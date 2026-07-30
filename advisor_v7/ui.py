@@ -198,8 +198,12 @@ tr:last-child td{border-bottom:none}
 
 
 def _page(body, title="advisor v7"):
-    return ("<!doctype html><meta charset=utf-8><title>%s</title><style>%s</style>"
-            "<div class=wrap>%s</div>" % (html.escape(title), _CSS, body))
+    # auto-refresh: this dashboard is watched DURING a run, and a first load that happened to catch
+    # an empty DB used to just sit there looking broken
+    return ("<!doctype html><meta charset=utf-8><title>%s</title>"
+            "<meta http-equiv=refresh content=10>"
+            "<style>%s</style><div class=wrap>%s</div>"
+            % (html.escape(title), _CSS, body))
 
 
 def _esc(v):
@@ -212,7 +216,7 @@ def render_index(con, run_dir):
                     % (k, v) for k, v in
                     (("turns", s["turns"]), ("decisions", s["decisions"]), ("offers", s["offers"]),
                      ("taken", s["taken"]), ("confirmed", s["counted"]),
-                     ("confirm %%", s["confirm_rate"])))
+                     ("confirm %", s["confirm_rate"])))
     rows = []
     for r in by_action_type(con):
         pct = (100.0 * (r["ok"] or 0) / r["n"]) if r["n"] else 0
@@ -421,8 +425,9 @@ def serve(run_dir, port=8777, follow=False):
             self.end_headers()
             self.wfile.write(data)
 
-    print("advisor v7 UI -> http://127.0.0.1:%d   (%s)" % (port, run_dir), flush=True)
-    HTTPServer(("127.0.0.1", port), H).serve_forever()
+    print("advisor v7 UI -> http://127.0.0.1:%d  (also http://localhost:%d)   run=%s"
+          % (port, port, run_dir), flush=True)
+    HTTPServer(("0.0.0.0", port), H).serve_forever()
 
 
 if __name__ == "__main__":
