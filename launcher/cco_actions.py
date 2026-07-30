@@ -311,6 +311,317 @@ register("building", {
 })
 
 
+# ---------------------------------------------------------------------------- cco: RESEARCH
+# faction -> TechnologyManagerContext -> TechnologyList -> entry with NodeKey -> StartResearching.
+# LIVE-VERIFIED: is_currently_researching False->True, CurrentResearchingTechnologyContext.NodeKey
+# == picked key; a prereq-gated tier-5 tech was silently refused (engine self-guards).
+_LUA_TECH = (_G +
+    "local f=cco('CcoCampaignFaction','%(fac)s'); local m=g(f,'TechnologyManagerContext');"
+    "if not m then return 'NO-MGR' end local l=g(m,'TechnologyList');"
+    "if type(l)~='table' then return 'NO-LIST' end ")
+
+
+def _faction_cqi(bus):
+    return _ev(bus, "return cm:get_local_faction(true):command_queue_index()", timeout=8.0)
+
+
+def _researching(bus):
+    return _ev(bus, "return tostring(cm:get_local_faction(true):is_currently_researching())", timeout=8.0)
+
+
+def _current_tech(bus, fac):
+    return _ev(bus, _G + "local f=cco('CcoCampaignFaction','%s'); local m=g(f,'TechnologyManagerContext');"
+                         "local c=m and g(m,'CurrentResearchingTechnologyContext');"
+                         "if c then return ts(g(c,'NodeKey')) end return 'none'" % fac)
+
+
+def _research_snapshot(bus, ctx, pick):
+    fac = _faction_cqi(bus)
+    if fac is None:
+        return None
+    return {"faction": str(fac), "researching": _researching(bus), "current": _current_tech(bus, fac)}
+
+
+def _research_gate(bus, ctx, pick, before):
+    if before.get("researching") == "true":
+        return False, "already_researching"
+    return True, None
+
+
+def _research_execute(bus, ctx, pick, before):
+    res = _ev(bus, (_LUA_TECH % {"fac": before["faction"]}) +
+              "for i=1,#l do local t=l[i]; if ts(g(t,'NodeKey'))=='%s' then "
+              "pcall(function() t:Call('StartResearching') end); return 'called' end end return 'NOT-IN-LIST'"
+              % pick["key"], timeout=25.0)
+    if res != "called":
+        sys.stderr.write("cco_actions: research %r -> %s\n" % (pick["key"], res))
+        return False
+    return True
+
+
+def _research_confirm(bus, ctx, pick, before):
+    cur = _current_tech(bus, before["faction"])
+    researching = _researching(bus)
+    return (researching == "true" and cur == pick["key"]), {"researching": researching, "current": cur}
+
+
+register("research", {
+    "layer": "cco", "signal": "is_researching_and_current_tech",
+    "snapshot": _research_snapshot, "gates": [_research_gate],
+    "execute": _research_execute, "confirm": _research_confirm,
+    "timeout_s": 6.0, "poll_s": 1.5, "max_per_entity_turn": 1,
+})
+
+
+# ---------------------------------------------------------------------------- cco: SKILLS
+# CharacterSkill::AddPoint (Void) then Character::CommitSkillChoices (Void).
+# LIVE-VERIFIED: has_skill False->True, SkillPointsAvailable 1->0, HasUncommitedSkills true->false.
+# NOTE has_skill flips at AddPoint (BEFORE commit) -- the reliable confirm is has_skill AND
+# uncommitted back to false. A rank-locked skill with 0 points produced ZERO state change.
+_LUA_SKILLS = (_G + "local c=cco('CcoCampaignCharacter','%(cqi)s'); local l=g(c,'SkillList');"
+                    "if type(l)~='table' then return 'NO-LIST' end ")
+
+
+def _has_skill(bus, cqi, key):
+    return _ev(bus, "local c=cm:get_character_by_cqi(%s); if c and not c:is_null_interface() "
+                    "then return tostring(c:has_skill('%s')) end return 'no-char'" % (cqi, key), timeout=8.0)
+
+
+def _skills_snapshot(bus, ctx, pick):
+    cqi = ctx["entity_id"]
+    return {
+        "has_skill": _has_skill(bus, cqi, pick["key"]),
+        "points": _ev(bus, _G + "return ts(g(cco('CcoCampaignCharacter','%s'),'SkillPointsAvailable'))" % cqi),
+        "status": _ev(bus, (_LUA_SKILLS % {"cqi": cqi}) +
+                      "for i=1,#l do if ts(g(l[i],'Key'))=='%s' then return ts(g(l[i],'Status')) end end "
+                      "return 'NOT-IN-LIST'" % pick["key"], timeout=20.0),
+    }
+
+
+def _skills_gate(bus, ctx, pick, before):
+    if before.get("has_skill") == "true":
+        return False, "already_has_skill"
+    try:
+        if float(before.get("points") or 0) < 1:
+            return False, "no_skill_points"
+    except (TypeError, ValueError):
+        return False, "skill_points_unreadable"
+    if before.get("status") != "active":
+        return False, "skill_status_%s" % before.get("status")
+    return True, None
+
+
+def _skills_execute(bus, ctx, pick, before):
+    cqi = ctx["entity_id"]
+    res = _ev(bus, (_LUA_SKILLS % {"cqi": cqi}) +
+              "for i=1,#l do local s=l[i]; if ts(g(s,'Key'))=='%s' then "
+              "pcall(function() s:Call('AddPoint') end); return 'called' end end return 'NOT-IN-LIST'"
+              % pick["key"], timeout=25.0)
+    if res != "called":
+        sys.stderr.write("cco_actions: skills AddPoint %r -> %s\n" % (pick["key"], res))
+        return False
+    time.sleep(0.8)
+    _ev(bus, _G + "local c=cco('CcoCampaignCharacter','%s'); "
+                  "pcall(function() c:Call('CommitSkillChoices') end); return 'called'" % cqi)
+    return True
+
+
+def _skills_confirm(bus, ctx, pick, before):
+    cqi = ctx["entity_id"]
+    has = _has_skill(bus, cqi, pick["key"])
+    uncommitted = _ev(bus, _G + "return ts(g(cco('CcoCampaignCharacter','%s'),'HasUncommitedSkills'))" % cqi)
+    return (has == "true" and uncommitted == "false"), {"has_skill": has, "uncommitted": uncommitted}
+
+
+register("skills", {
+    "layer": "cco", "signal": "has_skill_flip_and_committed",
+    "snapshot": _skills_snapshot, "gates": [_skills_gate],
+    "execute": _skills_execute, "confirm": _skills_confirm,
+    "timeout_s": 6.0, "poll_s": 1.2, "max_per_entity_turn": 3,
+})
+
+
+# ---------------------------------------------------------------------------- cco: ITEMS
+# Ancillary equip/unequip. LIVE-VERIFIED: RemoveAncillary (Void) 1->0; equip via the TWO-ARG
+# form EquipToCharacter(SelectedCharacter(), NullContext()) 0->1 -- the ONE-ARG form silently
+# no-ops. SelectedCharacter() is resolved by first calling the Void command Select on the
+# character (also verified). Gate CanCharacterEquip(SelectedCharacter()) correctly read false
+# when already equipped, and a repeat call then changed nothing.
+_LUA_POOL = (_G + "local f=cco('CcoCampaignFaction','%(fac)s'); local l=g(f,'AncillaryList');"
+                  "if type(l)~='table' then return 'NO-LIST' end ")
+
+
+def _equipped_names(bus, cqi):
+    return _ev(bus, _G + "local c=cco('CcoCampaignCharacter','%s'); local l=g(c,'AncillaryList');"
+                         "if type(l)~='table' then return 'NO-LIST' end local o={} "
+                         "for i=1,#l do o[#o+1]=ts(g(l[i],'Name')) end "
+                         "return #l..'|'..table.concat(o,',')" % cqi, timeout=20.0)
+
+
+def _select_character(bus, cqi):
+    _ev(bus, _G + "local c=cco('CcoCampaignCharacter','%s'); pcall(function() c:Call('Select') end); "
+                  "return 'ok'" % cqi)
+    time.sleep(1.0)
+
+
+def _items_snapshot(bus, ctx, pick):
+    cqi = ctx["entity_id"]
+    fac = _faction_cqi(bus)
+    if fac is None:
+        return None
+    _select_character(bus, cqi)
+    idx = pick.get("params", {}).get("pool_index")
+    can = None
+    if idx is not None:
+        can = _ev(bus, (_LUA_POOL % {"fac": fac}) +
+                  "local a=l[%d]; if not a then return 'NO-ITEM' end "
+                  "return ts(g(a,'CanCharacterEquip(SelectedCharacter())'))" % int(idx), timeout=20.0)
+    return {"faction": str(fac), "equipped": _equipped_names(bus, cqi), "can_equip": can}
+
+
+def _items_gate(bus, ctx, pick, before):
+    if pick.get("params", {}).get("pool_index") is None:
+        return False, "no_pool_index"
+    if before.get("can_equip") != "true":
+        return False, "can_character_equip_%s" % before.get("can_equip")
+    return True, None
+
+
+def _items_execute(bus, ctx, pick, before):
+    idx = int(pick["params"]["pool_index"])
+    _select_character(bus, ctx["entity_id"])          # refresh SelectedCharacter() binding
+    res = _ev(bus, (_LUA_POOL % {"fac": before["faction"]}) +
+              "local a=l[%d]; if not a then return 'NO-ITEM' end "
+              "pcall(function() a:Call('EquipToCharacter(SelectedCharacter(), NullContext())') end); "
+              "return 'called'" % idx, timeout=25.0)
+    return res == "called"
+
+
+def _items_confirm(bus, ctx, pick, before):
+    now = _equipped_names(bus, ctx["entity_id"])
+    def n(v):
+        try:
+            return int(str(v).split("|", 1)[0])
+        except (TypeError, ValueError):
+            return -1
+    return (n(now) > n(before.get("equipped"))), {"equipped": now}
+
+
+register("items", {
+    "layer": "cco", "signal": "equipped_count_increase",
+    "snapshot": _items_snapshot, "gates": [_items_gate],
+    "execute": _items_execute, "confirm": _items_confirm,
+    "timeout_s": 6.0, "poll_s": 1.2, "max_per_entity_turn": 2,
+})
+
+
+def _unequip_snapshot(bus, ctx, pick):
+    return {"equipped": _equipped_names(bus, ctx["entity_id"])}
+
+
+def _unequip_execute(bus, ctx, pick, before):
+    idx = int(pick.get("params", {}).get("equipped_index", 1))
+    res = _ev(bus, _G + "local c=cco('CcoCampaignCharacter','%s'); local l=g(c,'AncillaryList');"
+                        "local a=l[%d]; if not a then return 'NO-ITEM' end "
+                        "pcall(function() a:Call('RemoveAncillary') end); return 'called'"
+              % (ctx["entity_id"], idx), timeout=20.0)
+    return res == "called"
+
+
+def _unequip_confirm(bus, ctx, pick, before):
+    now = _equipped_names(bus, ctx["entity_id"])
+    def n(v):
+        try:
+            return int(str(v).split("|", 1)[0])
+        except (TypeError, ValueError):
+            return -1
+    return (n(now) < n(before.get("equipped"))), {"equipped": now}
+
+
+register("item_unequip", {
+    "layer": "cco", "signal": "equipped_count_decrease",
+    "snapshot": _unequip_snapshot, "execute": _unequip_execute, "confirm": _unequip_confirm,
+    "timeout_s": 5.0, "poll_s": 1.2, "max_per_entity_turn": 2,
+})
+
+
+# ---------------------------------------------------------------------------- cco: RITES
+# faction AvailableRitualList[i]:Perform. LIVE-VERIFIED: CanPerformRitual true->false and
+# IsComplete false->true on exactly the performed entry. NOTE the ritual objects expose no
+# readable key/name property, so rites are addressed by LIST INDEX (params.rite_index).
+_LUA_RITES = (_G + "local f=cco('CcoCampaignFaction','%(fac)s'); local l=g(f,'AvailableRitualList');"
+                   "if type(l)~='table' then return 'NO-LIST' end ")
+
+
+def _rite_flags(bus, fac, idx):
+    return _ev(bus, (_LUA_RITES % {"fac": fac}) +
+               "local r=l[%d]; if not r then return 'NO-RITE' end "
+               "return ts(g(r,'CanPerformRitual'))..'/'..ts(g(r,'IsComplete'))" % int(idx), timeout=20.0)
+
+
+def _rites_snapshot(bus, ctx, pick):
+    fac = _faction_cqi(bus)
+    idx = pick.get("params", {}).get("rite_index")
+    if fac is None or idx is None:
+        return None
+    return {"faction": str(fac), "flags": _rite_flags(bus, fac, idx)}
+
+
+def _rites_gate(bus, ctx, pick, before):
+    if not str(before.get("flags", "")).startswith("true/"):
+        return False, "cannot_perform_%s" % before.get("flags")
+    return True, None
+
+
+def _rites_execute(bus, ctx, pick, before):
+    idx = int(pick["params"]["rite_index"])
+    res = _ev(bus, (_LUA_RITES % {"fac": before["faction"]}) +
+              "local r=l[%d]; if not r then return 'NO-RITE' end "
+              "pcall(function() r:Call('Perform') end); return 'called'" % idx, timeout=25.0)
+    return res == "called"
+
+
+def _rites_confirm(bus, ctx, pick, before):
+    flags = _rite_flags(bus, before["faction"], pick["params"]["rite_index"])
+    return (flags != before.get("flags") and not str(flags).startswith("true/")), {"flags": flags}
+
+
+register("rites", {
+    "layer": "cco", "signal": "can_perform_false_and_complete",
+    "snapshot": _rites_snapshot, "gates": [_rites_gate],
+    "execute": _rites_execute, "confirm": _rites_confirm,
+    "timeout_s": 8.0, "poll_s": 1.5, "max_per_entity_turn": 2,
+})
+
+
+# ---------------------------------------------------------------------------- cco: END TURN
+# CampaignRoot::EndTurn (Void). LIVE-VERIFIED: turn 1 -> 2 with NO notification suppression and
+# NO hardware click -- this retires the v6 suppress + hardware-click-the-rect dance entirely.
+def _endturn_snapshot(bus, ctx, pick):
+    t = _ev(bus, "return cm:model():turn_number()", timeout=8.0)
+    return None if t is None else {"turn": t}
+
+
+def _endturn_execute(bus, ctx, pick, before):
+    return _ev(bus, _G + "local r=cco('CcoCampaignRoot',''); "
+                         "pcall(function() r:Call('EndTurn') end); return 'called'") == "called"
+
+
+def _endturn_confirm(bus, ctx, pick, before):
+    t = _ev(bus, "return cm:model():turn_number()", timeout=8.0)
+    try:
+        return (t is not None and float(t) > float(before["turn"])), {"turn": t}
+    except (TypeError, ValueError):
+        return False, {"turn": t}
+
+
+register("end_turn", {
+    "layer": "cco", "signal": "turn_number_increment",
+    "snapshot": _endturn_snapshot, "execute": _endturn_execute, "confirm": _endturn_confirm,
+    "timeout_s": 200.0, "poll_s": 4.0, "retryable": False, "max_per_entity_turn": 1,
+})
+
+
 # ---------------------------------------------------------------------------- noop
 register("noop", {"layer": "cco", "signal": "none",
                   "snapshot": lambda bus, ctx, pick: {},
