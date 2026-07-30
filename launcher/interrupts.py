@@ -44,14 +44,14 @@ DIPLOMACY_HUD_ROOTS = frozenset(("diplomacy_dropdown",))
 # treating them as "something the game put on screen" made resolve() declare a stuck screen and
 # burn a screenshot on every single action during normal operation.
 BENIGN_PANELS = frozenset((
-    # ⚠ character_panel is deliberately NOT here. Left open it BLOCKS the next selection from
-    # opening its panel and stalls the run -- it must stay visible to the stuck detector.
+    # ONLY panels the LOADER ITSELF opens in prepare(). Everything else on screen is something the
+    # GAME put there and must be dismissed -- being permissive here is why a "Path to Glory" advice
+    # panel sat on screen unclickable while the loop carried on around it.
+    # ⚠ do NOT add advice_interface / events / influence_gained: those are dismissible popups with a
+    # tick button, and listing them made the loop ignore them forever.
+    # ⚠ do NOT add character_panel: left open it BLOCKS the next selection and wedges the run.
     "units_panel", "settlement_panel", "recruitment_options",
-    "recruitment_panel", "technology_panel", "diplomacy_panel", "faction_summary_panel",
-    "province_overview_panel", "building_browser", "unit_information", "advice_interface",
-    "events", "event_feed", "influence_gained", "help_panel", "campaign_space_bar_options",
 ))
-
 
 def roots(bus):
     try:
