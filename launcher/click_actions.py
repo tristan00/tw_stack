@@ -78,6 +78,33 @@ def _find(bus, path, timeout=8.0):
         return {}, []
 
 
+def _hw_click(bus, path, settle=1.2):
+    """HARDWARE click on a component's rect. Needed for components the bus refuses to
+    SimulateLClick -- notably ones reporting visible:False (verified: the raise-army
+    `general_candidate_<n>_` rows, which are found+active but invisible, so the mod's click
+    is a silent no-op while still returning clicked:True)."""
+    import nav
+    res, _ = _find(bus, path)
+    if res.get("x") is None:
+        sys.stderr.write("click_actions: no rect for %s\n" % path.rsplit("|", 1)[-1])
+        return False
+    sx, sy = nav.ui_to_screen(res["x"] + (res.get("w") or 0) / 2.0,
+                              res["y"] + (res.get("h") or 0) / 2.0)
+    nav.mouse("move", sx, sy)
+    time.sleep(0.3)
+    nav.mouse("click", sx, sy)
+    time.sleep(settle)
+    return True
+
+
+def _click_or_hw(bus, path):
+    """Try the (cursor-safe) bus click; fall back to a hardware click on the rect."""
+    res, _ = _find(bus, path)
+    if res.get("visible") is True and _click(bus, path):
+        return True
+    return _hw_click(bus, path)
+
+
 def _treasury(bus):
     return _ev(bus, "return cm:get_faction(cm:get_local_faction_name(true)):treasury()", timeout=8.0)
 
@@ -224,9 +251,11 @@ def _lord_snapshot(bus, ctx, pick):
 
 
 def _lord_execute(bus, ctx, pick, before):
-    if not _click(bus, CREATE_ARMY_BTN):         # opens character_panel (raise-army)
-        return False
-    time.sleep(1.8)
+    r = _roots(bus)
+    if not (r and "character_panel" in r):       # idempotent: the button TOGGLES the panel
+        if not _click(bus, CREATE_ARMY_BTN):     # opens character_panel (raise-army)
+            return False
+        time.sleep(1.8)
     if not _click(bus, "%s|%s" % (LORD_TYPE_LIST, pick["key"])):   # lord TYPE, e.g. hef_prince
         return False
     time.sleep(1.5)
@@ -235,10 +264,17 @@ def _lord_execute(bus, ctx, pick, before):
         sys.stderr.write("click_actions: no general_candidate rows for %r\n" % pick["key"])
         return False
     idx = int((pick.get("params") or {}).get("candidate_index", 0))
-    if not _click(bus, "%s|%s" % (CANDIDATE_LIST, cands[min(idx, len(cands) - 1)])):
+    # candidate rows report visible:False -> the bus click is a silent no-op; hardware-click the rect
+    if not _hw_click(bus, "%s|%s" % (CANDIDATE_LIST, cands[min(idx, len(cands) - 1)])):
         return False
-    time.sleep(1.2)
-    return _click(bus, BUTTON_RAISE)             # commits
+    # button_raise is 'down_off' (disabled) until a candidate is selected -- that flip is the
+    # in-flight proof the selection landed, checked before committing.
+    res, _ = _find(bus, BUTTON_RAISE)
+    if res.get("state") != "active":
+        sys.stderr.write("click_actions: button_raise not active after candidate select (state=%s)\n"
+                         % res.get("state"))
+        return False
+    return _click_or_hw(bus, BUTTON_RAISE)       # commits
 
 
 def _lord_confirm(bus, ctx, pick, before):
