@@ -427,11 +427,27 @@ register("recruit_unit", {
 
 
 # ------------------------------------------------------------------------- RECRUIT LORD
+def _character_count(bus):
+    """How many characters the faction has. ONE read, ONE number -- the whole recruit verdict.
+
+    Replaces a set-of-cqis built by splitting a string: a failed read produced {''}, which is
+    indistinguishable from "no new character", so a bus hiccup turned a SUCCESSFUL recruit into a
+    reported failure. Returns None when the read genuinely fails, so the caller can say "unknown"
+    instead of "did not happen".
+    """
+    v = _ev(bus, "local f=cm:get_local_faction(true) return f:character_list():num_items()",
+            timeout=12.0)
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return None
+
+
 def _character_cqis(bus):
     raw = _ev(bus, "local f=cm:get_local_faction(true); local cl=f:character_list(); local o={} "
                    "for i=0,cl:num_items()-1 do o[#o+1]=cl:item_at(i):command_queue_index() end "
                    "return table.concat(o,',')", timeout=12.0)
-    return set(str(raw or "").split(","))
+    return set(x for x in str(raw or "").split(",") if x.strip())
 
 
 def lord_types(bus):
@@ -447,7 +463,10 @@ def lord_candidates(bus):
 
 
 def _lord_snapshot(bus, ctx, pick):
-    return {"treasury": _treasury(bus), "chars": sorted(_character_cqis(bus))}
+    n = _character_count(bus)
+    if n is None:
+        return None                      # unreadable baseline -> snapshot_failed, never a bad one
+    return {"treasury": _treasury(bus), "n_chars": n}
 
 
 def _lord_execute(bus, ctx, pick, before):
@@ -513,11 +532,24 @@ def _lord_execute_inner(bus, ctx, pick, before):
 
 
 def _lord_confirm(bus, ctx, pick, before):
-    now = _character_cqis(bus)
-    new = sorted(now - set(before.get("chars") or []))
+    """Did the faction gain a character? That is the whole question.
+
+    A COUNT, not a set difference, and not an AND of two independent reads. The previous version
+    required both a new cqi AND a treasury drop, each from its own read -- so either one hiccuping
+    inside the confirm window flipped a real recruit to `command_silently_refused`. Live evidence:
+    recruit_lord scored 0/3 confirmed on recruits that had actually happened, and each false
+    negative burned the FULL confirm timeout (a success returns on the first poll), which made this
+    the largest time sink after end_turn.
+
+    The treasury drop is still recorded as corroborating evidence, but it is NOT required.
+    """
+    n = _character_count(bus)
     t = _treasury(bus)
-    dropped = (t is not None and before.get("treasury") is not None and t < before["treasury"])
-    return (bool(new) and dropped), {"new_cqis": new, "treasury": t}
+    before_n = before.get("n_chars")
+    grew = (n is not None and before_n is not None and n > before_n)
+    return grew, {"n_chars": n, "n_chars_before": before_n, "treasury": t,
+                  "treasury_dropped": (t is not None and before.get("treasury") is not None
+                                       and t < before["treasury"])}
 
 
 register("recruit_lord", {

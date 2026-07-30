@@ -28,8 +28,21 @@ import model as M                                          # noqa: E402
 # the one thing a testing agent must never do is wander into a manual battle.
 FORBIDDEN_KEYS = frozenset({"button_attack", "button_spectate"})
 
-MAX_ACTIONS_PER_TURN = 40          # hard ceiling; the loop force-ends the turn at this
+# 10, not 40. Measured on a live run: ~12s per decision (verify dominates, and a FAILED confirm
+# burns its whole timeout while a success returns on the first poll), so 40 actions/turn is ~8
+# minutes a turn = ~2.5h per 20-turn campaign. At 10 the cap rarely binds early-game anyway -- turn
+# 1 used 13 -- and it keeps a bad turn from eating the session.
+MAX_ACTIONS_PER_TURN = 10          # hard ceiling; the loop force-ends the turn at this
 MAX_ACTIONS_PER_ENTITY = 6         # an entity retires after this many confirmed actions in a turn
+
+# PER-ENTITY, PER-TURN CAPS BY ACTION TYPE.
+# Enforced HERE because the game's availability read cannot express it: after recruiting a lord the
+# pool still reports size=6 with CanRecruitCharacter=[True]*6, so `available` stays true forever and
+# the policy would happily try again every action. A second attempt in the same settlement/turn is
+# a guaranteed wasted action, and a wasted action costs the FULL confirm timeout.
+# Conservative by design: if a rule turns out not to exist we lose at most one extra action per
+# entity per turn; if it does exist we avoid a certain failure and a mislabelled row.
+PER_TURN_CAPS = {"recruit_lord": 1, "recruit_unit": 4, "edict": 1, "research": 1, "rites": 1}
 EPS_FLOOR = 0.05                   # never stop exploring entirely
 COLD_NOOP_WEIGHT = 0.10            # cold-start prior mass on "this entity is done"
 
@@ -44,12 +57,14 @@ class Policy:
         self.retired = set()           # (context_kind, context_id) done for this turn
         self.blacklist = set()         # (ck, cid, action_type, key) that failed confirmation
         self.entity_actions = {}       # (ck, cid) -> confirmed actions this turn
+        self.type_actions = {}         # (ck, cid, action_type) -> confirmed of THAT type this turn
 
     # ------------------------------------------------------------------ turn bookkeeping
     def new_turn(self):
         self.retired.clear()
         self.blacklist.clear()
         self.entity_actions.clear()
+        self.type_actions.clear()
 
     def retire(self, context_kind, context_id):
         self.retired.add((context_kind, str(context_id)))
@@ -61,6 +76,8 @@ class Policy:
         if counted:
             n = self.entity_actions.get(k, 0) + 1
             self.entity_actions[k] = n
+            tk = (k[0], k[1], pick["action_type"])
+            self.type_actions[tk] = self.type_actions.get(tk, 0) + 1
             if n >= self.max_actions_per_entity:
                 self.retired.add(k)
         else:
@@ -87,6 +104,9 @@ class Policy:
                 continue
             if (k[0], k[1], r["action_type"], str(r["key"])) in self.blacklist:
                 continue
+            cap = PER_TURN_CAPS.get(r["action_type"])
+            if cap is not None and self.type_actions.get((k[0], k[1], r["action_type"]), 0) >= cap:
+                continue                 # already done this many of this type here, this turn
             out.append(r)
         return out
 
