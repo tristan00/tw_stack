@@ -673,11 +673,34 @@ def _endturn_execute(bus, ctx, pick, before):
 
 
 def _endturn_confirm(bus, ctx, pick, before):
+    """Waiting for the turn to advance is NOT enough -- it will not advance while the AI's turn is
+    blocked on something that needs us.
+
+    ⚠ THE CASE THIS EXISTS FOR: a faction attacks US during its own turn, so a Battle Deployment
+    (popup_pre_battle) opens mid inter-turn. The turn number then never moves, and a confirm that
+    only polls the turn number sits there for its whole timeout doing nothing while the battle waits
+    for a click. So every poll also CLEARS INTERRUPTS -- autoresolving a defensive battle, taking
+    the post-battle options, declining diplomacy -- and only then re-reads the turn.
+    """
     t = _ev(bus, "return cm:model():turn_number()", timeout=8.0)
+    steps = []
     try:
-        return (t is not None and float(t) > float(before["turn"])), {"turn": t}
+        advanced = (t is not None and float(t) > float(before["turn"]))
     except (TypeError, ValueError):
-        return False, {"turn": t}
+        advanced = False
+    if not advanced:
+        try:
+            import interrupts
+            steps = interrupts.resolve(bus)
+            if steps:
+                t = _ev(bus, "return cm:model():turn_number()", timeout=8.0)
+                try:
+                    advanced = (t is not None and float(t) > float(before["turn"]))
+                except (TypeError, ValueError):
+                    advanced = False
+        except Exception as e:
+            sys.stderr.write("cco_actions: end_turn interrupt sweep -> %s\n" % repr(e)[:120])
+    return advanced, {"turn": t, "interrupts": steps}
 
 
 register("end_turn", {

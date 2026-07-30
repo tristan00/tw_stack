@@ -43,8 +43,14 @@ RUNS_ROOT = "D:/twdata/runs/human"
 
 
 def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
-                  log=print, runs_root=RUNS_ROOT):
-    """Play `n` campaigns of up to `turns` turns each. Returns the session report."""
+                  log=print, runs_root=RUNS_ROOT, retrain=False):
+    """Play `n` campaigns of up to `turns` turns each. Returns the session report.
+
+    retrain=True refits the model from everything collected so far BEFORE each campaign, so run k+1
+    is played by a policy that has seen runs 1..k. With retrain=False the policy is whatever is on
+    disk (cold-start random when nothing is trained), identical across all n runs -- which is what
+    you want for a clean data-collection sweep.
+    """
     from bus import Bus
     from executor import Executor
 
@@ -59,6 +65,18 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
         log("CAMPAIGN %d/%d  (up to %d turns, plan=%s)" % (i + 1, n, turns, plan))
         log("=" * 78)
         entry = {"index": i + 1, "started": time.time(), "plan": plan}
+        if retrain:
+            # Refit on everything collected so far. A failure here must NOT stop the session: the
+            # run simply proceeds on the previous model (or cold-start), which is still useful data.
+            try:
+                t0 = time.time()
+                rep = M.train()
+                entry["retrain"] = dict(rep, seconds=round(time.time() - t0, 1))
+                log("retrained before run %d: %s" % (i + 1, json.dumps(rep)[:220]))
+            except Exception as e:
+                entry["retrain"] = {"error": repr(e)[:250]}
+                log("!! retrain before run %d failed (continuing on the previous model): %s"
+                    % (i + 1, repr(e)[:180]))
         try:
             # A fresh campaign for every iteration -- including the first, so campaign 1 is not
             # silently whatever happened to be loaded when the session started.
@@ -69,7 +87,12 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
             ex.shots_dir = os.path.join(run_dir, "shots")
             log("run dir: %s" % run_dir)
 
-            pol = P.Policy(M.Ranker())                        # fresh caps/blacklists per campaign
+            ranker = M.Ranker()                               # re-read from disk: picks up a retrain
+            pol = P.Policy(ranker)                            # fresh caps/blacklists per campaign
+            entry["policy"] = ("trained(%d rows, eps=%.2f)" % ((ranker.meta or {}).get("rows", 0),
+                                                               pol.epsilon)
+                               if ranker.ready else "cold_random")
+            log("policy: %s" % entry["policy"])
             rows = L.run_campaign(run_dir, ex, pol, turns=turns, log=log)
             entry.update(outcome="completed", turns_played=len(rows),
                          actions=sum(r["actions"] for r in rows),
@@ -130,7 +153,7 @@ def main():
     plan = "nagarythe"
     if "--plan" in sys.argv:
         plan = sys.argv[sys.argv.index("--plan") + 1]
-    r = run_campaigns(n, turns, plan=plan)
+    r = run_campaigns(n, turns, plan=plan, retrain="--retrain" in sys.argv)
     return 0 if r["totals"]["completed"] else 2
 
 

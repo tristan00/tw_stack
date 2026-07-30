@@ -96,10 +96,13 @@ def run(ctx):
                         n = sum(len(e["offers"]) for e in snap["entities"])
                         journal.respond(out_dir, rid, decision_id=did,
                                         collect_ms=int((time.time() - t0) * 1000))
+                        # the per-phase profile goes to THIS JSONL, never the DB -- profiling must
+                        # not add writes (or locks) to the store the advisor is reading
                         ctx.emit({"kind": "decisions_point", "decision_id": did,
                                   "entities": len(snap["entities"]), "offers": n,
                                   "turn": snap["campaign"].get("turn"),
-                                  "ms": int((time.time() - t0) * 1000)})
+                                  "ms": int((time.time() - t0) * 1000),
+                                  "profile": snap.get("profile")})
                     elif kind == "target":
                         r = collect.target_row(bus)
                         wrote = store.write_target_row(r)

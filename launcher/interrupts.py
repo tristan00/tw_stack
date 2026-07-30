@@ -148,10 +148,26 @@ def in_battle(bus):
 
 # --------------------------------------------------------------------------------- battle
 def autoresolve(bus):
-    """Click autoresolve in the open pre-battle. NEVER touches the manual-battle buttons."""
+    """Click autoresolve in the open pre-battle. NEVER touches the manual-battle buttons.
+
+    Covers BOTH pre-battle variants: the one we open by attacking, and the Battle Deployment screen
+    the game raises when a faction attacks US during its own turn. Same root (popup_pre_battle),
+    different layout -- which is why the button is RESOLVED BY SEARCH rather than a fixed path.
+
+    Prefers the bus click (SimulateLClick by path), which does not touch the OS cursor and so cannot
+    steal the mouse from whoever is at the keyboard. Verified on the deployment screen: the button
+    reports visible=True / state=active, which is exactly the condition SimulateLClick needs. The
+    hardware click stays as the fallback for the case where the bus click does not register.
+    """
     n = nav.find_rect(bus, "popup_pre_battle", "button_autoresolve")
-    if not n or n.get("x") is None:
+    if not n or n.get("path") is None:
         sys.stderr.write("interrupts: button_autoresolve not found in popup_pre_battle\n")
+        return False
+    if n.get("visible") and _click(bus, n["path"], settle=1.0):
+        if _wait_root(bus, "popup_battle_results", tries=20, pause=1.0):
+            return True
+        sys.stderr.write("interrupts: bus click on autoresolve did not open the results\n")
+    if n.get("x") is None:
         return False
     sx, sy = nav.ui_to_screen(n["x"] + n["w"] / 2.0, n["y"] + n["h"] / 2.0)
     nav.mouse("move", sx, sy)
