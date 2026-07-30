@@ -125,30 +125,54 @@ def timeline(con):
     return out, turns_
 
 
-def run_history(con):
-    """One row per CAMPAIGN in this store, oldest first.
+def run_history(con, runs_root=RUNS_ROOT):
+    """Every campaign EVER recorded, across EVERY run dir -- oldest first.
 
-    Several playthroughs share one decisions.sqlite now (identity lives in the minted campaign uuid,
-    not in the directory), so "run history" is just a GROUP BY campaign_id -- no cross-file walking.
+    ⚠ This deliberately does NOT read only the current run. The manager opens a FRESH run dir each
+    time it starts, so a history scoped to one dir forgets everything the moment anything restarts,
+    which is exactly what made this table look broken. Campaigns are keyed by their minted uuid, so
+    unioning across dirs is unambiguous: the same campaign can never appear twice, and two
+    playthroughs of the same faction can never merge.
+
+    Every DB is opened READ-ONLY; a dir with an older/incompatible schema is skipped, never fatal.
     """
-    rows = []
-    for camp, first_ts, last_ts, n_dec, max_turn in con.execute(
-            "SELECT campaign_id, MIN(ts), MAX(ts), COUNT(*), MAX(turn) FROM decision_points"
-            " GROUP BY campaign_id ORDER BY MIN(ts)"):
-        taken, counted = con.execute(
-            "SELECT COUNT(*), COALESCE(SUM(t.counted),0) FROM action_taken t"
-            " JOIN decision_points d ON d.decision_id=t.decision_id"
-            " WHERE d.campaign_id=? AND t.refusal IS NOT 'awaiting_execution'", (camp,)).fetchone()
-        reward = con.execute(
-            "SELECT turn, income, settlements, power_rank FROM target_rows WHERE campaign_id=?"
-            " ORDER BY turn DESC LIMIT 1", (camp,)).fetchone()
-        rows.append({"campaign": camp, "turns": int(max_turn or 0), "decisions": n_dec,
-                     "taken": taken or 0, "counted": counted or 0,
-                     "minutes": round(((last_ts or 0) - (first_ts or 0)) / 60.0, 1),
-                     "confirm_pct": round(100.0 * (counted or 0) / (taken or 1), 1),
-                     "last_income": (reward[1] if reward else None),
-                     "last_settlements": (reward[2] if reward else None),
-                     "last_power_rank": (reward[3] if reward else None)})
+    seen, rows = {}, []
+    dbs = sorted(glob.glob(os.path.join(runs_root, "*", "decisions.sqlite")), key=os.path.getmtime)
+    for db in dbs:
+        try:
+            c = sqlite3.connect("file:%s?mode=ro" % db.replace("\\", "/"), uri=True, timeout=5.0)
+        except sqlite3.Error:
+            continue
+        try:
+            for camp, first_ts, last_ts, n_dec, max_turn in c.execute(
+                    "SELECT campaign_id, MIN(ts), MAX(ts), COUNT(*), MAX(turn) FROM decision_points"
+                    " GROUP BY campaign_id"):
+                taken, counted = c.execute(
+                    "SELECT COUNT(*), COALESCE(SUM(t.counted),0) FROM action_taken t"
+                    " JOIN decision_points d ON d.decision_id=t.decision_id"
+                    " WHERE d.campaign_id=? AND t.refusal IS NOT 'awaiting_execution'",
+                    (camp,)).fetchone()
+                reward = c.execute(
+                    "SELECT turn, income, settlements, power_rank FROM target_rows"
+                    " WHERE campaign_id=? ORDER BY turn DESC LIMIT 1", (camp,)).fetchone()
+                row = {"campaign": camp, "turns": int(max_turn or 0), "decisions": n_dec,
+                       "taken": taken or 0, "counted": counted or 0, "first_ts": first_ts or 0,
+                       "minutes": round(((last_ts or 0) - (first_ts or 0)) / 60.0, 1),
+                       "confirm_pct": round(100.0 * (counted or 0) / (taken or 1), 1),
+                       "run": os.path.basename(os.path.dirname(db)),
+                       "last_income": (reward[1] if reward else None),
+                       "last_settlements": (reward[2] if reward else None),
+                       "last_power_rank": (reward[3] if reward else None)}
+                if camp in seen:                      # same campaign seen in two dirs -> keep richer
+                    if row["decisions"] > seen[camp]["decisions"]:
+                        seen[camp] = row
+                else:
+                    seen[camp] = row
+        except sqlite3.Error:
+            pass                                      # older schema in an archived dir; skip it
+        finally:
+            c.close()
+    rows = sorted(seen.values(), key=lambda r: r["first_ts"])
     return rows
 
 
@@ -284,16 +308,16 @@ def render_history(con):
             "<td class=barcell><div class='bar2 dimbar' style='width:%d%%'></div>"
             "<span class=blabel>%d</span></td>"
             "<td>%s</td><td>%s%%</td><td class=dim>%s min</td>"
-            "<td class=dim>%s</td><td class=dim>%s</td></tr>"
+            "<td class=dim>%s</td><td class=dim>%s</td><td class=dim>%s</td></tr>"
             % (i, _esc(r["campaign"]), _esc(str(r["campaign"])[-14:]),
                cls, w, r["turns"], wd, r["decisions"],
                r["counted"], r["confirm_pct"], r["minutes"],
-               _esc(r["last_settlements"]), _esc(r["last_income"])))
+               _esc(r["last_settlements"]), _esc(r["last_income"]), _esc(r.get("run"))))
     return ("<h2>run history &mdash; how far each campaign got</h2>"
             "<div class=scroll><table>"
             "<tr><th>#<th>campaign<th title='max turn reached'>turns survived"
             "<th title='decision points recorded'>decisions<th>confirmed<th>rate"
-            "<th>wall<th>settlements<th>income</tr>%s</table></div>" % "".join(bars))
+            "<th>wall<th>settlements<th>income<th>run dir</tr>%s</table></div>" % "".join(bars))
 
 
 def render_timeline(con):

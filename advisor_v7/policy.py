@@ -73,11 +73,17 @@ class Policy:
         """A confirmed action advances that entity's counter; an unconfirmed one is blacklisted so
         the same dead action is never retried a second time in the same turn."""
         k = (pick["context_kind"], str(pick["context_id"]))
+        # ⚠ THE PER-TYPE CAP COUNTS ATTEMPTS, NOT CONFIRMATIONS.
+        # The game consumes the turn's allowance whether or not our confirm believed it. Counting
+        # only confirmed actions meant a false-negative confirm left the counter at 0, so the policy
+        # immediately tried again -- and the retry uses a different subtype/candidate, so the
+        # blacklist (which keys on the exact key) did not stop it either. Live: two recruit_lord
+        # attempts in one settlement in one turn, the first of which had actually succeeded.
+        tk = (k[0], k[1], pick["action_type"])
+        self.type_actions[tk] = self.type_actions.get(tk, 0) + 1
         if counted:
             n = self.entity_actions.get(k, 0) + 1
             self.entity_actions[k] = n
-            tk = (k[0], k[1], pick["action_type"])
-            self.type_actions[tk] = self.type_actions.get(tk, 0) + 1
             if n >= self.max_actions_per_entity:
                 self.retired.add(k)
         else:

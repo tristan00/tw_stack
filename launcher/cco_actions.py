@@ -179,7 +179,26 @@ def execute_confirmed(bus, ctx, pick):
         rec["confirm"] = {"signal": None, "error": repr(e)[:160]}
         return rec
     if not rec["executed"]:
-        rec["refusal"] = "execute_failed"
+        # ⚠ DO NOT TRUST "execute failed" EITHER. The executor reporting failure says only that OUR
+        # click/command path gave up somewhere -- it says nothing about the GAME. A UI sequence can
+        # complete its effect and still return False on a later step (a state check, a click that
+        # reports not-registered, a cleanup error). Live proof: recruit_lord returned False, was
+        # recorded `execute_failed`, and the lord HAD BEEN RECRUITED (cqi 1042 present, faction
+        # count 3 -> 4). We threw away a real success and mislabelled the training row.
+        # The post-assert is the only truth, so ask the world once before declaring failure.
+        try:
+            confirmed, after = spec["confirm"](bus, ctx, pick, before)
+        except Exception as e:
+            confirmed, after = False, {"error": repr(e)[:160]}
+        rec["confirmed"] = bool(confirmed)
+        rec["counted"] = bool(confirmed)
+        rec["confirm"] = {"signal": spec.get("signal"), "before": before, "after": after,
+                          "latency_ms": int((time.time() - t0) * 1000), "polls": 0,
+                          "executor_reported": False}
+        rec["refusal"] = None if confirmed else "execute_failed"
+        if confirmed:
+            sys.stderr.write("cco_actions: %s executor said FAILED but the world says it "
+                             "HAPPENED -- counting it" % atype + chr(10))
         return rec
     deadline = t0 + spec["timeout_s"]
     confirmed, after, polls = False, {}, 0
