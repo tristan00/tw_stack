@@ -232,11 +232,78 @@ class BusLauncher:
             time.sleep(2.0)
         return False
 
+    # ---- quit to main menu (in-campaign -> frontend, WITHOUT killing the process) ----------
+    #
+    # ⚠⚠ READ THIS BEFORE "IMPROVING" IT INTO BUS CLICKS. THIS HAS BITTEN US MORE THAN ONCE. ⚠⚠
+    #
+    # The escape menu is MODAL, and a modal PAUSES THE GAME TICK. The mod's command handlers run on
+    # that tick, so the moment the menu opens THE BUS IS DEAD: `roots` times out, `find` times out,
+    # `click` times out. Any implementation that tries to locate "Exit to Main Menu" through the bus
+    # cannot work -- not "usually fails", CANNOT, by construction. Verified live: ShowEscapeMenu
+    # dispatched fine, the menu rendered, and the very next `roots` call timed out.
+    #
+    # So these two clicks are HARDWARE clicks at fixed CLIENT FRACTIONS. They are not blind: each
+    # was read off a screenshot of the real dialog, and the whole sequence is post-asserted by the
+    # bus COMING BACK TO LIFE with the `main` frontend root visible -- which cannot happen unless
+    # both clicks landed. If the layout ever moves, this fails loudly instead of silently.
+    #
+    #   Exit to Main Menu   (183, 988) of a 2560x1440 client
+    #   confirm tick        (1243, 841) -- "If you quit now you will lose all unsaved progress"
+    F_EXIT_TO_MENU = (183.0 / 2560.0, 988.0 / 1440.0)
+    F_CONFIRM_TICK = (1243.0 / 2560.0, 841.0 / 1440.0)
+
+    def quit_to_main_menu(self, timeout=180):
+        """Leave a running campaign and return to the main menu, without respawning the process.
+
+        This is what makes a campaign restart take seconds instead of a multi-minute cold boot, and
+        it is where the watchdog's "abandon this run" goes instead of taskkill.
+        """
+        import nav
+        if self.bus is None:
+            self.bus = Bus()
+        r = self._send("eval", "local r=cco('CcoCampaignRoot',''); "
+                               "pcall(function() r:Call('ShowEscapeMenu') end); return 'called'",
+                       timeout=20)
+        if (r or {}).get("result") != "called":
+            raise TWError("ShowEscapeMenu did not dispatch: %s" % r)
+        _log("escape menu opened (the bus is now dead until we leave it -- expected)")
+        time.sleep(3.0)
+
+        ox, oy, cw, ch = nav.CLIENT
+        for label, (fx, fy), settle in (("Exit to Main Menu", self.F_EXIT_TO_MENU, 4.0),
+                                        ("confirm quit", self.F_CONFIRM_TICK, 6.0)):
+            x, y = int(round(ox + fx * cw)), int(round(oy + fy * ch))
+            _log("hardware click: %s @ (%d,%d)" % (label, x, y))
+            nav.mouse("move", x, y)
+            time.sleep(0.4)
+            nav.mouse("click", x, y)
+            time.sleep(settle)
+
+        # POST-ASSERT: the bus can only answer again once the campaign has been torn down, and
+        # `main` only exists on the frontend. Both together prove we really left.
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            if any(k.get("id") == "main" and k.get("visible") for k in self._roots_safe()):
+                _log("back at the main menu (bus alive, `main` visible).")
+                return True
+            time.sleep(2.0)
+        raise TWError("still not at the main menu %ds after the quit clicks -- the escape-menu "
+                      "layout has probably moved; re-read the fractions off a screenshot" % timeout)
+
+    def restart_campaign(self, plan_name="nagarythe", campaign="Immortal Empires",
+                         load_timeout=360):
+        """Quit the current campaign and start a FRESH one -- the efficient restart path.
+
+        Reuses the exact frontend drive the cold launch uses, so there is one implementation of
+        'pick campaign / race / lord / start' rather than two that can drift.
+        """
+        self.quit_to_main_menu()
+        return self.drive_frontend(plan_name, campaign, load_timeout)
+
     # ---- the launch sequence -------------------------------------------------------------
     def launch(self, plan_name="nagarythe", campaign="Immortal Empires", boot_timeout=240,
                load_timeout=360):
-        plan = PLANS.get(plan_name)
-        if plan is None:
+        if plan_name not in PLANS:
             raise TWError("unknown plan %r (have %s)" % (plan_name, list(PLANS)))
         self.ensure_pack()
         self.spawn()
@@ -248,7 +315,13 @@ class BusLauncher:
         if not self._wait_bus_ready():
             raise TWError("bus never became ready after frontend_armed")
         _log("bus ready.")
+        return self.drive_frontend(plan_name, campaign, load_timeout)
 
+    def drive_frontend(self, plan_name="nagarythe", campaign="Immortal Empires", load_timeout=360):
+        """Main menu -> playable campaign. Shared by the cold launch and by restart_campaign."""
+        plan = PLANS.get(plan_name)
+        if plan is None:
+            raise TWError("unknown plan %r (have %s)" % (plan_name, list(PLANS)))
         self.click(P_CAMPAIGN)
         _log("clicked Campaign")
         self.click(P_NEW)

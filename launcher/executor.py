@@ -123,6 +123,55 @@ class Executor:
         except Exception:
             return []
 
+    # ------------------------------------------------------------------ game lifecycle
+    # The advisor drives these; nobody sits in the loop. A stuck run does not need a human to go
+    # get a fresh campaign, and a cold start does not need one to launch the game.
+    def start_game(self, plan="nagarythe", campaign="Immortal Empires", boot_timeout=240):
+        """Cold start: spawn WH3 and drive the frontend to a playable campaign."""
+        import bus_launcher
+        bl = bus_launcher.BusLauncher()
+        started = bl.launch(plan_name=plan, campaign=campaign, boot_timeout=boot_timeout)
+        self.bus = bl.bus or self.bus
+        return started
+
+    def at_main_menu(self):
+        return "main" in self.visible_roots()
+
+    def ensure_campaign(self, plan="nagarythe", campaign="Immortal Empires", fresh=False):
+        """Guarantee a playable campaign, from whatever state the game is in.
+
+        in a campaign + fresh=False -> nothing to do
+        in a campaign + fresh=True  -> quit to menu and start a new one
+        at the main menu            -> start one
+        Lets the advisor own the whole flow: no human decides when a campaign is needed.
+        """
+        if self.at_main_menu():
+            import bus_launcher
+            bl = bus_launcher.BusLauncher()
+            bl.bus = self.bus
+            started = bl.drive_frontend(plan_name=plan, campaign=campaign)
+            self.bus = bl.bus or self.bus
+            return started
+        if self.turn_number() is None:
+            raise RuntimeError("game is neither at the main menu nor in a readable campaign "
+                               "(roots=%s)" % self.visible_roots())
+        return self.new_campaign(plan, campaign) if fresh else {"already_in_campaign": True,
+                                                                "turn": self.turn_number()}
+
+    def new_campaign(self, plan="nagarythe", campaign="Immortal Empires"):
+        """Abandon the current campaign and start a FRESH one WITHOUT respawning the process.
+
+        This is the recovery path for a stuck run and the way the loop gets clean state on demand.
+        Quitting to the menu rather than killing the game keeps it to seconds instead of the
+        several minutes a cold boot costs.
+        """
+        import bus_launcher
+        bl = bus_launcher.BusLauncher()
+        bl.bus = self.bus
+        started = bl.restart_campaign(plan_name=plan, campaign=campaign)
+        self.bus = bl.bus or self.bus
+        return started
+
     # ------------------------------------------------------------------ evidence
     def screenshot(self, name):
         """Capture the game window to <shots_dir>/<name>.png. Returns the path, or None.

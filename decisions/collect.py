@@ -379,9 +379,14 @@ def lord_offers(bus, cqi, state, world, stances_legal):
         gate = None if ok else ("already_in_settlement" if garrisoned else "cannot_reach")
         offers.append(_offer("garrison", "settlement:%s" % s["region"], ok, gate,
                              x=s.get("x"), y=s.get("y")))
-    if garrisoned:
-        offers.append(_offer("leave_garrison", "leave", True, None,
-                             x=state.get("x"), y=state.get("y")))
+    # leave_garrison is DELIBERATELY NOT OFFERED until it has a real destination.
+    # ⚠ cm:leave_garrison(char, x, y) is a MOVE ORDER, not a toggle. Offering it with the lord's
+    # OWN position as the destination (which is what "just leave" naively looks like) made the
+    # engine resolve a move into adjacent enemy ground and raise the modal "Declare War?" dialog --
+    # which then blocked every subsequent action for the rest of the turn. Live-verified: lord 56
+    # captured Shrine of Ladrielle at (224,777), was offered leave_garrison to (224,777), and the
+    # whole run stalled behind that popup.
+    # Re-add only with an explicit, validated destination (a chosen adjacent tile), never self.
     offers.append(_offer("noop", "noop", True))
     return offers
 
@@ -398,6 +403,15 @@ def province_offers(bus, region, state, campaign):
               "o[#o+1]=ts(g(sl,'Index'))..'~'..ts(g(sl,'PossibleUpgradeWithoutConversionsList['..j..'].Key'))"
               "..'~'..ts(g(sl,'BuildingRequirementsMet(PossibleUpgradeWithoutConversionsList['..j..'])')) end end end end "
               "return table.concat(o,',')" % region, timeout=30.0, allow_nil=True)
+    # ⚠ ONE CONSTRUCTION PER SETTLEMENT PER TURN. A free slot with its requirements met is NOT
+    # enough: if ANY slot in this settlement is already building, the engine refuses every further
+    # Construct silently (accepts the command, does nothing). Live-verified -- nine building picks
+    # in one turn, the first confirmed and the other eight all `command_silently_refused`, with
+    # slot 2 reading IsBuildingNew=true and slot 3 sitting free the whole time.
+    building = _ev(bus, _G + "local s=cco('CcoCampaignSettlement','settlement:%s') "
+                             "local sl=g(s,'BuildingSlotList') if type(sl)~='table' then return 'false' end "
+                             "for i=1,#sl do if g(sl[i],'IsBuildingNew')==true then return 'true' end end "
+                             "return 'false'" % region, timeout=20.0) == "true"
     seen = set()
     for row in str(raw or "").split(","):
         p = row.split("~")
@@ -407,7 +421,10 @@ def province_offers(bus, region, state, campaign):
         if key in seen:
             continue
         seen.add(key)
-        offers.append(_offer("building", key, met, None if met else "requirements_not_met",
+        ok = met and not building
+        gate = None if ok else ("settlement_already_building_this_turn" if building
+                                else "requirements_not_met")
+        offers.append(_offer("building", key, ok, gate,
                              slot_index=int(float(slot)) if slot not in ("nil", "") else None))
     # -- edicts: the province must be FULLY OWNED for the commandment stack to exist at all.
     # Live-proven: on a partly-owned province InitiativeList still lists the 5 edict records, but the
@@ -471,6 +488,22 @@ _LUA_RITES = (_G + "local l=g(cco('CcoCampaignFaction','%(fac)s'),'AvailableRitu
                    "for i=1,#l do o[#o+1]=ts(g(l[i],'CanPerformRitual')) end return table.concat(o,',')")
 
 
+def current_research(bus, faction_cqi):
+    """The tech actually being researched right now, or None.
+
+    Needed as its OWN read because StartResearching on a prerequisite-locked node does not simply
+    fail: the engine appears to start the first researchable prerequisite of that branch instead
+    (observed live -- seven locked picks were all correctly refused by our confirm, yet the branch
+    root hef_0_00 ended up in progress). Recording what IS being researched is how that side effect
+    stays visible in the data instead of looking like seven inert no-ops.
+    """
+    v = _ev(bus, _G + "local m=g(cco('CcoCampaignFaction','%s'),'TechnologyManagerContext') "
+                      "local c=m and g(m,'CurrentResearchingTechnologyContext') "
+                      "if c then return ts(g(c,'NodeKey')) end return 'none'" % faction_cqi,
+            timeout=20.0, allow_nil=True)
+    return None if v in (None, "none", "nil") else str(v)
+
+
 def campaign_offers(bus, campaign):
     """Faction-wide offers: research, rites, and END TURN.
 
@@ -479,16 +512,19 @@ def campaign_offers(bus, campaign):
     """
     offers = []
     fac = campaign["faction_cqi"]
-    researching = campaign["is_researching"]
+    current = current_research(bus, fac)
+    # CanResearch alone decides. Do NOT also require "not currently researching": the game allows
+    # SWITCHING the active tech, and it says so -- live-verified with hef_0_00 in progress while
+    # hef_5_00 still reported CanResearch=true. Adding a not-researching clause would suppress a
+    # legal action, and whether switching is a good idea is the model's call, not a gate's.
     for row in str(_ev(bus, _LUA_TECH % {"fac": fac}, timeout=30.0, allow_nil=True) or "").split(","):
         p = row.split("~")
         if len(p) < 3:
             continue
         key, done, can = p[0], p[1] == "true", p[2] == "true"
-        ok = can and not researching
-        gate = None if ok else ("already_researching" if researching else
-                                "researched" if done else "prerequisites_not_met")
-        offers.append(_offer("research", key, ok, gate))
+        gate = None if can else ("researched" if done else
+                                 "in_progress" if key == current else "prerequisites_not_met")
+        offers.append(_offer("research", key, can, gate, in_progress=(key == current)))
     for i, flag in enumerate(str(_ev(bus, _LUA_RITES % {"fac": fac}, timeout=25.0,
                                      allow_nil=True) or "").split(",")):
         if flag not in ("true", "false"):
