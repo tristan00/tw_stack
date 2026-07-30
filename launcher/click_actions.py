@@ -51,6 +51,11 @@ CREATE_ARMY_BTN = ("hud_campaign|hud_center_docker|hud_center|small_bar|button_s
                    "button_subpanel|button_group_settlement|button_create_army")
 CHAR_PANEL = "character_panel|character_panel_info_holder"
 LORD_TYPE_LIST = CHAR_PANEL + "|lords_and_agents_holder|lord_parent|list_box"
+# ⚠ THE PANEL HAS TWO LISTS AND TWO COMMIT BUTTONS. lord_parent + button_raise recruits a LORD;
+# agent_parent + button_confirm recruits a HERO. Driving a hero subtype through the lord path
+# opens the panel, finds no matching type, and then leaves it open -- which wedged a whole run.
+AGENT_TYPE_LIST = CHAR_PANEL + "|lords_and_agents_holder|agent_parent|list_box"
+BUTTON_CONFIRM = CHAR_PANEL + "|footer|button_confirm"
 CANDIDATE_LIST = (CHAR_PANEL + "|general_selection_panel|main_holder|character_list_parent|"
                   "character_list|listview|list_clip|list_box")
 BUTTON_RAISE = CHAR_PANEL + "|footer|button_raise"
@@ -163,11 +168,24 @@ def clear_screen(bus):
         time.sleep(1.0)
     except Exception as e:
         sys.stderr.write("click_actions: CloseAllPanels -> %s" % repr(e)[:80] + chr(10))
+    n = 0
     try:
-        return len(nav.close_popups(bus))
+        n = len(nav.close_popups(bus))
     except Exception as e:
         sys.stderr.write("click_actions: close_popups -> %s" % repr(e)[:80] + chr(10))
-        return 0
+    # ⚠ THE ONE THAT ACTUALLY CLOSES THE LORDS/HEROES PANEL.
+    # character_panel has NO close control -- its full 333-node tree contains only button_raise,
+    # button_confirm and button_info. CloseAllPanels does NOT close it (verified: roots unchanged),
+    # toggling button_create_army does NOT close it, and SimulateKey("escape") does NOT close it.
+    # A player closes it by clicking the map, which is exactly what nav.deselect does. Left open it
+    # blocks the next selection from opening its panel and wedges the entire run.
+    try:
+        if any(r not in nav.BASE_ROOTS for r in (nav.visible_roots(bus) or [])):
+            nav.deselect(bus)
+            time.sleep(1.2)
+    except Exception as e:
+        sys.stderr.write("click_actions: deselect -> %s" % repr(e)[:80] + chr(10))
+    return n
 
 
 def select_settlement(bus, region):
@@ -433,6 +451,17 @@ def _lord_snapshot(bus, ctx, pick):
 
 
 def _lord_execute(bus, ctx, pick, before):
+    """⚠ ALWAYS CLOSES THE PANEL. An early return that leaves character_panel open wedges the whole
+    run: the next action's prepare() cannot open its own panel, and the loop stalls there until the
+    watchdog kills the campaign. Live: a recruit_lord for a subtype with no valid candidates left
+    the panel up and the session died on it."""
+    try:
+        return _lord_execute_inner(bus, ctx, pick, before)
+    finally:
+        clear_screen(bus)          # CloseAllPanels -- unconditional, success or failure
+
+
+def _lord_execute_inner(bus, ctx, pick, before):
     ok, why = prepare(bus, "settlement", ctx["entity_id"], expect_root="settlement_panel")
     if not ok:
         sys.stderr.write("click_actions: recruit_lord refused, not a known state -> %s" % why + chr(10))
@@ -446,12 +475,21 @@ def _lord_execute(bus, ctx, pick, before):
     # is the short form (hef_prince). Resolve against what the panel actually lists rather than
     # assuming either shape -- prefixes differ per pack (wh2_main_, wh2_dlc10_, wh3_dlc27_...).
     want = str(pick["key"])
-    types = lord_types(bus)
-    btn = next((t for t in types if want.endswith(t) or t.endswith(want) or t in want), None)
+
+    def _match(types):
+        return next((t for t in types if want.endswith(t) or t.endswith(want) or t in want), None)
+
+    # try the LORD list, then the HERO list; the commit button differs per mode
+    lord_list = [k for k in _find(bus, LORD_TYPE_LIST)[1] if not k.startswith("button_template")]
+    agent_list = [k for k in _find(bus, AGENT_TYPE_LIST)[1] if not k.startswith("button_template")]
+    btn, type_path, commit_id = _match(lord_list), LORD_TYPE_LIST, "button_raise"
     if btn is None:
-        sys.stderr.write("click_actions: lord type for %r not among %s" % (want, types) + chr(10))
+        btn, type_path, commit_id = _match(agent_list), AGENT_TYPE_LIST, "button_confirm"
+    if btn is None:
+        sys.stderr.write("click_actions: %r is neither a lord type %s nor a hero type %s"
+                         % (want, lord_list, agent_list) + chr(10))
         return False
-    if not _click(bus, "%s|%s" % (LORD_TYPE_LIST, btn)):
+    if not _click(bus, "%s|%s" % (type_path, btn)):
         return False
     time.sleep(1.5)
     cands = lord_candidates(bus)
@@ -471,7 +509,7 @@ def _lord_execute(bus, ctx, pick, before):
         sys.stderr.write("click_actions: button_raise not active after candidate select (state=%s)\n"
                          % res.get("state"))
         return False
-    return engine_click(bus, "button_raise")     # commits, engine-side
+    return engine_click(bus, commit_id)          # button_raise (lord) / button_confirm (hero)
 
 
 def _lord_confirm(bus, ctx, pick, before):
