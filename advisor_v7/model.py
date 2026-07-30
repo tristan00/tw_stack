@@ -39,7 +39,7 @@ sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.join(r"D:\tw_stack", "decisions"))
 
 import features as F                                       # noqa: E402
-from store import DecisionStore                            # noqa: E402
+from store import DecisionStore, IncompatibleStore        # noqa: E402
 
 MODEL_DIR = os.path.join(_HERE, "models_store")
 RUNS_ROOT = "D:/twdata/runs/human"
@@ -123,13 +123,22 @@ def gather(runs_root=RUNS_ROOT):
     feature rows. (This is v6's arrangement, unchanged.)
     """
     dbs = sorted(glob.glob(os.path.join(runs_root, "*", "decisions.sqlite")))
-    decisions, series = [], {}
+    decisions, series, skipped_dbs = [], {}, []
     for db in dbs:
         run_dir = os.path.dirname(db)
-        s = DecisionStore(run_dir)
+        try:
+            s = DecisionStore(run_dir)
+        except IncompatibleStore as e:
+            # a store from before the faction-wide redesign -- skip it LOUDLY rather than let one
+            # legacy directory abort training over every campaign we do have
+            skipped_dbs.append(os.path.basename(run_dir))
+            sys.stderr.write("model: skipping %s -> %s\n" % (run_dir, str(e)[:120]))
+            continue
         try:
             for rec, taken in s.labelled_decisions():
                 decisions.append((rec, taken))
+            # campaigns are keyed by their MINTED uuid, so several playthroughs can share one store
+            # (and one run dir) without their turn-series merging
             for camp, turns in s.target_series().items():
                 series.setdefault(camp, {}).update(turns)
         finally:
@@ -152,7 +161,8 @@ def gather(runs_root=RUNS_ROOT):
             groups.append(rec.get("campaign_id"))
     return {"full": full, "state": state, "y": ys, "groups": groups,
             "n_decisions": len(decisions), "skipped_unlabelled": skipped,
-            "runs": len(dbs), "campaigns": len(series)}
+            "runs": len(dbs) - len(skipped_dbs), "skipped_dbs": skipped_dbs,
+            "campaigns": len(series)}
 
 
 # ------------------------------------------------------------------ train / load / score
