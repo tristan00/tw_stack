@@ -39,6 +39,18 @@ _CLICKABLE = ("active", "hover", "selected")
 # live on turn 1 of a fresh campaign). Matching "diplo" alone would flag every single loop iteration
 # as an incoming proposal and fire a decline click at nothing.
 DIPLOMACY_HUD_ROOTS = frozenset(("diplomacy_dropdown",))
+# ⚠ ORDINARY PANELS ARE NOT INTERRUPTS. These are opened deliberately -- prepare() opens
+# settlement_panel/units_panel/character_panel to establish a known state before a click -- so
+# treating them as "something the game put on screen" made resolve() declare a stuck screen and
+# burn a screenshot on every single action during normal operation.
+BENIGN_PANELS = frozenset((
+    # ⚠ character_panel is deliberately NOT here. Left open it BLOCKS the next selection from
+    # opening its panel and stalls the run -- it must stay visible to the stuck detector.
+    "units_panel", "settlement_panel", "recruitment_options",
+    "recruitment_panel", "technology_panel", "diplomacy_panel", "faction_summary_panel",
+    "province_overview_panel", "building_browser", "unit_information", "advice_interface",
+    "events", "event_feed", "influence_gained", "help_panel", "campaign_space_bar_options",
+))
 
 
 def roots(bus):
@@ -148,7 +160,8 @@ def cancel_declare_war(bus):
     """
     steps = []
     for root in [x for x in roots(bus)
-                 if x not in nav.BASE_ROOTS and x not in DIPLOMACY_HUD_ROOTS]:
+                 if x not in nav.BASE_ROOTS and x not in DIPLOMACY_HUD_ROOTS
+                 and x not in BENIGN_PANELS]:
         target = None
         for n in _tree(bus, root):
             nid = str(n.get("id") or "").lower()
@@ -181,7 +194,8 @@ def pending(bus):
         out.add("battle")
     if diplomacy_roots(bus, r):
         out.add("diplomacy")
-    if [x for x in r if x not in nav.BASE_ROOTS and x not in DIPLOMACY_HUD_ROOTS]:
+    if [x for x in r if x not in nav.BASE_ROOTS and x not in DIPLOMACY_HUD_ROOTS
+            and x not in BENIGN_PANELS]:
         out.add("popup")
     return out
 
@@ -367,7 +381,8 @@ def resolve(bus, max_rounds=6):
             continue
         # something is open that we cannot dismiss -- record it with a screenshot so the next
         # unhandled screen is diagnosable instead of just slow
-        if [x for x in before if x not in nav.BASE_ROOTS and x not in DIPLOMACY_HUD_ROOTS]:
+        if [x for x in before if x not in nav.BASE_ROOTS and x not in DIPLOMACY_HUD_ROOTS
+                and x not in BENIGN_PANELS]:
             steps.append("undismissable:%s" % ",".join(x for x in before if x not in nav.BASE_ROOTS))
             if before != _stuck_sig[0]:
                 evidence(bus, "undismissable")
