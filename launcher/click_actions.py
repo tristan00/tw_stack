@@ -105,6 +105,97 @@ def _click_or_hw(bus, path):
     return _hw_click(bus, path)
 
 
+# ==== KNOWN STATE BEFORE EVERY CLICK =======================================================
+# THE RULE, applied by EVERY click executor without exception: never click into an unknown screen.
+# Put the game where we want it first -- clear stray popups, point the CAMERA at the subject, SELECT
+# the subject, and verify the panel we expect actually opened. Only then click.
+#
+# Why this is not optional. HUD buttons act on the CURRENT SELECTION and panels are per-selection,
+# so clicking with the wrong thing selected is a silent no-op at best and the WRONG ACTION at worst
+# -- and SimulateLClick returns clicked:True either way, so nothing downstream notices.
+#
+# Live proof of the cost: recruit_lord clicked `button_create_army` with NOTHING selected. It
+# reported found=True, clicked=True and opened nothing, so the lord-type list and candidate rows
+# never existed and the action failed 10 times out of 10 in real runs. We misdiagnosed that as
+# "invisible components" and bolted on hardware clicks that stole the user's cursor. With the
+# settlement selected first: settlement_panel -> character_panel -> 4 lord types -> 70 candidate
+# rows, several reporting visible=True. The panel was simply never open.
+#
+# Focus + selection are cco Void commands and the popup drain is a bus click, so establishing the
+# known state costs no OS cursor movement.
+
+
+def clear_screen(bus):
+    """Drain leftover popups so we are never clicking underneath something."""
+    import nav
+    try:
+        return len(nav.close_popups(bus))
+    except Exception as e:
+        sys.stderr.write("click_actions: close_popups -> %s" % repr(e)[:80] + chr(10))
+        return 0
+
+
+def select_settlement(bus, region):
+    r = _ev(bus, _G + "local s=cco('CcoCampaignSettlement','settlement:%s') if not s then return 'NO-SETT' end "
+                      "local ok,e=pcall(function() s:Call('Select') end) return 'ok='..tostring(ok)" % region,
+            timeout=20.0)
+    time.sleep(1.5)
+    return r == "ok=true"
+
+
+def select_character(bus, cqi):
+    r = _ev(bus, _G + "local c=cco('CcoCampaignCharacter','%s') if not c then return 'NO-CHAR' end "
+                      "local ok,e=pcall(function() c:Call('Select') end) return 'ok='..tostring(ok)" % cqi,
+            timeout=20.0)
+    time.sleep(1.2)
+    return r == "ok=true"
+
+
+def focus(bus, kind, entity_id):
+    """Point the CAMERA at the subject. Not cosmetic: it discards whatever view the game was left
+    on, so the click lands against a screen we put there rather than whatever preceded it."""
+    import nav
+    try:
+        r = (nav.focus_char(bus, int(entity_id)) if kind == "lord"
+             else nav.focus_settlement(bus, entity_id))
+        time.sleep(1.0)
+        return bool(r)
+    except Exception as e:
+        sys.stderr.write("click_actions: focus %s %s -> %s" % (kind, entity_id, repr(e)[:70]) + chr(10))
+        return False
+
+
+def prepare(bus, kind, entity_id, expect_root=None, timeout=6.0):
+    """clear popups -> camera on subject -> select subject -> verify expected panel.
+
+    kind: "settlement" | "lord". Returns (ok, reason). LOUD by design: a click issued from an
+    unverified screen is the exact failure this exists to prevent, so callers must refuse to click
+    when this returns False rather than trying anyway.
+    """
+    import nav
+    clear_screen(bus)
+    focus(bus, kind, entity_id)
+    if kind == "settlement":
+        ok = select_settlement(bus, entity_id)
+    elif kind == "lord":
+        ok = select_character(bus, entity_id)
+    else:
+        return False, "unknown_subject_kind_%s" % kind
+    if not ok:
+        return False, "could_not_select_%s_%s" % (kind, entity_id)
+    if expect_root:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                if expect_root in (nav.visible_roots(bus) or []):
+                    return True, "ready"
+            except Exception:
+                pass
+            time.sleep(0.5)
+        return False, "expected_panel_%s_never_opened" % expect_root
+    return True, "ready"
+
+
 def _treasury(bus):
     return _ev(bus, "return cm:get_faction(cm:get_local_faction_name(true)):treasury()", timeout=8.0)
 
@@ -166,6 +257,7 @@ def edict_options(bus, region):
 
 def _edict_snapshot(bus, ctx, pick):
     region = ctx["entity_id"]
+    prepare(bus, "settlement", region)      # the HUD stack belongs to the SELECTED province
     return {"selected": _selected_edict(bus, region), "options": edict_options(bus, region)}
 
 
@@ -185,6 +277,10 @@ def _edict_execute(bus, ctx, pick, before):
     The button lives either promoted as a direct child of the stack, or inside
     clip_parent|stack_background; the promoted id rotates as a preview, so resolve before clicking.
     """
+    ok, why = prepare(bus, "settlement", ctx["entity_id"])
+    if not ok:
+        sys.stderr.write("click_actions: edict refused, not a known state -> %s" % why + chr(10))
+        return False
     key = "button_%s" % pick["key"]
     for path in ("%s|%s" % (EDICT_STACK, key),
                  "%s|clip_parent|stack_background|%s" % (EDICT_STACK, key)):
@@ -230,6 +326,7 @@ def recruitable_units(bus):
 
 
 def _recruit_snapshot(bus, ctx, pick):
+    prepare(bus, "lord", ctx["entity_id"], expect_root="units_panel")
     r = _roots(bus)
     return {"treasury": _treasury(bus), "pending": _pending_recruits(bus, ctx["entity_id"]),
             "units_panel_open": (r is not None and "units_panel" in r)}
@@ -243,6 +340,10 @@ def _recruit_gate(bus, ctx, pick, before):
 
 
 def _recruit_execute(bus, ctx, pick, before):
+    ok, why = prepare(bus, "lord", ctx["entity_id"], expect_root="units_panel")
+    if not ok:
+        sys.stderr.write("click_actions: recruit_unit refused, not a known state -> %s" % why + chr(10))
+        return False
     cards = recruitable_units(bus)
     if not cards:                                # idempotent: the button TOGGLES the sub-panel,
         if not _click(bus, RECRUIT_BTN):         # so only open it when no cards are showing
@@ -297,6 +398,10 @@ def _lord_snapshot(bus, ctx, pick):
 
 
 def _lord_execute(bus, ctx, pick, before):
+    ok, why = prepare(bus, "settlement", ctx["entity_id"], expect_root="settlement_panel")
+    if not ok:
+        sys.stderr.write("click_actions: recruit_lord refused, not a known state -> %s" % why + chr(10))
+        return False
     r = _roots(bus)
     if not (r and "character_panel" in r):       # idempotent: the button TOGGLES the panel
         if not _click(bus, CREATE_ARMY_BTN):     # opens character_panel (raise-army)
