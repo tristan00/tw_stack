@@ -289,21 +289,33 @@ class DecisionStore:
                 "campaign": json.loads(dp["campaign"] or "{}"),
                 "world": json.loads(dp["world"] or "{}"), "entities": ents}
 
-    def labelled_decisions(self):
-        """Every VALID decision point with its label: (record, taken_key).
+    def labelled_decisions(self, confirmed_only=False):
+        """Every decision point with a CHOSEN action: (record, taken_key, counted).
 
-        A decision point is valid only when its taken action was CONFIRMED -- if we cannot prove
-        what really happened, every label in that point is suspect, so the whole point is VOIDED.
+        ⚠ THE LABEL IS WHAT THE POLICY CHOSE, NOT WHAT THE GAME ALLOWED. A decision point whose
+        action was refused is still a training row, because the question the model answers is
+        "should this be ATTEMPTED here", and whether something was attempted is the better predictor
+        of whether to attempt it again. Filtering to confirmed actions would train on a different
+        question and quietly compare attempted-vs-taken -- e.g. every lord-recruit attempt would
+        vanish from the data purely because its click path fails, so the model would never learn
+        that recruiting a lord is a reasonable thing to want.
+
+        `counted` is returned alongside so a caller can still separate the two if it needs to, and
+        `confirmed_only=True` restores the old behaviour for analysis.
         taken_key = (context_kind, context_id, action_type, action_key).
         """
         out = []
         for (did,) in self.con.execute("SELECT decision_id FROM decision_points").fetchall():
             t = self.con.execute(
-                "SELECT context_kind,context_id,action_type,action_key,counted FROM action_taken"
-                " WHERE decision_id=?", (did,)).fetchone()
-            if t is None or not t[4]:
-                continue                       # observation-only, or voided: unconfirmed
-            out.append((self.read_decision(did), (t[0], str(t[1]), t[2], str(t[3]))))
+                "SELECT context_kind,context_id,action_type,action_key,counted,refusal"
+                " FROM action_taken WHERE decision_id=?", (did,)).fetchone()
+            if t is None:
+                continue                       # observation-only: nothing was chosen
+            if t[5] == "awaiting_execution":
+                continue                       # in flight when we read it; not yet a decision
+            if confirmed_only and not t[4]:
+                continue
+            out.append((self.read_decision(did), (t[0], str(t[1]), t[2], str(t[3])), bool(t[4])))
         return out
 
     def target_series(self):

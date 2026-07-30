@@ -118,9 +118,14 @@ def gather(runs_root=RUNS_ROOT):
     """Every confirmed decision point across every run, featurized into (E1 rows, E2 rows, y).
 
     Only the CHOSEN action of each decision point becomes a training row: the target describes what
-    happened after that action, so attaching it to actions that were NOT taken would be a lie. The
+    happened after that action, so attaching it to actions that were NOT chosen would be a lie. The
     unchosen offers are still used -- at decision time, scored by the same model through their own
     feature rows. (This is v6's arrangement, unchanged.)
+
+    ⚠ Chosen means CHOSEN, not confirmed: refused actions are training rows too. The model answers
+    "should this be attempted here", and an attempt is the better predictor of whether to attempt
+    again -- dropping refusals would silently delete whole action types (every lord-recruit, whose
+    click path fails) from the data.
     """
     dbs = sorted(glob.glob(os.path.join(runs_root, "*", "decisions.sqlite")))
     decisions, series, skipped_dbs = [], {}, []
@@ -135,8 +140,8 @@ def gather(runs_root=RUNS_ROOT):
             sys.stderr.write("model: skipping %s -> %s\n" % (run_dir, str(e)[:120]))
             continue
         try:
-            for rec, taken in s.labelled_decisions():
-                decisions.append((rec, taken))
+            for rec, taken, counted in s.labelled_decisions():
+                decisions.append((rec, taken, counted))
             # campaigns are keyed by their MINTED uuid, so several playthroughs can share one store
             # (and one run dir) without their turn-series merging
             for camp, turns in s.target_series().items():
@@ -144,9 +149,9 @@ def gather(runs_root=RUNS_ROOT):
         finally:
             s.close()
     ranges = target_ranges(series)
-    full, state, ys, groups = [], [], [], []
+    full, state, ys, groups, confirmed = [], [], [], [], []
     skipped = 0
-    for rec, taken in decisions:
+    for rec, taken, was_counted in decisions:
         y = target(series, rec.get("campaign_id"), rec.get("turn"), ranges)
         if y is None:
             skipped += 1                    # no reward row for that turn yet -> unlabelled
@@ -159,7 +164,9 @@ def gather(runs_root=RUNS_ROOT):
             state.append(F.state_row(rec, ent))
             ys.append(y)
             groups.append(rec.get("campaign_id"))
+            confirmed.append(was_counted)
     return {"full": full, "state": state, "y": ys, "groups": groups,
+            "confirmed": confirmed, "n_confirmed": sum(1 for c in confirmed if c),
             "n_decisions": len(decisions), "skipped_unlabelled": skipped,
             "runs": len(dbs) - len(skipped_dbs), "skipped_dbs": skipped_dbs,
             "campaigns": len(series)}

@@ -588,9 +588,18 @@ def snapshot(bus, active=None):
     `active` optionally restricts the sweep to entities still in play this turn:
         {"lords": [cqi, ...], "regions": [region_key, ...], "campaign": True}
     """
-    camp = campaign_state(bus)
-    world = world_state(bus)
-    stances_legal = legal_stances(bus)
+    prof = {}                       # per-phase ms; the loop's biggest cost lives in here
+
+    def timed(name, fn, *a, **k):
+        t = time.time()
+        try:
+            return fn(*a, **k)
+        finally:
+            prof[name] = prof.get(name, 0) + int((time.time() - t) * 1000)
+
+    camp = timed("campaign_state", campaign_state, bus)
+    world = timed("world_state", world_state, bus)
+    stances_legal = timed("legal_stances", legal_stances, bus)
     lords = [str(c.get("cqi")) for c in world["armies"] if c.get("has_army") and c.get("is_general")]
     regions = [s["region"] for s in world["settlements"] if s.get("region")]
     want_camp = True
@@ -600,18 +609,21 @@ def snapshot(bus, active=None):
         want_camp = bool(active.get("campaign", True))
     ents = []
     for cqi in lords:
-        st = lord_state(bus, cqi)
+        st = timed("lord_state", lord_state, bus, cqi)
         ents.append({"context_kind": "lord", "context_id": str(cqi), "state": st,
-                     "offers": lord_offers(bus, cqi, st, world, stances_legal)})
+                     "offers": timed("lord_offers", lord_offers, bus, cqi, st, world, stances_legal)})
     for reg in regions:
-        st = province_state(bus, reg)
+        st = timed("province_state", province_state, bus, reg)
         ents.append({"context_kind": "province", "context_id": reg, "state": st,
-                     "offers": province_offers(bus, reg, st, camp)})
+                     "offers": timed("province_offers", province_offers, bus, reg, st, camp)})
     if want_camp:
         ents.append({"context_kind": "campaign", "context_id": camp["faction"], "state": dict(camp),
-                     "offers": campaign_offers(bus, camp)})
+                     "offers": timed("campaign_offers", campaign_offers, bus, camp)})
+    prof["_entities"] = len(ents)
+    prof["_lords"] = len(lords)
+    prof["_regions"] = len(regions)
     return {"ts": time.time(), "campaign": camp, "world": world,
-            "stances_legal": stances_legal, "entities": ents}
+            "stances_legal": stances_legal, "entities": ents, "profile": prof}
 
 
 if __name__ == "__main__":
