@@ -24,7 +24,7 @@ import time
 
 # Recorder version stamped into meta.json. v6 = the decomposed tw_stack recorder (this pipeline);
 # v5 was the monolith record.py. Bump on any change to capture behaviour.
-RECORDER_VERSION = "v6"
+RECORDER_VERSION = "v7"
 
 # R3 campaign-swap: the live CampaignTracker lives in the campaigns/ repo (same boundary kernel the
 # offline splitter uses, so live + offline splits agree). Imported best-effort: if unavailable the
@@ -434,13 +434,14 @@ def main():
     import sys
 
     here = os.path.dirname(os.path.abspath(__file__))
-    for repo in ("input", "shots", "logs", "ui-capture", "bus", "launcher"):  # launcher/ holds config.py
+    for repo in ("input", "shots", "logs", "ui-capture", "bus", "launcher", "decisions"):
         sys.path.insert(0, os.path.join(os.path.dirname(here), repo))
     import input_stream
     import shots_stream
     import logs_stream
     import ui_capture_stream
     import actions_stream
+    import decisions_stream
     try:
         import config
         game_dir = config.GAME_DIR
@@ -452,10 +453,16 @@ def main():
         out_root = "D:/twdata/runs/human"
         sys.stderr.write("manager: config import failed, using hardcoded paths -> %s\n" % repr(e)[:80])
 
+    # v7 ROSTER: the old high-noise streams are OFF by default. v7 records DECISION POINTS
+    # (context features + offered actions + chosen action + verification) and one reward row per
+    # turn -- nothing else. `logs` stays on: it is passive (the game writes it anyway) and is what
+    # drives campaign-swap detection. The v6 streams remain opt-in for debugging only.
     argv = sys.argv[1:]
     shots_on = "--shots" in argv or "--debug" in argv
-    ui_on = "--no-ui" not in argv                          # ui-capture ON by default (record.py parity)
-    actions_on = "--no-actions" not in argv                # cco actionable-state sweeps ON by default
+    input_on = "--input" in argv                           # v6 kbd/mouse capture (opt-IN now)
+    ui_on = "--ui" in argv                                 # v6 UI-component scraping (opt-IN now)
+    actions_on = "--v6-actions" in argv                    # v6 cco sweep stream (superseded)
+    decisions_on = "--no-decisions" not in argv            # v7 decision store: ON by default
     shot_every = 60.0                                       # an optional number after --shots overrides it
     if "--shots" in argv:
         i = argv.index("--shots")
@@ -470,9 +477,13 @@ def main():
     print("reset bus files (was %.1f MB)" % (was / (1024 * 1024)), flush=True)
 
     streams = [
-        {"run": input_stream.run, "name": "input"},
         {"run": logs_stream.run, "name": "logs", "kwargs": {"log_dirs": log_dirs}},
     ]
+    if decisions_on:
+        streams.append({"run": decisions_stream.run, "name": "decisions",
+                        "out_file": "decisions_stream.jsonl"})
+    if input_on:
+        streams.append({"run": input_stream.run, "name": "input"})
     if shots_on:
         streams.append({"run": shots_stream.run, "name": "shots", "kwargs": {"shot_every": shot_every}})
     if ui_on:
@@ -485,7 +496,9 @@ def main():
     rec = start(out_root, streams, recorder_version=RECORDER_VERSION,
                 meta_overrides={"game_dir": game_dir, "appdata_logs": appdata,
                                 "shots_enabled": shots_on, "ui_enabled": ui_on,
-                                "actions_enabled": actions_on})
+                                "actions_enabled": actions_on,
+                                "decisions_enabled": decisions_on,
+                                "input_enabled": input_on})
     print("RECORDING -> %s  (streams: %s)" % (rec.out_dir, [s["name"] for s in streams]), flush=True)
     print("  Ctrl-C to stop.", flush=True)
     try:
