@@ -1,4 +1,20 @@
-# v7 pipeline speed — measurements and plan (NOT yet implemented)
+# v7 pipeline speed — measurements, plan, and RESULTS
+
+**STATUS: Wins #1 and #2 are IMPLEMENTED and live-verified.**
+Collect went **3563 ms → 1183 ms median (−67%)** with an identical offer set (183 offers,
+25 available), measured in a running session. Remaining items (#3 world_state merge,
+#4 dirty-set) are still just plans.
+
+| phase | before | after |
+|---|---|---|
+| legal_stances | 1388 | **0** (deleted) |
+| province_offers | 708 | 202 |
+| lord_offers | 455 | 304 |
+| campaign_offers | 298 | 101 |
+| campaign_state | 152 | 53 |
+| world_state | 297 | 303 (unchanged, needs #3) |
+| **total collect** | **3563** | **1183** |
+
 
 ## The one number that explains everything
 
