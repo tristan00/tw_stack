@@ -149,7 +149,21 @@ def _edict_gate(bus, ctx, pick, before):
 
 
 def _edict_execute(bus, ctx, pick, before):
-    return _click(bus, "%s|button_%s" % (EDICT_STACK, pick["key"]))
+    """Click the edict button EXACTLY ONCE.
+
+    ⚠ DO NOT re-click the button and DO NOT ESC/close the stack afterwards: either CANCELS the
+    queued commandment (this is what made an earlier attempt appear to select and then revert).
+    The button lives either promoted as a direct child of the stack, or inside
+    clip_parent|stack_background; the promoted id rotates as a preview, so resolve before clicking.
+    """
+    key = "button_%s" % pick["key"]
+    for path in ("%s|%s" % (EDICT_STACK, key),
+                 "%s|clip_parent|stack_background|%s" % (EDICT_STACK, key)):
+        res, _ = _find(bus, path)
+        if res.get("found"):
+            return _click(bus, path)
+    sys.stderr.write("click_actions: edict button %s not resolvable in the stack\n" % key)
+    return False
 
 
 def _edict_confirm(bus, ctx, pick, before):
