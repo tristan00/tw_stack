@@ -99,8 +99,46 @@ def target_row(bus):
     p = str(_ev(bus, _LUA_TARGET, timeout=60.0)).split("|")
     if len(p) < 7:
         raise CollectError("target row malformed: %r" % p)
-    return {"campaign_id": p[0], "turn": _num(p[1]), "income": _num(p[2]), "settlements": _num(p[3]),
+    return {"campaign_id": p[0], "campaign_uuid": campaign_uuid(bus),
+            "turn": _num(p[1]), "income": _num(p[2]), "settlements": _num(p[3]),
             "allies": _num(p[4]), "vassals": _num(p[5]), "power_rank": _num(p[6]), "ts": time.time()}
+
+
+# ============================================================ CAMPAIGN IDENTITY
+# WH3 exposes NO unique per-playthrough id. Enumerated exhaustively: all 515 CCO contexts / 6347
+# functions (the only `Guid` is CcoComponent, a UI widget), and episodic_scripting/model_hierarchy
+# contain no seed/guid/uuid at all. cm:get_campaign_name() is the campaign TYPE ("main_warhammer")
+# and the faction name repeats on every restart -- so keying on either would merge two separate
+# Nagarythe playthroughs into ONE turn series and silently corrupt the reward target.
+#
+# The engine clearly HAS one internally (autosave filenames carry a per-campaign uint32 that differs
+# between playthroughs of the same faction) but does not expose it. So we MINT our own, using CA's
+# own persistence primitive.
+#
+# LIVE-VERIFIED (all four, this build):
+#   cm:random_number(1000000,1)                 -> 62008 then 5982   (varies; NOT bare math.random,
+#                                                  which is deterministic ANSI rand and would mint
+#                                                  the SAME id in two fresh campaigns)
+#   cm:set_saved_value / cm:get_saved_value      -> round-trips
+#   cm:get_cached_value(key, generator)          -> minted_24644 on the first call and the SAME
+#                                                  value on the second -> mint-once semantics hold
+# ⚠ the key must not contain ':' (hard script_error in lib_campaign_manager.lua).
+CAMPAIGN_UUID_KEY = "tw_stack_campaign_uuid"
+
+_LUA_UUID = ("local ok,v=pcall(function() return cm:get_cached_value('%s', function() "
+             "local t={} for i=1,4 do t[i]=string.format('%%04x', cm:random_number(65535,0)) end "
+             "return cm:get_local_faction_name(true)..'_'..table.concat(t) end) end) "
+             "if ok and v then return tostring(v) end return 'NO-UUID'" % CAMPAIGN_UUID_KEY)
+
+
+def campaign_uuid(bus):
+    """This playthrough's stable unique id, minted on first read and cached in the campaign.
+
+    Returns None if the mechanism is unavailable -- the caller then falls back to the run-dir key
+    rather than silently reusing a non-unique faction name.
+    """
+    v = _ev(bus, _LUA_UUID, timeout=25.0, allow_nil=True)
+    return None if v in (None, "NO-UUID", "nil", "") else str(v)
 
 
 # ============================================================ CAMPAIGN + WORLD (raw)
@@ -111,12 +149,15 @@ _LUA_CAMPAIGN = (_G + "local f=cm:get_local_faction(true) "
                  "..'|'..tostring(f:command_queue_index())")
 
 
-def campaign_state(bus):
+def campaign_state(bus, with_uuid=True):
     p = str(_ev(bus, _LUA_CAMPAIGN)).split("|")
     if len(p) < 7:
         raise CollectError("campaign state malformed: %r" % p)
-    return {"faction": p[0], "turn": _num(p[1]), "income": _num(p[2]), "settlements": _num(p[3]),
-            "treasury": _num(p[4]), "is_researching": p[5] == "true", "faction_cqi": p[6]}
+    out = {"faction": p[0], "turn": _num(p[1]), "income": _num(p[2]), "settlements": _num(p[3]),
+           "treasury": _num(p[4]), "is_researching": p[5] == "true", "faction_cqi": p[6]}
+    if with_uuid:
+        out["campaign_uuid"] = campaign_uuid(bus)
+    return out
 
 
 def world_state(bus):

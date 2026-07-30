@@ -112,16 +112,21 @@ class DecisionStore:
                 self.con.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, col, typ))
 
     # ---------------------------------------------------------------- writes
-    def campaign_key(self, faction):
-        """The unique campaign identity for this run (see __init__)."""
-        return "%s@%s" % (faction, self.run_id)
+    def campaign_key(self, faction, uuid=None):
+        """This playthrough's identity.
+
+        Prefers the uuid MINTED INSIDE THE CAMPAIGN (collect.campaign_uuid), which is tied to the
+        campaign itself and so survives a recorder restart. Falls back to faction@rundir when the
+        mint is unavailable -- still unique, just tied to the directory instead of the save.
+        """
+        return str(uuid) if uuid else "%s@%s" % (faction, self.run_id)
 
     def write_target_row(self, row):
         """Exactly-once per (campaign, turn). Returns True if this call inserted it."""
         cur = self.con.execute(
             "INSERT OR IGNORE INTO target_rows(campaign_id,turn,ts,income,settlements,allies,vassals,power_rank)"
             " VALUES(?,?,?,?,?,?,?,?)",
-            (self.campaign_key(row.get("campaign_id")),
+            (self.campaign_key(row.get("campaign_id"), row.get("campaign_uuid")),
              int(row.get("turn") or 0), row.get("ts") or time.time(),
              row.get("income"), row.get("settlements"), row.get("allies"),
              row.get("vassals"), row.get("power_rank")))
@@ -144,7 +149,8 @@ class DecisionStore:
         cur = self.con.execute(
             "INSERT INTO decision_points(ts,campaign_id,turn,decision_seq,policy,n_entities,"
             "n_offers,campaign,world) VALUES(?,?,?,?,?,?,?,?,?)",
-            (snapshot.get("ts") or time.time(), self.campaign_key(camp.get("faction")),
+            (snapshot.get("ts") or time.time(),
+             self.campaign_key(camp.get("faction"), camp.get("campaign_uuid")),
              int(camp.get("turn") or 0),
              int(decision_seq), policy, len(ents), n_offers,
              json.dumps(camp, default=str), json.dumps(snapshot.get("world") or {}, default=str)))
