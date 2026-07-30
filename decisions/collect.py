@@ -293,7 +293,21 @@ _LUA_PROVINCE = (_G +
     "..'|'..free..'|'..ts(m and g(m,'CanSetInitiative'))"
     "..'|'..ts((function() local i=m and g(m,'SelectedInitiative') if i then return g(i,'Key') end return 'none' end)())"
     "..'|'..ts(r and r:get_active_edict_key())..'|'..ts(r and r:public_order())"
-    "..'|'..ts(r and r:num_buildings())..'|'..ts(r and r:is_province_capital())")
+    "..'|'..ts(r and r:num_buildings())..'|'..ts(r and r:is_province_capital())"
+    # WHICH buildings are built, per slot. The count alone tells the model nothing about what the
+    # settlement actually is. NB the key lives on BuildingContext.BuildingLevelRecordContext.Key --
+    # BuildingContext.Key is nil (CcoCampaignBuilding has no Key at all; it has UniqueId/Name).
+    "..'|'..(function() local o={} if type(slots)=='table' then for i=1,#slots do local x=slots[i] "
+    "local bc=g(x,'BuildingContext') local lv=bc and g(bc,'BuildingLevelRecordContext') "
+    # IN PROGRESS: the construction lives on slot.ConstructionItemContext (a
+    # CcoCampaignConstructionItem), NOT on the slot as a bool -- IsUnderConstruction and friends do
+    # not exist, which is why this looked invisible. IsBuildingNew only means "queued THIS turn" and
+    # goes false while the build is still running, so it cannot answer "is this settlement busy".
+    "local ci=g(x,'ConstructionItemContext') local cl=ci and g(ci,'BuildingLevelRecordContext') "
+    "o[#o+1]=ts(g(x,'Index'))..':'..ts(lv and g(lv,'Key') or '-')..':'..ts(g(x,'IsActive'))"
+    "..':'..ts(cl and g(cl,'Key') or '-')..':'..ts(ci and g(ci,'TurnsToCompletion') or '-')"
+    "..':'..ts(ci and g(ci,'IsPaused') or '-') end end "
+    "return table.concat(o,',') end)()")
 # NB `settlement():population()` does NOT exist in WH3 (live-verified: "attempt to call method
 # 'population' (a nil value)") -- num_buildings() is the settlement-size signal that does.
 
@@ -305,10 +319,24 @@ def province_state(bus, region):
     p = raw.split("|")
     if len(p) < 10:
         raise CollectError("province state malformed for %s: %r" % (region, p))
+    built, locked, building_now = {}, [], {}
+    for chunk in (p[10] if len(p) > 10 else "").split(","):
+        bits = chunk.split(":")
+        if len(bits) < 3:
+            continue
+        idx, key, active = bits[0], bits[1], bits[2] == "true"
+        if key not in ("-", "nil", ""):
+            built[idx] = key
+        elif not active:
+            locked.append(idx)
+        if len(bits) >= 6 and bits[3] not in ("-", "nil", ""):
+            building_now[idx] = {"key": bits[3], "turns_left": _num(bits[4]),
+                                 "paused": bits[5] == "true"}
     return {"region": region, "settlement_present": True, "province": p[0],
             "complete_owner": p[1] == "true", "max_slots": _num(p[2]), "free_slots": _num(p[3]),
             "can_set_edict": p[4] == "true", "selected_edict": p[5], "active_edict": p[6],
-            "public_order": _num(p[7]), "buildings": _num(p[8]), "is_capital": p[9] == "true"}
+            "public_order": _num(p[7]), "buildings": _num(p[8]), "is_capital": p[9] == "true",
+            "built": built, "locked_slots": locked, "building_now": building_now}
 
 
 # ============================================================ STREAM 2: THE OFFER SETS
@@ -423,6 +451,45 @@ def lord_offers(bus, cqi, state, world):
     # captured Shrine of Ladrielle at (224,777), was offered leave_garrison to (224,777), and the
     # whole run stalled behind that popup.
     # Re-add only with an explicit, validated destination (a chosen adjacent tile), never self.
+    offers.append(_offer("noop", "noop", True))
+    return offers
+
+
+_LUA_HERO_OFFERS = (_G +
+    "local c=cco('CcoCampaignCharacter','%(cqi)s') "
+    "local sk={} local s=g(c,'SkillList') "
+    "if type(s)=='table' then for i=1,#s do sk[#sk+1]=ts(g(s[i],'Key'))..'~'..ts(g(s[i],'Status')) end end "
+    "return ts(g(c,'IsAgent'))..'||'..ts(g(c,'CanBeEmbedded'))..'||'..table.concat(sk,',')")
+
+
+def hero_offers(bus, cqi, state, world):
+    """A HERO's offers. Heroes are characters, so the character-level actions already proven on
+    lords apply unchanged -- skills now, items when a pool item exists.
+
+    Deliberately NOT offered:
+      * agent actions (assassinate/block/wound/...) -- there is NO command on any layer. Agent
+        actions are campaign ACTION CONTROLLERS (CHARACTER_TARGET_AGENT_ACTION_CONTROLLER) and,
+        unlike the walk/attack/join_garrison/embed controllers, they have no cm: binding at all;
+        AgentActionButtonCallback exposes no functions either. Only a real click reaches them, and
+        opening the targeting panel is not solvable click-free today.
+      * embed -- cm:embed_agent_in_force TELEPORTS (live: AP unchanged at 77.05% across a move), so
+        it is cheating and is rejected. NB there is no "detach" in the game by design: a hero leaves
+        a force by EMBEDDING ELSEWHERE or simply moving, so the missing detach command is not a gap
+        -- but both of those still route through the same rejected/absent commands, which is why
+        heroes currently get only the character-level actions.
+    """
+    offers = []
+    raw = str(_ev(bus, _LUA_HERO_OFFERS % {"cqi": cqi}, timeout=25.0, allow_nil=True) or "")
+    parts = raw.split("||")
+    sk_raw = parts[2] if len(parts) > 2 else ""
+    has_pts = (state.get("skill_points") or 0) >= 1
+    for row in sk_raw.split(","):
+        if "~" not in row:
+            continue
+        key, status = row.rsplit("~", 1)
+        ok = (status == "active" and has_pts)
+        offers.append(_offer("skills", key, ok,
+                             None if ok else ("no_points" if not has_pts else status)))
     offers.append(_offer("noop", "noop", True))
     return offers
 
@@ -652,11 +719,18 @@ def snapshot(bus, active=None):
 
     camp = timed("campaign_state", campaign_state, bus)
     world = timed("world_state", world_state, bus)
-    lords = [str(c.get("cqi")) for c in world["armies"] if c.get("has_army") and c.get("is_general")]
+    # THE CHARACTER POOL: lords (generals commanding an army) and heroes (agents) are both
+    # characters and both rotate through the decision loop. They differ only in which offers they
+    # get -- a lord has stances/moves/recruitment, a hero has the character-level actions.
+    # ⚠ classify by HAS_ARMY, not is_general: a prince commanding an army reported is_general=False
+    # and was wrongly binned as a hero (offers=1). Anything commanding a force is a lord.
+    lords = [str(c.get("cqi")) for c in world["armies"] if c.get("has_army")]
+    heroes = [str(c.get("cqi")) for c in world["armies"] if not c.get("has_army")]
     regions = [s["region"] for s in world["settlements"] if s.get("region")]
     want_camp = True
     if active is not None:
         lords = [c for c in lords if c in set(str(x) for x in (active.get("lords") or []))]
+        heroes = [c for c in heroes if c in set(str(x) for x in (active.get("heroes") or []))]
         regions = [r for r in regions if r in set(active.get("regions") or [])]
         want_camp = bool(active.get("campaign", True))
     ents = []
@@ -664,6 +738,10 @@ def snapshot(bus, active=None):
         st = timed("lord_state", lord_state, bus, cqi)
         ents.append({"context_kind": "lord", "context_id": str(cqi), "state": st,
                      "offers": timed("lord_offers", lord_offers, bus, cqi, st, world)})
+    for cqi in heroes:
+        st = timed("hero_state", lord_state, bus, cqi)     # same character read; force fields nil
+        ents.append({"context_kind": "hero", "context_id": str(cqi), "state": st,
+                     "offers": timed("hero_offers", hero_offers, bus, cqi, st, world)})
     for reg in regions:
         st = timed("province_state", province_state, bus, reg)
         ents.append({"context_kind": "province", "context_id": reg, "state": st,
@@ -673,6 +751,7 @@ def snapshot(bus, active=None):
                      "offers": timed("campaign_offers", campaign_offers, bus, camp)})
     prof["_entities"] = len(ents)
     prof["_lords"] = len(lords)
+    prof["_heroes"] = len(heroes)
     prof["_regions"] = len(regions)
     return {"ts": time.time(), "campaign": camp, "world": world,
             "entities": ents, "profile": prof}

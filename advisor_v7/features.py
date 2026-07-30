@@ -190,7 +190,7 @@ def action_block(offer, locus, treasury):
 
 # ------------------------------------------------------------------------------ assembly
 def _locus(context_kind, state, world, provinces):
-    if context_kind == "lord":
+    if context_kind in ("lord", "hero"):
         return (state.get("x"), state.get("y"))
     if context_kind == "province":
         s = next((s for s in (world.get("settlements") or [])
@@ -209,7 +209,9 @@ def state_row(record, entity):
     ck, st = entity.get("context_kind"), entity.get("state") or {}
     row = campaign_block(record.get("campaign") or {}, world)
     row["ctx_kind"] = ck
-    if ck == "lord":
+    # a HERO is a character, so it uses the same character block as a lord -- the force-derived
+    # fields simply come back empty, which is itself signal (no army = no stance/move options)
+    if ck in ("lord", "hero"):
         row.update(lord_block(st))
         row.update(province_block(provinces.get(st.get("region"))))   # the province he stands in
     elif ck == "province":
