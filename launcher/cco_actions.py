@@ -228,8 +228,39 @@ def _stance_snapshot(bus, ctx, pick):
             "can_activate": tgt.get("can_activate"), "can_afford": tgt.get("can_afford")}
 
 
+# The HUD stance stack is the game's own answer to "which stances may this faction use". The cco
+# StanceList cannot answer it -- it lists every stance in the game and Activate will happily set a
+# faction-ILLEGAL one (verified rule breach: a High Elf army entered TUNNELING). This gate reads the
+# stack ITSELF rather than trusting a whitelist passed in by the caller: the executor must be able
+# to refuse an illegal stance even when the advisor asks for one.
+# ⚠ the stack is collapsed most of the time, so only the current button is `visible` -- but the bus
+# `find` handler enumerates children via ChildCount+Find(i), which is NOT visibility gated.
+_STANCE_STACK = "hud_campaign|BL_parent|land_stance_button_stack|clip_parent|stack_background"
+
+
+def _legal_stances(bus):
+    try:
+        r = bus.send("find", _STANCE_STACK, timeout=12.0) or {}
+    except Exception as e:
+        sys.stderr.write("cco_actions: stance stack find -> %s\n" % repr(e)[:90])
+        return set()
+    out = set()
+    for k in (r.get("child_ids") or []):
+        if not k.startswith("button_") or k == "button_default":
+            continue
+        try:
+            b = bus.send("find", "%s|%s" % (_STANCE_STACK, k), timeout=8.0) or {}
+        except Exception:
+            continue
+        if (b.get("result") or {}).get("state") != "inactive":
+            out.add(k[len("button_"):])
+    return out
+
+
 def _stance_gate_whitelist(bus, ctx, pick, before):
-    wl = ctx.get("stance_whitelist") or set()
+    wl = _legal_stances(bus)
+    if not wl:
+        return False, "stance_legality_unreadable"         # loud: never assume "everything is legal"
     if pick["key"] not in wl:
         return False, "stance_not_in_legality_whitelist"   # engine sets ILLEGAL stances; never bypass
     return True, None
@@ -265,6 +296,22 @@ register("stance", {
 
 
 # ---------------------------------------------------------------------------- cco: BUILDING
+# The cco layer exposes NO cost/affordability property on a building-level record (probed live:
+# Cost / ConstructionCost / CreateCost / CanAfford / IsAffordable / PurchaseCost all return nil, and
+# BuildingRequirementsMet covers requirements only -- NOT gold). So the price comes from the game's
+# own DB, decoded offline into reference.sqlite (marble_1 = 1000 gold, verified). Without it the
+# treasury gate can never fire and an unaffordable build reaches the engine, which accepts the
+# command and silently does nothing -- the exact failure this whole layer exists to prevent.
+def _build_cost(key):
+    try:
+        sys.path.insert(0, r"D:\tw_stack\advisor\reference")
+        import features_db as _DB
+        return _DB.building_features(key).get("create_cost")
+    except Exception as e:
+        sys.stderr.write("cco_actions: build cost lookup %r -> %s\n" % (key, repr(e)[:90]))
+        return None
+
+
 def _building_snapshot(bus, ctx, pick):
     t = _treasury(bus)
     if t is None:
@@ -273,7 +320,11 @@ def _building_snapshot(bus, ctx, pick):
     if slot is None:
         return None
     is_new = _ev(bus, _LUA_SLOT_STATE % {"region": ctx["entity_id"], "slot": int(slot)})
-    return {"treasury": t, "slot_is_building_new": is_new == "true"}
+    cost = (pick.get("params") or {}).get("cost")
+    if cost is None:
+        cost = _build_cost(pick["key"])
+        pick.setdefault("params", {})["cost"] = cost      # feeds the engine's treasury-floor gate
+    return {"treasury": t, "slot_is_building_new": is_new == "true", "cost": cost}
 
 
 def _building_gate_slot(bus, ctx, pick, before):

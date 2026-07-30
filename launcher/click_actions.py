@@ -117,6 +117,35 @@ def _roots(bus):
         return None
 
 
+# ----------------------------------------------------------------- STANCE LEGALITY WHITELIST
+# READ-ONLY enumerator (no clicking) -- the game's own answer to "which stances may this faction
+# use", which the cco StanceList does NOT give: StanceList returns EVERY stance in the game and
+# Activate will happily set a faction-ILLEGAL one (verified rule breach: a High Elf army entered
+# TUNNELING). The HUD stance stack only ever contains the legal ones, so it is the whitelist.
+#
+# ⚠ the stack is COLLAPSED most of the time, so only the current button reports visible:True. The
+# bus `find` handler enumerates direct children via ChildCount+Find(i), which is NOT visibility
+# gated, so it returns all of them anyway (verified: 13 buttons off a collapsed, invisible stack).
+STANCE_STACK = "hud_campaign|BL_parent|land_stance_button_stack|clip_parent|stack_background"
+_STANCE_PREFIX = "button_"
+
+
+def stance_options(bus):
+    """{stance_key: state} for every stance this faction may use. Empty dict = the stack could not
+    be read (LOUD: callers must treat that as "no stance offers", never as "no legal stances")."""
+    _res, kids = _find(bus, STANCE_STACK, timeout=12.0)
+    out = {}
+    for k in kids:
+        if not k.startswith(_STANCE_PREFIX) or k == "button_default":
+            continue
+        key = k[len(_STANCE_PREFIX):]
+        res, _ = _find(bus, "%s|%s" % (STANCE_STACK, k), timeout=8.0)
+        out[key] = res.get("state")
+    if not out:
+        sys.stderr.write("click_actions: stance stack %s enumerated 0 buttons\n" % STANCE_STACK)
+    return out
+
+
 # ------------------------------------------------------------------------------- EDICT
 def _selected_edict(bus, region):
     return _ev(bus, _G + "local s=cco('CcoCampaignSettlement','settlement:%s');"
