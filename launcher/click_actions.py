@@ -97,6 +97,27 @@ def _hw_click(bus, path, settle=1.2):
     return True
 
 
+def engine_click(bus, component_id):
+    """Click a component ENGINE-SIDE by its id -- no OS cursor, so it can never steal the mouse.
+
+    `CcoComponent.SimulateLClick` is the only Simulate* in the whole CCO system and CA drive their
+    own UI with it (verbatim, dlc24_matters_of_state.twui.xml:8127:
+    context_function_id="Component(&quot;FC4F69A8-...&quot;).SimulateLClick"). `RootComponent` needs
+    no ExpressionState and `ChildContext` searches recursively, so it resolves runtime-spawned rows
+    like general_candidate_<n>_ that appear in no XML.
+
+    This replaces the hardware clicks that used to drive lord recruitment. It still proves nothing
+    on its own -- the caller must post-assert, exactly as with the bus click.
+    """
+    lua = ('common.call_context_command([[RootComponent.ChildContext("%s").SimulateLClick]]) '
+           'return "sent"' % component_id)
+    try:
+        return _ev(bus, lua, timeout=20.0) == "sent"
+    except Exception as e:
+        sys.stderr.write("click_actions: engine_click %s -> %s" % (component_id, repr(e)[:80]) + chr(10))
+        return False
+
+
 def _click_or_hw(bus, path):
     """Try the (cursor-safe) bus click; fall back to a hardware click on the rect."""
     res, _ = _find(bus, path)
@@ -126,8 +147,22 @@ def _click_or_hw(bus, path):
 
 
 def clear_screen(bus):
-    """Drain leftover popups so we are never clicking underneath something."""
+    """Close whatever the game was left looking at: open PANELS first, then leftover popups.
+
+    ⚠ Popup draining alone is not enough. A panel (character_panel, settlement_panel, units_panel)
+    has no dismiss button, so nav.close_popups returns 0 and the panel stays up -- and a stale panel
+    BLOCKS the next selection from opening its own panel. Live: character_panel left open from a
+    previous attempt made select_settlement succeed while settlement_panel never appeared, so the
+    whole recruit chain refused.
+    `CloseAllPanels` is a verified CA global context command (used in campaign_tours.lua:3097),
+    click-free and cursor-free.
+    """
     import nav
+    try:
+        _ev(bus, 'common.call_context_command([[CloseAllPanels]]) return "sent"', timeout=15.0)
+        time.sleep(1.0)
+    except Exception as e:
+        sys.stderr.write("click_actions: CloseAllPanels -> %s" % repr(e)[:80] + chr(10))
     try:
         return len(nav.close_popups(bus))
     except Exception as e:
@@ -407,7 +442,16 @@ def _lord_execute(bus, ctx, pick, before):
         if not _click(bus, CREATE_ARMY_BTN):     # opens character_panel (raise-army)
             return False
         time.sleep(1.8)
-    if not _click(bus, "%s|%s" % (LORD_TYPE_LIST, pick["key"])):   # lord TYPE, e.g. hef_prince
+    # ⚠ ID MISMATCH: the offer key is the DB subtype (wh2_main_hef_prince) but the UI type button
+    # is the short form (hef_prince). Resolve against what the panel actually lists rather than
+    # assuming either shape -- prefixes differ per pack (wh2_main_, wh2_dlc10_, wh3_dlc27_...).
+    want = str(pick["key"])
+    types = lord_types(bus)
+    btn = next((t for t in types if want.endswith(t) or t.endswith(want) or t in want), None)
+    if btn is None:
+        sys.stderr.write("click_actions: lord type for %r not among %s" % (want, types) + chr(10))
+        return False
+    if not _click(bus, "%s|%s" % (LORD_TYPE_LIST, btn)):
         return False
     time.sleep(1.5)
     cands = lord_candidates(bus)
@@ -415,8 +459,10 @@ def _lord_execute(bus, ctx, pick, before):
         sys.stderr.write("click_actions: no general_candidate rows for %r\n" % pick["key"])
         return False
     idx = int((pick.get("params") or {}).get("candidate_index", 0))
-    # candidate rows report visible:False -> the bus click is a silent no-op; hardware-click the rect
-    if not _hw_click(bus, "%s|%s" % (CANDIDATE_LIST, cands[min(idx, len(cands) - 1)])):
+    # ENGINE-SIDE click by component id. These rows are spawned at runtime (they exist in no XML)
+    # and often report visible:False, which is why the path-based bus click was a silent no-op and
+    # we used to fall back to a hardware click that stole the cursor.
+    if not engine_click(bus, cands[min(idx, len(cands) - 1)]):
         return False
     # button_raise is 'down_off' (disabled) until a candidate is selected -- that flip is the
     # in-flight proof the selection landed, checked before committing.
@@ -425,7 +471,7 @@ def _lord_execute(bus, ctx, pick, before):
         sys.stderr.write("click_actions: button_raise not active after candidate select (state=%s)\n"
                          % res.get("state"))
         return False
-    return _click_or_hw(bus, BUTTON_RAISE)       # commits
+    return engine_click(bus, "button_raise")     # commits, engine-side
 
 
 def _lord_confirm(bus, ctx, pick, before):

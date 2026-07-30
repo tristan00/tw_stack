@@ -457,7 +457,7 @@ def province_offers(bus, region, state, campaign):
               "local p=g(sl,'PossibleUpgradeWithoutConversionsList') "
               "if type(p)=='table' then for j=0,#p-1 do "
               "o[#o+1]=ts(g(sl,'Index'))..'~'..ts(g(sl,'PossibleUpgradeWithoutConversionsList['..j..'].Key'))"
-              "..'~'..ts(g(sl,'BuildingRequirementsMet(PossibleUpgradeWithoutConversionsList['..j..'])'))"
+              "..'~'..ts(g(sl,'PossibleUpgradeWithoutConversionsList['..j..'].IsActiveForBuildingBrowser(this)'))"
               "..'~'..ts(empty)..'~'..ts(canup) end end end end end "
               "local ed={} local m=g(s,'FactionProvinceManagerContext') "
               "if m then local il=g(m,'InitiativeList') "
@@ -469,21 +469,32 @@ def province_offers(bus, region, state, campaign):
         raise CollectError("province offers malformed for %s: %r" % (region, combo[:120]))
     raw = cparts[1]
     edicts = [k for k in cparts[2].split(",") if k and k != "nil"]
+    # ⚠ THE GATE IS `IsActiveForBuildingBrowser(slot)`, NOT `BuildingRequirementsMet`.
+    # CA's shipped UI never calls BuildingRequirementsMet anywhere (0 uses across all 867 ui3.pack
+    # files); it decides lit-vs-greyed with, verbatim from building_construction_popup.twui.xml:
+    #     normal = level.IsActiveForBuildingBrowser(slot) && level.IsBuiltInSlot(slot) == false
+    # BuildingRequirementsMet only checks dependency buildings -- necessary, never sufficient --
+    # which is exactly why our offers leaked and Construct kept being silently refused.
+    # IsActiveForBuildingBrowser is the aggregate: it folds in affordability, growth/development
+    # points, damage, caps, tech locks and the rest.
+    #
+    # ARGUMENT SYNTAX: `this` is the ROOT of the Call (the slot). Do NOT write `Context` -- that is
+    # a TYPE NAME in the docs, not a value, and evaluating it CTD'd the game once.
+    #
     # An occupied ACTIVE slot is still actionable: upgrading it is how a settlement grows, and
     # upgrading the PRIMARY building is the only way to unlock the level-locked slots. Offering
     # construction on empty slots alone left the advisor structurally unable to develop a province.
-    # An UPGRADE additionally needs CanUpgrade -- requirements being met is not sufficient.
     seen = set()
     for row in str(raw or "").split(","):
         p = row.split("~")
         if len(p) < 5:
             continue
-        slot, key, met, empty, canup = p[0], p[1], p[2] == "true", p[3] == "true", p[4] == "true"
+        slot, key, active, empty, canup = p[0], p[1], p[2] == "true", p[3] == "true", p[4] == "true"
         if key in seen:
             continue
         seen.add(key)
-        ok = met and (empty or canup)
-        gate = None if ok else ("requirements_not_met" if not met else "cannot_upgrade_now")
+        ok = active                      # the game's own lit-vs-greyed verdict
+        gate = None if ok else ("not_buildable_now" if empty else "not_upgradeable_now")
         offers.append(_offer("building", key, ok, gate,
                              slot_index=int(float(slot)) if slot not in ("nil", "") else None,
                              is_upgrade=(not empty)))
