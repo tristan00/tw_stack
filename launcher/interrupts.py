@@ -57,20 +57,64 @@ def _wait_root(bus, root, tries=30, pause=1.0):
     return False
 
 
+CLICK_LOG = []          # (ts, path, clicked) for every click this module made -- read by the loop
+
+
 def _click(bus, path, settle=1.5):
     try:
         r = bus.send("click", path, timeout=10.0) or {}
     except Exception as e:
         sys.stderr.write("interrupts: click %s -> %s\n" % (path.rsplit("|", 1)[-1], repr(e)[:70]))
+        CLICK_LOG.append((time.time(), path, "error"))
         return False
+    ok = bool(r.get("clicked"))
+    CLICK_LOG.append((time.time(), path, ok))
+    sys.stderr.write("interrupts: CLICK %s -> clicked=%s\n" % (path, ok))
     time.sleep(settle)
-    return bool(r.get("clicked"))
+    return ok
+
+
+def evidence(bus, why, shots_dir=None):
+    """Screenshot + the exact click history + the visible roots, for a screen we could not drive.
+
+    A stuck screen is precisely the case where the logs alone never tell you enough -- you need to
+    SEE what was in front of the clicks. Returns the report dict (and the PNG path if it captured).
+    """
+    import os
+    import subprocess
+    rep = {"why": why, "roots": roots(bus), "ts": time.time(),
+           "clicks": [(round(t, 1), p, c) for t, p, c in CLICK_LOG[-12:]]}
+    shots_dir = shots_dir or os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                          "logs", "v7_shots")
+    path = os.path.join(shots_dir, "stuck_%s_%d.png" % (why.replace(":", "_")[:40], int(time.time())))
+    try:
+        os.makedirs(shots_dir, exist_ok=True)
+        subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                        os.path.join(os.path.dirname(os.path.abspath(__file__)), "ps", "capture.ps1"),
+                        path], capture_output=True, text=True, timeout=45)
+        rep["screenshot"] = path if os.path.exists(path) else None
+    except Exception as e:
+        rep["screenshot_error"] = repr(e)[:120]
+    sys.stderr.write("interrupts: STUCK (%s) roots=%s shot=%s\n  recent clicks: %s\n"
+                     % (why, rep["roots"], rep.get("screenshot"), rep["clicks"]))
+    return rep
 
 
 def _found(bus, path):
+    """Found AND actually clickable.
+
+    ⚠ `found` alone is worthless here. The battle-results checkmark
+    (button_set_settlement_captured|button_accept) reports found=True on a results panel where it is
+    NOT visible, and SimulateLClick on it then returns clicked=True while doing nothing -- so the
+    caller loops forever on a control that can never work. Live cost of trusting `found`: 24 clicks
+    and 107 seconds per action. Requiring visible + a clickable state makes the caller fall through
+    to the control the panel really offers (button_dismiss).
+    """
     try:
         r = bus.send("find", path, timeout=8.0) or {}
-        return bool((r.get("result") or {}).get("found"))
+        res = r.get("result") or {}
+        return bool(res.get("found") and res.get("visible")
+                    and str(res.get("state")) in _CLICKABLE)
     except Exception:
         return False
 
@@ -210,17 +254,29 @@ def occupy(bus):
 
 
 def resolve_battle(bus, max_rounds=4):
+    """⚠ NEVER REPEAT A STEP THAT DEMONSTRABLY DID NOTHING.
+
+    The battle-results checkmark reports `clicked: True` even when the popup does not close (the
+    bus click lies -- see click_actions). Looping on "is a battle root still open" therefore span:
+    live, this re-clicked settlement_captured_checkmark 24 times and burned 107 SECONDS per action,
+    which was ~105s of every ~117s decision cycle. So each round must make the ROOT SET change; if
+    it does not, the screen is stuck on something we cannot drive and looping is pure waste.
+    """
     steps = []
     for _ in range(max_rounds):
-        r = roots(bus)
-        if "popup_pre_battle" in r:
+        before = tuple(roots(bus))
+        if "popup_pre_battle" in before:
             steps.append("autoresolve:%s" % autoresolve(bus))
-            continue
-        if "popup_battle_results" in r or "settlement_captured" in r:
+        elif "popup_battle_results" in before or "settlement_captured" in before:
             steps.extend(handle_results(bus))
             time.sleep(1.5)
-            continue
-        break
+        else:
+            break
+        if tuple(roots(bus)) == before:
+            steps.append("stuck:%s" % ",".join(x for x in before if x not in nav.BASE_ROOTS))
+            sys.stderr.write("interrupts: battle screen did not change after a step -- giving up "
+                             "rather than re-clicking (%s)\n" % (before,))
+            break
     return steps
 
 
@@ -252,18 +308,47 @@ def decline_diplomacy(bus):
 
 
 # --------------------------------------------------------------------------------- everything
+_stuck_sig = [None]         # the root signature we already gave up on
+
+
+def forget_stuck():
+    """Called when something external changed the screen (a turn ended, an action was confirmed),
+    so the next stuck screen is retried rather than assumed identical."""
+    _stuck_sig[0] = None
+
+
 def resolve(bus, max_rounds=6):
-    """Clear every interrupt currently on screen. Returns the steps taken ([] = clean screen)."""
+    """Clear every interrupt currently on screen. Returns the steps taken ([] = clean screen).
+
+    THIS RUNS AFTER EVERY ACTION, so its cost on a clean screen must be ONE `roots` call (~101ms)
+    and nothing more.
+
+    Two limiters, both learned from a live 107s-per-action stall:
+      * a round that leaves the visible root set UNCHANGED means nothing here can drive it, so stop
+        instead of walking every open panel's tree again (the outer loop used to multiply the inner
+        one, 6 x 4 = 24 clicks on a control that could never work);
+      * once a root set has been declared stuck, DO NOT RE-ATTEMPT IT -- no trees, no clicks, no
+        repeat screenshot -- until the roots actually change. A screen we could not drive a second
+        ago is not going to yield to the same clicks a second later.
+    """
     steps = []
     for _ in range(max_rounds):
+        before = tuple(roots(bus))
+        if before and before == _stuck_sig[0]:
+            return ["stuck_unchanged"]          # cheap: one roots call, then out
         kinds = pending(bus)
         if not kinds:
+            _stuck_sig[0] = None
             break
         if "battle" in kinds:
             steps.extend(resolve_battle(bus))
+            if tuple(roots(bus)) == before:
+                break
             continue
         if "diplomacy" in kinds:
             steps.extend(decline_diplomacy(bus))
+            if tuple(roots(bus)) == before:
+                break
             continue
         try:
             n = len(nav.close_popups(bus))
@@ -280,5 +365,12 @@ def resolve(bus, max_rounds=6):
         if s:
             steps.extend(s)
             continue
-        break                                        # something is open that we cannot dismiss
+        # something is open that we cannot dismiss -- record it with a screenshot so the next
+        # unhandled screen is diagnosable instead of just slow
+        if [x for x in before if x not in nav.BASE_ROOTS and x not in DIPLOMACY_HUD_ROOTS]:
+            steps.append("undismissable:%s" % ",".join(x for x in before if x not in nav.BASE_ROOTS))
+            if before != _stuck_sig[0]:
+                evidence(bus, "undismissable")
+            _stuck_sig[0] = before
+        break
     return steps
