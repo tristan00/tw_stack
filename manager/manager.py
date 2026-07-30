@@ -236,7 +236,8 @@ class Recording:
 
     def __init__(self, out_dir, t0, stop_event, threads, events_writer, *,
                  out_root=None, writers=None, ctxs=None, on_error=None,
-                 meta_overrides=None, restart_turn=1, reset_bus=None):
+                 meta_overrides=None, restart_turn=1, reset_bus=None, swap_dirs=False):
+        self.swap_dirs = swap_dirs        # v7 default: ONE dir for the whole session (see should_swap)
         self.out_dir = out_dir
         self.out_root = out_root
         self.t0 = t0
@@ -265,6 +266,14 @@ class Recording:
             started_new = self._tracker.observe(faction, subculture, turn)
         except Exception as e:                       # a bad row must never break capture
             sys.stderr.write("manager: tracker.observe failed -> %s\n" % repr(e)[:80])
+            return False
+        # ⚠ v7: DIRECTORY ROTATION IS OFF BY DEFAULT (--swap-dirs re-enables the v6 behaviour).
+        # v7 keys every row by the minted campaign uuid, so one decisions.sqlite holds many
+        # playthroughs unambiguously. Rotating on top of that made every consumer chase a moving
+        # path, and the log-based detection below does NOT fire for a command-started campaign
+        # (cm:quit() + StartCampaign) -- so it silently failed to rotate anyway. Identity belongs
+        # in the data, not the filesystem.
+        if not self.swap_dirs:
             return False
         # index 0 is the first campaign (keeps the initial dir); index >= 1 needs a fresh dir.
         return bool(started_new and self._tracker.index >= 1)
@@ -340,7 +349,7 @@ class Recording:
 
 
 def start(out_root, streams, *, recorder_version, meta_overrides=None,
-          restart_turn=1, reset_bus=None):
+          restart_turn=1, reset_bus=None, swap_dirs=False):
     """Create the run dir + shared clock + meta, then launch each stream as a daemon thread.
 
     Args:
@@ -379,7 +388,7 @@ def start(out_root, streams, *, recorder_version, meta_overrides=None,
 
     rec = Recording(out, t0, stop_event, [], events, out_root=out_root, writers=writers,
                     ctxs=[], on_error=on_error, meta_overrides=base_meta,
-                    restart_turn=restart_turn, reset_bus=reset_bus)
+                    restart_turn=restart_turn, reset_bus=reset_bus, swap_dirs=swap_dirs)
 
     threads = []
     for s in streams:
@@ -513,7 +522,8 @@ def main():
         streams.append({"run": actions_stream.run, "name": "actions",
                         "out_file": "actions_stream.jsonl"})
 
-    rec = start(out_root, streams, recorder_version=RECORDER_VERSION,
+    swap_dirs = "--swap-dirs" in argv          # v7 default: ONE dir per session (see should_swap)
+    rec = start(out_root, streams, recorder_version=RECORDER_VERSION, swap_dirs=swap_dirs,
                 meta_overrides={"game_dir": game_dir, "appdata_logs": appdata,
                                 "shots_enabled": shots_on, "ui_enabled": ui_on,
                                 "actions_enabled": actions_on,

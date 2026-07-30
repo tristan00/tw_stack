@@ -44,6 +44,26 @@ def run(ctx):
     bus = Bus()
     store, cur_dir, offset = None, None, 0
     seq = 0
+    last_uuid = [None]
+
+    def campaign_changed(snap_camp):
+        """Notice a campaign change and RECORD it -- but do NOT rotate the run dir.
+
+        ONE DIRECTORY, MANY CAMPAIGNS. v7 separates campaigns by the minted campaign uuid, which is
+        the primary key of every row, so a single decisions.sqlite holds several playthroughs with
+        no ambiguity. Rotating directories on top of that bought nothing and cost a great deal: the
+        advisor, the UI and the trainer each had to chase a moving path, and a missed rotation (the
+        manager's log-based detector does not fire for a command-started campaign) silently split
+        or merged runs. Identity lives in the data now, not in the filesystem.
+        """
+        u = (snap_camp or {}).get("campaign_uuid")
+        if not u or u == last_uuid[0]:
+            return False
+        if last_uuid[0] is not None:
+            ctx.emit({"kind": "decisions_status", "status": "campaign_changed",
+                      "from": last_uuid[0], "to": u, "same_dir": True})
+        last_uuid[0] = u
+        return False                   # never swaps; the return value is kept for callers' clarity
     counts = {"snapshot": 0, "target": 0, "turn": 0, "hash": 0, "pick": 0,
               "verification": 0, "error": 0}
     while ctx.is_running():
@@ -63,6 +83,13 @@ def run(ctx):
                     if kind == "snapshot":
                         t0 = time.time()
                         snap = collect.snapshot(bus, active=row.get("active"))
+                        # A campaign change mid-request is answered with an ERROR, not a decision id.
+                        # The reply has to go to the dir the advisor is polling, but the decision
+                        # belongs in the NEW campaign's store -- writing one and pointing at the
+                        # other would hand back an id that does not exist where the advisor looks.
+                        # Failing loudly makes the advisor re-resolve, which is the correct move.
+                        if campaign_changed(snap.get("campaign")):
+                            seq = 0                      # decision_seq restarts with the campaign
                         did = store.write_decision(snap, decision_seq=seq)
                         seq += 1
                         counts["snapshot"] += 1
@@ -81,9 +108,13 @@ def run(ctx):
                         ctx.emit({"kind": "decisions_target", "turn": r.get("turn"),
                                   "inserted": bool(wrote)})
                     elif kind == "turn":
-                        t = collect.campaign_state(bus).get("turn")
+                        # the cheap request the advisor makes right after starting a campaign, so
+                        # this is where the rotation normally gets noticed
+                        cs = collect.campaign_state(bus)
+                        campaign_changed(cs)
                         counts["turn"] += 1
-                        journal.respond(out_dir, rid, turn=t)
+                        journal.respond(out_dir, rid, turn=cs.get("turn"),
+                                        campaign_uuid=cs.get("campaign_uuid"))
                     elif kind == "hash":
                         h = collect.state_hash(bus)
                         counts["hash"] += 1

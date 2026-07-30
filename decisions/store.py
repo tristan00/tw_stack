@@ -34,6 +34,10 @@ import time
 
 DB_NAME = "decisions.sqlite"
 
+
+class IncompatibleStore(RuntimeError):
+    """This decisions.sqlite predates the current schema and cannot be read."""
+
 _DDL = """
 CREATE TABLE IF NOT EXISTS target_rows(
   campaign_id TEXT NOT NULL, turn INTEGER NOT NULL, ts REAL,
@@ -91,6 +95,23 @@ class DecisionStore:
                    ("action_offers", "explore", "REAL"),
                    ("action_offers", "rank", "INTEGER"))
 
+    # tables whose shape changed in the faction-wide redesign; a DB predating it cannot be read by
+    # the new queries and must be skipped rather than half-migrated into something misleading.
+    _REQUIRED = (("action_offers", "decision_id"), ("entity_snapshots", "decision_id"))
+
+    def _assert_compatible(self):
+        for table, col in self._REQUIRED:
+            exists = self.con.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
+            if not exists:
+                continue                       # fresh DB: the DDL will create it correctly
+            cols = {r[1] for r in self.con.execute("PRAGMA table_info(%s)" % table)}
+            if col not in cols:
+                raise IncompatibleStore(
+                    "%s predates the faction-wide decision-point schema (%s.%s missing). Its rows "
+                    "have a different shape and cannot be read by the current queries."
+                    % (self.path, table, col))
+
     def __init__(self, run_dir):
         # ⚠ CAMPAIGN IDENTITY. The game exposes no unique per-playthrough id: cm:get_campaign_name()
         # is the campaign TYPE ("main_warhammer") and the faction name repeats on every restart, so
@@ -101,6 +122,7 @@ class DecisionStore:
         self.path = os.path.join(run_dir, DB_NAME)
         self.con = sqlite3.connect(self.path, timeout=10.0)
         self.con.execute("PRAGMA journal_mode=WAL")
+        self._assert_compatible()
         self.con.executescript(_DDL)
         self._migrate()
         self.con.commit()

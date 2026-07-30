@@ -232,73 +232,73 @@ class BusLauncher:
             time.sleep(2.0)
         return False
 
-    # ---- quit to main menu (in-campaign -> frontend, WITHOUT killing the process) ----------
+    # ---- campaign lifecycle by COMMAND (no clicking, no coordinates) ----------------------
     #
-    # ⚠⚠ READ THIS BEFORE "IMPROVING" IT INTO BUS CLICKS. THIS HAS BITTEN US MORE THAN ONCE. ⚠⚠
+    # Both of these are engine commands found in the game's OWN shipped documentation and used by
+    # CA's own scripts. They replace the click/hardware-click paths entirely:
     #
-    # The escape menu is MODAL, and a modal PAUSES THE GAME TICK. The mod's command handlers run on
-    # that tick, so the moment the menu opens THE BUS IS DEAD: `roots` times out, `find` times out,
-    # `click` times out. Any implementation that tries to locate "Exit to Main Menu" through the bus
-    # cannot work -- not "usually fails", CANNOT, by construction. Verified live: ShowEscapeMenu
-    # dispatched fine, the menu rendered, and the very next `roots` call timed out.
+    #   cm:quit()                        "Immediately exits to the frontend" (lib_campaign_manager)
+    #                                    -> LIVE: main menu in 6s, and CRUCIALLY the bus stays alive
+    #                                       the whole time because no modal is ever opened.
+    #   CcoFrontendRoot.StartCampaign(campaign_key, faction_key, "SP_NORMAL")
+    #                                    -> LIVE: campaign loaded in 28s, turn 1.
     #
-    # So these two clicks are HARDWARE clicks at fixed CLIENT FRACTIONS. They are not blind: each
-    # was read off a screenshot of the real dialog, and the whole sequence is post-asserted by the
-    # bus COMING BACK TO LIFE with the `main` frontend root visible -- which cannot happen unless
-    # both clicks landed. If the layout ever moves, this fails loudly instead of silently.
-    #
-    #   Exit to Main Menu   (183, 988) of a 2560x1440 client
-    #   confirm tick        (1243, 841) -- "If you quit now you will lose all unsaved progress"
-    F_EXIT_TO_MENU = (183.0 / 2560.0, 988.0 / 1440.0)
-    F_CONFIRM_TICK = (1243.0 / 2560.0, 841.0 / 1440.0)
+    # Why this matters beyond speed: the escape menu is MODAL, a modal PAUSES THE GAME TICK, and the
+    # mod's handlers run on that tick -- so with the menu open the bus is dead and nothing can be
+    # located through it. The old path therefore needed hardware clicks at screenshot-read
+    # coordinates. These commands never open the menu at all, so that whole class of fragility is
+    # gone. (Confirmed by enumeration: esc_menu.twui.xml has ZERO context-command bindings -- its
+    # buttons are C++ callbacks, so there never was a command BEHIND the menu. These bypass it.)
+    CAMPAIGN_KEYS = {"Immortal Empires": "wh3_main_combi",
+                     "Realm of Chaos": "wh3_main_chaos",
+                     "Prologue": "wh3_main_prologue"}
 
-    def quit_to_main_menu(self, timeout=180):
-        """Leave a running campaign and return to the main menu, without respawning the process.
-
-        This is what makes a campaign restart take seconds instead of a multi-minute cold boot, and
-        it is where the watchdog's "abandon this run" goes instead of taskkill.
-        """
-        import nav
+    def quit_to_main_menu(self, timeout=120):
+        """Leave a running campaign and return to the main menu, without respawning the process."""
         if self.bus is None:
             self.bus = Bus()
-        r = self._send("eval", "local r=cco('CcoCampaignRoot',''); "
-                               "pcall(function() r:Call('ShowEscapeMenu') end); return 'called'",
-                       timeout=20)
-        if (r or {}).get("result") != "called":
-            raise TWError("ShowEscapeMenu did not dispatch: %s" % r)
-        _log("escape menu opened (the bus is now dead until we leave it -- expected)")
-        time.sleep(3.0)
-
-        ox, oy, cw, ch = nav.CLIENT
-        for label, (fx, fy), settle in (("Exit to Main Menu", self.F_EXIT_TO_MENU, 4.0),
-                                        ("confirm quit", self.F_CONFIRM_TICK, 6.0)):
-            x, y = int(round(ox + fx * cw)), int(round(oy + fy * ch))
-            _log("hardware click: %s @ (%d,%d)" % (label, x, y))
-            nav.mouse("move", x, y)
-            time.sleep(0.4)
-            nav.mouse("click", x, y)
-            time.sleep(settle)
-
-        # POST-ASSERT: the bus can only answer again once the campaign has been torn down, and
-        # `main` only exists on the frontend. Both together prove we really left.
+        r = self._send("eval", "local ok,e=pcall(function() cm:quit() end) "
+                               "return 'ok='..tostring(ok)..' err='..tostring(e)", timeout=25)
+        if not str((r or {}).get("result", "")).startswith("ok=true"):
+            raise TWError("cm:quit() did not dispatch: %s" % r)
         t0 = time.time()
         while time.time() - t0 < timeout:
             if any(k.get("id") == "main" and k.get("visible") for k in self._roots_safe()):
-                _log("back at the main menu (bus alive, `main` visible).")
+                _log("back at the main menu via cm:quit() (%.0fs)" % (time.time() - t0))
                 return True
             time.sleep(2.0)
-        raise TWError("still not at the main menu %ds after the quit clicks -- the escape-menu "
-                      "layout has probably moved; re-read the fractions off a screenshot" % timeout)
+        raise TWError("cm:quit() dispatched but the main menu never appeared within %ds" % timeout)
+
+    def start_campaign(self, plan_name="nagarythe", campaign="Immortal Empires", load_timeout=360):
+        """Main menu -> playable campaign, by command. Post-asserted on the interactive HUD."""
+        plan = PLANS.get(plan_name)
+        if plan is None:
+            raise TWError("unknown plan %r (have %s)" % (plan_name, list(PLANS)))
+        ckey = self.CAMPAIGN_KEYS.get(campaign, campaign)
+        faction = plan.get("faction")
+        if not faction:
+            raise TWError("plan %r has no faction key, which StartCampaign requires" % plan_name)
+        _log("StartCampaign(%s, %s, SP_NORMAL)" % (ckey, faction))
+        r = self._send("eval",
+                       "local ok,e=pcall(function() cco('CcoFrontendRoot',''):Call("
+                       "'StartCampaign(\"%s\", \"%s\", \"SP_NORMAL\")') end) "
+                       "return 'ok='..tostring(ok)..' err='..tostring(e)" % (ckey, faction),
+                       timeout=30)
+        if not str((r or {}).get("result", "")).startswith("ok=true"):
+            raise TWError("StartCampaign did not dispatch: %s" % r)
+        started = self.wait_for({"started"}, load_timeout)
+        if not started:
+            raise TWError("campaign did not load ('started' never logged) within %ds" % load_timeout)
+        if not self.advance_to_hud():
+            raise TWError("reached 'started' but never got the interactive HUD (loading/cinematic stuck)")
+        _log("CAMPAIGN PLAYABLE: %s / %s" % (ckey, faction))
+        return started
 
     def restart_campaign(self, plan_name="nagarythe", campaign="Immortal Empires",
                          load_timeout=360):
-        """Quit the current campaign and start a FRESH one -- the efficient restart path.
-
-        Reuses the exact frontend drive the cold launch uses, so there is one implementation of
-        'pick campaign / race / lord / start' rather than two that can drift.
-        """
+        """Quit the current campaign and start a FRESH one -- both steps by command."""
         self.quit_to_main_menu()
-        return self.drive_frontend(plan_name, campaign, load_timeout)
+        return self.start_campaign(plan_name, campaign, load_timeout)
 
     # ---- the launch sequence -------------------------------------------------------------
     def launch(self, plan_name="nagarythe", campaign="Immortal Empires", boot_timeout=240,
