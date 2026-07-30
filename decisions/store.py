@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS decision_points(
   ts REAL, campaign_id TEXT, turn INTEGER,
   decision_seq INTEGER NOT NULL DEFAULT 0, policy TEXT,
   n_entities INTEGER, n_offers INTEGER,
-  campaign TEXT, world TEXT);
+  campaign TEXT, world TEXT, timings TEXT);
 
 CREATE TABLE IF NOT EXISTS entity_snapshots(
   snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,20 +80,49 @@ CREATE INDEX IF NOT EXISTS ix_taken_dp ON action_taken(decision_id);
 
 
 class DecisionStore:
+    # columns added after a DB may already exist. CREATE TABLE IF NOT EXISTS does NOT add them to
+    # an existing file, so a run started before the column landed would break every reader with
+    # "no such column" -- migrate explicitly instead.
+    _MIGRATIONS = (("decision_points", "campaign", "TEXT"),
+                   ("decision_points", "world", "TEXT"),
+                   ("decision_points", "timings", "TEXT"),
+                   ("action_offers", "score", "REAL"),
+                   ("action_offers", "exploit", "REAL"),
+                   ("action_offers", "explore", "REAL"),
+                   ("action_offers", "rank", "INTEGER"))
+
     def __init__(self, run_dir):
+        # ⚠ CAMPAIGN IDENTITY. The game exposes no unique per-playthrough id: cm:get_campaign_name()
+        # is the campaign TYPE ("main_warhammer") and the faction name repeats on every restart, so
+        # keying on either would merge two separate Nagarythe playthroughs into one turn series and
+        # silently corrupt the reward target. The recorder opens a fresh run dir per campaign, so
+        # the run-dir stamp IS the unique campaign key -- faction@rundir.
+        self.run_id = os.path.basename(str(run_dir).rstrip("/\\"))
         self.path = os.path.join(run_dir, DB_NAME)
         self.con = sqlite3.connect(self.path, timeout=10.0)
         self.con.execute("PRAGMA journal_mode=WAL")
         self.con.executescript(_DDL)
+        self._migrate()
         self.con.commit()
 
+    def _migrate(self):
+        for table, col, typ in self._MIGRATIONS:
+            cols = {r[1] for r in self.con.execute("PRAGMA table_info(%s)" % table)}
+            if col not in cols:
+                self.con.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, col, typ))
+
     # ---------------------------------------------------------------- writes
+    def campaign_key(self, faction):
+        """The unique campaign identity for this run (see __init__)."""
+        return "%s@%s" % (faction, self.run_id)
+
     def write_target_row(self, row):
         """Exactly-once per (campaign, turn). Returns True if this call inserted it."""
         cur = self.con.execute(
             "INSERT OR IGNORE INTO target_rows(campaign_id,turn,ts,income,settlements,allies,vassals,power_rank)"
             " VALUES(?,?,?,?,?,?,?,?)",
-            (row.get("campaign_id"), int(row.get("turn") or 0), row.get("ts") or time.time(),
+            (self.campaign_key(row.get("campaign_id")),
+             int(row.get("turn") or 0), row.get("ts") or time.time(),
              row.get("income"), row.get("settlements"), row.get("allies"),
              row.get("vassals"), row.get("power_rank")))
         self.con.commit()
@@ -115,7 +144,8 @@ class DecisionStore:
         cur = self.con.execute(
             "INSERT INTO decision_points(ts,campaign_id,turn,decision_seq,policy,n_entities,"
             "n_offers,campaign,world) VALUES(?,?,?,?,?,?,?,?,?)",
-            (snapshot.get("ts") or time.time(), camp.get("faction"), int(camp.get("turn") or 0),
+            (snapshot.get("ts") or time.time(), self.campaign_key(camp.get("faction")),
+             int(camp.get("turn") or 0),
              int(decision_seq), policy, len(ents), n_offers,
              json.dumps(camp, default=str), json.dumps(snapshot.get("world") or {}, default=str)))
         did = cur.lastrowid
@@ -134,6 +164,16 @@ class DecisionStore:
                      json.dumps(o.get("params") or {}, default=str)))
         self.con.commit()
         return did
+
+    def attach_timings(self, decision_id, timings):
+        """Millisecond phase timings for one action, so a slow session can be read rather than
+        guessed at: request -> collected -> received -> scored -> instructed -> verified."""
+        if not timings:
+            return 0
+        self.con.execute("UPDATE decision_points SET timings=? WHERE decision_id=?",
+                         (json.dumps(timings, default=str), decision_id))
+        self.con.commit()
+        return 1
 
     def attach_scores(self, decision_id, scores):
         """The advisor's ranking, stored next to the offers it ranked.

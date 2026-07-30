@@ -28,6 +28,30 @@ import time
 REQUESTS = "decisions_requests.jsonl"
 RESPONSES = "decisions_responses.jsonl"
 DB_NAME = "decisions.sqlite"
+RUNS_ROOT = "D:/twdata/runs/human"
+CURRENT_POINTER = "CURRENT_RUN"
+
+
+def current_run_dir(runs_root=RUNS_ROOT, timeout=0.0):
+    """The run dir the recorder is servicing RIGHT NOW, from the pointer the manager publishes.
+
+    Never cache this across a campaign change: the recorder opens a fresh run dir on every campaign
+    swap, and a stale path means posting requests into a directory nobody is reading (which fails as
+    a request timeout, indistinguishable at a glance from a dead game).
+    """
+    path = os.path.join(runs_root, CURRENT_POINTER)
+    deadline = time.time() + max(0.0, timeout)
+    while True:
+        try:
+            with open(path, encoding="utf-8") as f:
+                d = f.read().strip()
+            if d and os.path.isdir(d):
+                return d
+        except OSError:
+            pass
+        if time.time() >= deadline:
+            raise RuntimeError("no live run dir at %s -- is the manager running?" % path)
+        time.sleep(0.5)
 
 
 # ------------------------------------------------------------------------------- plumbing
@@ -61,8 +85,9 @@ def read_requests(run_dir, offset=0):
 
 
 def respond(run_dir, req_id, **payload):
-    """Recorder -> advisor reply for one request."""
-    _append(run_dir, RESPONSES, dict(payload, req_id=req_id))
+    """Recorder -> advisor reply for one request, stamped with the dir it is actually servicing."""
+    _append(run_dir, RESPONSES, dict(payload, req_id=req_id,
+                                     served_by=str(run_dir).replace("\\", "/")))
 
 
 _req_seq = [0]
@@ -86,8 +111,19 @@ def _await(run_dir, req_id, timeout, poll=0.25):
                     raise RuntimeError("recorder failed request %s: %s" % (req_id, r["error"]))
                 return r
         time.sleep(poll)
-    raise RuntimeError("recorder never answered request %s within %ss "
-                       "(is the manager running with the 'decisions' stream?)" % (req_id, timeout))
+    # A bare timeout is the WRONG story to tell here: by far the most common cause is that the
+    # recorder rotated to a new run dir on a campaign swap and this caller is still posting into the
+    # abandoned one. Say which dir is live so the failure names its own fix.
+    hint = ""
+    try:
+        live = current_run_dir()
+        if os.path.abspath(live) != os.path.abspath(run_dir):
+            hint = (" -- THE RECORDER HAS MOVED: it is now servicing %s, not %s. The campaign "
+                    "almost certainly changed; re-resolve with journal.current_run_dir()."
+                    % (live, run_dir))
+    except RuntimeError:
+        hint = " -- no live run dir is published either; the manager looks dead."
+    raise RuntimeError("recorder never answered request %s within %ss%s" % (req_id, timeout, hint))
 
 
 # ------------------------------------------------------------- STREAM 2: ask the recorder to look
@@ -100,10 +136,17 @@ def request_snapshot(run_dir, active=None, timeout=180.0):
     live game read.
     """
     rid = _new_id("snapshot")
+    t_request = time.time()
     _append(run_dir, REQUESTS, {"kind": "snapshot", "req_id": rid, "active": active})
     reply = _await(run_dir, rid, timeout)
     did = reply.get("decision_id")
-    return did, read_decision(run_dir, did)
+    rec = read_decision(run_dir, did)
+    # phase stamps the advisor cannot get any other way: how long the RECORDER spent reading the
+    # game (collect_ms) vs how long the whole round trip took (the queue wait is the difference).
+    rec["_t_request"] = t_request
+    rec["_t_received"] = time.time()
+    rec["_collect_ms"] = reply.get("collect_ms")
+    return did, rec
 
 
 def request_target(run_dir, timeout=120.0):
@@ -130,11 +173,12 @@ def request_hash(run_dir, timeout=45.0):
 
 
 # ------------------------------------------------------------------- STREAMS 3 + 4: what happened
-def log_pick(run_dir, decision_id, pick, scores=None):
+def log_pick(run_dir, decision_id, pick, scores=None, timings=None):
     """STREAM 3 (ADVISOR): the offer it chose out of the decision point, plus the scores it gave
-    every offer, so the ranking that produced the choice is stored next to the choice."""
+    every offer, so the ranking that produced the choice is stored next to the choice.
+    `timings` carries the millisecond phase breakdown for this action (see loop.py)."""
     _append(run_dir, REQUESTS, {"kind": "pick", "decision_id": decision_id,
-                                "pick": pick, "scores": scores})
+                                "pick": pick, "scores": scores, "timings": timings})
 
 
 def log_verification(run_dir, decision_id, result):

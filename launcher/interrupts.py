@@ -84,6 +84,45 @@ def _tree(bus, root, depth=22, nodes=4000):
 
 
 # --------------------------------------------------------------------------------- detection
+def cancel_declare_war(bus):
+    """Answer the modal "Declare War?" dialog with CANCEL MOVE -- never Declare War, never Request
+    Military Access.
+
+    The game raises this whenever a move/attack order would start a war ("Making this attack is an
+    act of war. Do you wish to proceed?"). Declaring war and requesting military access are both
+    DIPLOMACY, which the advisor did not choose and which is out of scope for this version, so the
+    only correct answer is to withdraw the order.
+
+    ⚠ This one matters out of proportion to its size: the dialog is MODAL, so until it is answered
+    every later action is silently refused. Live-verified -- one bad move order left it up and the
+    next nine actions all failed as `command_silently_refused` with no other symptom.
+
+    ⚠ UNVERIFIED ROOT ID: the dialog was cleared before its root could be captured, so this does
+    NOT match on a root name. It scans EVERY non-base visible root for a clickable control that
+    reads "Cancel Move" -- which is why it works without knowing what the dialog is called, and why
+    it is only tried when the ordinary dismiss-button drain has already found nothing.
+    """
+    steps = []
+    for root in [x for x in roots(bus)
+                 if x not in nav.BASE_ROOTS and x not in DIPLOMACY_HUD_ROOTS]:
+        target = None
+        for n in _tree(bus, root):
+            nid = str(n.get("id") or "").lower()
+            txt = str(n.get("text") or "").strip().lower()
+            if not n.get("visible") or str(n.get("state")) not in _CLICKABLE:
+                continue
+            if txt in ("cancel move", "cancel") or "cancel_move" in nid or "button_cancel" in nid:
+                target = n.get("path")
+                break
+        if target is None:
+            continue
+        if _click(bus, target, settle=2.0):
+            steps.append("declare_war_cancelled:%s" % root)
+        if root in roots(bus):
+            sys.stderr.write("interrupts: %s still open after cancel\n" % root)
+    return steps
+
+
 def diplomacy_roots(bus, r=None):
     """Open diplomacy roots that are an actual PROPOSAL, excluding the persistent HUD dropdown."""
     r = roots(bus) if r is None else r
@@ -215,7 +254,15 @@ def resolve(bus, max_rounds=6):
         except Exception as e:
             sys.stderr.write("interrupts: close_popups -> %s\n" % repr(e)[:80])
             break
-        if not n:
-            break                                    # something is open that we cannot dismiss
-        steps.append("popups_cleared:%d" % n)
+        if n:
+            steps.append("popups_cleared:%d" % n)
+            continue
+        # Nothing carried a standard dismiss button. Before giving up, try the modals whose
+        # controls are named differently -- "Declare War?" answers to "Cancel Move", not button_ok,
+        # so the generic drain silently does nothing and the run stalls behind it.
+        s = cancel_declare_war(bus)
+        if s:
+            steps.extend(s)
+            continue
+        break                                        # something is open that we cannot dismiss
     return steps

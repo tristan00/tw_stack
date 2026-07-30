@@ -102,13 +102,25 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log):
             ended_by = "stuck"
             break
         decision_id, record = journal.request_snapshot(run_dir, active=active)
+        t_scored0 = time.time()
         pick, ranked = pol.choose(record, actions_taken=actions)
+        t_scored = time.time()
+        # the per-action phase breakdown, in ms: how long the recorder spent reading the game, how
+        # long the round trip added on top, how long scoring took, then execute+confirm. Recorded so
+        # a slow session can be READ rather than guessed at.
+        timing = {"t_request": record.get("_t_request"), "t_received": record.get("_t_received"),
+                  "collect_ms": record.get("_collect_ms"),
+                  "roundtrip_ms": int((record.get("_t_received", t_scored0)
+                                       - record.get("_t_request", t_scored0)) * 1000),
+                  "score_ms": int((t_scored - t_scored0) * 1000),
+                  "offers": sum(len(e.get("offers") or []) for e in record.get("entities") or []),
+                  "entities": len(record.get("entities") or [])}
         if pick is None:
             log("   nothing eligible -> ending turn")
             ended_by = "no_eligible_actions"
             _force_end_turn(run_dir, executor, decision_id, ranked, log)
             break
-        journal.log_pick(run_dir, decision_id, pick, P.scores_for_store(ranked))
+        journal.log_pick(run_dir, decision_id, pick, P.scores_for_store(ranked), timings=timing)
         picks.append({"action": pick["action_type"], "key": pick["key"],
                       "context": "%s:%s" % (pick["context_kind"], pick["context_id"]),
                       "policy": pick["policy"], "score": pick.get("score")})

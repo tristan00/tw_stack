@@ -411,9 +411,23 @@ def _research_execute(bus, ctx, pick, before):
 
 
 def _research_confirm(bus, ctx, pick, before):
+    """Research is a GOAL, not an immediate assignment.
+
+    LIVE-VERIFIED: StartResearching on a node further up the tree starts the first researchable
+    node on the path to it instead -- asking for wh2_main_tech_hef_5_01 left
+    CurrentResearchingTechnologyContext on wh2_main_tech_hef_5_00. Demanding an exact key match
+    therefore reports a real, successful command as `executed_unconfirmed`.
+
+    So the signal is "research is now underway and the active tech CHANGED", and the tech that
+    actually started is recorded as `actual` -- the request and the outcome both stay visible
+    instead of one silently standing in for the other.
+    """
     cur = _current_tech(bus, before["faction"])
     researching = _researching(bus)
-    return (researching == "true" and cur == pick["key"]), {"researching": researching, "current": cur}
+    started = (researching == "true"
+               and (cur != before.get("current") or before.get("researching") != "true"))
+    return started, {"researching": researching, "current": cur, "actual": cur,
+                     "exact_match": cur == pick["key"]}
 
 
 register("research", {

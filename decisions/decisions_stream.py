@@ -67,7 +67,8 @@ def run(ctx):
                         seq += 1
                         counts["snapshot"] += 1
                         n = sum(len(e["offers"]) for e in snap["entities"])
-                        journal.respond(out_dir, rid, decision_id=did)
+                        journal.respond(out_dir, rid, decision_id=did,
+                                        collect_ms=int((time.time() - t0) * 1000))
                         ctx.emit({"kind": "decisions_point", "decision_id": did,
                                   "entities": len(snap["entities"]), "offers": n,
                                   "turn": snap["campaign"].get("turn"),
@@ -90,6 +91,7 @@ def run(ctx):
                     elif kind == "pick":
                         did = row.get("decision_id")
                         store.attach_scores(did, row.get("scores"))
+                        store.attach_timings(did, row.get("timings"))
                         pick = row.get("pick") or {}
                         store.attach_taken(did, dict(pick, executed=False, confirmed=False,
                                                      counted=False, refusal="awaiting_execution"),

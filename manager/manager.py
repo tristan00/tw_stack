@@ -152,6 +152,25 @@ def _run_guarded(run, ctx, kwargs, name, on_error):
         on_error("stream:" + name, e)
 
 
+CURRENT_POINTER = "CURRENT_RUN"
+
+
+def write_current_pointer(out_root, out_dir):
+    """Publish which run dir is LIVE, at a stable path the advisor can read.
+
+    The recorder opens a fresh run dir whenever the campaign changes (R3 swap). Anything holding the
+    old path then talks to a directory nobody is servicing any more -- which is exactly what happened
+    the first time the advisor restarted a campaign: it kept posting requests into the previous dir
+    and timed out waiting for a recorder that had already moved on. A pointer file means the advisor
+    follows the recorder instead of guessing.
+    """
+    try:
+        with open(os.path.join(out_root, CURRENT_POINTER), "w", encoding="utf-8") as f:
+            f.write(str(out_dir).replace("\\", "/"))
+    except OSError as e:
+        sys.stderr.write("manager: could not publish the current-run pointer -> %s\n" % repr(e)[:90])
+
+
 def write_meta(out_dir, t0, meta_overrides=None):
     """Write <out_dir>/meta.json (geometry + environment + versions) and return it. The caller
     supplies environment fields (recorder_version, game_dir, ...) via meta_overrides; the manager
@@ -288,6 +307,7 @@ class Recording:
             self._on_error = new_on_error
             self.out_dir = new_dir
             self.dirs.append(new_dir)
+            write_current_pointer(self.out_root, new_dir)   # the advisor follows this, see below
 
             # 5. fresh meta.json + a 'start' row for the new dir (so each dir reads like a run).
             meta = dict(self._meta_overrides)
@@ -499,6 +519,7 @@ def main():
                                 "actions_enabled": actions_on,
                                 "decisions_enabled": decisions_on,
                                 "input_enabled": input_on})
+    write_current_pointer(out_root, rec.out_dir)          # advisor/UI follow this, not a fixed path
     print("RECORDING -> %s  (streams: %s)" % (rec.out_dir, [s["name"] for s in streams]), flush=True)
     print("  Ctrl-C to stop.", flush=True)
     try:

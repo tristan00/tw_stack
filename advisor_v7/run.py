@@ -32,14 +32,31 @@ def main():
     if len(sys.argv) < 2:
         print(__doc__.strip())
         return 1
-    run_dir = sys.argv[1]
+    import journal                                          # noqa: E402  (recorder request API)
+    arg = sys.argv[1]
     turns = int(sys.argv[2]) if len(sys.argv) > 2 else 3
-    if not os.path.isdir(run_dir):
-        raise SystemExit("run dir does not exist: %s (start the manager first)" % run_dir)
+    if arg not in ("auto", "-"):
+        run_dir = arg
+        if not os.path.isdir(run_dir):
+            raise SystemExit("run dir does not exist: %s (start the manager first)" % run_dir)
+    else:
+        run_dir = journal.current_run_dir(timeout=30.0)
 
     from bus import Bus
     from executor import Executor
-    ex = Executor(Bus(), shots_dir=os.path.join(run_dir, "shots"))
+    ex = Executor(Bus())
+    # The advisor owns the whole flow: it gets itself a campaign rather than waiting for a human.
+    state = ex.ensure_campaign(fresh="--fresh" in sys.argv)
+    print("campaign: %s" % json.dumps(state)[:200], flush=True)
+    # ⚠ RE-RESOLVE AFTER the campaign settles. Starting a campaign makes the recorder open a FRESH
+    # run dir, so the path from before the restart is already dead -- that is exactly how the first
+    # autonomous restart failed (every request timed out against the abandoned directory).
+    if not state.get("already_in_campaign"):
+        live = journal.current_run_dir(timeout=120.0)
+        if live != run_dir:
+            print("recorder rotated on the campaign swap: %s -> %s" % (run_dir, live), flush=True)
+            run_dir = live
+    ex.shots_dir = os.path.join(run_dir, "shots")
     ranker = M.Ranker()
     pol = P.Policy(ranker)
     print("advisor v7: model=%s  policy=%s  turns=%d  run=%s"
