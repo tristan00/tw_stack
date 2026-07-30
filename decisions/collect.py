@@ -430,49 +430,63 @@ def lord_offers(bus, cqi, state, world):
 def province_offers(bus, region, state, campaign):
     """Every province-context offer (buildings across free slots, edicts, lord recruitment)."""
     offers = []
-    # ONE round-trip for the whole province: the buildable list, whether ANY slot is already under
-    # construction, and the province's edict records. Was three evals (~303ms).
+    # ONE round-trip for the whole province: the buildable list and the province's edict records.
     #
-    # ⚠ ONE CONSTRUCTION PER SETTLEMENT PER TURN. A free slot with its requirements met is NOT
-    # enough: if ANY slot in this settlement is already building, the engine refuses every further
-    # Construct silently (accepts the command, does nothing). Live-verified -- nine building picks
-    # in one turn, the first confirmed and the other eight all `command_silently_refused`, with
-    # slot 2 reading IsBuildingNew=true and slot 3 sitting free the whole time.
+    # ⚠ A SLOT MUST BE **IsActive** OR EVERY Construct ON IT IS SILENTLY REFUSED.
+    # A locked slot is NOT distinguishable from a free one by the obvious properties: it is in
+    # BuildingSlotList, reports IsEmpty=true, and returns a full PossibleUpgradeWithoutConversions
+    # list with BuildingRequirementsMet=true for EVERY entry -- and then eats the command. CA's own
+    # UI gates the slot on exactly this (settlement_building_slot.twui.xml:
+    # <property name="locked" value="IsActive == false"/>, tooltip "This slot will unlock when you
+    # upgrade your main settlement chain building to level %d").
+    # Live-confirmed: SlotActivateLevel <= primary settlement level == IsActive.
+    #   The Monoliths (settlement_minor_2):  idx0/1/2 active, idx3 (unlock 3) LOCKED
+    #   Shrine of Ladrielle (minor_1):       idx0/1 active, idx2+idx3 LOCKED
+    # This cost ~5 wasted actions per turn, all reported as command_silently_refused.
+    #
+    # NB there is NO "one construction per settlement per turn" rule -- that earlier theory is
+    # ruled out by full enumeration of the shipped API (no such property, loc string or UI gate).
+    # Genuine in-progress state lives on slot.ConstructionItemContext (TurnsToCompletion etc.).
     combo = str(_ev(bus, _G +
               "local s=cco('CcoCampaignSettlement','settlement:%s') local slots=g(s,'BuildingSlotList') "
-              "local o={} local busy='false' "
+              "local o={} "
               "if type(slots)=='table' then for i=1,#slots do local sl=slots[i] "
-              "if g(sl,'IsBuildingNew')==true then busy='true' end "
-              "local b=g(sl,'BuildingContext') "
-              "if not b and g(sl,'IsBuildingNew')~=true then local p=g(sl,'PossibleUpgradeWithoutConversionsList') "
+              "if g(sl,'IsActive')==true and not g(sl,'ConstructionItemContext') then "
+              "local empty=(g(sl,'IsEmpty')==true) "
+              "local canup=(g(sl,'CanUpgrade')==true) "
+              "local p=g(sl,'PossibleUpgradeWithoutConversionsList') "
               "if type(p)=='table' then for j=0,#p-1 do "
               "o[#o+1]=ts(g(sl,'Index'))..'~'..ts(g(sl,'PossibleUpgradeWithoutConversionsList['..j..'].Key'))"
-              "..'~'..ts(g(sl,'BuildingRequirementsMet(PossibleUpgradeWithoutConversionsList['..j..'])')) end end end end end "
+              "..'~'..ts(g(sl,'BuildingRequirementsMet(PossibleUpgradeWithoutConversionsList['..j..'])'))"
+              "..'~'..ts(empty)..'~'..ts(canup) end end end end end "
               "local ed={} local m=g(s,'FactionProvinceManagerContext') "
               "if m then local il=g(m,'InitiativeList') "
               "if type(il)=='table' then for i=1,#il do ed[#ed+1]=ts(g(il[i],'Key')) end end end "
-              "return busy..'||'..table.concat(o,',')..'||'..table.concat(ed,',')"
+              "return 'false||'..table.concat(o,',')..'||'..table.concat(ed,',')"
               % region, timeout=30.0, allow_nil=True) or "")
     cparts = combo.split("||")
     if len(cparts) < 3:
         raise CollectError("province offers malformed for %s: %r" % (region, combo[:120]))
-    building = cparts[0] == "true"
     raw = cparts[1]
     edicts = [k for k in cparts[2].split(",") if k and k != "nil"]
+    # An occupied ACTIVE slot is still actionable: upgrading it is how a settlement grows, and
+    # upgrading the PRIMARY building is the only way to unlock the level-locked slots. Offering
+    # construction on empty slots alone left the advisor structurally unable to develop a province.
+    # An UPGRADE additionally needs CanUpgrade -- requirements being met is not sufficient.
     seen = set()
     for row in str(raw or "").split(","):
         p = row.split("~")
-        if len(p) < 3:
+        if len(p) < 5:
             continue
-        slot, key, met = p[0], p[1], p[2] == "true"
+        slot, key, met, empty, canup = p[0], p[1], p[2] == "true", p[3] == "true", p[4] == "true"
         if key in seen:
             continue
         seen.add(key)
-        ok = met and not building
-        gate = None if ok else ("settlement_already_building_this_turn" if building
-                                else "requirements_not_met")
+        ok = met and (empty or canup)
+        gate = None if ok else ("requirements_not_met" if not met else "cannot_upgrade_now")
         offers.append(_offer("building", key, ok, gate,
-                             slot_index=int(float(slot)) if slot not in ("nil", "") else None))
+                             slot_index=int(float(slot)) if slot not in ("nil", "") else None,
+                             is_upgrade=(not empty)))
     # -- edicts: the province must be FULLY OWNED for the commandment stack to exist at all.
     # Live-proven: on a partly-owned province InitiativeList still lists the 5 edict records, but the
     # HUD stack has no buttons and nothing can be clicked -- offering them would hand the advisor

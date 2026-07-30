@@ -315,10 +315,12 @@ class BusLauncher:
         if not self._wait_bus_ready():
             raise TWError("bus never became ready after frontend_armed")
         _log("bus ready.")
-        return self.drive_frontend(plan_name, campaign, load_timeout)
+        # command-driven (CcoFrontendRoot.StartCampaign); drive_frontend is the click fallback
+        return self.start_campaign(plan_name, campaign, load_timeout)
 
     def drive_frontend(self, plan_name="nagarythe", campaign="Immortal Empires", load_timeout=360):
-        """Main menu -> playable campaign. Shared by the cold launch and by restart_campaign."""
+        """Main menu -> playable campaign BY CLICKING. Kept as the fallback for the case where
+        StartCampaign is unavailable; start_campaign() is the normal path."""
         plan = PLANS.get(plan_name)
         if plan is None:
             raise TWError("unknown plan %r (have %s)" % (plan_name, list(PLANS)))

@@ -125,6 +125,33 @@ def timeline(con):
     return out, turns_
 
 
+def run_history(con):
+    """One row per CAMPAIGN in this store, oldest first.
+
+    Several playthroughs share one decisions.sqlite now (identity lives in the minted campaign uuid,
+    not in the directory), so "run history" is just a GROUP BY campaign_id -- no cross-file walking.
+    """
+    rows = []
+    for camp, first_ts, last_ts, n_dec, max_turn in con.execute(
+            "SELECT campaign_id, MIN(ts), MAX(ts), COUNT(*), MAX(turn) FROM decision_points"
+            " GROUP BY campaign_id ORDER BY MIN(ts)"):
+        taken, counted = con.execute(
+            "SELECT COUNT(*), COALESCE(SUM(t.counted),0) FROM action_taken t"
+            " JOIN decision_points d ON d.decision_id=t.decision_id"
+            " WHERE d.campaign_id=? AND t.refusal IS NOT 'awaiting_execution'", (camp,)).fetchone()
+        reward = con.execute(
+            "SELECT turn, income, settlements, power_rank FROM target_rows WHERE campaign_id=?"
+            " ORDER BY turn DESC LIMIT 1", (camp,)).fetchone()
+        rows.append({"campaign": camp, "turns": int(max_turn or 0), "decisions": n_dec,
+                     "taken": taken or 0, "counted": counted or 0,
+                     "minutes": round(((last_ts or 0) - (first_ts or 0)) / 60.0, 1),
+                     "confirm_pct": round(100.0 * (counted or 0) / (taken or 1), 1),
+                     "last_income": (reward[1] if reward else None),
+                     "last_settlements": (reward[2] if reward else None),
+                     "last_power_rank": (reward[3] if reward else None)})
+    return rows
+
+
 def by_action_type(con):
     return [dict(r) for r in con.execute(
         "SELECT action_type, COUNT(*) n, SUM(counted) ok,"
@@ -162,6 +189,11 @@ tr:last-child td{border-bottom:none}
 .legend{color:var(--dim);font-size:11px;margin-bottom:8px}
 .legend .seg{width:14px;margin:0 4px 0 10px}
 .lanehead{margin:14px 0 6px;font-weight:600}
+.barcell{min-width:190px;position:relative}
+.bar2{display:inline-block;height:14px;border-radius:3px;vertical-align:middle;min-width:2px}
+.bar2.ok{background:#3fb950}.bar2.warn{background:#d29922}.bar2.bad{background:#f85149}
+.bar2.dimbar{background:#4c8dff;opacity:.55}
+.blabel{margin-left:6px;font-size:11px;color:var(--dim)}
 """
 
 
@@ -221,7 +253,43 @@ def render_index(con, run_dir):
               "<tr><th>#<th>turn<th>offers<th>entity<th>action<th>key<th>result<th>refusal<th>policy</tr>"
               "%s</table></div>" % "".join(seq))
     head = ("<h1>advisor v7</h1><div class=dim>%s</div>" % _esc(run_dir)) + "<div class=cards>%s</div>" % cards
-    return _page(head + per_type + render_timeline(con) + seqtbl + reward)
+    return _page(head + render_history(con) + per_type + render_timeline(con) + seqtbl + reward)
+
+
+def render_history(con):
+    """Bar chart of run history: how far each campaign actually got.
+
+    Turns-survived is the headline because it is the one number that says whether a run was a real
+    campaign or died/stalled early -- and it is the survival leg of the reward, so a run that looks
+    short here contributes a low target for every decision in it.
+    """
+    runs = run_history(con)
+    if not runs:
+        return ""
+    mx = max(r["turns"] for r in runs) or 1
+    mxd = max(r["decisions"] for r in runs) or 1
+    bars = []
+    for i, r in enumerate(runs, 1):
+        w = max(2, int(100.0 * r["turns"] / mx))
+        wd = max(2, int(100.0 * r["decisions"] / mxd))
+        cls = "bad" if r["turns"] <= 1 else ("warn" if r["turns"] < 0.4 * mx else "ok")
+        bars.append(
+            "<tr><td>%d</td><td class=dim title='%s'>%s</td>"
+            "<td class=barcell><div class='bar2 %s' style='width:%d%%'></div>"
+            "<span class=blabel>%d</span></td>"
+            "<td class=barcell><div class='bar2 dimbar' style='width:%d%%'></div>"
+            "<span class=blabel>%d</span></td>"
+            "<td>%s</td><td>%s%%</td><td class=dim>%s min</td>"
+            "<td class=dim>%s</td><td class=dim>%s</td></tr>"
+            % (i, _esc(r["campaign"]), _esc(str(r["campaign"])[-14:]),
+               cls, w, r["turns"], wd, r["decisions"],
+               r["counted"], r["confirm_pct"], r["minutes"],
+               _esc(r["last_settlements"]), _esc(r["last_income"])))
+    return ("<h2>run history &mdash; how far each campaign got</h2>"
+            "<div class=scroll><table>"
+            "<tr><th>#<th>campaign<th title='max turn reached'>turns survived"
+            "<th title='decision points recorded'>decisions<th>confirmed<th>rate"
+            "<th>wall<th>settlements<th>income</tr>%s</table></div>" % "".join(bars))
 
 
 def render_timeline(con):

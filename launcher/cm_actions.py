@@ -177,6 +177,25 @@ register("garrison", {
 })
 
 
+# ------------------------------------------------------- EMBED HERO: REJECTED (god-mode)
+# cm:embed_agent_in_force(agent, force) works and is click-free, but it is CHEATING and we do not
+# use it. Its own doc says "the agent will teleport into the force, disregarding normal
+# restrictions", and a live test confirmed exactly that: hero cqi 57 jumped (218,764) -> (212,762)
+# and embedded with ACTION POINTS UNCHANGED at 77.05% -- free movement across distance, which no
+# player can do. Gating it was not salvageable either: the obvious predicate
+# `character:can_embed_in_military_force()` DOES NOT EXIST (nil method), so there is no game-side
+# verdict to gate on.
+# Same verdict, same reason, for the rest of the create/spawn family:
+#   cm:create_agent           -> live test: treasury 5000 -> 5000, prince pool 6 -> 6. A hero
+#                                appears for free and consumes no recruitment slot. Not recruitment.
+#   cm:create_force_with_general / create_force_with_existing_general / spawn_agent_at_* /
+#   spawn_unique_agent* / spawn_character_to_pool  -> create something from nothing.
+# A full enumeration of every cm: function matching create|recruit|army|force|appoint|hire (65 of
+# them) found NO player-equivalent way to recruit a lord or a hero. appoint_character_to_force only
+# appoints an EXISTING character. So the click-free route, if it exists, is cco or an engine-side
+# click -- not this layer.
+
+
 def _leave_execute(bus, ctx, pick, before):
     p = pick.get("params") or {}
     return _ev(bus, "local ok,e=pcall(function() cm:leave_garrison('%s',%s,%s) end); "

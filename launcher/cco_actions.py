@@ -672,6 +672,28 @@ def _endturn_execute(bus, ctx, pick, before):
                          "pcall(function() r:Call('EndTurn') end); return 'called'") == "called"
 
 
+# ⚠ THE TURN NUMBER IS NOT "IT IS OUR TURN". cm:model():turn_number() advances when the ROUND
+# advances, while the AI factions are still playing theirs. Acting in that window is silently
+# refused by the engine for EVERYTHING -- live-proven: on "turn 3" with whose_turn_is_it() ==
+# {wh2_main_def_karond_kar}, Construct was refused at two different settlements (including one we
+# had never built in), research pre-check-refused, and lord recruitment failed. It all looked like
+# a mysterious building bug and was simply "not our turn".
+#
+# whose_turn_is_it() returns a faction LIST, not a faction (calling :name() on it errors).
+_LUA_OUR_TURN = ("local me=cm:get_local_faction_name(true) "
+                 "local ok,l=pcall(function() return cm:model():world():whose_turn_is_it() end) "
+                 "if not ok or not l then return 'unknown' end "
+                 "local ok2,n=pcall(function() return l:num_items() end) "
+                 "if not ok2 then return 'unknown' end "
+                 "for i=0,n-1 do if l:item_at(i):name()==me then return 'true' end end return 'false'")
+
+
+def is_our_turn(bus):
+    """True / False / None(unknown) -- whether the human faction currently holds the turn."""
+    v = _ev(bus, _LUA_OUR_TURN, timeout=10.0)
+    return None if v not in ("true", "false") else (v == "true")
+
+
 def _endturn_confirm(bus, ctx, pick, before):
     """Waiting for the turn to advance is NOT enough -- it will not advance while the AI's turn is
     blocked on something that needs us.
