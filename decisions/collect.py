@@ -264,11 +264,17 @@ def province_actions(bus, region):
         seen.add(key)
         offers.append(_offer("building", key, met, None if met else "requirements_not_met",
                              slot_index=int(float(slot)) if slot not in ("nil", "") else None))
-    # edicts
-    sel = CLICK._selected_edict(bus, region)
+    # edicts -- the province must be FULLY OWNED for the commandment stack to exist at all.
+    # (Live-proven: on a partly-owned province InitiativeList still lists the 5 edict records, but
+    # the HUD stack has no buttons and the executor cannot click anything. Offering them as
+    # available would feed the advisor options it can never take.)
+    prov = province_features(bus, region)
+    complete = bool(prov.get("province_complete"))
+    sel = prov.get("selected_edict")
     for key in CLICK.edict_options(bus, region):
-        ok = key != sel
-        offers.append(_offer("edict", key, ok, None if ok else "already_selected"))
+        ok = complete and key != sel
+        gate = None if ok else ("province_not_complete" if not complete else "already_selected")
+        offers.append(_offer("edict", key, ok, gate))
     # lord recruitment -- pool read data-side (no UI needed) via DatabaseRecordContext
     for sub in _lord_subtypes(bus):
         n, can = _lord_pool(bus, sub)
