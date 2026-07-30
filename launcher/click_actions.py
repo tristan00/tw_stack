@@ -200,10 +200,13 @@ def _recruit_gate(bus, ctx, pick, before):
 
 
 def _recruit_execute(bus, ctx, pick, before):
-    if not _click(bus, RECRUIT_BTN):             # opens the docked recruitment sub-panel
-        return False
-    time.sleep(1.4)
-    card = next((c for c in recruitable_units(bus) if c["key"] == pick["key"]), None)
+    cards = recruitable_units(bus)
+    if not cards:                                # idempotent: the button TOGGLES the sub-panel,
+        if not _click(bus, RECRUIT_BTN):         # so only open it when no cards are showing
+            return False
+        time.sleep(1.4)
+        cards = recruitable_units(bus)
+    card = next((c for c in cards if c["key"] == pick["key"]), None)
     if card is None:
         sys.stderr.write("click_actions: unit %r not among recruitable cards\n" % pick["key"])
         return False
