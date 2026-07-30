@@ -1,20 +1,26 @@
-r"""decisions_stream.py -- the v7 recorder stream. THE SOLE WRITER of decisions.sqlite.
+r"""decisions_stream.py -- the v7 recorder stream. THE ONLY PROCESS THAT READS THE GAME FOR THE
+ADVISOR, and THE SOLE WRITER of decisions.sqlite.
 
 v7 data is a clean break from v6: no UI-component scraping, no input/shot capture, no offline
-synthesis of "what probably happened". The only thing recorded is DECISION POINTS --
-context features, the actions that were offered, the one that was chosen, and hard evidence of
-whether it actually happened -- plus one reward row per turn.
+synthesis of "what probably happened". The only thing recorded is DECISION POINTS -- the raw
+campaign/world/entity state, every action that was offered, the one that was chosen, and hard
+evidence of whether it actually happened -- plus one reward row per turn.
+
+It services four request kinds off <run>/decisions_requests.jsonl:
+
+    snapshot      read the game NOW -> persist a faction-wide decision point -> reply decision_id
+    target        read + persist this turn's reward row                      -> reply row
+    turn          reply the current turn number
+    pick          attach the advisor's chosen offer (+ its ranking) to a decision   [stream 3]
+    verification  attach the launcher's ActionRecord to a decision                  [stream 4]
 
 Contract with the manager (same as every other stream):
     run(ctx)  with ctx.emit / ctx.now / ctx.is_running / ctx.on_error / ctx.out_dir
+ctx.out_dir is re-read every iteration, so an R3 campaign swap moves the DB to the new run dir.
 
-It tails <run>/decisions_journal.jsonl (written by the advisor and the launcher through
-decisions/journal.py) and persists each row via DecisionStore. ctx.out_dir is re-read every
-iteration, so an R3 campaign swap moves the DB to the new run dir automatically.
-
-Loud by design: a malformed or unpersistable journal row is reported through ctx.on_error and
-emitted as an error row -- it is never silently dropped, because a missing decision point is
-indistinguishable from "the advisor did nothing" unless we say so.
+Loud by design: a malformed or unserviceable request is answered with an explicit error (so the
+advisor raises instead of hanging) AND reported through ctx.on_error -- it is never dropped,
+because a missing decision point is indistinguishable from "the advisor did nothing".
 """
 from __future__ import annotations
 
@@ -24,16 +30,22 @@ import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
+sys.path.insert(0, r"D:\tw_stack\bus")
 
-import journal                                  # noqa: E402
-from store import DecisionStore                 # noqa: E402
+import collect                                   # noqa: E402
+import journal                                   # noqa: E402
+from store import DecisionStore                  # noqa: E402
 
-POLL = 1.0
+POLL = 0.4
 
 
 def run(ctx):
+    from bus import Bus
+    bus = Bus()
     store, cur_dir, offset = None, None, 0
-    counts = {"decision": 0, "target": 0, "verification": 0, "error": 0}
+    seq = 0
+    counts = {"snapshot": 0, "target": 0, "turn": 0, "hash": 0, "pick": 0,
+              "verification": 0, "error": 0}
     while ctx.is_running():
         try:
             out_dir = ctx.out_dir
@@ -41,41 +53,68 @@ def run(ctx):
                 if store is not None:
                     store.close()
                 store = DecisionStore(out_dir)
-                cur_dir, offset = out_dir, 0
+                cur_dir, offset, seq = out_dir, 0, 0
                 ctx.emit({"kind": "decisions_status", "status": "store_open",
                           "db": os.path.join(out_dir, "decisions.sqlite")})
-            rows, offset = journal.read_journal(out_dir, offset)
+            rows, offset = journal.read_requests(out_dir, offset)
             for row in rows:
-                kind = row.get("kind")
+                kind, rid = row.get("kind"), row.get("req_id")
                 try:
-                    if kind == "target":
-                        wrote = store.write_target_row(row.get("row") or {})
+                    if kind == "snapshot":
+                        t0 = time.time()
+                        snap = collect.snapshot(bus, active=row.get("active"))
+                        did = store.write_decision(snap, decision_seq=seq)
+                        seq += 1
+                        counts["snapshot"] += 1
+                        n = sum(len(e["offers"]) for e in snap["entities"])
+                        journal.respond(out_dir, rid, decision_id=did)
+                        ctx.emit({"kind": "decisions_point", "decision_id": did,
+                                  "entities": len(snap["entities"]), "offers": n,
+                                  "turn": snap["campaign"].get("turn"),
+                                  "ms": int((time.time() - t0) * 1000)})
+                    elif kind == "target":
+                        r = collect.target_row(bus)
+                        wrote = store.write_target_row(r)
                         counts["target"] += 1
-                        ctx.emit({"kind": "decisions_target", "turn": (row.get("row") or {}).get("turn"),
+                        journal.respond(out_dir, rid, row=r, inserted=bool(wrote))
+                        ctx.emit({"kind": "decisions_target", "turn": r.get("turn"),
                                   "inserted": bool(wrote)})
-                    elif kind == "decision":
-                        snap = store.write_decision(
-                            row.get("features") or {}, row.get("offers") or [],
-                            taken=_taken_from(row), decision_seq=row.get("decision_seq") or 0,
-                            policy=row.get("policy"))
-                        counts["decision"] += 1
-                        ctx.emit({"kind": "decisions_point", "snapshot_id": snap,
-                                  "context": (row.get("features") or {}).get("context_kind"),
-                                  "offers": len(row.get("offers") or []),
-                                  "pick": (row.get("pick") or {}).get("action_type")})
+                    elif kind == "turn":
+                        t = collect.campaign_state(bus).get("turn")
+                        counts["turn"] += 1
+                        journal.respond(out_dir, rid, turn=t)
+                    elif kind == "hash":
+                        h = collect.state_hash(bus)
+                        counts["hash"] += 1
+                        journal.respond(out_dir, rid, hash=h["hash"], roots=h["roots"])
+                    elif kind == "pick":
+                        did = row.get("decision_id")
+                        store.attach_scores(did, row.get("scores"))
+                        pick = row.get("pick") or {}
+                        store.attach_taken(did, dict(pick, executed=False, confirmed=False,
+                                                     counted=False, refusal="awaiting_execution"),
+                                           policy=pick.get("policy"))
+                        counts["pick"] += 1
+                        ctx.emit({"kind": "decisions_pick", "decision_id": did,
+                                  "context": pick.get("context_kind"),
+                                  "action": pick.get("action_type"), "key": pick.get("key")})
                     elif kind == "verification":
-                        # a late-arriving launcher result for a decision already stored
-                        n = _apply_verification(store, row)
+                        did = row.get("decision_id")
+                        res = row.get("result") or {}
+                        store.attach_taken(did, res, policy=res.get("policy"))
                         counts["verification"] += 1
-                        ctx.emit({"kind": "decisions_verify", "decision_id": row.get("decision_id"),
-                                  "updated": n})
+                        ctx.emit({"kind": "decisions_verify", "decision_id": did,
+                                  "action": res.get("action_type"), "key": res.get("key"),
+                                  "counted": bool(res.get("counted")),
+                                  "refusal": res.get("refusal")})
                     else:
-                        counts["error"] += 1
-                        ctx.on_error("decisions-journal", ValueError("unknown row kind %r" % kind))
-                except Exception as e:                    # one bad row never kills the stream
+                        raise ValueError("unknown request kind %r" % kind)
+                except Exception as e:                    # one bad request never kills the stream
                     counts["error"] += 1
-                    ctx.on_error("decisions-write(%s)" % kind, e)
-                    ctx.emit({"kind": "decisions_error", "row_kind": kind, "err": repr(e)[:180]})
+                    ctx.on_error("decisions-%s" % kind, e)
+                    ctx.emit({"kind": "decisions_error", "req_kind": kind, "err": repr(e)[:200]})
+                    if rid:                               # unblock the waiting advisor, loudly
+                        journal.respond(out_dir, rid, error=repr(e)[:300])
         except Exception as e:
             ctx.on_error("decisions-stream", e)
             time.sleep(5.0)
@@ -84,46 +123,3 @@ def run(ctx):
     if store is not None:
         ctx.emit({"kind": "decisions_status", "status": "closing", **counts})
         store.close()
-
-
-def _taken_from(row):
-    """The taken action for a journal decision row: the launcher result when present, else a
-    noop pick recorded as trivially confirmed ('the model chose to stop' is a real label)."""
-    pick, result = row.get("pick"), row.get("result")
-    if pick is None:
-        return None
-    if result is not None:
-        taken = dict(result)
-        taken.setdefault("action_type", pick.get("action_type"))
-        taken.setdefault("key", pick.get("key"))
-        return taken
-    if pick.get("action_type") == "noop":
-        return {"action_type": "noop", "key": "noop", "executed": True, "confirmed": True,
-                "counted": True, "refusal": None,
-                "confirm": {"signal": "none", "before": {}, "after": {}, "latency_ms": 0}}
-    return None                                   # decided but not yet executed -> awaits stream 4
-
-
-def _apply_verification(store, row):
-    """Attach a late launcher ActionRecord to the most recent matching decision snapshot."""
-    res = row.get("result") or {}
-    atype, akey = res.get("action_type"), str(res.get("key"))
-    hit = store.con.execute(
-        "SELECT snapshot_id, offer_id FROM action_offers WHERE action_type=? AND action_key=? "
-        "ORDER BY offer_id DESC LIMIT 1", (atype, akey)).fetchone()
-    if not hit:
-        return 0
-    snap, offer_id = hit
-    conf = res.get("confirm") or {}
-    import json as _json
-    store.con.execute(
-        "INSERT INTO action_taken(snapshot_id,offer_id,ts,action_type,action_key,executed,confirmed,"
-        "counted,refusal,confirm_signal,confirm_before,confirm_after,latency_ms,policy)"
-        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (snap, offer_id, row.get("ts") or time.time(), atype, akey,
-         1 if res.get("executed") else 0, 1 if res.get("confirmed") else 0,
-         1 if res.get("counted") else 0, res.get("refusal"), conf.get("signal"),
-         _json.dumps(conf.get("before"), default=str), _json.dumps(conf.get("after"), default=str),
-         conf.get("latency_ms"), res.get("policy")))
-    store.con.commit()
-    return 1

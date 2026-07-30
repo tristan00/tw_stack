@@ -59,19 +59,7 @@ def _char_scalar(bus, cqi, expr):
                     "then return tostring(%s) end return 'no-char'" % (cqi, expr), timeout=8.0)
 
 
-# ------------------------------------------------------------------ attack nearest enemy ARMY
-def nearest_enemy_army(bus):
-    """{cqi, faction, dist, x, y} of the closest at-war army, or None (bus `hostiles`)."""
-    try:
-        ho = (bus.send("hostiles", "", timeout=10) or {}).get("hostiles") or []
-    except Exception as e:
-        sys.stderr.write("cm_actions: hostiles -> %s\n" % repr(e)[:80])
-        return None
-    arms = [h for h in ho if h.get("kind") == "army" and h.get("cqi")]
-    arms.sort(key=lambda h: h.get("dist") if h.get("dist") is not None else 9999)
-    return arms[0] if arms else None
-
-
+# ------------------------------------------------------------------ attack an enemy ARMY
 def _attack_army_snapshot(bus, ctx, pick):
     cqi = ctx["entity_id"]
     tgt = (pick.get("params") or {}).get("target_cqi")
@@ -114,19 +102,7 @@ register("attack_army", {
 })
 
 
-# ------------------------------------------------------------- attack nearest enemy SETTLEMENT
-def nearest_enemy_settlement(bus):
-    """{region, faction, dist, x, y} of the closest at-war settlement, or None."""
-    try:
-        ho = (bus.send("hostiles", "", timeout=10) or {}).get("hostiles") or []
-    except Exception as e:
-        sys.stderr.write("cm_actions: hostiles -> %s\n" % repr(e)[:80])
-        return None
-    ss = [h for h in ho if h.get("kind") == "settlement" and h.get("region")]
-    ss.sort(key=lambda h: h.get("dist") if h.get("dist") is not None else 9999)
-    return ss[0] if ss else None
-
-
+# ------------------------------------------------------------- attack an enemy SETTLEMENT
 def _attack_sett_snapshot(bus, ctx, pick):
     cqi, region = ctx["entity_id"], pick["key"]
     return {"ap": _char_scalar(bus, cqi, "c:action_points_remaining_percent()"),
@@ -170,22 +146,6 @@ register("attack_settlement", {
 
 
 # ------------------------------------------------------------------------------- GARRISON
-def nearest_own_settlement(bus, cqi):
-    """{region, x, y, dist} of the player's closest own settlement to the character (logical coords)."""
-    try:
-        setts = (bus.send("setts", "", timeout=10) or {}).get("setts") or []
-        chars = (bus.send("chars", "", timeout=10) or {}).get("chars") or []
-    except Exception as e:
-        sys.stderr.write("cm_actions: setts/chars -> %s\n" % repr(e)[:80])
-        return None
-    me = next((c for c in chars if str(c.get("cqi")) == str(cqi)), None)
-    if not me or not setts:
-        return None
-    best = min(setts, key=lambda s: ((s.get("x", 0) - me.get("x", 0)) ** 2 +
-                                     (s.get("y", 0) - me.get("y", 0)) ** 2))
-    return {"region": best.get("region"), "x": best.get("x"), "y": best.get("y")}
-
-
 def _garrison_snapshot(bus, ctx, pick):
     return {"in_settlement": _char_scalar(bus, ctx["entity_id"], "c:in_settlement()"),
             "acted": _char_scalar(bus, ctx["entity_id"], "c:performed_action_this_turn()")}
