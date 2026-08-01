@@ -235,21 +235,23 @@ def _pending_recruits(bus, cqi):
                     "table.sort(ks) return table.concat(ks,',')" % cqi, timeout=12.0)
 
 
-RECRUIT_POOLS = ("global", "local")
+POOL_ANCHOR = "unit_list"
 
 
 def card_queue(path):
-    """Which recruitment pool a card belongs to: 'global', 'local<N>', or None.
+    """Which recruitment pool a card belongs to, read STRUCTURALLY: the path segment directly
+    before `unit_list`, whatever it is called.
 
-    The pool is a path segment under recruitment_pool_list (verified live: jade warriors sat
-    only under |global|, peasant archers under both |global| and |local1|). Same unit key in
-    two pools means different cost, build time and slot competition, so the queue is part of
-    the identity of the action -- never pick a card without it.
+    Verified live: |global|unit_list| and |local1|unit_list|. There are more pools than those
+    two (mercenary, allied/outpost, horde variants), so the name is never matched against a
+    list -- an unrecognised pool must arrive tagged with its real name, not as None.
     """
-    for seg in str(path or "").split("|"):
-        if seg == "global" or (seg.startswith("local") and seg[5:].isdigit()) or seg == "local":
-            return seg
-    return None
+    segs = str(path or "").split("|")
+    try:
+        i = segs.index(POOL_ANCHOR)
+    except ValueError:
+        return None
+    return segs[i - 1] if i > 0 else None
 
 
 def recruitable_units(bus):
@@ -303,8 +305,7 @@ def _recruit_execute_inner(bus, ctx, pick, before):
     want_q = str((pick.get("params") or {}).get("queue") or "").lower() or None
     same_key = [c for c in cards if c["key"] == pick["key"]]
     if want_q:
-        card = next((c for c in same_key
-                     if str(c.get("queue") or "").startswith(want_q.rstrip("0123456789"))), None)
+        card = next((c for c in same_key if str(c.get("queue") or "").lower() == want_q), None)
         if card is None and same_key:
             sys.stderr.write("click_actions: %s offered in %s but %r was asked for\n"
                              % (pick["key"], [c.get("queue") for c in same_key], want_q))
