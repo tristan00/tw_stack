@@ -20,6 +20,27 @@ import policy as P                                         # noqa: E402
 RUNS_ROOT = "D:/twdata/runs/human"
 
 
+BUS_TRIM_MB = 64
+MAX_LAUNCH_FAILURES = 3
+
+
+def _trim_bus(log, limit_mb=BUS_TRIM_MB):
+    """Truncate the command-bus files when they pass limit_mb. Game must be dead. Never raises."""
+    import bus as _bus
+    out = []
+    for path in (_bus.CMD_PATH, _bus.OUT_PATH):
+        try:
+            mb = os.path.getsize(path) / (1024.0 * 1024.0)
+            if mb >= limit_mb:
+                open(path, "w", encoding="utf-8").close()
+                out.append("%s truncated at %.0fMB" % (os.path.basename(path), mb))
+            else:
+                out.append("%s %.0fMB" % (os.path.basename(path), mb))
+        except OSError as e:
+            out.append("%s unreadable (%s)" % (os.path.basename(path), repr(e)[:40]))
+    return ", ".join(out)
+
+
 def _pick_plan(plan, rng):
     """`plan` is a faction KEY, or a list of faction keys to sample one from per campaign."""
     if isinstance(plan, (list, tuple, set)):
@@ -187,6 +208,7 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
     out_path = os.path.join(runs_root, "session_%s.json" % stamp)
 
     hard_restart_next, prev_outcome = True, "session start"
+    launch_failures = 0
 
     for i in range(n):
         this_plan = _pick_plan(plan, rng)
@@ -198,6 +220,10 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
             log("previous campaign ended %s -- killing the game now, before retraining"
                 % prev_outcome)
             ex.kill_game()
+            # the bus reply file grew to 380MB over one overnight session and every campaign in
+            # that batch failed. Truncating is only safe with the game dead and no send in
+            # flight, which is exactly here.
+            log("   bus files: %s" % _trim_bus(log))
         # once, at the start of the batch: every campaign in a batch is then played by the same
         # model, so the batch measures one policy rather than a moving one
         if retrain and i == 0:
@@ -248,6 +274,16 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
         except Exception as e:
             entry.update(outcome="error", error=repr(e)[:300])
             log("!! campaign %d failed: %s" % (i + 1, repr(e)[:200]))
+            if "did not load" in str(e) or "never logged" in str(e):
+                launch_failures += 1
+                if launch_failures >= MAX_LAUNCH_FAILURES:
+                    log("!! %d consecutive launch failures -- the environment is broken, stopping "
+                        "the batch instead of proving it %d more times"
+                        % (launch_failures, n - (i + 1)))
+                    entries.append(entry)
+                    break
+            else:
+                launch_failures = 0
             try:
                 entry["screenshot"] = ex.screenshot("session_fail_%d_%d" % (i + 1, int(time.time())))
             except Exception:
