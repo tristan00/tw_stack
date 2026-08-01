@@ -43,6 +43,7 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
         executor.disable_ui_hotkeys()
     except Exception as e:
         log("!! could not disable the UI-hide hotkeys: %s" % repr(e)[:120])
+    executor.mark_campaign_start()
     import interrupt_model as IM
     import interrupts as I
     ranker = IM.InterruptRanker()
