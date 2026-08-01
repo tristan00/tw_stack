@@ -19,10 +19,20 @@ BETA = 0.1                         # P(argmax novelty); the remainder is argmax 
 
 SUBSAMPLE_CAPS = {"diplomacy": 12}
 # per (context_kind, context_id, action_type), per turn
+# capacities the FACTION owns, not the entity: recruiting a lord from settlement A spends the
+# same per-turn character capacity as settlement B, so the cap counts across all of them
+FACTION_WIDE_CAPS = frozenset(("recruit_lord", "research", "rites"))
 PER_TURN_CAPS = {"recruit_lord": 1, "recruit_unit": 4, "edict": 1, "research": 1, "rites": 1,
                  "diplomacy": 1,
                  "stance": 1}
 COLD_NOOP_WEIGHT = 0.10
+
+
+def _cap_key(context_kind, context_id, action_type):
+    """Cap counter key: faction-wide types share one counter across every entity."""
+    if action_type in FACTION_WIDE_CAPS:
+        return ("faction", "*", action_type)
+    return (context_kind, str(context_id), action_type)
 
 
 class Policy:
@@ -52,7 +62,7 @@ class Policy:
         """A confirmed action advances that entity's counter; an unconfirmed one is blacklisted."""
         k = (pick["context_kind"], str(pick["context_id"]))
         # counts attempts, not confirmations -- must stay above the `if counted` branch
-        tk = (k[0], k[1], pick["action_type"])
+        tk = _cap_key(k[0], k[1], pick["action_type"])
         self.type_actions[tk] = self.type_actions.get(tk, 0) + 1
         if counted:
             n = self.entity_actions.get(k, 0) + 1
@@ -79,7 +89,8 @@ class Policy:
             if (k[0], k[1], r["action_type"], str(r["key"])) in self.blacklist:
                 continue
             cap = PER_TURN_CAPS.get(r["action_type"])
-            if cap is not None and self.type_actions.get((k[0], k[1], r["action_type"]), 0) >= cap:
+            if cap is not None and self.type_actions.get(
+                    _cap_key(k[0], k[1], r["action_type"]), 0) >= cap:
                 continue
             out.append(r)
         return self._subsample(out)
