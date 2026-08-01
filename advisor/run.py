@@ -1,6 +1,6 @@
 r"""run.py -- the v7 driver: wire the three roles together and play.
 
-    python advisor_v7/run.py <run_dir> [turns]
+    python advisor/run.py <run_dir> [turns]
 
   RECORDER  already running inside the manager (stream `decisions`). It owns the bus for READING
             and is asked for data over <run_dir>/decisions_requests.jsonl.

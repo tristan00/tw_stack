@@ -24,8 +24,7 @@ _ENTITY_KIND = {"lord": "lord", "province": "settlement", "campaign": "campaign"
 class Executor:
     def __init__(self, bus, shots_dir=None):
         self.bus = bus
-        self.shots_dir = shots_dir or os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                                   "logs", "v7_shots")
+        self.shots_dir = shots_dir or r"D:\twdata\logs\launcher\v7_shots"
         self.executed = 0
         self.counted = 0
 

@@ -43,10 +43,9 @@ class GameManager:
     PACK_SRC = os.path.join(_REPO, "dist", PACK_NAME)
     PACK_DST = os.path.join(_GAME_DIR, "data", PACK_NAME)
     PS_DIR = os.path.join(_REPO, "ps")
-    SHOTS_DIR = os.path.join(_REPO, "logs", "launch_shots")
+    SHOTS_DIR = r"D:\twdata\logs\launcher\launch_shots"
     REF_MENU = os.path.join(_REPO, "ref", "main_menu.png")
-    SCRATCH_DIR = ("C:/Users/trist/AppData/Local/Temp/claude/D--totalwar-runner/"
-                   "9cd42a34-d986-4a74-b5f7-7ed3e6114774/scratchpad")
+    SCRATCH_DIR = r"D:\twdata\scratch\launcher"
 
     SCREEN_W = 2560
     SCREEN_H = 1440
@@ -626,7 +625,7 @@ class GameManager:
             shutil.copy2(settled, dst)
         except OSError as exc:
             self._log("WARN could not copy main-menu frame to %s: %s" % (dst, exc))
-        self._log("main menu ready (rendered+stable; see logs/launch_shots/01_main_menu.png)")
+        self._log("main menu ready (rendered+stable; see D:\\twdata\\logs\\launcher\\launch_shots\\01_main_menu.png)")
         return True
 
     def _open_accordion(self, base_menu: str) -> bool:

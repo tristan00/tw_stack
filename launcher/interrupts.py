@@ -220,8 +220,7 @@ def evidence(bus, why, shots_dir=None):
     import subprocess
     rep = {"why": why, "roots": roots(bus), "ts": time.time(),
            "clicks": [(round(t, 1), p, c) for t, p, c in CLICK_LOG[-12:]]}
-    shots_dir = shots_dir or os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                          "logs", "v7_shots")
+    shots_dir = shots_dir or r"D:\twdata\logs\launcher\v7_shots"
     path = os.path.join(shots_dir, "stuck_%s_%d.png" % (why.replace(":", "_")[:40], int(time.time())))
     try:
         os.makedirs(shots_dir, exist_ok=True)
