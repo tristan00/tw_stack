@@ -40,7 +40,7 @@ class GameManager:
     REPO = _REPO
     EXE = os.path.join(_GAME_DIR, "Warhammer3.exe")
     PACK_NAME = "tw.pack"
-    PACK_SRC = os.path.join(_REPO, "dist", PACK_NAME)
+    PACK_SRC = os.path.join(os.path.dirname(_REPO), "bus", "dist", PACK_NAME)
     PACK_DST = os.path.join(_GAME_DIR, "data", PACK_NAME)
     PS_DIR = os.path.join(_REPO, "ps")
     SHOTS_DIR = r"D:\twdata\logs\launcher\launch_shots"
