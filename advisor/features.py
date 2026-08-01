@@ -240,8 +240,8 @@ def near_block(world, locus):
     for name, items in groups:
         out["near_%s_closest" % name] = None
         out["near_%s_total" % name] = float(len(items))
-        out["near_%s_strength" % name] = None          # troops of the nearest one
-        out["near_%s_strength_r25" % name] = None      # known troops within 25
+        out["near_%s_strength" % name] = None
+        out["near_%s_strength_r25" % name] = None
         out["near_%s_dir_sin" % name] = None
         out["near_%s_dir_cos" % name] = None
         for k in range(NEAR_K.get(name, NEAR_K_DEFAULT)):
@@ -295,7 +295,7 @@ def _db_features(action_type, key):
     if action_type == "research":
         return DB.tech_features(key)
     if action_type == "recruit_unit":
-        return DB.unit_features(key)
+        return DB.unit_features(key.partition("@")[0])
     if action_type == "skills":
         return DB.skill_features(key)
     if action_type == "rites":
@@ -362,6 +362,10 @@ def action_block(offer, locus, treasury, world=None, self_units=None):
            "opt_available": 1.0 if offer.get("available") else 0.0,
            "opt_gate": offer.get("gate") or "none"}
     out.update(_diplomacy_feats(atype, params))
+    # local and global recruitment of the same unit are different actions: different cost,
+    # build time and slot competition, so the queue must be visible to the model
+    out["opt_recruit_queue"] = (str(params.get("queue") or key.partition("@")[2] or "none")
+                                if atype == "recruit_unit" else "none")
     tx, ty = params.get("x"), params.get("y")
     if locus and tx is not None and ty is not None and locus[0] is not None:
         dx, dy = float(tx) - float(locus[0]), float(ty) - float(locus[1])
@@ -421,7 +425,7 @@ def state_row(record, entity):
     row = campaign_block(record.get("campaign") or {}, world)
     row["ctx_kind"] = ck
     if ck in ("lord", "hero"):
-        here = provinces.get(st.get("region"))                        # None => not on our ground
+        here = provinces.get(st.get("region"))
         row.update(lord_block(st))
         row.update(lord_recruit_block(st))
         row.update(province_block(here))
