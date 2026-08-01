@@ -376,11 +376,17 @@ def resolve_prebattle(bus):
         return False
     opts = _options_of(bus, "popup_pre_battle", legal)
     forecast = prebattle_forecast(bus)
+    # the real control set, not our belief about it: a control can be present and clickable and
+    # still be unable to end the screen (button_surround on a DEFENSIVE battle, measured)
+    tree = _tree(bus, "popup_pre_battle", 30, 40000)
+    offered_all = sorted({str(n.get("id")) for n in tree
+                          if str(n.get("id") or "").startswith("button_") and n.get("visible")})
     t0 = time.time()
     off = bus.out_offset()
     clicked = _click(bus, ctrls[target], settle=1.5)
     if not clicked:
-        _record_choice("pre_battle", "popup_pre_battle", opts, target, extra={"panel": forecast},
+        _record_choice("pre_battle", "popup_pre_battle", opts, target,
+                       extra={"panel": forecast, "tree": tree, "controls": offered_all},
                        executed=False, confirmed=False, refusal="execute_failed",
                        latency_ms=int((time.time() - t0) * 1000))
         return False
@@ -398,7 +404,8 @@ def resolve_prebattle(bus):
         still_up = "popup_pre_battle" in roots(bus)
         sys.stderr.write("interrupts: %s did NOT resolve the battle (pre_battle still open=%s)\n"
                          % (target, still_up))
-    _record_choice("pre_battle", "popup_pre_battle", opts, target, extra={"panel": forecast},
+    _record_choice("pre_battle", "popup_pre_battle", opts, target,
+                   extra={"panel": forecast, "tree": tree, "controls": offered_all},
                    executed=clicked, confirmed=bool(ok),
                    refusal=None if ok else "command_silently_refused",
                    latency_ms=int((time.time() - t0) * 1000))
