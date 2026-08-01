@@ -1,7 +1,6 @@
 """interrupts.py -- driving screens that appear without the advisor asking for them."""
 from __future__ import annotations
 
-import random
 import sys
 import time
 
@@ -544,6 +543,7 @@ def acknowledge_war_declared(bus, open_roots):
         clicked = _click(bus, target[1], settle=2.0)
         gone = root not in roots(bus)
         _record_choice("war_declared", root, opts, target[0],
+                       extra={"tree": tree},
                        executed=clicked, confirmed=gone,
                        refusal=None if gone else ("command_silently_refused" if clicked
                                                   else "execute_failed"),
@@ -558,7 +558,8 @@ def answer_diplomacy(bus):
     steps = []
     for root in diplomacy_roots(bus):
         answers = {}                                 # id -> (path, "accept" | "decline")
-        for n in _tree(bus, root):
+        tree = _tree(bus, root)
+        for n in tree:
             nid = str(n.get("id") or "")
             low = nid.lower()
             if not n.get("visible") or str(n.get("state")) not in _CLICKABLE:
@@ -579,16 +580,9 @@ def answer_diplomacy(bus):
         detail = _options_of(bus, root, sorted(answers))
         for k, (_path, kind) in answers.items():
             detail[k] = dict(detail.get(k) or {}, answer=kind)
-        declines = sorted(k for k, (_p, kind) in answers.items() if kind == "decline")
-        if not declines:
-            sys.stderr.write("interrupts: %s offers no DECLINE control -- refusing to answer it "
-                             "rather than accepting something the advisor never chose (offered=%s)\n"
-                             % (root, sorted(answers)))
-            steps.append("diplomacy_stuck:%s" % root)
-            continue
-        want = random.choice(declines)
+        want = _choose("diplomacy", sorted(answers), _campaign_hint())
         target, kind = answers[want]
-        sys.stderr.write("interrupts: diplomacy %s -- %d answer(s) %s, picking %r (%s) at random\n"
+        sys.stderr.write("interrupts: diplomacy %s -- %d answer(s) %s -> %r (%s)\n"
                          % (root, len(answers), sorted(answers), want, kind))
         t0 = time.time()
         clicked = _click(bus, target, settle=2.0)
@@ -599,7 +593,9 @@ def answer_diplomacy(bus):
             sys.stderr.write("interrupts: diplomacy root %s still open after %s\n" % (root, kind))
         if not clicked or not gone:
             steps.append("diplomacy_stuck:%s" % root)
-        _record_choice("diplomacy", root, detail, want, extra={"answer": kind},
+        _record_choice("diplomacy", root, detail, want,
+                       # the deal itself lives only in the tree: proposer, terms, amounts
+                       extra={"answer": kind, "tree": tree},
                        executed=clicked, confirmed=gone,
                        refusal=None if gone else ("command_silently_refused" if clicked
                                                   else "execute_failed"),
