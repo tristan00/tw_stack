@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import random
+import re
 import sys
 import time
 
@@ -757,12 +758,38 @@ _LUA_SUBCULTURE_SUBTYPES = (
 _SUBTYPE_CACHE = {}
 
 
+_SUBTYPE_TOKEN = re.compile(r"^wh\d?_[a-z0-9]+_([a-z]+)_")
+
+
 def _lord_subtypes(bus, faction):
-    """Recruitable character subtypes for ANY faction, read from the world; cached per faction."""
+    """Character subtypes to ASK the engine about, cached per faction.
+
+    The world query only returns subtypes some faction already fields, so a lore nobody has
+    recruited yet is invisible to it. The offline subtype list for the same race tokens is
+    added as a superset; _lord_pools' pool size is the authority that filters it back down."""
     key = str(faction)
     if key not in _SUBTYPE_CACHE:
         raw = str(_ev(bus, _LUA_SUBCULTURE_SUBTYPES, timeout=30.0, allow_nil=True) or "")
-        _SUBTYPE_CACHE[key] = [s for s in raw.split(",") if s and s != "nil"]
+        live = [s for s in raw.split(",") if s and s != "nil"]
+        toks = set()
+        for s_ in live + [key]:
+            m = _SUBTYPE_TOKEN.match(str(s_))
+            if m:
+                toks.add(m.group(1))
+        extra = []
+        if toks:
+            try:
+                sys.path.insert(0, "D:/tw_stack/advisor/reference")
+                import features_db as DB
+                extra = [sub for sub, _label in DB.agent_subtypes(toks)]
+            except Exception as e:
+                raise CollectError("agent-subtype reference unreadable (%s); refusing to offer "
+                                   "only the subtypes that happen to be alive on the map"
+                                   % repr(e)[:90])
+            if not extra:
+                raise CollectError("reference DB returned no agent subtypes for race tokens %s "
+                                   "-- it is stale against the running packs" % sorted(toks))
+        _SUBTYPE_CACHE[key] = sorted(set(live) | set(extra))
     return _SUBTYPE_CACHE[key]
 
 

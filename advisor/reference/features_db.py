@@ -183,3 +183,26 @@ if __name__ == "__main__":
     print("spearmen :", unit_features("wh2_main_hef_inf_spearmen_0"))
     print("skill    :", skill_features("wh2_dlc04_skill_vmp_lord_unique_helman_ghorst_battle_1"))
     print("ritual   :", ritual_features("wh2_dlc09_ritual_crafting_tmb_arcane_item_blue_khepra"))
+
+
+_SUBTYPE_PREFIX = "agent_subtypes_onscreen_name_override_"
+_SUBTYPE_RE = re.compile(r"^wh\d?_[a-z0-9]+_([a-z]+)_")
+_subtype_cache = None
+
+
+def agent_subtypes(race_tokens):
+    """[(subtype_key, label)] for these race tokens -- every lore variant the game ships.
+
+    A SUPERSET: the caller must confirm each against the engine's recruitment pool. The live
+    world only shows subtypes some faction already fielded, which is why an unplayed lore
+    (every Wood Elf Spellweaver, 8 of 9 High Elf Archmages) never reached the advisor."""
+    global _subtype_cache
+    if _subtype_cache is None:
+        _subtype_cache = []
+        for row in _connect().execute("SELECT key,text FROM loc WHERE key LIKE ?",
+                                      (_SUBTYPE_PREFIX + "%",)):
+            sub = row["key"][len(_SUBTYPE_PREFIX):]
+            m = _SUBTYPE_RE.match(sub)
+            _subtype_cache.append((m.group(1) if m else None, sub, row["text"]))
+    toks = set(race_tokens or ())
+    return [(sub, txt) for tok, sub, txt in _subtype_cache if tok in toks]
