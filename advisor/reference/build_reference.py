@@ -486,7 +486,9 @@ def decode_db_tables(con, files, d, schema, report):
 #  Top-level build
 # --------------------------------------------------------------------------- #
 def build():
-    con = sqlite3.connect(os.path.join(HERE, "reference.sqlite"))
+    out = r"D:\twdata\reference\reference.sqlite"
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    con = sqlite3.connect(out)
     cur = con.cursor()
 
     # ---- localisation leg (record key -> name/description) ----

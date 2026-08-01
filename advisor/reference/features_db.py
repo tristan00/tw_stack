@@ -16,7 +16,7 @@ import os
 import re
 import sqlite3
 
-DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reference.sqlite")
+DB = r"D:\twdata\reference\reference.sqlite"
 
 _con = None
 
