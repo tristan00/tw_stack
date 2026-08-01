@@ -60,6 +60,69 @@ def _node(bus, node_id):
     return None
 
 
+FACTION_LIST = "sortable_list_factions"
+SCROLL_ARROW = ("diplomacy_dropdown|faction_panel|faction_panel_top|"
+                "sortable_list_factions|vslider|%s")
+
+
+def _find(bus, node_id):
+    try:
+        r = bus.send("find", node_id, timeout=8.0) or {}
+    except Exception:
+        return {}
+    return r.get("result") or {}
+
+
+def _list_band(bus):
+    """(y0, y1) of the faction list's clipping viewport. The tree's `visible` flag lies for
+    clipped rows -- only geometry decides clickability."""
+    for n in _tree(bus):
+        p = str(_path(n) or "")
+        if str(n.get("id") or "") == "list_clip" and FACTION_LIST in p:
+            return int(n.get("y") or 0), int(n.get("y") or 0) + int(n.get("h") or 0)
+    raise DiplomacyError("no %s list_clip in the panel -- is diplomacy open?" % FACTION_LIST)
+
+
+def scroll_to_row(bus, row_id, max_clicks=80):
+    """Bring `row_id` inside the list viewport. Bus-clicks on the slider arrows: one row per
+    click, self-calibrated from a single measured delta, burst with no sleeps."""
+    n = _find(bus, row_id)
+    if not n.get("found"):
+        raise DiplomacyError("no %s in the panel -- that faction is not deal-able right now"
+                             % row_id)
+    y0, y1 = _list_band(bus)
+    h = int(n.get("h") or 44)
+
+    def _off(y):
+        if y < y0:
+            return y - y0                     # negative: scroll up
+        if y + h > y1:
+            return y + h - y1                 # positive: scroll down
+        return 0
+
+    off = _off(int(n.get("y") or 0))
+    if off == 0:
+        return 0
+    arrow = SCROLL_ARROW % ("bottom" if off > 0 else "top")
+    before = int(n.get("y") or 0)
+    bus.send("click", arrow, timeout=8.0)
+    after = int(_find(bus, row_id).get("y") or before)
+    step = abs(before - after)
+    if step == 0:
+        raise DiplomacyError("scroll arrow click moved nothing (row at y=%s, band %s..%s)"
+                             % (before, y0, y1))
+    clicks = 1
+    remaining = abs(_off(after))
+    for _ in range(min(max_clicks, (remaining + step - 1) // step)):
+        bus.send("click", arrow, timeout=8.0)
+        clicks += 1
+    final = _find(bus, row_id)
+    if _off(int(final.get("y") or 0)) != 0:
+        raise DiplomacyError("scrolled %d clicks but %s is still outside %s..%s (y=%s)"
+                             % (clicks, row_id, y0, y1, final.get("y")))
+    return clicks
+
+
 def _hardware_click(node, double=False):
     nav.mouse("dclick" if double else "click",
               *nav.ui_to_screen(node["x"] + node["w"] / 2, node["y"] + node["h"] / 2))
@@ -142,11 +205,10 @@ def close_panel(bus, tries=3, limit=2.5):
 def select_faction(bus, faction_key, limit=4.0):
     """Open the negotiation with one faction. Hardware double-click -- a bus click will not do it."""
     row_id = "faction_row_entry_%s" % faction_key
+    scroll_to_row(bus, row_id)
     n = _node(bus, row_id)
     if n is None:
         raise DiplomacyError("no %s in the panel -- that faction is not deal-able right now" % row_id)
-    if not n.get("visible"):
-        raise DiplomacyError("%s is present but not visible (scrolled out of view)" % row_id)
     _hardware_click(n, double=True)
     if _wait(lambda: bool(offered_terms(bus)), limit):
         return True
