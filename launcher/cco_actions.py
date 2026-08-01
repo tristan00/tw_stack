@@ -8,7 +8,7 @@ import time
 sys.path.insert(0, r"D:\tw_stack\bus")
 sys.path.insert(0, r"D:\tw_stack\launcher")
 
-TREASURY_FLOOR = 500        # gold
+TREASURY_FLOOR = 500
 try:
     import config as _cfg
     TREASURY_FLOOR = getattr(_cfg, "TREASURY_FLOOR", TREASURY_FLOOR)
@@ -157,13 +157,13 @@ def execute_confirmed(bus, ctx, pick):
     try:
         rec["executed"] = bool(spec["execute"](bus, ctx, pick, before))
     except Exception as e:
-        # do not return here: always fall through to the post-assert
         rec["executed"] = False
         rec["execute_error"] = repr(e)[:160]
     _t["execute_ms"] = int((time.time() - t0) * 1000)
     _tc = time.time()
-    deadline = time.time() + spec["timeout_s"]      # starts after execute; confirm runs at least once
+    deadline = time.time() + spec["timeout_s"]
     confirmed, after, polls = False, {}, 0
+    doomed = spec.get("doomed")
     while True:
         polls += 1
         try:
@@ -173,6 +173,18 @@ def execute_confirmed(bus, ctx, pick):
             confirmed = False
         if confirmed or time.time() >= deadline:
             break
+        # a confirm that CANNOT come true must not spend the rest of the budget proving it
+        if doomed is not None:
+            try:
+                why = doomed(bus, ctx, pick, before, after)
+            except Exception:
+                why = None
+            if why:
+                rec["doomed"] = why
+                sys.stderr.write("cco_actions: %s confirm unreachable (%s) -- stopped at %.1fs of "
+                                 "%.1fs\n" % (pick.get("action_type"), why, time.time() - _tc,
+                                              spec["timeout_s"]))
+                break
         time.sleep(spec["poll_s"])
     rec["confirmed"] = bool(confirmed)
     rec["counted"] = rec["confirmed"]
@@ -185,7 +197,6 @@ def execute_confirmed(bus, ctx, pick):
     _t["total_ms"] = int((time.time() - _t_start) * 1000)
     rec["timing"] = _t
     if not rec["counted"]:
-        # compare only keys present in both
         changed = (any(after.get(k) != before.get(k) for k in after if k in before)
                    if isinstance(after, dict) and isinstance(before, dict) else False)
         rec["refusal"] = ("executed_unconfirmed" if changed else
@@ -385,7 +396,7 @@ def _research_execute(bus, ctx, pick, before):
 
 
 def _research_confirm(bus, ctx, pick, before):
-    """True when research is underway and the active tech changed; `actual` is the tech that started."""
+    """True when research is underway and the active tech changed."""
     cur = _current_tech(bus, before["faction"])
     researching = _researching(bus)
     started = (researching == "true"
@@ -563,7 +574,6 @@ register("item_unequip", {
 })
 
 
-# rites are addressed by list index (params.rite_index)
 _LUA_RITES = (_G + "local f=cco('CcoCampaignFaction','%(fac)s'); local l=g(f,'AvailableRitualList');"
                    "if type(l)~='table' then return 'NO-LIST' end ")
 
