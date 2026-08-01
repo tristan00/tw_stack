@@ -299,6 +299,9 @@ _LUA_RECRUITABLE = (_G +
     "return table.concat(out,',')")
 
 
+RECRUIT_QUEUES = ("local", "global")
+
+
 def recruitable_units(bus, cqi):
     """Units this force can recruit, WITHOUT opening units_panel."""
     raw = str(_ev(bus, _LUA_RECRUITABLE % {"cqi": cqi}, timeout=30.0, allow_nil=True) or "")
@@ -592,8 +595,13 @@ def lord_offers(bus, cqi, state, world, stationed=None):
                                 "cannot_activate" if not can_act else "cannot_afford")
         offers.append(_offer("stance", key, ok, gate, active=active))
     for c in recruitable_units(bus, cqi):
-        offers.append(_offer("recruit_unit", c["key"], c.get("state") == "active",
-                             None if c.get("state") == "active" else c.get("state")))
+        # can_recruit_unit is pool-blind, so both queues are offered for every recruitable unit
+        # and an unavailable one fails loudly at execution rather than being guessed away here
+        for queue in RECRUIT_QUEUES:
+            offers.append(_offer("recruit_unit", "%s@%s" % (c["key"], queue),
+                                 c.get("state") == "active",
+                                 None if c.get("state") == "active" else c.get("state"),
+                                 unit=c["key"], queue=queue))
     has_pts = (state.get("skill_points") or 0) >= 1
     for row in sk_raw.split(","):
         if "~" not in row:
