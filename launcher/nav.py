@@ -31,6 +31,39 @@ PERSISTENT_ROOTS = frozenset((
 
 _CLICKABLE_STATES = frozenset(("active", "default", "NewState", "selected", "hover", "down"))
 
+# our own panels -- the only roots exempt from pre-dismiss dumping
+BENIGN_PANELS = frozenset(("units_panel", "settlement_panel", "recruitment_options"))
+
+SCREEN_DUMP_DIR = r"D:/twdata/runs/human/screens"
+_DUMP_MEMO = {}
+
+
+def dump_screen(bus, root, why):
+    """Write the COMPLETE tree of `root` to disk -- every node, unfiltered. A screen we cannot
+    classify is at least fully recorded. Consecutive identical content per root is not rewritten."""
+    import hashlib
+    import json
+    import os
+    try:
+        tr = bus.send("tree", "%s %d %d" % (root, 30, 80000), timeout=_TREE_T) or {}
+        nodes = tr.get("nodes") or []
+        sig = hashlib.sha1(json.dumps(nodes, sort_keys=True, default=str).encode()).hexdigest()
+        prev = _DUMP_MEMO.get(root)
+        if prev and prev[0] == sig:
+            return prev[1]
+        os.makedirs(SCREEN_DUMP_DIR, exist_ok=True)
+        path = os.path.join(SCREEN_DUMP_DIR,
+                            "%d_%s_%s.json" % (int(time.time() * 1000), why, str(root)[:40]))
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"ts": time.time(), "root": root, "why": why,
+                       "roots": visible_roots(bus), "nodes": nodes}, fh, default=str)
+        _DUMP_MEMO[root] = (sig, path)
+        sys.stderr.write("nav: dumped %s (%d nodes) -> %s\n" % (root, len(nodes), path))
+        return path
+    except Exception as e:
+        sys.stderr.write("nav: dump of %s failed -> %s\n" % (root, repr(e)[:90]))
+        return None
+
 
 def _open_roots(bus):
     """Visible, non-persistent top-level roots -- the popup candidates."""
@@ -71,6 +104,8 @@ def close_popups(bus, max_rounds=8, settle=0.7):
     for _ in range(max_rounds):
         clicked_this_round = False
         for root in _open_roots(bus):
+            if root not in BASE_ROOTS and root not in BENIGN_PANELS:
+                dump_screen(bus, root, "predismiss")
             for btn in find_dismiss_buttons(bus, root):
                 res = bus.send("click", btn, timeout=_FIND_T) or {}
                 if res.get("clicked"):
