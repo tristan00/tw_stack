@@ -110,7 +110,7 @@ Bus `context` coverage varies by panel [measured]: `technology_panel` 11/956 (al
 but `settlement_panel` 128/645 (settlement/province/faction/unit) — so entity-bound panels expose far
 more curated context than option-grid panels. The option KEY is still in the node `path`/`id` regardless.
 
-## E. Offline reference — `advisor/reference/reference.sqlite`
+## E. Offline reference — `D:	wdataeferenceeference.sqlite` (via `advisor/reference/features_db.py`)
 
 Tables `buildings (5259), building_chains (1943), tech, units, skills, rituals, loc, captive_*`. The
 **full option universes** for DB-synthesis (names via `loc`). This is how `building`/`edict` get their

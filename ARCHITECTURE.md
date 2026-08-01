@@ -1,56 +1,50 @@
-# tw_stack — project roles (coherent purposes)
+# tw_stack — architecture (v7, live)
 
-One sentence per project: what it OWNS, and the boundary it must not cross. The north star is the
-**advisor** (decide well); everything else exists to feed it or to test it online.
-
-## Control/data flow
 ```
-        ┌──────────────────────────── the GAME (WH3 + mod) ────────────────────────────┐
-        │                                    ▲  ▲                                        │
-        │                              (only via) bus                                    │
-   COLLECT (read)                            │  │                         ACT (write)     │
-   recorder ── ui-capture/manager/streams ───┘  └──── launcher (launch + actions) ────────┘
-        │                                                        ▲
-   run files (menus+coords, events, state, shots)               │ execute chosen option
-        │                                                        │
-   PROCESS: correlation / structurer / campaigns / runs         │
-        │                                                        │
-   DECIDE: advisor (score menus → ranked advice: advisor.jsonl)  │
-        │                                                        │
-   SERVE: tw_advisor_ui (/api/state: state + advice) ──► driver (bridge) ──────────────────┘
+                 ┌────────────── the GAME (WH3 + bus/dist/tw.pack mod) ──────────────┐
+                 │                        ▲                                          │
+                 │            bus (file command bus — SOLE transport)                │
+                 │                        │                                          │
+   manager (RECORDER: sole sqlite writer)│              launcher (DRIVER: launch,    │
+   streams: logs · input · shots ·       │              executor registry, nav,      │
+   ui-capture · actions · decisions ─────┘              interrupts, screen/ps) ──────┘
+                 │                                              ▲
+   run dirs  D:\twdata\runs\human\<ts>\  + CURRENT_RUN          │ execute picked action
+                 │                                              │
+   advisor (BACKEND: session → loop → policy/model)  ───────────┘
+   E1/E2 CatBoost + isolation-forest explore · interrupt model · watchdog
+   features ← reference/features_db ← D:\twdata\reference\reference.sqlite
+                 │
+   advisor_ui (FRONTEND: ui.py :8779 — dashboard over decisions.sqlite,
+   service control: start/kill session, health)
 ```
 
 ## Projects
-- **bus** — the SOLE transport to the game (command bus ⇄ mod). Concurrency-safe (cross-process seq
-  lock). Nothing else reimplements game I/O; everyone sends through here. *Boundary: transport only, no
-  policy.*
-- **launcher** — game LIFECYCLE + ACTIONS. (1) singleton launch: exactly one game, correct fast/consistent
-  settings, reach a verified campaign, clear the Continue screen. (2) `actions.py`: execute a decision —
-  a semantic verb parameterized by the CHOSEN key ("settlement builds building X", "lord attacks lord Y")
-  — targeted click/commit + verify from game state. *Boundary: does NOT enumerate options or collect data
-  (that's record+enumerate = other jobs); it launches and acts. Stays bus-light.*
-- **ui-capture** (+ **manager**, **input/logs/shots**) — the RECORDER: passive DATA COLLECTION. Captures
-  each menu's option-set WITH coords (enumeration), UI/events/state, shots, into a run dir. *This is the
-  single home of enumeration + collection — including the comprehensive full-screen dump that beats the
-  500-node/visible-only caps (migrate `launcher/dumps.py` here). Owns the bus-heavy reads.*
-- **correlation / structurer / campaigns / runs** — offline PROCESSING: stream time-align, raw→structured
-  state, per-campaign split, valid-run gating. *Boundary: read run files, no game.*
-- **advisor** — DECISION INTELLIGENCE (the deliverable). Consumes recorder output; per-type models score
-  each menu's options → ranked advice. `runtime.py watch` = live service → `advisor.jsonl`; `replay` =
-  offline/full-context. Owns enumeration→features→scoring + `reference.sqlite`. *Boundary: read-only; never
-  drives the game.*
-- **tw_advisor_ui** — the advisor's SERVICE FRONT: localhost dashboard + `GET /api/state` (current run's
-  campaign/health/menus + scored advice). This is the "state service that tells a consumer what's happening
-  in-game + what to do" — the launcher/driver's read-side, so the launcher need not query the game itself.
-- **driver** (`launcher/advisor_driver.py`) — thin BRIDGE = the online TEST HARNESS: read the advisor
-  service's top-available advice per menu, join the recorder's captured coords, call the launcher action to
-  execute it, verify. This is how the advisor gets online-tested. *Boundary: no scoring (advisor), no
-  enumeration (recorder); it orchestrates.*
+- **bus** — file command bus to the in-game lua mod (`bus/mod/`), packed by `pack_multi.py` into
+  `bus/dist/tw.pack` (deployed to the game by the launcher). Sole game I/O.
+- **manager** — the recorder. Owns every bus READ and all sqlite writes. Runs the streams
+  (`logs` always-on — drives campaign-swap detection; `input`, `shots`, `ui-capture`, `actions`
+  opt-in; `decisions` on by default) into the run dir; writes the `CURRENT_RUN` pointer.
+- **advisor** — the backend. `session.py N T` plays N campaigns × T turns: `loop.py` per-turn
+  decision loop, `policy.py` selection, `model.py` E1/E2 global+local ranking,
+  `interrupt_model.py` for blocking screens, `watchdog.py`, `analyze.py`/`efficiency.py` reports.
+  `reference/` is the offline game-data lookup layer (`features_db.py`, rebuilt by
+  `build_reference.py` from the WH3 packs).
+- **advisor_ui** — the frontend. `ui.py [port]` (:8779 in production): decision browser, run
+  history, timeline, blocking menus, infrastructure health, session start/kill.
+- **launcher** — the driver. Game lifecycle (`bus_launcher.py`, `launcher.py`), the executor
+  registry (`executor.py`, 18 action types incl. diplomacy), navigation, interrupt handling,
+  PowerShell capture/input bridge (`ps/`). `config.py` is the only file allowed absolute paths.
+- **decisions** — the data layer: `store.py` (decisions.sqlite schema: decision points, offers,
+  taken+confirmation law, interrupts, target rows), `collect.py`, `journal.py`.
+- **campaigns** — the campaign-boundary splitter kernel (used by manager and the logs stream).
+- **input / shots / logs / ui-capture** — recorder stream packages (code only).
 
-## Rules that keep it coherent
+## Rules
 1. Only the **bus** talks to the game.
-2. **Enumeration + data collection live in the recorder/advisor**, never the launcher (else the launcher
-   becomes record+enumerate+act = 3 jobs).
-3. The **launcher acts** on a chosen key + captured coords handed to it; it does not decide or discover.
-4. The **advisor decides**; it is read-only.
-5. If launcher and recorder both hammer the bus, that's contention — consolidate reads under recorder.
+2. The **manager** owns bus reads and sqlite writes; the **launcher** executes; the **advisor**
+   decides; the **UI** reads.
+3. An action is taken only when `executed AND confirmed` — unverified clicks are voided.
+4. **No logs, data, DBs, or models in this repo.** Everything lives under `D:\twdata`:
+   `runs\` `models\{global,local,interrupt}\` `reference\` `logs\{advisor,launcher,services}\`
+   `scratch\` `tmp\catboost\` `repo_archive\`.
