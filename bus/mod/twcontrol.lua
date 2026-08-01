@@ -961,6 +961,29 @@ local function arm_event_recorder()
               autoresolved = or_null(try(function()
                 return context:model():pending_battle():has_been_autoresolved() end)) })
       end, true)
+    -- DIPLOMACY: the incoming-offer screen is invisible to python (not a root it matches, not a
+    -- panel name we have seen, no event). Arm every plausible engine event by name -- one that
+    -- does not exist never fires -- and log which one answered, the way FactionDeath was found.
+    for _, ev in ipairs({
+      "PositiveDiplomaticEvent", "NegativeDiplomaticEvent",
+      "DiplomaticDealMade", "DiplomaticDeal", "DiplomacyDealStruck",
+      "FactionDeclaresWar", "WarDeclared", "DeclaredWar",
+      "FactionBecomesVassal", "FactionBecomesConfederation", "FactionConfederates",
+      "TreatySigned", "TreatyBroken", "AllianceFormed", "MilitaryAllianceFormed",
+      "FactionLeaderSignsPeaceTreaty", "DiplomaticOfferReceived", "DiplomacyOfferMade",
+      "ForcedDiplomacy", "TributeDemanded", "FactionOffersPeace" }) do
+      pcall(function()
+        core:add_listener("twcontrol_diplo_" .. ev, ev, true,
+          function(context)
+            log({ cmd = "diplo_event", event = ev, turn = turn(),
+                  a = or_null(try(function() return context:proposer():name() end)),
+                  b = or_null(try(function() return context:recipient():name() end)),
+                  faction = or_null(try(function() return context:faction():name() end)),
+                  me = or_null(try(function() return human_faction():name() end)) })
+          end, true)
+      end)
+    end
+
     core:add_listener("twcontrol_panel_opened", "PanelOpenedCampaign", true,
       function(context)
         log({ cmd = "panel", opened = true, turn = turn(),
