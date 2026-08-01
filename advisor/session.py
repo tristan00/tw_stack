@@ -85,15 +85,18 @@ def _ending_evidence(rd, entry, ex):
     reasons = []
     if out.get("defeat_row"):
         reasons.append("engine death row in this campaign's window")
-    if traj and (last.get("settlements") or 0) <= 1:
-        reasons.append("settlements down to %s" % last.get("settlements"))
-    if len(traj) >= 3 and (traj[0].get("settlements") or 0) > (last.get("settlements") or 0):
-        reasons.append("settlement decline %s -> %s" % (traj[0].get("settlements"),
-                                                        last.get("settlements")))
-    if any(b.get("turn") == last.get("turn") for b in battles):
+    # most campaigns live their whole life on 1 settlement -- only CHANGE is evidence,
+    # never the absolute level
+    peak = max((t.get("settlements") or 0) for t in traj) if traj else 0
+    lastn = last.get("settlements") or 0
+    if traj and lastn == 0:
+        reasons.append("settlements reached 0")
+    elif traj and peak > lastn:
+        reasons.append("settlement decline %g -> %g" % (peak, lastn))
+    final_battle = any(b.get("turn") == last.get("turn") for b in battles)
+    if final_battle:
         reasons.append("battle on the final turn")
-    healthy = (traj and (last.get("settlements") or 0) >= 2
-               and not any(b.get("turn") == last.get("turn") for b in battles))
+    healthy = bool(traj) and peak <= lastn and not final_battle
     outcome = entry.get("outcome")
     if outcome == "defeated":
         verdict = ("consistent_with_real_defeat" if reasons
