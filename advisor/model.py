@@ -34,17 +34,30 @@ def _mm0(v, lo, hi):
     return max(0.0, min(1.0, (v - lo) / (hi - lo))) if hi > lo else 0.0
 
 
+def _growth(turns, turn, part):
+    """Improvement of `part` after `turn`: best future value minus now, sign-flipped for
+    LOWER_IS_BETTER parts so every delta is higher-is-better. None if unlabelable."""
+    now = turns.get(turn, {}).get(part)
+    if now is None:
+        return None
+    vals = [turns[t].get(part) for t in turns if t > turn and turns[t].get(part) is not None]
+    if not vals:
+        return None
+    return (now - min(vals)) if part in LOWER_IS_BETTER else (max(vals) - now)
+
+
 def target_ranges(series):
-    """Per part: every campaign's best value, sorted."""
-    peaks = {p: [] for p in VALUE_PARTS}
+    """Per part: the growth delta of every labelled (campaign, turn), sorted. Growth, not
+    level: an absolute target makes turn-3 and turn-30 decisions train against different
+    label regimes and rewards sitting on wealth; deltas are stationary across stage."""
+    deltas = {p: [] for p in VALUE_PARTS}
     for turns in series.values():
-        if not turns:
-            continue
-        for p in VALUE_PARTS:
-            vals = [turns[t].get(p) for t in sorted(turns) if turns[t].get(p) is not None]
-            if vals:
-                peaks[p].append(min(vals) if p in LOWER_IS_BETTER else max(vals))
-    return {"dist": {p: sorted(peaks[p]) for p in VALUE_PARTS}}
+        for t in sorted(turns):
+            for p in VALUE_PARTS:
+                d = _growth(turns, t, p)
+                if d is not None:
+                    deltas[p].append(d)
+    return {"dist": {p: sorted(deltas[p]) for p in VALUE_PARTS}}
 
 
 def _pct(v, sample, lower_is_better=False):
@@ -59,51 +72,52 @@ def _pct(v, sample, lower_is_better=False):
 
 
 def target(series, campaign, turn, ranges):
-    """Mean percentile of each TARGET_PART's peak over the turns after `turn`; None if unlabelled."""
+    """Mean percentile of each TARGET_PART's GROWTH after `turn`; None if unlabelled."""
     turns = series.get(campaign) or {}
     turn = int(turn or 0)
     if turn not in turns:
         return None
-    future = [t for t in sorted(turns) if t > turn]
-    if not future:
+    if not any(t > turn for t in turns):
         return None
     parts = []
     for p in TARGET_PARTS:
-        vals = [turns[t].get(p) for t in future if turns[t].get(p) is not None]
-        if not vals:
+        d = _growth(turns, turn, p)
+        if d is None:
             continue
-        low = p in LOWER_IS_BETTER
-        best = min(vals) if low else max(vals)
-        parts.append(_pct(best, ranges["dist"].get(p) or [], lower_is_better=low))
+        parts.append(_pct(d, ranges["dist"].get(p) or []))
     return (sum(parts) / len(parts)) if parts else None
 
 
 def local_ranges(eseries):
-    """Per context_kind: every entity's peak value, sorted. Kinds are NOT pooled -- a lord level
-    and a settlement level have different scales."""
-    peaks = {}
+    """Per context_kind: the growth delta of every labelled (entity, turn), sorted. Kinds are
+    NOT pooled -- a lord level and a settlement level have different scales."""
+    deltas = {}
     for ents in eseries.values():
         for (kind, _cid), turns in ents.items():
-            vals = [v for _t, v in sorted(turns.items()) if v is not None]
-            if vals:
-                peaks.setdefault(kind, []).append(max(vals))
-    return {k: sorted(v) for k, v in peaks.items()}
+            for t in sorted(turns):
+                now = turns.get(t)
+                if now is None:
+                    continue
+                vals = [v for ft, v in turns.items() if ft > t and v is not None]
+                if vals:
+                    deltas.setdefault(kind, []).append(max(vals) - now)
+    return {k: sorted(v) for k, v in deltas.items()}
 
 
 def local_target(eseries, campaign, kind, cid, turn, lranges):
-    """Percentile of this entity's FUTURE MAX value, within its own kind. None if unlabelled."""
+    """Percentile of this entity's GROWTH (future max minus now), within its own kind."""
     ents = eseries.get(campaign) or {}
     turns = ents.get((kind, str(cid)))
     if not turns:
         return None
     turn = int(turn or 0)
-    future = [t for t in sorted(turns) if t > turn]
-    if not future:
+    now = turns.get(turn)
+    if now is None:
         return None
-    vals = [turns[t] for t in future if turns[t] is not None]
+    vals = [turns[t] for t in turns if t > turn and turns[t] is not None]
     if not vals:
         return None
-    return _pct(max(vals), lranges.get(kind) or [])
+    return _pct(max(vals) - now, lranges.get(kind) or [])
 
 
 def gather(runs_root=RUNS_ROOT):
@@ -192,7 +206,7 @@ def train(runs_root=RUNS_ROOT):
             "w_local": W_LOCAL,
             "nov_lo": min(nov), "nov_hi": max(nov), "rows": len(rows),
             "campaigns": sorted(set(data["groups"])), "beta": BETA,
-            "target": "future_max(%s)" % ",".join(TARGET_PARTS)}
+            "target": "growth(best_future-now: %s)" % ",".join(TARGET_PARTS)}
     # stage then os.replace: the four artefacts must land together or not at all
     stage = MODEL_DIR + ".staging"
     shutil.rmtree(stage, ignore_errors=True)
