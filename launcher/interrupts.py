@@ -203,6 +203,7 @@ CLICK_LOG = []          # (ts, path, clicked)
 
 
 def _click(bus, path, settle=1.5):
+    before = tuple(roots(bus))
     try:
         r = bus.send("click", path, timeout=10.0) or {}
     except Exception as e:
@@ -212,7 +213,12 @@ def _click(bus, path, settle=1.5):
     ok = bool(r.get("clicked"))
     CLICK_LOG.append((time.time(), path, ok))
     sys.stderr.write("interrupts: CLICK %s -> clicked=%s\n" % (path, ok))
-    time.sleep(settle)
+    # settle is a CAP, not a sleep: return as soon as the click visibly landed
+    deadline = time.time() + settle
+    while time.time() < deadline:
+        time.sleep(0.3)
+        if tuple(roots(bus)) != before:
+            break
     return ok
 
 
@@ -372,6 +378,7 @@ def resolve_prebattle(bus):
         return False
     opts = _options_of(bus, "popup_pre_battle", legal)
     t0 = time.time()
+    off = bus.out_offset()
     clicked = _click(bus, ctrls[target], settle=1.5)
     if not clicked:
         _record_choice("pre_battle", "popup_pre_battle", opts, target,
@@ -386,7 +393,7 @@ def resolve_prebattle(bus):
             sys.stderr.write("interrupts: %s clicked but the pre-battle is still open\n" % name)
         outcome = name if ok else False
     else:
-        ok = _wait_root(bus, "popup_battle_results", tries=20, pause=1.0)
+        ok = _results_appeared(bus, off, timeout=20.0)
         outcome = "autoresolve" if ok else False
     if not ok:
         still_up = "popup_pre_battle" in roots(bus)
@@ -397,6 +404,29 @@ def resolve_prebattle(bus):
                    refusal=None if ok else "command_silently_refused",
                    latency_ms=int((time.time() - t0) * 1000))
     return outcome
+
+
+def _results_appeared(bus, offset, timeout=20.0):
+    """Battle resolved: the mod's battle_completed/panel row, else the results root."""
+    deadline = time.time() + timeout
+    off = offset
+
+    def _wanted(r):
+        if r.get("cmd") == "battle_completed":
+            return True
+        return bool(r.get("opened")) and "battle_results" in str(r.get("name") or "")
+
+    while time.time() < deadline:
+        row, off = bus.wait_row(("battle_completed", "panel"),
+                                timeout=min(2.0, max(0.1, deadline - time.time())),
+                                offset=off, pred=_wanted)
+        if row is not None:
+            if _wait_root(bus, "popup_battle_results", tries=6, pause=0.5):
+                return True
+            continue
+        if "popup_battle_results" in roots(bus):
+            return True
+    return False
 
 
 def _clickable_controls(bus, root="popup_battle_results"):

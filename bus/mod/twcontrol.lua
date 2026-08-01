@@ -937,6 +937,23 @@ local function arm_event_recorder()
               incident = or_null(try(function() return context:incident() end)),
               faction = or_null(try(function() return context:faction():name() end)) })
       end, true)
+    -- wait signals: python tails these rows instead of sleeping/polling the UI
+    core:add_listener("twcontrol_battle_completed", "BattleCompleted", true,
+      function(context)
+        log({ cmd = "battle_completed", turn = turn(),
+              autoresolved = or_null(try(function()
+                return context:model():pending_battle():has_been_autoresolved() end)) })
+      end, true)
+    core:add_listener("twcontrol_panel_opened", "PanelOpenedCampaign", true,
+      function(context)
+        log({ cmd = "panel", opened = true, turn = turn(),
+              name = or_null(try(function() return context.string end)) })
+      end, true)
+    core:add_listener("twcontrol_panel_closed", "PanelClosedCampaign", true,
+      function(context)
+        log({ cmd = "panel", opened = false, turn = turn(),
+              name = or_null(try(function() return context.string end)) })
+      end, true)
   end)
   log({ cmd = "event_recorder", armed = ok })
 end
