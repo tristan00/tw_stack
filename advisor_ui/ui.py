@@ -1,4 +1,4 @@
-r"""python advisor_v7/ui.py [run_dir] [port]      # default: newest run, :8777"""
+r"""python advisor_ui/ui.py [run_dir] [port]      # default: newest run, :8777"""
 from __future__ import annotations
 
 import glob
@@ -8,6 +8,8 @@ import os
 import sqlite3
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "advisor"))
 
 RUNS_ROOT = "D:/twdata/runs/human"
 
@@ -625,7 +627,7 @@ def render_decision(con, did):
 
 TW_STACK = r"D:\tw_stack"
 VENV_PY = r"D:\totalwar_runner\.venv\Scripts\python.exe"
-LOG_DIR = os.path.join(TW_STACK, "advisor_v7", "logs")
+LOG_DIR = r"D:\twdata\logs\advisor"
 CURRENT_LOG = os.path.join(LOG_DIR, "CURRENT_SESSION_LOG.txt")
 SERVICES = (("session.py", "advisor session"), ("manager.py", "recorder"), ("ui.py", "UI"))
 
@@ -708,10 +710,10 @@ def render_infra(run_dir):
            "<tr><th>service<th>state<th>pid<th>started</tr>%s</table></div>" % "".join(rows))
 
     # ---- models
-    g = _meta(os.path.join(TW_STACK, "advisor_v7", "models_store", "meta.json"))
-    l = _meta(os.path.join(TW_STACK, "advisor_v7", "models_store_local", "meta.json"))
-    ga, gt = _age(os.path.join(TW_STACK, "advisor_v7", "models_store", "meta.json"))
-    la, lt = _age(os.path.join(TW_STACK, "advisor_v7", "models_store_local", "meta.json"))
+    g = _meta(r"D:\twdata\models\global\meta.json")
+    l = _meta(r"D:\twdata\models\local\meta.json")
+    ga, gt = _age(r"D:\twdata\models\global\meta.json")
+    la, lt = _age(r"D:\twdata\models\local\meta.json")
 
     def ago(s):
         if s is None:
@@ -804,7 +806,7 @@ def _start_session(retrain=True, campaigns=100, turns=40):
     ts = time.strftime("%Y%m%d_%H%M%S")
     log = os.path.join(LOG_DIR, "session_%dx%d_%s.log" % (campaigns, turns, ts))
     err = log[:-4] + ".err"
-    args = [VENV_PY, "-u", "advisor_v7/session.py", str(campaigns), str(turns),
+    args = [VENV_PY, "-u", "advisor/session.py", str(campaigns), str(turns),
             "--factions", "all"] + (["--retrain"] if retrain else [])
     try:
         os.makedirs(LOG_DIR, exist_ok=True)

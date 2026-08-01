@@ -14,8 +14,8 @@ sys.path.insert(0, os.path.join(r"D:\tw_stack", "decisions"))
 import features as F                                       # noqa: E402
 from store import DecisionStore, IncompatibleStore        # noqa: E402
 
-MODEL_DIR = os.path.join(_HERE, "models_store")
-LOCAL_MODEL_DIR = os.path.join(_HERE, "models_store_local")
+MODEL_DIR = r"D:\twdata\models\global"
+LOCAL_MODEL_DIR = r"D:\twdata\models\local"
 # local reward weight: one SD of local impact is worth W_LOCAL SDs of global.
 # inference-time dial -- changing it needs no refit.
 W_LOCAL = 0.25
@@ -170,13 +170,13 @@ def train(runs_root=RUNS_ROOT):
     X = F.matrix(rows, num, cat)
     cat_idx = list(range(len(num), len(num) + len(cat)))
     e1 = CatBoostRegressor(iterations=300, depth=4, learning_rate=0.05, loss_function="RMSE",
-                           verbose=0)
+                           verbose=0, train_dir=r"D:\twdata\tmp\catboost")
     e1.fit(Pool(X, y, cat_features=cat_idx))
     snum, scat = F.split_columns(srows)
     Xs = F.matrix(srows, snum, scat)
     scat_idx = list(range(len(snum), len(snum) + len(scat)))
     e2 = CatBoostRegressor(iterations=300, depth=4, learning_rate=0.05, loss_function="RMSE",
-                          verbose=0)
+                          verbose=0, train_dir=r"D:\twdata\tmp\catboost")
     e2.fit(Pool(Xs, y, cat_features=scat_idx))
     Xa, cat_maps = _encode(rows, num, cat)
     iso = IsolationForest(n_estimators=200, random_state=0, n_jobs=-1)
@@ -264,10 +264,10 @@ def _train_local(data, num, cat, snum, scat, sd_global):
     Xs = F.matrix(srows, snum, scat)
     scat_idx = list(range(len(snum), len(snum) + len(scat)))
     e1 = CatBoostRegressor(iterations=300, depth=4, learning_rate=0.05, loss_function="RMSE",
-                           verbose=0)
+                           verbose=0, train_dir=r"D:\twdata\tmp\catboost")
     e1.fit(Pool(X, yl, cat_features=cat_idx))
     e2 = CatBoostRegressor(iterations=300, depth=4, learning_rate=0.05, loss_function="RMSE",
-                           verbose=0)
+                           verbose=0, train_dir=r"D:\twdata\tmp\catboost")
     e2.fit(Pool(Xs, yl, cat_features=scat_idx))
     li = [a - b for a, b in zip(e1.predict(Pool(X, cat_features=cat_idx)),
                                 e2.predict(Pool(Xs, cat_features=scat_idx)))]

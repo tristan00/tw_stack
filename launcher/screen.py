@@ -33,7 +33,7 @@ class ScreenBridge:
     """The ps/*.ps1 capture/restore/input bridge plus frame-stat helpers."""
 
     PS_DIR = os.path.join(_REPO, "ps")
-    SHOTS_DIR = os.path.join(_REPO, "logs", "launch_shots")
+    SHOTS_DIR = r"D:\twdata\logs\launcher\launch_shots"
 
     # fallback only -- clicks map through the live client rect
     SCREEN_W = 2560

@@ -1,431 +1,501 @@
-r"""features.py -- per-decision-type featurizers for the advisor.
+from __future__ import annotations
 
-Same featurizer is used for training (the chosen option) and scoring (every option). Features are
-GENERIC + type-specific so a per-type model trained on chosen options can score UNCHOSEN options it
-never saw. Real numeric features (cost / turns / tier / category / unlock) come from the offline game
-DB via reference/features_db.py; context comes from the player's per-turn faction state record.
-
-  context_features(fac, faction, subculture, lord) -> generic decision context (numeric + categoricals)
-  option_features(dtype, key, source, dilemma, choice) -> type-specific option features (DB-backed)
-  featurize(dtype, fac, faction, subculture, lord, key, source, dilemma, choice) -> full row
-"""
-import collections
+import math
 import os
 import sys
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(_HERE, "reference"))
-try:
-    import features_db as _db      # building_features / tech_features / unit_features / skill_features / ritual_features
-except Exception as e:             # pragma: no cover - reference not built yet
-    _db = None
-    sys.stderr.write("features: features_db import unavailable -> %s\n" % repr(e)[:80])
-try:
-    import item_choices as _items  # ancillary category-from-key parser (no DB: there is no items table)
-except Exception as e:             # pragma: no cover
-    _items = None
-    sys.stderr.write("features: item_choices import unavailable -> %s\n" % repr(e)[:80])
+sys.path.insert(0, os.path.join(r"D:\tw_stack", "advisor", "reference"))
+import features_db as DB                                  # noqa: E402
 
-# ---- context (generic, faction/lord-agnostic quantities + explicit categoricals) --------------
-# The vassal_*/num_* diplomatic aggregates are NEW twstate.lua fields (relationship signals every
-# decision benefits from). Absent on old runs -> context_features defaults them to 0, so inert until
-# fresh recordings carry them; each becomes a ctx_* numeric column shared across ALL per-type models.
-STATE_NUM = ["treasury", "income", "net_income", "expenditure", "regions", "num_provinces",
-             "forces", "chars", "num_generals", "tax_level", "rank", "turn",
-             "num_vassals", "vassal_regions", "vassal_forces", "num_allies",
-             "num_military_allies", "num_defensive_allies", "num_at_war",
-             "num_non_aggression", "num_trade_partners"]
-STATE_BOOL = ["at_war", "is_researching"]
-CAT_CONTEXT = ["faction", "subculture", "lord"]
+RINGS = (10, 25, 50)                                      # map units
+# nearest items per channel that get full geometry (dist + direction + strength)
+NEAR_K = {"enemy": 3, "enemysett": 3, "friend": 2, "neutral": 1, "ownsett": 2}
+NEAR_K_DEFAULT = 2
+
+# append only: the order is the categorical's encoding
+ACTION_TYPES = ("stance", "building", "research", "skills", "items", "item_unequip", "rites",
+                "recruit_unit", "recruit_lord", "edict", "attack_army", "attack_settlement",
+                "garrison", "leave_garrison", "end_turn", "noop",
+                "move", "diplomacy")
 
 
-def context_features(fac, faction=None, subculture=None, lord=None):
-    fac = fac or {}
-    f = {("ctx_" + k): (fac.get(k) if fac.get(k) is not None else 0) for k in STATE_NUM}
-    for k in STATE_BOOL:
-        f["ctx_" + k] = int(bool(fac.get(k)))
-    f["ctx_faction"] = faction or fac.get("faction") or "?"
-    f["ctx_subculture"] = subculture or fac.get("subculture") or "?"
-    f["ctx_lord"] = lord or "?"
-    return f
-
-
-# ---- per-type CONTEXT features (Part B): read the sub-records decision_instances joined onto the
-# decision's context (context["region"], ["prov_corruption"], ["army"], ["char"], ...). Numeric keys
-# are ctx_*, categoricals ctx_c_* (split_columns routes them). Every key is emitted with a default so
-# the column set is stable per type whether or not the source record was recoverable.
-def context_type_features(dtype, fac):
-    fac = fac or {}
-    f = {}
-    region = fac.get("region") or {}
-    corr = fac.get("prov_corruption") or {}
-    # region block -- present for building/occupation/edict (chosen settlement) + captives (battle site)
-    if region:
-        f["ctx_region_public_order"] = _num(region, "public_order")
-        f["ctx_region_gdp"] = _num(region, "gdp")
-        f["ctx_region_num_buildings"] = _num(region, "num_buildings")
-        f["ctx_region_growth"] = _num(region, "growth_per_turn")
-        f["ctx_is_capital"] = int(bool(region.get("is_capital")))
-        f["ctx_climate_suit"] = _num(fac, "climate_suit")
-        f["ctx_c_climate"] = region.get("climate") or "?"
-        f["ctx_in_own_territory"] = int(region.get("owner_is_human") is True)
-    if corr:
-        f["ctx_prov_corruption_max"] = _num(corr, "max")
-        f["ctx_c_corruption_dominant"] = corr.get("dominant") or "none"
-    if fac.get("prov_owned_fraction") is not None:
-        f["ctx_prov_owned_fraction"] = _num(fac, "prov_owned_fraction")
-        f["ctx_prov_is_complete"] = int(bool(fac.get("prov_is_complete")))
-    if dtype == "building":
-        f["ctx_region_free_slots"] = _num(fac, "region_free_slots", -1)
-    elif dtype == "edict":
-        f["ctx_c_current_edict"] = region.get("active_edict") or "none"
-    elif dtype in ("recruit", "stance"):
-        army = fac.get("army") or {}
-        units = fac.get("army_units") or []
-        f["ctx_army_unit_count"] = _num(army, "units")
-        f["ctx_army_strength"] = _num(army, "strength")
-        f["ctx_army_morale"] = _num(army, "morale")
-        f["ctx_army_upkeep"] = _num(army, "upkeep")
-        f["ctx_army_mp_pct"] = _num(army, "mp_pct")
-        hs = [u.get("health") for u in units if isinstance(u.get("health"), (int, float))]
-        f["ctx_army_avg_health"] = (sum(hs) / len(hs)) if hs else 0
-        if dtype == "recruit":
-            for cat, n in collections.Counter(
-                    u.get("category") for u in units if u.get("category")).items():
-                f["ctx_mix_" + cat] = n
-        else:  # stance
-            f["ctx_is_army"] = int(bool(army.get("is_army")))
-            f["ctx_is_navy"] = int(bool(army.get("is_navy")))
-            f["ctx_is_horde"] = int(bool(army.get("is_horde")))
-            f["ctx_c_stance_current"] = (army.get("stance") or "?").replace(
-                "MILITARY_FORCE_ACTIVE_STANCE_TYPE_", "")
-    elif dtype == "skills":
-        char = fac.get("char") or {}
-        f["ctx_char_rank"] = _num(char, "rank", -1)
-        f["ctx_char_loyalty"] = _num(char, "loyalty")
-        f["ctx_char_taken_skills"] = _num(fac, "char_taken_skills")
-        f["ctx_is_governor"] = int(bool(char.get("is_governor")))
-        f["ctx_faction_leader"] = int(bool(char.get("faction_leader")))
-        f["ctx_c_char_type"] = char.get("type") or "?"
-        f["ctx_c_char_subtype"] = char.get("subtype") or "?"
-    elif dtype == "research":
-        f["ctx_completed_count"] = _num(fac, "completed_count")
-        tiers = fac.get("completed_tech_tiers") or []
-        f["ctx_max_completed_tier"] = max(tiers) if tiers else 0
-        f["ctx_research_queue_idle"] = int(bool(fac.get("research_queue_idle")))
-    elif dtype == "items":
-        # the character the item goes on/off (rank/type gate item value) + how full the item slots are.
-        char = fac.get("char") or {}
-        f["ctx_char_rank"] = _num(char, "rank", -1)
-        f["ctx_is_governor"] = int(bool(char.get("is_governor")))
-        f["ctx_faction_leader"] = int(bool(char.get("faction_leader")))
-        f["ctx_c_char_type"] = char.get("type") or "?"
-        f["ctx_c_char_subtype"] = char.get("subtype") or "?"
-        f["ctx_equipped_count"] = _num(fac, "equipped_count")
-        f["ctx_available_count"] = _num(fac, "available_count")
-    elif dtype in ("recruit_lord", "recruit_hero"):
-        # LORD/HERO roster-composition context (P1). Per user spec these are PROVINCE-level decisions:
-        # the MODERATE province features come from the shared `region` block above (populated once the
-        # decision_instances join attaches the settlement's region for these types -- FLAG: join not yet
-        # wired, so region defaults empty on any current data). Here we add the roster counts: current
-        # #lords / #heroes overall + #of the candidate's OWN type (composition signal). Sourced from the
-        # per-turn faction record -> defaults to 0 until the mod/join carries them (FLAG: live-verify the
-        # field names num_lords/num_heroes/num_this_type).
-        f["ctx_num_lords"] = _num(fac, "num_lords")
-        f["ctx_num_heroes"] = _num(fac, "num_heroes")
-        f["ctx_num_this_type"] = _num(fac, "num_this_type")
-    if dtype in ("rites", "captives"):
-        pooled = fac.get("pooled") or {}
-        vals = [v for v in pooled.values() if isinstance(v, (int, float))]
-        f["ctx_pooled_max"] = max(vals) if vals else 0
-        if dtype == "rites":
-            f["ctx_active_ritual_count"] = len(fac.get("active_rituals") or [])
-    return f
-
-
-def _cross_features(dtype, fac, opt):
-    """Context x OPTION interactions -- need BOTH the option's DB row and the faction/region context,
-    so they live here (after option_features). Prefixed ctx_ (numeric) since they are per-decision-state
-    signals; they vary per option (affordability, chain level) which is exactly the discriminator."""
-    fac = fac or {}
-    f = {}
-    treasury = _num(fac, "treasury"); net = _num(fac, "net_income")
-    if dtype in ("building", "recruit"):
-        cost = _num(opt, "opt_n_cost"); upkeep = _num(opt, "opt_n_upkeep")
-        f["ctx_can_afford"] = int(treasury >= cost) if cost else 1
-        f["ctx_cost_vs_treasury"] = min(9.99, cost / treasury) if treasury > 0 else (0.0 if not cost else 9.99)
-        f["ctx_upkeep_vs_income"] = min(9.99, upkeep / net) if net > 0 else (0.0 if not upkeep else 9.99)
-    if dtype == "building":
-        chain = opt.get("opt_c_chain")
-        lvls = []
-        for bk in (fac.get("region_buildings") or []):
-            bf = _db.building_features(bk) if _db else {}
-            if bf and bf.get("building_chain") == chain and bf.get("level") is not None:
-                lvls.append(bf["level"])
-        f["ctx_chain_current_level"] = max(lvls) if lvls else -1
-        f["ctx_chain_already_built"] = int(bool(lvls))
-    elif dtype == "occupation":
-        owned = _num(fac, "prov_owned_count"); total = _num(fac, "prov_region_count")
-        f["ctx_completes_province"] = int(total > 0 and owned + 1 >= total)
-    elif dtype == "research":
-        tiers = fac.get("completed_tech_tiers") or []
-        maxc = max(tiers) if tiers else 0
-        tier = _num(opt, "opt_n_tier", -1)
-        f["ctx_tier_gap"] = (tier - maxc) if tier >= 0 else 0
-    elif dtype == "skills":
-        crank = _num(fac.get("char") or {}, "rank", 0)
-        orank = _num(opt, "opt_n_rank", -1)
-        f["ctx_skill_rank_ok"] = int(crank >= orank) if orank >= 0 else 1
-        f["ctx_skill_rank_gap"] = (crank - orank) if orank >= 0 else 0
-    elif dtype == "rites":
-        pooled = fac.get("pooled") or {}
-        have = max([v for v in pooled.values() if isinstance(v, (int, float))] or [0])
-        need = _num(opt, "opt_n_influence")  # influence is the primary rite cost axis (slaves secondary)
-        f["ctx_currency_vs_cost"] = min(9.99, have / need) if need > 0 else (0.0 if not have else 9.99)
-        f["ctx_rite_already_active"] = int((opt.get("opt_c_ritual_key") or "___") in
-                                           (fac.get("active_rituals") or []))
-    return f
-
-
-def _num(d, k, default=0):
-    v = (d or {}).get(k)
+def _f(v):
+    """Bools become 0/1, unparseable becomes None."""
+    if isinstance(v, bool):
+        return 1.0 if v else 0.0
     try:
         return float(v)
     except (TypeError, ValueError):
-        return default  # intentional: non-numeric -> default, hot per-value coercion helper (no log)
+        return None
 
 
-# ---- small key-parsing helpers (categorical derivations from an option key, no DB) --------------
-# dilemma ordinal TOKEN -> 0-based index (mirrors dilemmas._token_ordinal; kept local to avoid a
-# circular import). Used only as a fallback when the option's own numeric `ordinal` is absent.
-_DIL_WORD_ORD = {w: i for i, w in enumerate(
-    ["FIRST", "SECOND", "THIRD", "FOURTH", "FIFTH", "SIXTH", "SEVENTH", "EIGHTH", "NINTH", "TENTH",
-     "ELEVENTH", "TWELFTH"])}
+def _resource_feats(campaign):
+    """`res_<key>` per pooled resource, plus how many there are."""
+    res = (campaign or {}).get("resources") or {}
+    out = {"camp_n_resources": float(len(res))}
+    for k, v in res.items():
+        out["res_%s" % k] = _f(v)
+    return out
 
 
-def _dil_token_ord(token):
-    """A dilemma option token (FIRST.. / SCRIPTED_<n>) -> 0-based ordinal, else -1."""
-    t = str(token or "")
-    if t in _DIL_WORD_ORD:
-        return _DIL_WORD_ORD[t]
-    if t.startswith("SCRIPTED_") and t[len("SCRIPTED_"):].isdigit():
-        return int(t[len("SCRIPTED_"):]) - 1
-    return -1
+def campaign_block(campaign, world):
+    w = world or {}
+    armies = w.get("armies") or []
+    hostiles = w.get("hostiles") or []
+    return dict(_resource_feats(campaign), **{"camp_faction": campaign.get("faction"),
+            "camp_turn": _f(campaign.get("turn")),
+            "camp_income": _f(campaign.get("income")),
+            "camp_settlements": _f(campaign.get("settlements")),
+            "camp_treasury": _f(campaign.get("treasury")),
+            "camp_is_researching": _f(campaign.get("is_researching")),
+            "camp_armies": float(sum(1 for a in armies if a.get("has_army"))),
+            "camp_army_units": float(sum((a.get("units") or 0) for a in armies if a.get("has_army"))),
+            "camp_enemy_units_known": float(sum((h.get("units") or 0) for h in hostiles
+                                                if h.get("kind") == "army")),
+            "camp_characters": float(len(armies)),
+            "camp_lords": float(sum(1 for a in armies if a.get("has_army"))),
+            "camp_heroes": float(sum(1 for a in armies if not a.get("has_army"))),
+            "camp_enemy_armies": float(sum(1 for h in hostiles if h.get("kind") == "army")),
+            "camp_enemy_settlements": float(sum(1 for h in hostiles
+                                                if h.get("kind") == "settlement"))})
 
 
-def _faction_race(key):
-    """RACE/subculture token parsed from a faction key (wh*_{main|dlcNN|twaNN}_{race}_{name}) -- e.g.
-    wh3_main_sla_subtle_torture -> 'sla', wh2_twa03_def_rakarth -> 'def'. A LOW-cardinality categorical
-    that generalizes across factions of the same race (vs the raw, mostly-unseen faction key). '?' if it
-    doesn't parse."""
-    parts = str(key or "").split("_")
-    return parts[2] if len(parts) >= 3 and parts[0].startswith("wh") else "?"
+_EMPTY_LORD = {"lord_rank": None, "lord_skill_points": None, "lord_units": None,
+               "lord_pending_recruits": None, "lord_ap_pct": None, "lord_garrisoned": None,
+               "lord_besieging": None, "lord_acted": None, "lord_stance": None,
+               "lord_subtype": None, "lord_is_leader": None,
+               "lord_x": None, "lord_y": None, "lord_has_army": None,
+               "lord_present": 0.0}
 
 
-def option_features(dtype, key, source=None, dilemma=None, choice=None, option=None):
-    """Type-specific option features. Numeric keys start opt_n_*, categoricals opt_c_*. DB-backed.
-    `dilemma`/`choice` are used only by the dilemma path (the dilemma key + the option's choice
-    label/token). `option` is the FULL per-option record (recorder-captured extra fields such as a
-    candidate's trait/level/cost or a faction's diplo stats); it is read only by the newer per-option
-    types and every field is `.get(...)`-defaulted, so old data (which lacks those fields) stays inert."""
-    key = key or ""
-    o = option or {}
-    f = {"opt_c_source": source or "none"}
-    if dtype == "building":
-        b = _db.building_features(key) if _db else {}
-        f["opt_n_cost"] = _num(b, "create_cost")
-        f["opt_n_time"] = _num(b, "create_time")
-        f["opt_n_upkeep"] = _num(b, "upkeep_cost")
-        f["opt_n_tier"] = _num(b, "level", -1)
-        f["opt_c_chain"] = (b or {}).get("building_chain") or "?"
-        # DEMOLISH/REPAIR building-model EXTENSION (per user: NOT a standalone type): the option's action
-        # (build / demolish / repair) so the SAME building model scores raze + repair options alongside
-        # construction. Defaults to "build" -> every existing construction option is unchanged/inert;
-        # demolish/repair options (fresh recordings: button_raze / RegionBuildingCancelled / repair-
-        # BuildingCompleted) carry option["action"] to discriminate.
-        f["opt_c_action"] = o.get("action") or "build"
-    elif dtype == "recruit":
-        u = _db.unit_features(key) if _db else {}
-        f["opt_n_cost"] = _num(u, "recruitment_cost")
-        f["opt_n_upkeep"] = _num(u, "upkeep_cost")
-        f["opt_n_time"] = _num(u, "create_time")
-        f["opt_n_tier"] = _num(u, "tier", -1)
-        f["opt_n_men"] = _num(u, "num_men")
-        f["opt_c_category"] = (u or {}).get("category") or "?"
-        f["opt_c_caste"] = (u or {}).get("caste") or "?"
-    elif dtype == "research":
-        t = _db.tech_features(key) if _db else {}
-        f["opt_n_cost"] = _num(t, "research_points_required")
-        f["opt_n_perround"] = _num(t, "cost_per_round")
-        f["opt_n_tier"] = _num(t, "tier", -1)
-        f["opt_n_parents"] = _num(t, "required_parents")
-        f["opt_c_branch"] = ("military" if (t or {}).get("is_military") else
-                             "civil" if (t or {}).get("is_civil") else
-                             "engineering" if (t or {}).get("is_engineering") else "?")
-        f["opt_c_unlocks"] = "yes" if (t or {}).get("building_level") else "no"
-    elif dtype == "skills":
-        s = _db.skill_features(key) if _db else {}
-        f["opt_n_rank"] = _num(s, "unlocked_at_rank", -1)
-        f["opt_n_influence"] = _num(s, "influence_cost")
-        f["opt_c_group"] = ("lord" if "_lord_" in key else "hero" if "_hero_" in key
-                            else "all" if "_all_" in key else "magic" if "_magic_" in key else "?")
-    elif dtype == "rites":
-        r = _db.ritual_features(key) if _db else {}
-        f["opt_n_cooldown"] = _num(r, "cooldown_time")
-        f["opt_n_influence"] = _num(r, "influence_cost")
-        f["opt_n_slaves"] = _num(r, "slave_cost")
-        f["opt_c_category"] = (r or {}).get("category") or "?"
-        f["opt_c_ritual_key"] = key or "?"
-    elif dtype == "captives":
-        f["opt_c_outcome"] = (key or "").replace("button_captive_option_", "") or "?"
-    elif dtype == "occupation":
-        f["opt_c_decision"] = str(key)
-    elif dtype == "pre_battle":
-        # PRE-BATTLE menu (attack / autoresolve / retreat / continue-siege / demand-surrender / ...).
-        # No DB table -- the option IS the clicked button. Previously pre_battle had NO case, so every
-        # option got only opt_c_source == byte-identical (100% of decisions indistinguishable). The
-        # ACTION categorical (button key, LOW cardinality + well covered) lets the model value each
-        # action; a coarse group generalizes across siege/field variants. Campaign stats
-        # (treasury/regions/income/rank/num_generals) already arrive via context_features (shared across
-        # options -- context, not discriminator). The deeper BOTH-SIDES battle-odds features
-        # (deployment strength ratio) await a recorder deployment-odds grab -- out of scope here.
-        k = key or ""
-        _FIGHT = {"button_attack", "button_sally_forth", "button_surround"}
-        _AVOID = {"button_retreat", "button_dismiss", "button_spectate"}
-        _SIEGE = {"button_continue_siege", "button_maintain_blockade", "button_demand_surrender"}
-        f["opt_c_action"] = k or "?"
-        f["opt_c_action_group"] = ("fight" if k in _FIGHT else "resolve" if k == "button_autoresolve"
-                                   else "avoid" if k in _AVOID else "siege" if k in _SIEGE else "other")
-    elif dtype == "stance":
-        # stance KEY suffix (DEFAULT/MARCH/AMBUSH/...) + a coarse family grouping. No stance DB table.
-        k = (key or "").replace("MILITARY_FORCE_ACTIVE_STANCE_TYPE_", "")
-        _MOVE = {"MARCH", "DOUBLE_TIME", "PATROL"}
-        _RAID = {"LAND_RAID", "SET_CAMP_RAIDING", "AMBUSH"}
-        _CAMP = {"SET_CAMP", "FIXED_CAMP", "SETTLE", "MUSTER", "ASSEMBLE_FLEET"}
-        _MAGIC = {"CHANNELING", "ASTROMANCY", "TUNNELING"}
-        f["opt_c_stance"] = k or "?"
-        f["opt_c_stance_group"] = ("move" if k in _MOVE else "raid" if k in _RAID else
-                                   "camp" if k in _CAMP else "magic" if k in _MAGIC else
-                                   "default" if k == "DEFAULT" else "other")
-    elif dtype == "edict":
-        # GAP: no edicts table exists in reference.sqlite (no create cost / numeric effect data for an
-        # edict). Categorize by key substring only -- flagged; add an edicts DB table to enrich further.
-        kk = (key or "").lower()
-        f["opt_c_edict"] = key or "?"
-        f["opt_c_edict_group"] = ("order" if "order" in kk else "growth" if "growth" in kk else
-                                  "corruption" if "corrupt" in kk else
-                                  "military" if ("military" in kk or "recruit" in kk or "war" in kk) else
-                                  "economy" if ("gdp" in kk or "wealth" in kk or "trade" in kk or
-                                                "income" in kk or "splendour" in kk) else "other")
-    elif dtype == "items":
-        # ITEM (ancillary) option, featurized from the KEY: the CATEGORY token (weapon/armour/talisman/
-        # enchanted_item/...) + the item key itself (reference.sqlite has no ancillary features table).
-        # The category is the generalizable per-option signal -- the model values "equip a talisman" vs
-        # "equip a weapon" and DISTINGUISHES options that differ by category (verified: a resolved-key
-        # option-set scores 4 distinct (exploit,explore) tuples of 4). WHY the current data is still
-        # degenerate is NOT a missing feature: every CHOSEN key trained on is a resolved real key
-        # (CharacterAncillaryGained.ancillary) but every OPTION-SET key is an UNRESOLVED numeric ancillary
-        # CQI ('780') -- the two distributions are DISJOINT (measured 128/128 chosen real vs 81/81 options
-        # numeric, 0 overlap), so no feature computable from a numeric option key exists in the training
-        # space and both models collapse it. The real fix is id->key RESOLUTION via the recorder's
-        # equipment-panel scrape TEXT (a capture follow-on, out of scope here -- like pre_battle's battle
-        # odds); once options carry real keys this featurizer distinguishes them. item_category on a
-        # numeric id -> "unknown" (a clean categorical, not a junk numeric string). `source` =
-        # available(add) vs equipped(remove) -- carried in opt_c_source above.
-        f["opt_c_item"] = key or "?"
-        cat = _items.item_category(key) if _items else "?"
-        f["opt_c_category"] = "unknown" if str(cat).isdigit() else cat
-    elif dtype in ("recruit_lord", "recruit_hero"):
-        # LORD/HERO recruit candidate (P1; 0 rows until fresh recordings). Per user spec: candidate
-        # trait(s) + starting level + TYPE (the class/subtype tab) + campaign+province context (context
-        # side) + current #lords/#heroes per type (context side). `type` IS the chosen char_subtype =
-        # key; trait/level/cost are per-candidate (CcoCampaignCharacter-resolved by the recorder) and
-        # arrive on `option` -> default until captured (FLAG: live-verify the option field names).
-        f["opt_c_type"] = o.get("type") or key or "?"          # lord/hero class/subtype (the tab)
-        f["opt_n_level"] = _num(o, "level", -1)                # candidate starting level
-        f["opt_n_cost"] = _num(o, "cost")                      # recruit cost (influence/gold)
-        f["opt_c_trait"] = str(o.get("trait") or o.get("traits") or "?")   # candidate trait(s)
-        f["opt_c_lore"] = o.get("lore") or "?"                 # sorcerer-lord lore sub-pick, if any
-    elif dtype == "offices":
-        # OFFICE assignment candidate (P1; 0 rows until fresh recordings). Per user spec: candidate
-        # trait/level/type + office bonus + campaign ctx. type = candidate char subtype (key); office +
-        # bonus + trait/level arrive on `option` (offices-panel scrape / char-record getter) -> default
-        # until captured (FLAG: live-verify the option field names).
-        f["opt_c_type"] = o.get("type") or key or "?"          # candidate character subtype/class
-        f["opt_n_level"] = _num(o, "level", -1)                # candidate rank/level
-        f["opt_c_trait"] = str(o.get("trait") or o.get("traits") or "?")
-        f["opt_c_office"] = o.get("office") or "?"             # which office slot this option assigns to
-        f["opt_n_office_bonus"] = _num(o, "office_bonus")      # magnitude of the office's effect bonus
-    elif dtype == "eternal_dance":
-        # ETERNAL DANCE (Slaanesh; P1). "others = shared base context + option features": the dance
-        # theme/move is the whole option. key = the dance theme (wh3_dlc27_eternal_dance_* / btn_dance_*).
-        f["opt_c_dance"] = key or "?"
-        f["opt_n_tempo"] = _num(o, "tempo", -1)                # tempo level, if the recorder carries it
-    elif dtype == "diplomatic_target":
-        # DIPLOMACY level-1 (WHO to deal with; P1). Option = a known faction; per FINDINGS its row
-        # carries strength rank / attitude / settlements / treaties / ally-options / race. key = faction.
-        # opt_c_faction (the raw key) is high-cardinality + mostly unseen -> it distinguishes options but
-        # generalizes poorly; opt_c_target_race (parsed from the key) is a LOW-cardinality signal shared
-        # across factions of the same race, so the model can value "deal with a Dark Elf faction" even
-        # for an unseen one. The strength/settlement/treaty scalars remain recorder-capture-gated (they
-        # default inert until the WHO-list scrape carries them -- a follow-on, not this pass).
-        f["opt_c_faction"] = key or "?"
-        f["opt_c_target_race"] = _faction_race(key)
-        f["opt_n_strength_rank"] = _num(o, "strength_rank", -1)
-        f["opt_n_settlements"] = _num(o, "settlements")
-        f["opt_n_treaties"] = _num(o, "treaties")
-        f["opt_n_ally_options"] = _num(o, "ally_options")
-        f["opt_c_attitude"] = str(o.get("attitude") or "?")
-        f["opt_c_race"] = o.get("race") or o.get("subculture") or "?"
-    elif dtype == "diplomatic_deal":
-        # DIPLOMACY level-2 (WHAT deal; P1). Option = a staged clause; deal scalars (success_chance,
-        # treasury delta) + the counterparty resolve when a deal is active. key = clause type/component.
-        f["opt_c_clause"] = key or "?"
-        f["opt_c_counterparty"] = o.get("counterparty") or "?"
-        f["opt_n_success_chance"] = _num(o, "success_chance", -1)
-        f["opt_n_value"] = _num(o, "value")                    # clause magnitude (gold/settlement value)
-    elif dtype == "dilemma":
-        # opt_c_dilemma (which dilemma) + opt_c_choice (this option's label/token) + opt_n_ordinal.
-        # BUG FIXED: opt_n_ordinal used str(key).isdigit(), true only in TRAINING (key = chosen ordinal
-        # int) -- at SCORING key is the option TOKEN ("FIRST"/"SCRIPTED_1"), so every option collapsed to
-        # -1 (train/score mismatch), leaving only the per-dilemma-UNIQUE label -> CatBoost saw one novel
-        # categorical per option and returned an identical value for all (100% exploit-identical). Now the
-        # ordinal is read from the option's own numeric `ordinal` (scoring path) or the digit key
-        # (training path) or the token, so options carry a consistent, DIFFERING numeric the model can use.
-        ordv = o.get("ordinal")
-        if ordv is None:
-            ordv = int(key) if str(key).isdigit() else _dil_token_ord(key)
-        f["opt_n_ordinal"] = float(ordv) if isinstance(ordv, (int, float)) else -1.0
-        f["opt_c_dilemma"] = dilemma or "?"
-        f["opt_c_choice"] = choice or (str(key) if key not in (None, "") else "?")
-    return f
+def lord_block(state):
+    if not state:
+        return dict(_EMPTY_LORD)
+    return {"lord_rank": _f(state.get("rank")), "lord_skill_points": _f(state.get("skill_points")),
+            "lord_units": _f(state.get("units")),
+            "lord_pending_recruits": _f(state.get("pending_recruits")),
+            "lord_ap_pct": _f(state.get("ap_pct")), "lord_garrisoned": _f(state.get("garrisoned")),
+            "lord_besieging": _f(state.get("besieging")), "lord_acted": _f(state.get("acted")),
+            "lord_stance": state.get("stance"),
+            "lord_subtype": state.get("subtype"), "lord_is_leader": _f(state.get("is_leader")),
+            "lord_x": _f(state.get("x")), "lord_y": _f(state.get("y")),
+            "lord_has_army": (1.0 if state.get("units") is not None else 0.0),
+            "lord_present": 1.0}
 
 
-def featurize(dtype, fac, faction, subculture, lord, key, source=None, dilemma=None, choice=None,
-              option=None):
-    row = context_features(fac, faction, subculture, lord)
-    row.update(context_type_features(dtype, fac))
-    opt = option_features(dtype, key, source, dilemma=dilemma, choice=choice, option=option)
-    row.update(opt)
-    row.update(_cross_features(dtype, fac, opt))
+_EMPTY_PROV = {"prov_province": None, "prov_complete": None, "prov_max_slots": None,
+               "prov_free_slots": None, "prov_can_set_edict": None, "prov_selected_edict": None,
+               "prov_active_edict": None, "prov_public_order": None, "prov_buildings": None,
+               "prov_is_capital": None, "prov_present": 0.0}
+
+
+def province_block(state):
+    if not state or not state.get("settlement_present"):
+        return dict(_EMPTY_PROV)
+    return {"prov_province": state.get("province"), "prov_complete": _f(state.get("complete_owner")),
+            "prov_max_slots": _f(state.get("max_slots")), "prov_free_slots": _f(state.get("free_slots")),
+            "prov_can_set_edict": _f(state.get("can_set_edict")),
+            "prov_selected_edict": state.get("selected_edict"),
+            "prov_active_edict": state.get("active_edict"),
+            "prov_public_order": _f(state.get("public_order")),
+            "prov_buildings": _f(state.get("buildings")),
+            "prov_is_capital": _f(state.get("is_capital")), "prov_present": 1.0,
+            **_corruption_feats(state.get("corruption"))}
+
+
+CORRUPTION_KEYS = ("wh3_main_corruption_chaos", "wh3_main_corruption_khorne",
+                   "wh3_main_corruption_nurgle", "wh3_main_corruption_skaven",
+                   "wh3_main_corruption_slaanesh", "wh3_main_corruption_tzeentch",
+                   "wh3_main_corruption_vampiric")
+
+
+def _corruption_feats(corr):
+    c = corr or {}
+    out = {"corr_%s" % k.rsplit("_", 1)[-1]: _f(c.get(k)) for k in CORRUPTION_KEYS}
+    known = [v for v in out.values() if v is not None]
+    out["corr_total"] = float(sum(known)) if known else None
+    out["corr_max"] = float(max(known)) if known else None
+    return out
+
+
+def positioning_block(near, world, prov_key, locus=None):
+    """pos_*/agg_*/prov_* features for one locus."""
+    out = {}
+    fe, en = near.get("near_friend_1_dist"), near.get("near_enemy_1_dist")
+    out["pos_enemy_minus_friend"] = (en - fe) if (fe is not None and en is not None) else None
+    out["pos_exposed"] = (1.0 if en < fe else 0.0) if (fe is not None and en is not None) else None
+    w0 = world or {}
+    lx = float(locus[0]) if (locus and locus[0] is not None) else None
+    ly = float(locus[1]) if (locus and locus[1] is not None) else None
+    for nm, items in (("friend", [a for a in (w0.get("armies") or []) if a.get("has_army")]),
+                      ("enemy", [h for h in (w0.get("hostiles") or [])
+                                 if h.get("kind") == "army"])):
+        pts = [(float(i["x"]), float(i["y"])) for i in items
+               if i.get("x") is not None and i.get("y") is not None]
+        out["agg_%s_n" % nm] = float(len(pts))
+        known = [u for u in (i.get("units") for i in items) if u is not None]
+        out["agg_%s_units" % nm] = float(sum(known)) if known else None
+        if pts and lx is not None and ly is not None:
+            ds = [math.hypot(px - lx, py - ly) for px, py in pts]
+            out["agg_%s_mean_dist" % nm] = round(sum(ds) / len(ds), 2)
+            cx = sum(p[0] for p in pts) / len(pts)
+            cy = sum(p[1] for p in pts) / len(pts)
+            out["agg_%s_centroid_dist" % nm] = round(math.hypot(cx - lx, cy - ly), 2)
+            s, c = bearing(cx - lx, cy - ly)
+            out["agg_%s_centroid_sin" % nm], out["agg_%s_centroid_cos" % nm] = s, c
+        else:
+            for suf in ("mean_dist", "centroid_dist", "centroid_sin", "centroid_cos"):
+                out["agg_%s_%s" % (nm, suf)] = None
+    r0 = RINGS[0] if RINGS else None
+    f0 = near.get("near_friend_r%d" % r0) if r0 else None
+    e0 = near.get("near_enemy_r%d" % r0) if r0 else None
+    out["pos_support_ratio"] = (((f0 or 0.0) + 1.0) / ((e0 or 0.0) + 1.0)
+                               if (f0 is not None or e0 is not None) else None)
+    w = world or {}
+    if prov_key:
+        arm = [a for a in (w.get("armies") or []) if a.get("province") == prov_key]
+        hos = [h for h in (w.get("hostiles") or [])
+               if h.get("province") == prov_key and h.get("kind") in ("army", "neutral_army")]
+        out["prov_own_lords"] = float(sum(1 for a in arm if a.get("has_army")))
+        out["prov_own_heroes"] = float(sum(1 for a in arm if not a.get("has_army")))
+        out["prov_enemy_known"] = float(sum(1 for h in hos if h.get("kind") == "army"))
+        out["prov_neutral_known"] = float(sum(1 for h in hos if h.get("kind") == "neutral_army"))
+    else:
+        out["prov_own_lords"] = out["prov_own_heroes"] = None
+        out["prov_enemy_known"] = out["prov_neutral_known"] = None
+    return out
+
+
+def province_buildings_block(provinces, prov_state):
+    """pbld_<key> per building in this province's owned settlements, pbldnow_<key> per one being
+    built, plus counts."""
+    out = {"pbld_count": None, "pbld_inprogress": None}
+    if not prov_state or not prov_state.get("settlement_present"):
+        return out
+    pk = prov_state.get("province")
+    same = [s for s in (provinces or {}).values()
+            if s.get("settlement_present") and s.get("province") == pk] or [prov_state]
+    keys, inprog = set(), 0
+    for s in same:
+        for k in (s.get("built") or {}).values():
+            if k:
+                keys.add(str(k))
+        for v in (s.get("building_now") or {}).values():
+            inprog += 1
+            if v.get("key"):
+                out["pbldnow_%s" % v["key"]] = 1.0
+    for k in keys:
+        out["pbld_%s" % k] = 1.0
+    out["pbld_count"] = float(len(keys))
+    out["pbld_inprogress"] = float(inprog)
+    return out
+
+
+def lord_recruit_block(state):
+    """lrec_<key> per unit mid-recruitment, plus the count."""
+    ks = (state or {}).get("pending_recruit_keys") or []
+    out = {"lrec_inprogress": float(len(ks))}
+    for k in ks:
+        out["lrec_%s" % k] = 1.0
+    return out
+
+
+def carried_province_block(provinces, here):
+    """own_* totals over every owned settlement, carried regardless of where the actor is."""
+    owned = [s for s in (provinces or {}).values() if s.get("settlement_present")]
+    n = len(owned)
+    out = {"own_provinces": float(len({s.get("province") for s in owned})) if n else 0.0,
+           "own_settlements": float(n),
+           "own_buildings_total": float(sum(len(s.get("built") or {}) for s in owned)),
+           "own_building_now": float(sum(len(s.get("building_now") or {}) for s in owned)),
+           "own_free_slots": float(sum((_f(s.get("free_slots")) or 0.0) for s in owned)),
+           "here_is_ours": 1.0 if here else 0.0}
+    return out
+
+
+def bearing(dx, dy):
+    """(sin, cos) of the direction (dx, dy); (None, None) for a zero-length vector."""
+    d = math.hypot(dx, dy)
+    if d < 1e-9:
+        return None, None
+    return round(dy / d, 4), round(dx / d, 4)
+
+
+def _units_of(item):
+    """Known troop count, or None when unknown -- never 0."""
+    u = item.get("units")
+    return None if u is None else _f(u)
+
+
+def near_block(world, locus):
+    """near_* per channel around locus (x, y): ring counts, and the nearest few with distance,
+    direction and strength."""
+    w = world or {}
+    groups = (("friend", [a for a in (w.get("armies") or []) if a.get("has_army")]),
+              ("enemy", [h for h in (w.get("hostiles") or []) if h.get("kind") == "army"]),
+              ("neutral", [h for h in (w.get("hostiles") or []) if h.get("kind") == "neutral_army"]),
+              ("enemysett", [h for h in (w.get("hostiles") or []) if h.get("kind") == "settlement"]),
+              ("ownsett", list(w.get("settlements") or [])))
+    out = {}
+    for name, items in groups:
+        out["near_%s_closest" % name] = None
+        out["near_%s_total" % name] = float(len(items))
+        out["near_%s_strength" % name] = None          # troops of the nearest one
+        out["near_%s_strength_r25" % name] = None      # known troops within 25
+        out["near_%s_dir_sin" % name] = None
+        out["near_%s_dir_cos" % name] = None
+        for k in range(NEAR_K.get(name, NEAR_K_DEFAULT)):
+            pre = "near_%s_%d" % (name, k + 1)
+            out[pre + "_dist"] = out[pre + "_strength"] = None
+            out[pre + "_dir_sin"] = out[pre + "_dir_cos"] = None
+        for r in RINGS:
+            out["near_%s_r%d" % (name, r)] = None
+    if not locus or locus[0] is None or locus[1] is None:
+        return out
+    x, y = float(locus[0]), float(locus[1])
+    for name, items in groups:
+        pairs = sorted(((math.hypot(float(i["x"]) - x, float(i["y"]) - y), i) for i in items
+                        if i.get("x") is not None and i.get("y") is not None),
+                       key=lambda p: p[0])
+        if name == "friend" and pairs and pairs[0][0] < 1e-6:
+            pairs = pairs[1:]                # drop the subject itself
+        ds = [d for d, _ in pairs]
+        out["near_%s_closest" % name] = round(ds[0], 2) if ds else None
+        for r in RINGS:
+            out["near_%s_r%d" % (name, r)] = float(sum(1 for d in ds if d <= r))
+        for k in range(NEAR_K.get(name, NEAR_K_DEFAULT)):
+            pre = "near_%s_%d" % (name, k + 1)
+            if k < len(pairs):
+                d, it = pairs[k]
+                out[pre + "_dist"] = round(d, 2)
+                out[pre + "_strength"] = _units_of(it)
+                s, c = bearing(float(it["x"]) - x, float(it["y"]) - y)
+                out[pre + "_dir_sin"], out[pre + "_dir_cos"] = s, c
+            else:
+                out[pre + "_dist"] = out[pre + "_strength"] = None
+                out[pre + "_dir_sin"] = out[pre + "_dir_cos"] = None
+        if pairs:
+            d0, nearest = pairs[0]
+            out["near_%s_strength" % name] = _units_of(nearest)
+            s, c = bearing(float(nearest["x"]) - x, float(nearest["y"]) - y)
+            out["near_%s_dir_sin" % name], out["near_%s_dir_cos" % name] = s, c
+            known = [_units_of(i) for d, i in pairs if d <= 25]
+            known = [u for u in known if u is not None]
+            out["near_%s_strength_r25" % name] = float(sum(known)) if known else None
+    return out
+
+
+def _db_features(action_type, key):
+    """The offline DB record for this action key, or {}."""
+    if action_type == "building":
+        d = dict(DB.building_features(key))
+        d.update({("chain_" + k): v for k, v in
+                  DB.building_chain_features(d.get("building_chain") or "").items()})
+        return d
+    if action_type == "research":
+        return DB.tech_features(key)
+    if action_type == "recruit_unit":
+        return DB.unit_features(key)
+    if action_type == "skills":
+        return DB.skill_features(key)
+    if action_type == "rites":
+        return DB.ritual_features(key)
+    return {}
+
+
+_COST_FIELDS = ("create_cost", "recruitment_cost", "cost_per_round", "influence_cost")
+
+
+def _target_units(atype, params, key, world):
+    """Defender strength for an action that starts a fight, else None."""
+    w = world or {}
+    if atype == "attack_army":
+        cqi = (params or {}).get("target_cqi")
+        if cqi is None:
+            return None
+        for h in (w.get("hostiles") or []):
+            if h.get("kind") == "army" and str(h.get("cqi")) == str(cqi):
+                return _units_of(h)
+        return None
+    if atype == "attack_settlement":
+        for h in (w.get("hostiles") or []):
+            if h.get("kind") == "settlement" and str(h.get("region")) == str(key):
+                return _units_of(h)
+        return None
+    return None
+
+
+DIPLO_TERM_FEATS = ("nonaggression_pact", "trade_agreement", "defensive_alliance", "soft_access",
+                    "military_alliance", "vassal", "confederation", "declare_war")
+
+
+def _diplomacy_feats(atype, params):
+    """dip_* features for a diplomacy offer; {} for anything else."""
+    if atype != "diplomacy":
+        return {}
+    terms = list(params.get("terms") or [])
+    out = {
+        "dip_target": params.get("faction"),
+        "dip_standing": _f(params.get("standing")),
+        "dip_standing_abs": (abs(_f(params.get("standing")))
+                             if _f(params.get("standing")) is not None else None),
+        "dip_hostile_attitude": (1.0 if (_f(params.get("standing")) or 0.0) < 0 else 0.0),
+        "dip_at_war": _f(params.get("at_war")),
+        "dip_allied": _f(params.get("allied")),
+        "dip_trade": _f(params.get("trade")),
+        "dip_their_vassal": _f(params.get("their_vassal")),
+        "dip_has_any_tie": 1.0 if any(_f(params.get(k)) for k in
+                                      ("allied", "trade", "their_vassal")) else 0.0,
+        "dip_n_terms": float(len(terms)),
+        "dip_is_pair": 1.0 if len(terms) > 1 else 0.0,
+    }
+    for t in DIPLO_TERM_FEATS:
+        out["dip_term_%s" % t] = 1.0 if t in terms else 0.0
+    return out
+
+
+def action_block(offer, locus, treasury, world=None, self_units=None):
+    """opt_* for one offer: what it is, whether it was on, its params, geometry and DB record."""
+    atype, key = offer.get("action_type"), str(offer.get("key"))
+    params = offer.get("params") or {}
+    out = {"opt_type": atype, "opt_key": key,
+           "opt_available": 1.0 if offer.get("available") else 0.0,
+           "opt_gate": offer.get("gate") or "none"}
+    out.update(_diplomacy_feats(atype, params))
+    tx, ty = params.get("x"), params.get("y")
+    if locus and tx is not None and ty is not None and locus[0] is not None:
+        dx, dy = float(tx) - float(locus[0]), float(ty) - float(locus[1])
+        out["opt_target_dist"] = round(math.hypot(dx, dy), 2)
+        out["opt_target_dir_sin"], out["opt_target_dir_cos"] = bearing(dx, dy)
+    else:
+        out["opt_target_dist"] = None
+        out["opt_target_dir_sin"] = out["opt_target_dir_cos"] = None
+    tgt_units = _target_units(atype, params, key, world)
+    out["opt_self_units"] = _f(self_units)
+    out["opt_target_units"] = tgt_units
+    if out["opt_self_units"] is not None and tgt_units is not None:
+        out["opt_strength_diff"] = out["opt_self_units"] - tgt_units
+        out["opt_strength_ratio"] = out["opt_self_units"] / max(tgt_units, 1.0)
+    else:
+        out["opt_strength_diff"] = out["opt_strength_ratio"] = None
+    out["opt_target_faction"] = params.get("target_faction")
+    out["opt_trait"] = params.get("trait")
+    out["opt_n_traits"] = _f(params.get("n_traits"))
+    out["opt_cand_rank"] = _f(params.get("cand_rank"))
+    out["opt_slot_index"] = _f(params.get("slot_index"))
+    out["opt_candidate_index"] = _f(params.get("candidate_index"))
+    out["opt_rite_index"] = _f(params.get("rite_index"))
+    out["opt_is_active"] = _f(params.get("active"))
+    db = _db_features(atype, key) or {}
+    cost = None
+    for k, v in db.items():
+        if k in ("key", "id"):
+            continue
+        n = _f(v)
+        out["opt_db_" + k] = n if n is not None else (str(v) if v is not None else None)
+        if k in _COST_FIELDS and n is not None and cost is None:
+            cost = n
+    out["opt_cost"] = cost
+    out["opt_cost_vs_treasury"] = (cost / treasury) if (cost and treasury) else None
+    return out
+
+
+def _locus(context_kind, state, world, provinces):
+    if context_kind in ("lord", "hero"):
+        return (state.get("x"), state.get("y"))
+    if context_kind == "province":
+        s = next((s for s in (world.get("settlements") or [])
+                  if s.get("region") == state.get("region")), None)
+        return (s.get("x"), s.get("y")) if s else (None, None)
+    cap = (next((s for s in (world.get("settlements") or []) if s.get("capital")), None)
+           or (world.get("settlements") or [None])[0])
+    return (cap.get("x"), cap.get("y")) if cap else (None, None)
+
+
+def state_row(record, entity):
+    """E2's input: everything about the situation, nothing about the action."""
+    world = record.get("world") or {}
+    provinces = {e["context_id"]: e.get("state") or {} for e in record.get("entities") or []
+                 if e.get("context_kind") == "province"}
+    ck, st = entity.get("context_kind"), entity.get("state") or {}
+    row = campaign_block(record.get("campaign") or {}, world)
+    row["ctx_kind"] = ck
+    if ck in ("lord", "hero"):
+        here = provinces.get(st.get("region"))                        # None => not on our ground
+        row.update(lord_block(st))
+        row.update(lord_recruit_block(st))
+        row.update(province_block(here))
+        row.update(province_buildings_block(provinces, here))
+        row.update(carried_province_block(provinces, here))
+    elif ck == "province":
+        row.update(dict(_EMPTY_LORD))
+        row.update(province_block(st))
+        row.update(province_buildings_block(provinces, st))
+        row.update(carried_province_block(provinces, st))
+    else:
+        cap = next((p for p in provinces.values() if p.get("is_capital")), None)
+        row.update(dict(_EMPTY_LORD))
+        row.update(province_block(cap))
+        row.update(province_buildings_block(provinces, cap))
+        row.update(carried_province_block(provinces, cap))
+    loc = _locus(ck, st, world, provinces)
+    near = near_block(world, loc)
+    row.update(near)
+    row.update(positioning_block(near, world, st.get("province"), loc))
     return row
 
 
-_CTX_CAT = ("ctx_faction", "ctx_subculture", "ctx_lord")
+def offer_rows(record, entity):
+    """[(offer, E1 row)] for one entity: its state row plus each offer's action block."""
+    world = record.get("world") or {}
+    provinces = {e["context_id"]: e.get("state") or {} for e in record.get("entities") or []
+                 if e.get("context_kind") == "province"}
+    st = entity.get("state") or {}
+    locus = _locus(entity.get("context_kind"), st, world, provinces)
+    treasury = _f((record.get("campaign") or {}).get("treasury"))
+    self_units = _f(st.get("units"))
+    base = state_row(record, entity)
+    out = []
+    for o in entity.get("offers") or []:
+        row = dict(base)
+        row.update(action_block(o, locus, treasury, world=world, self_units=self_units))
+        out.append((o, row))
+    return out
+
+
+def decision_rows(record):
+    """[(entity, offer, E1 row)] for a whole decision point."""
+    out = []
+    for e in record.get("entities") or []:
+        for offer, row in offer_rows(record, e):
+            out.append((e, offer, row))
+    return out
 
 
 def split_columns(rows):
-    """Given feature-dict rows, return (numeric_cols, categorical_cols) by name convention.
-    Numeric = ctx_* (NOT ctx_c_*, NOT the 3 named categoricals) + opt_n_*. Categorical = the 3 named
-    + ctx_c_* (per-type context categoricals) + opt_c_*. The ctx_c_* routing is REQUIRED: without it a
-    string-valued ctx_c_* would land in the numeric matrix and crash float()/CatBoost."""
-    cols = set()
+    """(numeric_cols, categorical_cols): numeric only if every present value is a number."""
+    cols = {}
     for r in rows:
-        cols.update(r.keys())
-    num = sorted(c for c in cols if c.startswith("ctx_") and not c.startswith("ctx_c_")
-                 and c not in _CTX_CAT)
-    num += sorted(c for c in cols if c.startswith("opt_n_"))
-    cat = list(_CTX_CAT) + sorted(c for c in cols if c.startswith("ctx_c_"))
-    cat += sorted(c for c in cols if c.startswith("opt_c_"))
-    cat = [c for c in cat if c in cols]
+        for k, v in r.items():
+            if v is None:
+                cols.setdefault(k, True)
+                continue
+            cols[k] = cols.get(k, True) and isinstance(v, (int, float)) and not isinstance(v, bool)
+    num = sorted(k for k, isnum in cols.items() if isnum)
+    cat = sorted(k for k, isnum in cols.items() if not isnum)
     return num, cat
+
+
+def matrix(rows, num, cat):
+    """Numerics as floats (None -> nan), categoricals as strings."""
+    out = []
+    for r in rows:
+        vals = []
+        for c in num:
+            v = _f(r.get(c))
+            vals.append(float("nan") if v is None else v)
+        for c in cat:
+            v = r.get(c)
+            vals.append("?" if v is None else str(v))
+        out.append(vals)
+    return out

@@ -10,7 +10,7 @@ import time
 _LOCK = threading.Lock()
 _STATE = {"path": None, "run_dir": None, "seq": 0}
 # used until set_run_dir names a run
-_FALLBACK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "trace_prerun.jsonl")
+_FALLBACK = r"D:\twdata\logs\launcher\trace_prerun.jsonl"
 
 
 def set_run_dir(run_dir):

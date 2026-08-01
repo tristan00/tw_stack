@@ -8,7 +8,7 @@ import os
 import re
 import sys
 
-LOGS = r"D:\tw_stack\advisor\logs"
+LOGS = r"D:\twdata\logs\advisor"
 RUNS = r"D:\twdata\runs\human"
 
 

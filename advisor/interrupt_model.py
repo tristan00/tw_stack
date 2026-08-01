@@ -14,7 +14,7 @@ import features as F                                          # noqa: E402
 import model as M                                             # noqa: E402
 from store import DecisionStore, IncompatibleStore            # noqa: E402
 
-MODEL_DIR = os.path.join(_HERE, "models_store_interrupt")
+MODEL_DIR = r"D:\twdata\models\interrupt"
 MIN_ROWS = 5
 EPSILON = 0.3
 BETA = 0.40                      # explore weight
@@ -75,7 +75,7 @@ def train(runs_root=M.RUNS_ROOT):
     X = F.matrix(rows, num, cat)
     cat_idx = list(range(len(num), len(num) + len(cat)))
     m = CatBoostRegressor(iterations=300, depth=6, learning_rate=0.08, verbose=0,
-                          loss_function="RMSE")
+                          loss_function="RMSE", train_dir=r"D:\twdata\tmp\catboost")
     m.fit(Pool(X, y, cat_features=cat_idx))
     os.makedirs(MODEL_DIR, exist_ok=True)
     m.save_model(os.path.join(MODEL_DIR, "interrupt.cbm"))

@@ -46,7 +46,7 @@ You **may and should**:
   "loaded successfully" is not "ran".
 - **Wipe/archive the store** when data is contaminated. Stop `manager.py` and `ui.py` first, move
   `D:\twdata\runs\human\*` to `D:\twdata\runs\archive_prewipe_<stamp>`, restart both.
-  ⚠ **Archive `advisor_v7/models_store` at the same time.** A wipe that leaves the trained model
+  ⚠ **Archive `D:	wdatamodelsglobal` at the same time.** A wipe that leaves the trained model
   behind means the next campaign is steered by a model fitted on the data you just deleted. This
   happened today.
 
@@ -58,11 +58,11 @@ what caused duplicate games. The session owns the launch.
 # 2. RUNNING IT
 
 ```
-D:\totalwar_runner\.venv\Scripts\python.exe -u advisor_v7/session.py 100 40 --factions all --retrain
+D:\totalwar_runner\.venv\Scripts\python.exe -u advisor/session.py 100 40 --factions all --retrain
 ```
 
-Launch it detached with stdout → a timestamped log under `advisor_v7/logs/`, stderr → the matching
-`.err`, and write the log path to `advisor_v7/logs/CURRENT_SESSION_LOG.txt` (the health-check reads
+Launch it detached with stdout → a timestamped log under `D:	wdataogsdvisor/`, stderr → the matching
+`.err`, and write the log path to `D:	wdataogsdvisor/CURRENT_SESSION_LOG.txt` (the health-check reads
 that pointer).
 
 - `--factions all` reads `launcher/startable_factions.json` — **104 factions / 24 cultures**,
@@ -71,7 +71,7 @@ that pointer).
   Re-harvest with `BusLauncher().harvest_startable_factions()` at campaign-select after new DLC.
 - `--factions` is **mandatory**. Session refuses to start without it, by design: an earlier version
   defaulted to Nagarythe and a "multi-faction" run played one faction 100 times unnoticed.
-- Also required: `manager/manager.py` (the recorder — sole sqlite writer) and `advisor_v7/ui.py 8779`.
+- Also required: `manager/manager.py` (the recorder — sole sqlite writer) and `advisor_ui/ui.py 8779`.
 
 **Healthy = 1 Warhammer3 + 3 python.** Any extra python that is not manager/ui/session is an orphan
 (old scraper, stray probe) — kill it. Orphans polling the bus have killed campaigns.
