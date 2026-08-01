@@ -172,9 +172,7 @@ DIPLOMACY_NEVER_CLICK_IDS = frozenset(("button_send",))
 _CLICKABLE = ("active", "hover", "selected")
 DIPLOMACY_HUD_ROOTS = frozenset(("diplomacy_dropdown", "diplomacy_attitude_tooltip"))
 WAR_DECLARED_MARKER = "declared war on you"
-BENIGN_PANELS = frozenset((
-    "units_panel", "settlement_panel", "recruitment_options",
-))
+BENIGN_PANELS = nav.BENIGN_PANELS
 
 def roots(bus):
     try:
@@ -220,7 +218,7 @@ def evidence(bus, why, shots_dir=None):
     import subprocess
     rep = {"why": why, "roots": roots(bus), "ts": time.time(),
            "clicks": [(round(t, 1), p, c) for t, p, c in CLICK_LOG[-12:]]}
-    rep["dumps"] = [p for p in (dump_screen(bus, r, "stuck_" + why.replace(":", "_")[:24])
+    rep["dumps"] = [p for p in (nav.dump_screen(bus, r, "stuck_" + why.replace(":", "_")[:24])
                                 for r in rep["roots"] if r not in nav.BASE_ROOTS) if p]
     shots_dir = shots_dir or r"D:\twdata\logs\launcher\v7_shots"
     path = os.path.join(shots_dir, "stuck_%s_%d.png" % (why.replace(":", "_")[:40], int(time.time())))
@@ -278,44 +276,6 @@ def cancel_declare_war(bus):
         if root in roots(bus):
             sys.stderr.write("interrupts: %s still open after cancel\n" % root)
     return steps
-
-
-SCREEN_DUMP_DIR = r"D:/twdata/runs/human/screens"
-DIPLO_TOKENS = ("diplo", "treaty", "alliance", "vassal", "tribute", "peace", "war_decl", "ally")
-
-
-def dump_screen(bus, root, why):
-    """Write the COMPLETE tree of `root` to disk -- every node, unfiltered. A diplomacy screen we
-    cannot classify is at least fully recorded, which is the difference between having the
-    evidence and guessing at it."""
-    import json
-    import os
-    try:
-        nodes = _tree(bus, root, 30, 80000)
-        os.makedirs(SCREEN_DUMP_DIR, exist_ok=True)
-        path = os.path.join(SCREEN_DUMP_DIR,
-                            "%d_%s_%s.json" % (int(time.time()), why, str(root)[:40]))
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump({"ts": time.time(), "root": root, "why": why,
-                       "roots": roots(bus), "nodes": nodes}, fh, default=str)
-        sys.stderr.write("interrupts: dumped %s (%d nodes) -> %s\n" % (root, len(nodes), path))
-
-        return path
-    except Exception as e:
-        sys.stderr.write("interrupts: dump of %s failed -> %s\n" % (root, repr(e)[:90]))
-
-        return None
-
-
-def dump_diplomacy_screens(bus, rs=None):
-    """Dump every visible root that could carry diplomacy content. Returns the paths written."""
-    rs = roots(bus) if rs is None else rs
-    out = []
-    for r in rs or []:
-        low = str(r).lower()
-        if any(tok in low for tok in DIPLO_TOKENS) or low == "events":
-            out.append(dump_screen(bus, r, "diplo"))
-    return [p for p in out if p]
 
 
 def diplomacy_roots(bus, r=None):
@@ -842,8 +802,9 @@ def resolve(bus, max_rounds=6):
             _stuck_sig[0] = None
             steps.append("popups_cleared:%d" % n)
             continue
-        if any(any(t in str(x).lower() for t in DIPLO_TOKENS) for x in before):
-            dump_diplomacy_screens(bus, list(before))
+        for r in before:
+            if r not in nav.BASE_ROOTS and r not in BENIGN_PANELS:
+                nav.dump_screen(bus, r, "interrupt")
         kinds = pending(bus)
         if not kinds:
             _stuck_sig[0] = None
