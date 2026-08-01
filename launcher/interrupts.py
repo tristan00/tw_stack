@@ -25,6 +25,9 @@ PREBATTLE_CHOOSABLE = (
     "button_continue_siege",
     "button_surround",
     "button_retreat",
+    "button_sally_forth",
+    "button_maintain_blockade",
+    "button_demand_surrender",
 )
 PREBATTLE_NEVER = frozenset(("button_attack", "button_spectate"))
 
@@ -53,8 +56,7 @@ RESULTS_DECLINED = frozenset((
 ))
 KNOWN_RESULTS_CONTROLS = CAPTIVE_OPTIONS | frozenset(ADVANCE_PREFERENCE) | RESULTS_DECLINED
 PREBATTLE_DECLINED = FORBIDDEN_CLICK_IDS | PREBATTLE_NEVER | frozenset(PREBATTLE_CHOOSABLE) | frozenset((
-    "button_sally_forth", "button_maintain_blockade",
-    "button_demand_surrender", "button_dismiss", "button_cancel_ready", "button_save",
+    "button_dismiss", "button_cancel_ready", "button_save",
     "button_add_charges",
 ))
 KNOWN_PREBATTLE_CONTROLS = frozenset(PREBATTLE_PREFERENCE) | PREBATTLE_DECLINED
@@ -176,7 +178,8 @@ DECLINE_TOKENS = ("decline", "reject", "refuse", "cancel", "close", "no_deal")
 DIPLOMACY_NEVER_CLICK_PREFIXES = ("diplomatic_option",)
 DIPLOMACY_NEVER_CLICK_IDS = frozenset(("button_send",))
 _CLICKABLE = ("active", "hover", "selected")
-DIPLOMACY_HUD_ROOTS = frozenset(("diplomacy_dropdown",))
+DIPLOMACY_HUD_ROOTS = frozenset(("diplomacy_dropdown", "diplomacy_attitude_tooltip"))
+WAR_DECLARED_MARKER = "declared war on you"
 BENIGN_PANELS = frozenset((
     "units_panel", "settlement_panel", "recruitment_options",
 ))
@@ -297,6 +300,37 @@ def defeat_screen(bus, r=None):
     return None
 
 
+DEFEAT_PROBE = (
+    "local f=cm:get_local_faction(true) if not f then return 'nofaction' end "
+    "local ok,d=pcall(function() return f:is_dead() end) "
+    "if not ok then return 'err:'..tostring(d) end "
+    "return tostring(d)..'|'..f:region_list():num_items()")
+
+
+def defeated_probe(bus):
+    """Engine-side death check: True/False, or None when the probe itself failed (logged).
+
+    The Defeat screen exposes no defeat-named root (proven by stuck_blocked_1785556044.png),
+    so root-token matching cannot see it; the engine's own is_dead flag can.
+    """
+    try:
+        r = bus.send("eval", DEFEAT_PROBE, timeout=10.0) or {}
+    except Exception as e:
+        sys.stderr.write("interrupts: defeat probe bus error -> %s\n" % repr(e)[:90])
+        return None
+    if r.get("error"):
+        sys.stderr.write("interrupts: defeat probe eval error -> %s\n" % str(r.get("error"))[:120])
+        return None
+    res = str(r.get("result") or "")
+    if res.startswith("true"):
+        sys.stderr.write("interrupts: DEFEAT PROBE -> faction is dead (%s)\n" % res)
+        return True
+    if res.startswith("false"):
+        return False
+    sys.stderr.write("interrupts: defeat probe unexpected result %r\n" % res[:80])
+    return None
+
+
 def pending(bus):
     """Which interrupt kinds are on screen: a subset of {'battle', 'diplomacy', 'popup'}."""
     r = roots(bus)
@@ -345,7 +379,8 @@ def resolve_prebattle(bus):
                        executed=False, confirmed=False, refusal="execute_failed",
                        latency_ms=int((time.time() - t0) * 1000))
         return False
-    if target in ("button_continue_siege", "button_surround", "button_retreat"):
+    if target in ("button_continue_siege", "button_surround", "button_retreat",
+                  "button_sally_forth", "button_maintain_blockade", "button_demand_surrender"):
         name = target[len("button_"):]
         ok = "popup_pre_battle" not in roots(bus)
         if not ok:
@@ -478,6 +513,43 @@ def resolve_battle(bus, max_rounds=4):
             sys.stderr.write("interrupts: battle screen did not change after a step -- giving up "
                              "rather than re-clicking (%s)\n" % (before,))
             break
+    return steps
+
+
+def acknowledge_war_declared(bus, open_roots):
+    """Acknowledge a 'faction has declared war on you' notification. Returns the steps taken.
+
+    Acknowledge-only: the screen offers no choice, so clicking its accept-family control
+    concedes nothing. Gated on the marker text so nothing else can match.
+    """
+    steps = []
+    for root in open_roots:
+        if root in nav.BASE_ROOTS or root in DIPLOMACY_HUD_ROOTS or root in BENIGN_PANELS:
+            continue
+        tree = _tree(bus, root)
+        if not any(WAR_DECLARED_MARKER in str(n.get("text") or "").lower() for n in tree):
+            continue
+        target = None
+        for n in tree:
+            nid = str(n.get("id") or "").lower()
+            if (n.get("visible") and str(n.get("state")) in _CLICKABLE
+                    and any(t in nid for t in ACCEPT_TOKENS)):
+                target = (str(n.get("id")), n.get("path"))
+                break
+        if target is None:
+            _report_unhandled(bus, "war_declared", ["no accept-family control"], [], root=root)
+            continue
+        opts = {target[0]: {"context": None, "text": "acknowledge war declaration"}}
+        t0 = time.time()
+        clicked = _click(bus, target[1], settle=2.0)
+        gone = root not in roots(bus)
+        _record_choice("war_declared", root, opts, target[0],
+                       executed=clicked, confirmed=gone,
+                       refusal=None if gone else ("command_silently_refused" if clicked
+                                                  else "execute_failed"),
+                       latency_ms=int((time.time() - t0) * 1000))
+        if clicked:
+            steps.append("war_declared_acknowledged:%s" % root)
     return steps
 
 
@@ -698,6 +770,18 @@ def resolve(bus, max_rounds=6):
             continue
         if "diplomacy" in kinds:
             steps.extend(answer_diplomacy(bus))
+            if tuple(roots(bus)) == before:
+                break
+            continue
+        s = choose_dilemma(bus, list(before))
+        if s:
+            steps.extend(s)
+            if tuple(roots(bus)) == before:
+                break
+            continue
+        s = acknowledge_war_declared(bus, list(before))
+        if s:
+            steps.extend(s)
             if tuple(roots(bus)) == before:
                 break
             continue
