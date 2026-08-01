@@ -236,6 +236,17 @@ def _pending_recruits(bus, cqi):
 
 
 POOL_ANCHOR = "unit_list"
+QUEUE_SEP = "@"
+
+
+def split_key(pick):
+    """(unit_key, queue) from a recruit pick. The offer key is `<unit>@<queue>` so local and
+    global recruitment of the same unit are different recommendations; `params['queue']` wins
+    when both are present."""
+    raw = str(pick.get("key") or "")
+    unit, _, suffix = raw.partition(QUEUE_SEP)
+    queue = str((pick.get("params") or {}).get("queue") or suffix or "").lower() or None
+    return unit, queue
 
 
 def card_queue(path):
@@ -302,18 +313,28 @@ def _recruit_execute_inner(bus, ctx, pick, before):
             return False
         _until(lambda: bool(recruitable_units(bus)), 1.4)
         cards = recruitable_units(bus)
-    want_q = str((pick.get("params") or {}).get("queue") or "").lower() or None
-    same_key = [c for c in cards if c["key"] == pick["key"]]
+    unit, want_q = split_key(pick)
+    same_key = [c for c in cards if c["key"] == unit]
     if want_q:
-        card = next((c for c in same_key if str(c.get("queue") or "").lower() == want_q), None)
+        # a pool name may be indexed (local1, local2); an unindexed request must resolve to
+        # exactly one of them or it is ambiguous, never a guess
+        pools = [c for c in same_key if str(c.get("queue") or "").lower() == want_q]
+        if not pools:
+            pools = [c for c in same_key
+                     if str(c.get("queue") or "").lower().rstrip("0123456789") == want_q]
+        if len(pools) > 1:
+            sys.stderr.write("click_actions: %r matches %d pools %s -- ambiguous, refusing\n"
+                             % (want_q, len(pools), [c.get("queue") for c in pools]))
+            return False
+        card = pools[0] if pools else None
         if card is None and same_key:
             sys.stderr.write("click_actions: %s offered in %s but %r was asked for\n"
-                             % (pick["key"], [c.get("queue") for c in same_key], want_q))
+                             % (unit, [c.get("queue") for c in same_key], want_q))
             return False
     elif len(same_key) > 1:
         sys.stderr.write("click_actions: %s is in %d pools %s and the pick names no queue -- "
                          "refusing to guess which one\n"
-                         % (pick["key"], len(same_key), [c.get("queue") for c in same_key]))
+                         % (unit, len(same_key), [c.get("queue") for c in same_key]))
         return False
     else:
         card = same_key[0] if same_key else None
@@ -328,7 +349,7 @@ def _recruit_confirm(bus, ctx, pick, before):
     t = _treasury(bus)
     after = str(_pending_recruits(bus, ctx["entity_id"]) or "")
     prior = str(before.get("pending") or "")
-    want = str(pick["key"])
+    want = split_key(pick)[0]
     queued = after.count(want) > prior.count(want)
     dropped = (t is not None and before.get("treasury") is not None and t < before["treasury"])
     return queued, {"treasury": t, "pending": after, "pending_before": prior,
