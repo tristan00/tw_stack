@@ -59,6 +59,10 @@ class Executor:
         """Clear anything on screen the advisor did not ask for. Returns the steps taken."""
         return interrupts.resolve(self.bus)
 
+    def defeated_probe(self):
+        """Engine-side: is the player faction dead? True/False, None when the probe failed."""
+        return interrupts.defeated_probe(self.bus)
+
     def settle_between_turns(self, timeout=420.0, poll=4.0, turn_before=None, abort=None):
         """Ride out the AI turns after end_turn, clearing interrupts.
 
@@ -92,6 +96,10 @@ class Executor:
             t = self.turn_number()
             if t is not None and (turn_before is None or t > turn_before):
                 return {"turn": t, "steps": steps, "waited_s": round(time.time() - t0, 1)}
+            if interrupts.defeated_probe(self.bus) is True:
+                sys.stderr.write("executor: settle -- the faction is DEAD; this turn will never advance\n")
+                return {"turn": None, "steps": steps + ["defeated"],
+                        "waited_s": round(time.time() - t0, 1), "defeated": True}
             if _aborted():
                 return _bail()
             time.sleep(poll)

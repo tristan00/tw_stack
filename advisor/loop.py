@@ -73,6 +73,9 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
     try:
         for t in range(turns):
             if stuck["fired"]:
+                if executor.defeated_probe() is True:
+                    raise CampaignLost("watchdog fired but the faction is DEAD -- defeat, "
+                                       "not a stall (%s)" % stuck["reason"])
                 raise GameStuck("%s: %s" % (stuck["reason"], stuck["detail"]))
             row = _run_turn(run_dir, executor, pol, wd, stuck, log)
             rows.append(row)
@@ -88,6 +91,9 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
                                 "(turn %s, %d actions, %d confirmed)"
                                 % (row["turn"], row["actions"], row["confirmed"]))
             if row["ended_by"] == "stuck":
+                if executor.defeated_probe() is True:
+                    raise CampaignLost("watchdog fired but the faction is DEAD -- defeat, "
+                                       "not a stall (%s)" % stuck["reason"])
                 raise GameStuck("%s: %s" % (stuck["reason"], stuck["detail"]))
     finally:
         wd.stop()
@@ -300,7 +306,10 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log):
     if settle["steps"]:
         log("   inter-turn: %s (%.0fs)" % (", ".join(str(s) for s in settle["steps"]),
                                            settle["waited_s"]))
-    if settle["turn"] is None and not terminal:
+    if settle.get("defeated"):
+        log("   !! faction destroyed during the AI phase -- defeat, not a stall")
+        ended_by = "defeated"
+    elif settle["turn"] is None and not terminal:
         log("   !! turn never advanced after %.0fs -- the watchdog decides from here"
             % settle["waited_s"])
     camp = (last_record.get("campaign") or {})
