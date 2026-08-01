@@ -67,6 +67,30 @@ class Executor:
         """Engine-side: is the player faction dead? True/False, None when the probe failed."""
         return interrupts.defeated_probe(self.bus)
 
+    def defeated_row_seen(self, tail_bytes=65536):
+        """The mod's faction_destroyed row for us, from the file -- readable after the defeat
+        modal has killed the bus, which is exactly when the eval probe goes blind."""
+        import json
+        try:
+            size = os.path.getsize(self.bus.out_path)
+            with open(self.bus.out_path, "rb") as f:
+                f.seek(max(0, size - tail_bytes))
+                data = f.read()
+        except OSError:
+            return False
+        for line in data.decode("utf-8", "replace").splitlines():
+            line = line.strip()
+            if not line or '"faction_destroyed"' not in line:
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if row.get("cmd") == "faction_destroyed" and row.get("is_us"):
+                sys.stderr.write("executor: faction_destroyed row seen (turn %s)\n" % row.get("turn"))
+                return True
+        return False
+
     def settle_between_turns(self, timeout=420.0, poll=4.0, turn_before=None, abort=None):
         """Ride out the AI turns after end_turn, clearing interrupts.
 
