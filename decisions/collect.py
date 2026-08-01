@@ -14,7 +14,7 @@ MOVEMENT_STANCES = frozenset((
     "MILITARY_FORCE_ACTIVE_STANCE_TYPE_DOUBLE_TIME",
     "MILITARY_FORCE_ACTIVE_STANCE_TYPE_SET_CAMP_RAIDING",
 ))
-MOVE_SAMPLES = 2
+MOVE_SAMPLES = 4
 MOVE_CANDIDATES = 8
 MOVE_MIN_R = 3.0                 # tiles
 MOVE_MAX_R = 9.0                 # tiles
@@ -502,10 +502,16 @@ def _move_offers(bus, cqi, state, acted):
     sig = "%s:%s:%s" % (cqi, x, y)
     _MOVE_ATTEMPTS[sig] = _MOVE_ATTEMPTS.get(sig, 0) + 1
     rng = random.Random("%s#%d" % (sig, _MOVE_ATTEMPTS[sig]))
+    # sample inside what this character can still travel: a fixed 3-9 ring proposed moves a
+    # spent lord cannot make (the pathfinder then rejected them, wasting the sample)
+    ap = state.get("ap_pct")
+    ap = 1.0 if ap is None else (float(ap) / 100.0 if float(ap) > 1.0 else float(ap))
+    ap = max(0.0, min(1.0, ap))
+    reach_max = max(MOVE_MIN_R, MOVE_MAX_R * ap)
     pts = []
     for _ in range(MOVE_CANDIDATES):
         a = rng.uniform(0.0, 2.0 * math.pi)
-        r = rng.uniform(MOVE_MIN_R, MOVE_MAX_R)
+        r = rng.uniform(min(MOVE_MIN_R, reach_max), reach_max)
         pts.append("{%d,%d}" % (round(float(x) + r * math.cos(a)),
                                 round(float(y) + r * math.sin(a))))
     raw = _ev(bus, _LUA_MOVE_CANDIDATES % {"cqi": cqi, "pts": ",".join(pts)},
