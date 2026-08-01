@@ -344,6 +344,20 @@ def in_battle(bus):
     return "battle" in pending(bus)
 
 
+def prebattle_forecast(bus):
+    """The autoresolve forecast the panel shows: {result, casualties}, each text + state.
+
+    dy_result / dy_casualties are present whatever the faction (verified on a Skaven panel
+    carrying its own Menace Below elements)."""
+    out = {}
+    for n in _tree(bus, "popup_pre_battle", 30, 40000):
+        i = str(n.get("id") or "")
+        if i in ("dy_result", "dy_casualties") and n.get("visible"):
+            out[i[3:]] = {"text": str(n.get("text") or "").strip() or None,
+                          "state": str(n.get("state") or "") or None}
+    return out
+
+
 def resolve_prebattle(bus):
     """Drive the open pre-battle panel forward. Returns the control used, or False."""
     ctrls = _clickable_controls(bus, "popup_pre_battle")
@@ -361,11 +375,12 @@ def resolve_prebattle(bus):
                          % ",".join(sorted(ctrls)[:10]))
         return False
     opts = _options_of(bus, "popup_pre_battle", legal)
+    forecast = prebattle_forecast(bus)
     t0 = time.time()
     off = bus.out_offset()
     clicked = _click(bus, ctrls[target], settle=1.5)
     if not clicked:
-        _record_choice("pre_battle", "popup_pre_battle", opts, target,
+        _record_choice("pre_battle", "popup_pre_battle", opts, target, extra={"panel": forecast},
                        executed=False, confirmed=False, refusal="execute_failed",
                        latency_ms=int((time.time() - t0) * 1000))
         return False
@@ -383,7 +398,7 @@ def resolve_prebattle(bus):
         still_up = "popup_pre_battle" in roots(bus)
         sys.stderr.write("interrupts: %s did NOT resolve the battle (pre_battle still open=%s)\n"
                          % (target, still_up))
-    _record_choice("pre_battle", "popup_pre_battle", opts, target,
+    _record_choice("pre_battle", "popup_pre_battle", opts, target, extra={"panel": forecast},
                    executed=clicked, confirmed=bool(ok),
                    refusal=None if ok else "command_silently_refused",
                    latency_ms=int((time.time() - t0) * 1000))
