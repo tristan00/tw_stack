@@ -278,6 +278,44 @@ def cancel_declare_war(bus):
     return steps
 
 
+SCREEN_DUMP_DIR = r"D:/twdata/runs/human/screens"
+DIPLO_TOKENS = ("diplo", "treaty", "alliance", "vassal", "tribute", "peace", "war_decl")
+
+
+def dump_screen(bus, root, why):
+    """Write the COMPLETE tree of `root` to disk -- every node, unfiltered. A diplomacy screen we
+    cannot classify is at least fully recorded, which is the difference between having the
+    evidence and guessing at it."""
+    import json
+    import os
+    try:
+        nodes = _tree(bus, root, 30, 80000)
+        os.makedirs(SCREEN_DUMP_DIR, exist_ok=True)
+        path = os.path.join(SCREEN_DUMP_DIR,
+                            "%d_%s_%s.json" % (int(time.time()), why, str(root)[:40]))
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"ts": time.time(), "root": root, "why": why,
+                       "roots": roots(bus), "nodes": nodes}, fh, default=str)
+        sys.stderr.write("interrupts: dumped %s (%d nodes) -> %s\n" % (root, len(nodes), path))
+
+        return path
+    except Exception as e:
+        sys.stderr.write("interrupts: dump of %s failed -> %s\n" % (root, repr(e)[:90]))
+
+        return None
+
+
+def dump_diplomacy_screens(bus, rs=None):
+    """Dump every visible root that could carry diplomacy content. Returns the paths written."""
+    rs = roots(bus) if rs is None else rs
+    out = []
+    for r in rs or []:
+        low = str(r).lower()
+        if any(tok in low for tok in DIPLO_TOKENS) or low == "events":
+            out.append(dump_screen(bus, r, "diplo"))
+    return [p for p in out if p]
+
+
 def diplomacy_roots(bus, r=None):
     """Visible diplomacy roots, excluding DIPLOMACY_HUD_ROOTS."""
     r = roots(bus) if r is None else r
@@ -802,6 +840,8 @@ def resolve(bus, max_rounds=6):
             _stuck_sig[0] = None
             steps.append("popups_cleared:%d" % n)
             continue
+        if any(any(t in str(x).lower() for t in DIPLO_TOKENS) for x in before):
+            dump_diplomacy_screens(bus, list(before))
         kinds = pending(bus)
         if not kinds:
             _stuck_sig[0] = None
