@@ -132,9 +132,9 @@ class Executor:
             row, off = self.bus.wait_row(("turn_start", "faction_destroyed"),
                                          timeout=poll, offset=off, pred=_row_wanted)
             if row is not None:
-                if row.get("cmd") == "faction_destroyed" or (row.get("regions") or 1) == 0:
-                    sys.stderr.write("executor: settle -- the faction is DEAD (row=%s)\n"
-                                     % row.get("cmd"))
+                if row.get("cmd") == "faction_destroyed":
+                    sys.stderr.write("executor: settle -- the faction is DEAD (event=%s)\n"
+                                     % row.get("event"))
                     return {"turn": None, "steps": steps + ["defeated"],
                             "waited_s": round(time.time() - t0, 1), "defeated": True}
                 return {"turn": row.get("turn"), "steps": steps,

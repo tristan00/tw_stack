@@ -879,15 +879,21 @@ local function arm_defeat_listener()
     log({ cmd = "defeat_listener", armed = false, reason = "core:add_listener unavailable" })
     return
   end
-  local ok = pcall(function()
-    core:add_listener("twcontrol_faction_destroyed", "FactionDestroyed", true,
-      function(context)
-        local fn = try(function() return context:faction():name() end)
-        local me = try(function() return human_faction():name() end)
-        log({ cmd = "faction_destroyed", faction = fn, is_us = (fn ~= nil and fn == me),
-              turn = turn() })
-      end, true)
-  end)
+  -- the engine's death event name is patch-uncertain; arm every candidate (a name that
+  -- does not exist simply never fires)
+  local ok = false
+  for _, ev in ipairs({ "FactionDestroyed", "FactionDied", "FactionDeath" }) do
+    local armed = pcall(function()
+      core:add_listener("twcontrol_" .. ev, ev, true,
+        function(context)
+          local fn = try(function() return context:faction():name() end)
+          local me = try(function() return human_faction():name() end)
+          log({ cmd = "faction_destroyed", event = ev, faction = fn,
+                is_us = (fn ~= nil and fn == me), turn = turn() })
+        end, true)
+    end)
+    ok = ok or armed
+  end
   -- Belt and braces: our own region count at every turn start. If the listener never fires (event
   -- name differs by patch), the last turn_start row still shows the count going to zero.
   pcall(function()
@@ -898,7 +904,9 @@ local function arm_defeat_listener()
         if fn ~= nil and fn == me then
           local n = try(function() return human_faction():region_list():num_items() end)
           log({ cmd = "turn_start", turn = turn(), regions = or_null(n) })
-          if n == 0 then log({ cmd = "faction_destroyed", faction = me, is_us = true, turn = turn() }) end
+          -- regions==0 is NOT death: a faction with surviving armies plays on (proven by
+          -- Aislinn, 4 regionless turns). Informational row only, never faction_destroyed.
+          if n == 0 then log({ cmd = "regions_zero", faction = me, turn = turn() }) end
         end
       end, true)
   end)
