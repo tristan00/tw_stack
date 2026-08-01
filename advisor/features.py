@@ -374,6 +374,25 @@ def action_block(offer, locus, treasury, world=None, self_units=None):
     else:
         out["opt_target_dist"] = None
         out["opt_target_dir_sin"] = out["opt_target_dir_cos"] = None
+    # where this move LEAVES us relative to our other lords: concentration vs dispersal is the
+    # thing a move is for, and the pre-move distances say nothing about it
+    if atype == "move" and tx is not None and ty is not None:
+        others = [a for a in ((world or {}).get("armies") or [])
+                  if a.get("has_army") and a.get("x") is not None
+                  and not (locus and abs(float(a["x"]) - float(locus[0])) < 1e-6
+                           and abs(float(a["y"]) - float(locus[1])) < 1e-6)]
+        ds = sorted(math.hypot(float(tx) - float(a["x"]), float(ty) - float(a["y"]))
+                    for a in others)
+        out["opt_after_lords_n"] = float(len(ds))
+        out["opt_after_lord_nearest"] = round(ds[0], 2) if ds else None
+        out["opt_after_lord_mean"] = round(sum(ds) / len(ds), 2) if ds else None
+        for i in range(3):
+            out["opt_after_lord_%d_dist" % (i + 1)] = round(ds[i], 2) if i < len(ds) else None
+    else:
+        out["opt_after_lords_n"] = None
+        out["opt_after_lord_nearest"] = out["opt_after_lord_mean"] = None
+        for i in range(3):
+            out["opt_after_lord_%d_dist" % (i + 1)] = None
     tgt_units = _target_units(atype, params, key, world)
     out["opt_self_units"] = _f(self_units)
     out["opt_target_units"] = tgt_units
