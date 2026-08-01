@@ -372,7 +372,8 @@ def _recruit_gate(bus, ctx, pick, before):
         if not pools:
             return False, "queue_%s_not_offered_here" % queue
         if not any((v or {}).get("free") for v in pools.values()):
-            # a full pool refuses the click; spending the action to discover that is waste
+            # POLICY, not a game rule: the game queues past a full pool quite happily. Refusing
+            # keeps the advisor from sinking a turn's capital into one queue.
             return False, "%s_recruitment_slots_full" % queue
     return True, None
 
