@@ -48,6 +48,70 @@ def _tail_jsonl(path, n):
     return out
 
 
+def _ending_evidence(rd, entry, ex):
+    """The case file for adjudicating a campaign ending without having watched the game:
+    the state trajectory, the recent battles, the terminal signal, and a plausibility
+    verdict (advisory only -- it labels nothing, it argues)."""
+    import sqlite3
+    out = {}
+    try:
+        con = sqlite3.connect("file:%s/decisions.sqlite?mode=ro" % str(rd).replace("\\", "/"),
+                              uri=True, timeout=5.0)
+        camp = con.execute("SELECT campaign_id FROM decision_points"
+                           " ORDER BY decision_id DESC LIMIT 1").fetchone()
+        camp = camp[0] if camp else None
+        if camp:
+            out["trajectory"] = [
+                {"turn": t, "settlements": s, "income": i, "power_rank": p}
+                for t, s, i, p in con.execute(
+                    "SELECT turn, settlements, income, power_rank FROM target_rows"
+                    " WHERE campaign_id=? ORDER BY turn DESC LIMIT 6", (camp,))][::-1]
+            out["recent_battles"] = [
+                {"turn": t, "kind": k, "chosen": c, "confirmed": cf}
+                for t, k, c, cf in con.execute(
+                    "SELECT turn, kind, chosen, confirmed FROM interrupt_decisions"
+                    " WHERE campaign_id=? AND kind IN ('pre_battle','battle_results','occupation')"
+                    " ORDER BY interrupt_id DESC LIMIT 6", (camp,))][::-1]
+        con.close()
+    except Exception as e:
+        out["evidence_error"] = repr(e)[:120]
+    try:
+        out["defeat_row"] = bool(ex.defeated_row_seen())
+    except Exception:
+        out["defeat_row"] = None
+    traj = out.get("trajectory") or []
+    battles = out.get("recent_battles") or []
+    last = traj[-1] if traj else {}
+    reasons = []
+    if out.get("defeat_row"):
+        reasons.append("engine death row in this campaign's window")
+    if traj and (last.get("settlements") or 0) <= 1:
+        reasons.append("settlements down to %s" % last.get("settlements"))
+    if len(traj) >= 3 and (traj[0].get("settlements") or 0) > (last.get("settlements") or 0):
+        reasons.append("settlement decline %s -> %s" % (traj[0].get("settlements"),
+                                                        last.get("settlements")))
+    if any(b.get("turn") == last.get("turn") for b in battles):
+        reasons.append("battle on the final turn")
+    healthy = (traj and (last.get("settlements") or 0) >= 2
+               and not any(b.get("turn") == last.get("turn") for b in battles))
+    outcome = entry.get("outcome")
+    if outcome == "defeated":
+        verdict = ("consistent_with_real_defeat" if reasons
+                   else "SUSPICIOUS: no supporting evidence -- review the screenshot")
+    elif outcome in ("stuck", "error"):
+        if out.get("defeat_row"):
+            verdict = "MISLABELED? engine death row present -- likely a real defeat"
+        elif healthy:
+            verdict = "harness_failure_likely: state healthy at the wedge (%s settlements)" \
+                      % last.get("settlements")
+        else:
+            verdict = "ambiguous -- see trajectory and screenshot"
+    else:
+        verdict = "n/a"
+    out["plausibility"] = {"verdict": verdict, "evidence": reasons}
+    return out
+
+
 def _postmortem(runs_root, entry, ex, log):
     """Append one record per campaign to postmortems.jsonl, on any outcome. Never raises."""
     rec = {"ts": time.time(), "when": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -89,6 +153,7 @@ def _postmortem(runs_root, entry, ex, log):
                 rec["confirmed"] = sum(int(r.get("confirmed") or 0) for r in turn_rows)
                 rec["ended_by"] = [r.get("ended_by") for r in turn_rows]
         rec["errors_tail"] = _tail_jsonl(os.path.join(rd, "errors.log"), 4) or None
+        rec.update(_ending_evidence(rd, entry, ex))
         try:
             logs_dir = os.path.join(rd, "logs")
             rec["game_logs"] = [{"name": f, "bytes": os.path.getsize(os.path.join(logs_dir, f))}

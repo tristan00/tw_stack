@@ -491,6 +491,47 @@ def _matrix_tables(data, title):
             % (_esc(title), head, "".join(rate_rows), _esc(title), head, "".join(time_rows)))
 
 
+def render_endings(runs_root=RUNS_ROOT, limit=20):
+    """Campaign endings with their plausibility verdicts -- adjudicate without watching."""
+    path = os.path.join(runs_root, "postmortems.jsonl")
+    rows = []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return ""
+    for line in lines[-limit:]:
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        rows.append(r)
+    if not rows:
+        return ""
+    tr = []
+    for r in reversed(rows):
+        pl = r.get("plausibility") or {}
+        verdict = pl.get("verdict") or "-"
+        cls = ("ok" if verdict.startswith("consistent") else
+               "bad" if ("SUSPICIOUS" in verdict or "MISLABELED" in verdict) else
+               "warn" if verdict.startswith("harness") else "dim")
+        traj = r.get("trajectory") or []
+        tline = " ".join("%s:%s" % (t.get("turn"), t.get("settlements")) for t in traj[-4:])
+        tr.append("<tr><td class=dim>%s</td><td>%s</td><td>%s</td><td>%s</td>"
+                  "<td class=%s>%s</td><td class=dim>%s</td><td class=dim>%s</td></tr>"
+                  % (_esc(r.get("when", "")[-8:]), _esc(str(r.get("faction"))[:30]),
+                     _esc(r.get("outcome")), _esc(r.get("turns_played")),
+                     cls, _esc(verdict[:60]),
+                     _esc("; ".join((pl.get("evidence") or [])[:2])[:70]),
+                     _esc(tline)))
+    return ("<h2>campaign endings &mdash; was it a real defeat?</h2>"
+            "<p class=muted>Verdicts are advisory: they argue from the trajectory, the engine "
+            "death row, and final-turn battles. turn:settlements shows the death spiral or the "
+            "healthy line that just stopped.</p>"
+            "<div class=scroll><table><tr><th>when<th>faction<th>outcome<th>turns"
+            "<th>verdict<th>evidence<th>turn:settlements</tr>%s</table></div>" % "".join(tr))
+
+
 def render_faction_matrix():
     main, inter = faction_action_stats()
     intro = ("<p class=muted>Every campaign across every run dir. A cell far below its column's "
@@ -584,7 +625,7 @@ def render_index(con, run_dir):
               "<th>refusal<th>policy</tr>"
               "%s</table></div>" % "".join(seq))
     head = ("<h1>advisor v7</h1><div class=dim>%s</div>" % _esc(run_dir)) + "<div class=cards>%s</div>" % cards
-    panels = [("overview", render_leaders(con) + render_history(con)),
+    panels = [("overview", render_endings() + render_leaders(con) + render_history(con)),
               ("starts", render_starts()),
               ("action x faction", render_faction_matrix()),
               ("blocking menus", render_interrupts()),
