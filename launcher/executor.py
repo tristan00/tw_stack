@@ -67,14 +67,21 @@ class Executor:
         """Engine-side: is the player faction dead? True/False, None when the probe failed."""
         return interrupts.defeated_probe(self.bus)
 
-    def defeated_row_seen(self, tail_bytes=65536):
-        """The mod's faction_destroyed row for us, from the file -- readable after the defeat
-        modal has killed the bus, which is exactly when the eval probe goes blind."""
+    def mark_campaign_start(self):
+        """Row-scan boundary: defeat rows only count if written after this point."""
+        self._campaign_offset = self.bus.out_offset()
+
+    def defeated_row_seen(self):
+        """The mod's faction_destroyed row for us, written during THIS campaign -- readable
+        after the defeat modal has killed the bus, which is when the eval probe goes blind.
+        No campaign boundary marked -> False: degrade toward 'stuck', never toward 'defeated'."""
         import json
+        off = getattr(self, "_campaign_offset", None)
+        if off is None:
+            return False
         try:
-            size = os.path.getsize(self.bus.out_path)
             with open(self.bus.out_path, "rb") as f:
-                f.seek(max(0, size - tail_bytes))
+                f.seek(off)
                 data = f.read()
         except OSError:
             return False
@@ -87,7 +94,8 @@ class Executor:
             except ValueError:
                 continue
             if row.get("cmd") == "faction_destroyed" and row.get("is_us"):
-                sys.stderr.write("executor: faction_destroyed row seen (turn %s)\n" % row.get("turn"))
+                sys.stderr.write("executor: faction_destroyed row seen (event=%s turn=%s)\n"
+                                 % (row.get("event"), row.get("turn")))
                 return True
         return False
 
