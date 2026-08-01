@@ -220,6 +220,8 @@ def evidence(bus, why, shots_dir=None):
     import subprocess
     rep = {"why": why, "roots": roots(bus), "ts": time.time(),
            "clicks": [(round(t, 1), p, c) for t, p, c in CLICK_LOG[-12:]]}
+    rep["dumps"] = [p for p in (dump_screen(bus, r, "stuck_" + why.replace(":", "_")[:24])
+                                for r in rep["roots"] if r not in nav.BASE_ROOTS) if p]
     shots_dir = shots_dir or r"D:\twdata\logs\launcher\v7_shots"
     path = os.path.join(shots_dir, "stuck_%s_%d.png" % (why.replace(":", "_")[:40], int(time.time())))
     try:
@@ -279,7 +281,7 @@ def cancel_declare_war(bus):
 
 
 SCREEN_DUMP_DIR = r"D:/twdata/runs/human/screens"
-DIPLO_TOKENS = ("diplo", "treaty", "alliance", "vassal", "tribute", "peace", "war_decl")
+DIPLO_TOKENS = ("diplo", "treaty", "alliance", "vassal", "tribute", "peace", "war_decl", "ally")
 
 
 def dump_screen(bus, root, why):
