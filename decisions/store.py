@@ -104,6 +104,7 @@ class DecisionStore:
                    ("interrupt_decisions", "refusal", "TEXT"),
                    ("interrupt_decisions", "latency_ms", "INTEGER"),
                    ("interrupt_decisions", "tree_json", "TEXT"),
+                   ("interrupt_decisions", "policy", "TEXT"),
                    ("action_offers", "score", "REAL"),
                    ("action_offers", "exploit", "REAL"),
                    ("action_offers", "explore", "REAL"),
@@ -313,8 +314,8 @@ class DecisionStore:
         self.con.execute(
             "INSERT INTO interrupt_decisions(ts,campaign_id,turn,kind,root,root_context,"
             "n_options,options_json,chosen,chosen_context,executed,confirmed,counted,refusal,"
-            "latency_ms,campaign_json,tree_json)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "latency_ms,campaign_json,tree_json,policy)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (row.get("ts") or time.time(),
              self.campaign_key(camp.get("faction"), camp.get("campaign_uuid")),
              int(camp.get("turn") or 0),
@@ -325,7 +326,8 @@ class DecisionStore:
              self._flag(row.get("counted")),
              row.get("refusal"), row.get("latency_ms"),
              json.dumps(camp, default=str),
-             json.dumps(row["tree"], default=str) if row.get("tree") else None))
+             json.dumps(row["tree"], default=str) if row.get("tree") else None,
+             row.get("policy")))
         self.con.commit()
 
     def interrupt_rows(self):

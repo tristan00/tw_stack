@@ -149,19 +149,20 @@ class InterruptRanker:
             return {}
 
     def choose(self, screen, options, campaign):
-        """(pick, policy). Always picks: a uniform draw over `options` when nothing is fitted."""
+        """(pick, policy, scores). Always picks: a uniform draw over `options` when nothing is
+        fitted; `scores` is {} then, else the per-option predictions that drove the pick."""
         opts = sorted(options)
         if not opts:
-            return None, "none"
+            return None, "none", {}
         s = self.score(screen, options, campaign)
         if not s:
-            return self.rng.choice(opts), "cold_random"
+            return self.rng.choice(opts), "cold_random", {}
         if EPSILON > 0.0 and self.rng.random() < EPSILON:
             pick = self.rng.choice(sorted(s))
             sys.stderr.write("interrupt_model: %s -> %r (epsilon explore, model preferred %r)\n"
                              % (screen, pick, max(s, key=s.get)))
-            return pick, "epsilon_random"
-        return max(s, key=s.get), "model"
+            return pick, "epsilon_random", s
+        return max(s, key=s.get), "model", s
 
 
 def main():
