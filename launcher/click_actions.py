@@ -461,20 +461,11 @@ def lord_candidates(bus):
     except Exception as e:
         sys.stderr.write("click_actions: candidate tree -> %s\n" % repr(e)[:80])
         return []
-    nodes = t.get("nodes") or []
-    band = next(((n.get("y") or 0, (n.get("y") or 0) + (n.get("h") or 0))
-                 for n in nodes if str(n.get("id")) == "list_clip"), None)
-    rows = []
-    for n in nodes:
-        if not str(n.get("id") or "").startswith("general_candidate") or not n.get("visible"):
-            continue
-        if str(n.get("state")) not in ("active", "selected"):
-            continue                       # inactive rows do not take a click
-        if band is not None:
-            centre = (n.get("y") or 0) + (n.get("h") or 0) // 2
-            if not band[0] <= centre <= band[1]:
-                continue                   # clipped: engine_click on it is measured to do nothing
-        rows.append(n)
+    rows = [n for n in (t.get("nodes") or [])
+            if str(n.get("id") or "").startswith("general_candidate") and n.get("visible")
+            # state, not position: an id-click selects a row scrolled out of the viewport and
+            # the list scrolls itself to it (measured), while an inactive row ignores the click
+            and str(n.get("state")) in ("active", "selected")]
     rows.sort(key=lambda n: (n.get("y") or 0, n.get("x") or 0))
     return [str(n.get("id")) for n in rows]
 
