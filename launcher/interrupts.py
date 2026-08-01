@@ -68,6 +68,9 @@ DISPLAY_CONTROLS = frozenset((
     # classified from stuck_unhandled_battle_results_1785541961.png: the Tomb Kings' 0/8 books
     # HUD counter, clickable while the results popup is open -- opens a panel, resolves nothing
     "button_books_of_nagash",
+    # event-popup chrome (unhandled_screens.jsonl inventory): camera jump + message body
+    "button_zoom",
+    "button_txt",
 ))
 DISPLAY_PREFIXES = ("unit_",)
 
@@ -656,7 +659,10 @@ def choose_dilemma(bus, open_roots):
         found = _dilemma_options(bus, root)
         if not found:
             ctrls = _clickable_controls(bus, root)
-            actionable = {i: p for i, p in ctrls.items() if i not in SCROLL_CHROME_IDS}
+            actionable = {i: p for i, p in ctrls.items()
+                          if i not in SCROLL_CHROME_IDS and i not in DISPLAY_CONTROLS}
+            if not actionable:
+                continue
             ack = sorted(i for i in actionable
                          if any(t in i.lower() for t in ACCEPT_TOKENS)
                          or i in ("button_dismiss", "button_close"))
