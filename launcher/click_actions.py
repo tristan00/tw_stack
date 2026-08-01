@@ -21,6 +21,8 @@ BUTTON_CONFIRM = CHAR_PANEL + "|footer|button_confirm"
 CANDIDATE_LIST = (CHAR_PANEL + "|general_selection_panel|main_holder|character_list_parent|"
                   "character_list|listview|list_clip|list_box")
 BUTTON_RAISE = CHAR_PANEL + "|footer|button_raise"
+LORE_LIST = (CHAR_PANEL + "|general_selection_panel|main_holder|lore_select_parent|"
+             "lord_magic_lore_type|lore_type_list")
 
 
 def _click(bus, path, timeout=10.0):
@@ -415,10 +417,66 @@ def lord_types(bus):
     return [k for k in kids if not k.startswith("button_template")]
 
 
+def lore_tabs(bus):
+    """[(lore_id, path)] of the magic lores offered for the selected type, in panel order.
+
+    A caster type has a lore level between the type and its candidates: each lore keeps its
+    own roster, so the lore decides WHO can be recruited, not just what they cast."""
+    try:
+        t = bus.send("tree", "%s 6 4000" % LORE_LIST, timeout=20) or {}
+    except Exception as e:
+        sys.stderr.write("click_actions: lore tree -> %s\n" % repr(e)[:80])
+        return []
+    out = []
+    for n in (t.get("nodes") or []):
+        i = str(n.get("id") or "")
+        if "lore" in i and n.get("visible") and str(n.get("path") or "").endswith(i):
+            if i not in ("lore_type_list",):
+                out.append((i, str(n.get("path"))))
+    return out
+
+
+def split_lord_key(bus, key, types):
+    """(type_id, lore_hint) for a recruit_lord key against the panel's real type ids.
+
+    Longest matching type id wins and whatever remains is the lore hint, so both key shapes
+    work: an explicit `type@lore`, and the engine subtypes that bake the lore into the name
+    (wh3_dlc23_chd_sorcerer_prophet_fire -> chd_sorcerer_prophet + fire)."""
+    want, _, explicit = str(key).partition("@")
+    hits = [t for t in types if want == t or want.endswith("_" + t) or ("_" + t + "_") in want]
+    if not hits:
+        return None, (explicit or None)
+    t = max(hits, key=len)
+    tail = want.split(t, 1)[1].strip("_") if t in want else ""
+    return t, (explicit or tail or None)
+
+
 def lord_candidates(bus):
-    """`general_candidate_<n>_` rows for the selected lord type."""
-    _res, kids = _find(bus, CANDIDATE_LIST)
-    return [k for k in kids if k.startswith("general_candidate")]
+    """`general_candidate_<n>_` rows of the SELECTED type only, top row first.
+
+    Every type's roster lives in the tree at once, stacked on the same coordinates; picking
+    a type only changes which rows are visible. Child ids alone therefore span all types."""
+    try:
+        t = bus.send("tree", "%s 6 4000" % CANDIDATE_LIST, timeout=20) or {}
+    except Exception as e:
+        sys.stderr.write("click_actions: candidate tree -> %s\n" % repr(e)[:80])
+        return []
+    nodes = t.get("nodes") or []
+    band = next(((n.get("y") or 0, (n.get("y") or 0) + (n.get("h") or 0))
+                 for n in nodes if str(n.get("id")) == "list_clip"), None)
+    rows = []
+    for n in nodes:
+        if not str(n.get("id") or "").startswith("general_candidate") or not n.get("visible"):
+            continue
+        if str(n.get("state")) not in ("active", "selected"):
+            continue                       # inactive rows do not take a click
+        if band is not None:
+            centre = (n.get("y") or 0) + (n.get("h") or 0) // 2
+            if not band[0] <= centre <= band[1]:
+                continue                   # clipped: engine_click on it is measured to do nothing
+        rows.append(n)
+    rows.sort(key=lambda n: (n.get("y") or 0, n.get("x") or 0))
+    return [str(n.get("id")) for n in rows]
 
 
 def _lord_snapshot(bus, ctx, pick):
@@ -469,7 +527,22 @@ def _lord_execute_inner(bus, ctx, pick, before):
         return False
     if not _click(bus, "%s|%s" % (type_path, btn)):
         return False
-    _until(lambda: bool(lord_candidates(bus)), 1.5)
+    _until(lambda: bool(lord_candidates(bus)) or bool(lore_tabs(bus)), 1.5)
+    lores = lore_tabs(bus)
+    if lores:
+        if not lore_hint:
+            sys.stderr.write("click_actions: %s offers %d lores %s and the pick names none -- "
+                             "refusing to accept whichever tab happens to be open\n"
+                             % (btn, len(lores), [i for i, _p in lores]))
+            return False
+        hit = [(i, pth) for i, pth in lores if lore_hint.lower() in i.lower()]
+        if len(hit) != 1:
+            sys.stderr.write("click_actions: lore %r matches %d of %s -- refusing\n"
+                             % (lore_hint, len(hit), [i for i, _p in lores]))
+            return False
+        if not _click(bus, hit[0][1]):
+            return False
+        _until(lambda: bool(lord_candidates(bus)), 2.0)
     cands = lord_candidates(bus)
     if not cands:
         sys.stderr.write("click_actions: no general_candidate rows for %r\n" % pick["key"])
