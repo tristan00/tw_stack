@@ -19,8 +19,9 @@ BETA = 0.1                         # P(argmax novelty); the remainder is argmax 
 
 SUBSAMPLE_CAPS = {"diplomacy": 12}
 # per (context_kind, context_id, action_type), per turn
-# capacities the FACTION owns, not the entity: recruiting a lord from settlement A spends the
-# same per-turn character capacity as settlement B, so the cap counts across all of them
+# counted once across entities rather than per entity. The exact scope of the game's character
+# capacity is UNCONFIRMED (province-wide is at least as likely as faction-wide); this is the
+# conservative choice, and multi-province campaigns are rare enough that it rarely binds.
 FACTION_WIDE_CAPS = frozenset(("recruit_lord", "research", "rites"))
 PER_TURN_CAPS = {"recruit_lord": 1, "recruit_unit": 4, "edict": 1, "research": 1, "rites": 1,
                  "diplomacy": 1,
