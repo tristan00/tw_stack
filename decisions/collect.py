@@ -7,19 +7,17 @@ import time
 
 sys.path.insert(0, r"D:\tw_stack\bus")
 
-# stances carrying CA's cannot-attack flag; 13/13 attacks refused under these
+# stances carrying CA's cannot-attack flag
 MOVEMENT_STANCES = frozenset((
     "MILITARY_FORCE_ACTIVE_STANCE_TYPE_MARCH",
     "MILITARY_FORCE_ACTIVE_STANCE_TYPE_DOUBLE_TIME",
     "MILITARY_FORCE_ACTIVE_STANCE_TYPE_SET_CAMP_RAIDING",
-    # TUNNELING carries the flag on only 11/16 rows -- Tzeentch, Daemons, Norsca,
-    # Vilitch and Malakai variants attack legally from it. Left out deliberately.
 ))
-MOVE_SAMPLES = 2                  # destinations offered per character
-MOVE_CANDIDATES = 8              # raw draws fed to the pathfinder
+MOVE_SAMPLES = 2
+MOVE_CANDIDATES = 8
 MOVE_MIN_R = 3.0                 # tiles
 MOVE_MAX_R = 9.0                 # tiles
-_MOVE_ATTEMPTS = {}              # (cqi,x,y) -> draw count; part of the sampler seed
+_MOVE_ATTEMPTS = {}
 
 _G = ("local function g(c,p) local ok,v=pcall(function() return c:Call(p) end);"
       "if ok and v~=nil then return v end return nil end "
@@ -36,7 +34,6 @@ def _ev(bus, lua, timeout=20.0, allow_nil=False):
     except Exception as e:
         raise CollectError("bus eval failed: %s" % repr(e)[:110])
     if r.get("error"):
-        # keep the tail, not the head
         _e = str(r["error"])
         raise CollectError("lua error: ...%s" % _e[-260:] if len(_e) > 260 else
                            "lua error: %s" % _e)
@@ -193,7 +190,7 @@ _LUA_CAMPAIGN = (_G + "local f=cm:get_local_faction(true) "
 
 def campaign_state(bus, with_uuid=True):
     p = str(_ev(bus, _LUA_CAMPAIGN)).split("|")
-    if len(p) < 8:                     # the army count is field 9 and deliberately optional
+    if len(p) < 8:
         raise CollectError("campaign state malformed: %r" % p)
     uid = p[7]
     setts = _num(p[3])
@@ -224,17 +221,7 @@ _LUA_RUINS = (_G +
 
 
 def ruins(bus):
-    """Settlements that LOOK like ruins to the player: [{region, x, y}].
-
-    Use the CCO IsAbandoned flag, never cm r:is_abandoned(). They disagree, and the disagreement is
-    the point: a Skaven hidden city reads cm=false (it is really a Skaven settlement) but cco=true
-    (it renders as a ruin). The player sees the ruin, so the advisor must too -- reading cm here
-    both misses the trap and leaks knowledge the player does not have.
-
-    SHROUD GATE, do not remove: without it this emits ruins across the unscouted map. There is no
-    cm-layer region visibility call (is_shrouded/is_visible_to_faction are absent); IsShrouded on
-    the settlement CCO context is the accessor that works.
-    """
+    """Settlements that LOOK like ruins to the player: [{region, x, y}]."""
     raw = str(_ev(bus, _LUA_RUINS, timeout=30.0, allow_nil=True) or "")
     out = []
     for row in raw.split(","):
@@ -248,9 +235,6 @@ def world_state(bus):
     """{armies, settlements, hostiles, ruins} -- raw positions for the whole visible map."""
     rs = ruins(bus)
     ruin_keys = {r["region"] for r in rs}
-    # A settlement rendering as a ruin is stripped from `hostiles`. 34 of the 50 apparent ruins are
-    # Skaven cities we are at war with, so the channel would otherwise hand over their owner and
-    # garrison size -- facts the player cannot see, and the whole point of the disguise.
     hostiles = [h for h in _chan(bus, "hostiles", "hostiles")
                 if not (h.get("kind") == "settlement" and str(h.get("region")) in ruin_keys)]
     return {"armies": _chan(bus, "chars", "chars"),
@@ -284,7 +268,6 @@ def state_hash(bus):
         raise CollectError("bus roots returned no kids -- a bus failure would otherwise read as a "
                            "clean screen, which is exactly the state we must not fake")
     roots = sorted(str(k.get("id")) for k in r["kids"] if k.get("visible") and k.get("id"))
-    # game state only -- roots are reported, never hashed
     blob = parts
     return {"hash": hashlib.md5(blob.encode("utf-8", "replace")).hexdigest(),
             "roots": roots, "chars": blob.count("@"), "ts": time.time()}
@@ -317,16 +300,7 @@ _LUA_RECRUITABLE = (_G +
 
 
 def recruitable_units(bus, cqi):
-    """Units this force can recruit, WITHOUT opening units_panel.
-
-    The old version scraped `<key>_recruitable` cards out of the units_panel UI tree, so it yielded
-    nothing whenever that panel was closed -- which is almost always, meaning recruit_unit offers
-    effectively never existed.
-
-    Instead: walk the whole main_units table and ask the force itself. `RecordList` is seeded from a
-    unit already in the army, so no unit key is ever constructed and this holds for every faction.
-    Measured 2609 units scanned in 0.3s, so it runs per snapshot without caching.
-    """
+    """Units this force can recruit, WITHOUT opening units_panel."""
     raw = str(_ev(bus, _LUA_RECRUITABLE % {"cqi": cqi}, timeout=30.0, allow_nil=True) or "")
     return [{"key": k, "state": "active"} for k in raw.split(",") if k and k != "nil"]
 
@@ -347,8 +321,6 @@ _LUA_LORD = (_G +
     "if ch and ch:is_null_interface() then ch=nil end "
     "local rg=nil if ch then local r0=ch:region() "
     "if r0 and not r0:is_null_interface() then rg=r0 end end "
-    # recruitment queue via Lua recruitment_items(), NOT CCO PendingRecruitmentUnitList: that field
-    # measured 0 while the queue genuinely held two units, so anything gating on it never fired.
     "local pend={} "
     "if ch and ch:has_military_force() then "
     "  local ok,it=pcall(function() return ch:military_force():recruitment_items() end) "
@@ -413,8 +385,6 @@ _LUA_PROVINCE = (_G +
     "local okv,v=pcall(function() return pr:value() end) "
     "if okk and okv and k then o[#o+1]=ts(k)..'='..ts(v) end end end "
     "return table.concat(o,',') end)()"
-    # main settlement chain level: major caps at 5, minor at 3. Selected by key --
-    # 188/1251 non-settlement buildings also report Level>0, so a bare sum is wrong.
     "..'|'..(function() local n=0 if type(slots)=='table' then for i=1,#slots do "
     "local bc=g(slots[i],'BuildingContext') "
     "local lv=bc and g(bc,'BuildingLevelRecordContext') "
@@ -458,7 +428,6 @@ def province_state(bus, region):
             "settlement_level": (_num(p[12]) if len(p) > 12 else None)}
 
 
-# lord/hero level and per-province main-settlement level, in one round trip
 _LUA_ENTITY_TARGETS = (_G +
     "local f=cm:get_local_faction(true) local o={} "
     "local cl=f:character_list() "
@@ -484,10 +453,7 @@ _LUA_ENTITY_TARGETS = (_G +
 
 
 def entity_target_rows(bus):
-    """[{context_kind, context_id, value}] -- the LOCAL reward inputs, one row per entity.
-
-    lord/hero -> character level.  province -> summed main-settlement-chain level.
-    """
+    """[{context_kind, context_id, value}] -- lord/hero: character level; province: settlement level."""
     raw = str(_ev(bus, _LUA_ENTITY_TARGETS, timeout=30.0, allow_nil=True) or "")
     out = []
     for chunk in raw.split(","):
@@ -505,7 +471,6 @@ def _offer(atype, key, available, gate=None, **params):
             "gate": gate, "params": params or {}}
 
 
-# pipe-separated snapped tiles
 _LUA_MOVE_CANDIDATES = (
     "local c=cm:get_character_by_cqi(%(cqi)s) "
     "if not c or c:is_null_interface() then return '' end "
@@ -532,7 +497,7 @@ def _move_offers(bus, cqi, state, acted):
         return []
     sig = "%s:%s:%s" % (cqi, x, y)
     _MOVE_ATTEMPTS[sig] = _MOVE_ATTEMPTS.get(sig, 0) + 1
-    rng = random.Random("%s#%d" % (sig, _MOVE_ATTEMPTS[sig]))    # seed varies per attempt
+    rng = random.Random("%s#%d" % (sig, _MOVE_ATTEMPTS[sig]))
     pts = []
     for _ in range(MOVE_CANDIDATES):
         a = rng.uniform(0.0, 2.0 * math.pi)
@@ -597,12 +562,7 @@ _LUA_STATIONED = (_G +
 
 
 def settlement_forces(bus):
-    """{"stationed": {region: cqi|None}, "citizenry": {cqi}} for our regions, in one bus call.
-
-    StationedForceContext is the field army parked inside the settlement. GarrisonForceContext is
-    the permanent building garrison -- present in nearly every settlement, so it answers a different
-    question; its commander is armed citizenry and cannot be ordered.
-    """
+    """{"stationed": {region: cqi|None}, "citizenry": {cqi}} for our regions, in one bus call."""
     raw = str(_ev(bus, _LUA_STATIONED, timeout=25.0, allow_nil=True) or "")
     stationed, citizenry = {}, set()
     for row in raw.split(","):
@@ -620,7 +580,6 @@ def lord_offers(bus, cqi, state, world, stationed=None):
     """Every lord-context offer, available or not (unavailable ones carry the game's gate reason)."""
     offers = []
     acted = state.get("acted")
-    # -- stances
     raw = str(_ev(bus, _LUA_LORD_OFFERS % {"cqi": cqi}, timeout=25.0, allow_nil=True) or "")
     st_raw, _, sk_raw = raw.partition("||")
     for row in st_raw.split(","):
@@ -632,11 +591,9 @@ def lord_offers(bus, cqi, state, world, stationed=None):
         gate = None if ok else ("active" if active else
                                 "cannot_activate" if not can_act else "cannot_afford")
         offers.append(_offer("stance", key, ok, gate, active=active))
-    # -- recruitable units
     for c in recruitable_units(bus, cqi):
         offers.append(_offer("recruit_unit", c["key"], c.get("state") == "active",
                              None if c.get("state") == "active" else c.get("state")))
-    # -- skills
     has_pts = (state.get("skill_points") or 0) >= 1
     for row in sk_raw.split(","):
         if "~" not in row:
@@ -644,7 +601,6 @@ def lord_offers(bus, cqi, state, world, stationed=None):
         key, status = row.rsplit("~", 1)
         ok = (status == "active" and has_pts)
         offers.append(_offer("skills", key, ok, None if ok else ("no_points" if not has_pts else status)))
-    # -- MOVES: attack armies / attack settlements / garrison
     armies = [h for h in world["hostiles"] if h.get("kind") == "army" and h.get("cqi")]
     esetts = [h for h in world["hostiles"] if h.get("kind") == "settlement" and h.get("region")]
     osetts = [s for s in world["settlements"] if s.get("region")]
@@ -653,7 +609,6 @@ def lord_offers(bus, cqi, state, world, stationed=None):
                               [s["region"] for s in esetts] + [s["region"] for s in osetts]
                               + [s["region"] for s in rsetts])
     marching = str(state.get("stance") or "") in MOVEMENT_STANCES
-    # a force with units in its recruitment queue cannot move or fight this turn
     recruiting = (state.get("pending_recruits") or 0) > 0
     for a in armies:
         ok = bool(reach_c.get(str(a["cqi"]))) and not acted and not marching
@@ -678,8 +633,6 @@ def lord_offers(bus, cqi, state, world, stationed=None):
                                               "recruiting" if recruiting else "cannot_reach"),
                              x=s.get("x"), y=s.get("y")))
     garrisoned = state.get("garrisoned")
-    # A settlement already holding a field army is not a garrison target -- stacking a second army
-    # in is the failure mode when the faction over-recruits.
     occ = stationed or {}
     for s in osetts:
         holder = occ.get(str(s["region"]))
@@ -689,7 +642,6 @@ def lord_offers(bus, cqi, state, world, stationed=None):
                                 else "settlement_occupied" if taken else "cannot_reach")
         offers.append(_offer("garrison", "settlement:%s" % s["region"], ok, gate,
                              x=s.get("x"), y=s.get("y")))
-    # -- move to open ground
     offers.extend(_move_offers(bus, cqi, state, acted))
     offers.append(_offer("noop", "noop", True))
     return offers
@@ -760,14 +712,12 @@ def province_offers(bus, region, state, campaign):
         offers.append(_offer("building", key, ok, gate,
                              slot_index=int(float(slot)) if slot not in ("nil", "") else None,
                              is_upgrade=(not empty)))
-    # -- edicts
     complete = bool(state.get("complete_owner"))
     sel = state.get("selected_edict")
     for key in edicts:
         ok = complete and key != sel
         offers.append(_offer("edict", key, ok,
                              None if ok else ("province_not_complete" if not complete else "already_selected")))
-    # -- lord recruitment
     for sub, (n, can, traits, ranks) in _lord_pools(bus, campaign["faction_cqi"],
                                                     _lord_subtypes(bus, campaign["faction"])).items():
         for i in range(n):
@@ -800,19 +750,7 @@ _SUBTYPE_CACHE = {}
 
 
 def _lord_subtypes(bus, faction):
-    """Recruitable character subtypes for ANY faction, read from the world.
-
-    The old version spliced the race code into a High Elf naming template
-    (prince/princess/archmage/sea_helm), so the pool query resolved for High Elves and returned
-    nothing for every other race -- no recruit_lord offer was ever emitted.
-
-    Instead: collect the subtypes actually in use by factions sharing our subculture. Names are
-    never constructed, so this holds for every race. Unique legendary lords appear here but their
-    pools do not resolve, which is correct -- they are not recruitable.
-
-    Cached per faction: a subculture's roster does not change mid-campaign, and the sweep walks
-    every faction's character list.
-    """
+    """Recruitable character subtypes for ANY faction, read from the world; cached per faction."""
     key = str(faction)
     if key not in _SUBTYPE_CACHE:
         raw = str(_ev(bus, _LUA_SUBCULTURE_SUBTYPES, timeout=30.0, allow_nil=True) or "")
@@ -918,7 +856,7 @@ def campaign_offers(bus, campaign):
 DIPLO_TERMS = ("nonaggression_pact", "trade_agreement", "defensive_alliance", "soft_access",
                "military_alliance", "vassal", "confederation")
 DIPLO_DECLARE_WAR = "declare_war"
-DIPLO_MAX_TARGETS = 8        # 8 targets x 29 combos ~= 230 offers per turn
+DIPLO_MAX_TARGETS = 8
 
 _LUA_DIPLO_TARGETS = (
     "local me=cm:get_local_faction(true) "
@@ -986,7 +924,6 @@ def dealable_factions(bus, turn=None):
             _DEALABLE_CACHE.update(turn=turn, factions=[])
             return []
     facs, seen = [], set()
-    # depth 6 covers the row list; deeper is an 80k-node walk
     nodes = (_bus(bus, "tree", "%s 6 6000" % DIPLO_PANEL_ROOT) or {}).get("nodes") or []
     for n in nodes:
         nid = str(n.get("id") or "")
@@ -1055,21 +992,15 @@ def diplomacy_offers(bus, turn=None):
         offers.append(_offer("diplomacy", "%s:%s" % (f, DIPLO_DECLARE_WAR), not t["at_war"],
                              "already_at_war" if t["at_war"] else None,
                              faction=f, terms=[DIPLO_DECLARE_WAR], **rel))
-        for i, a in enumerate(DIPLO_TERMS):
+        for a in DIPLO_TERMS:
             offers.append(_offer("diplomacy", "%s:%s" % (f, a), True, None,
                                  faction=f, terms=[a], **rel))
-            for b in DIPLO_TERMS[i + 1:]:                      # pairs at most
-                offers.append(_offer("diplomacy", "%s:%s+%s" % (f, a, b), True, None,
-                                     faction=f, terms=[a, b], **rel))
     return offers
 
 
 def snapshot(bus, active=None):
-    """{ts, campaign, world, entities:[{context_kind, context_id, state, offers}], profile}.
-
-    `active` restricts the sweep: {"lords": [cqi], "heroes": [cqi], "regions": [key], "campaign": bool}
-    """
-    prof = {}                       # per-phase ms
+    """{ts, campaign, world, entities:[{context_kind, context_id, state, offers}], profile}."""
+    prof = {}
 
     def timed(name, fn, *a, **k):
         t = time.time()
@@ -1081,11 +1012,8 @@ def snapshot(bus, active=None):
     camp = timed("campaign_state", campaign_state, bus)
     camp["resources"] = timed("faction_resources", faction_resources, bus)
     world = timed("world_state", world_state, bus)
-    # armed citizenry arrives with has_army=true and 100% AP forever, so without this it is
-    # classified as a lord and handed move/stance offers that can never be executed
     sf = timed("settlement_forces", settlement_forces, bus)
     stationed, citizenry = sf["stationed"], sf["citizenry"]
-    # classify by has_army, not is_general
     lords = [str(c.get("cqi")) for c in world["armies"]
              if c.get("has_army") and str(c.get("cqi")) not in citizenry]
     heroes = [str(c.get("cqi")) for c in world["armies"] if not c.get("has_army")]

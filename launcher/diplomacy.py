@@ -14,11 +14,10 @@ BTN_DIPLOMACY = "hud_campaign|faction_buttons_docker|button_group_management|but
 OFFERS_PATH = ("diplomacy_dropdown|offers_panel|diplomacy_hud_offers_panel|panel_diplomacy|"
                "offers_list_panel|list_possible_actions")
 
-# the deal terms the advisor may propose
 TERMS = ("nonaggression_pact", "trade_agreement", "defensive_alliance", "soft_access",
          "military_alliance", "vassal", "confederation")
 DECLARE_WAR = "declare_war"
-MAX_TERMS = 2
+MAX_TERMS = 1
 
 _CLICKABLE = ("active", "hover", "selected")
 
@@ -53,7 +52,7 @@ def _tree(bus):
 
 
 def _node(bus, node_id):
-    """Resolve a node by id. Re-read before every click; do not cache the result."""
+    """Resolve a node by id; the list moves under the cursor, so the result must not be cached."""
     for n in _tree(bus):
         if str(n.get("id") or "") == node_id:
             return n
@@ -74,8 +73,7 @@ def _find(bus, node_id):
 
 
 def _list_band(bus):
-    """(y0, y1) of the faction list's clipping viewport. The tree's `visible` flag lies for
-    clipped rows -- only geometry decides clickability."""
+    """(y0, y1) of the faction list's clipping viewport."""
     for n in _tree(bus):
         p = str(_path(n) or "")
         if str(n.get("id") or "") == "list_clip" and FACTION_LIST in p:
@@ -83,43 +81,51 @@ def _list_band(bus):
     raise DiplomacyError("no %s list_clip in the panel -- is diplomacy open?" % FACTION_LIST)
 
 
-def scroll_to_row(bus, row_id, max_clicks=80):
-    """Bring `row_id` inside the list viewport. Bus-clicks on the slider arrows: one row per
-    click, self-calibrated from a single measured delta, burst with no sleeps."""
+def _row_pitch(bus):
+    """Pixels between adjacent rows: one arrow click moves the list by exactly this."""
+    ys = sorted(int(n.get("y") or 0) for n in _rows(bus))
+    gaps = sorted({b - a for a, b in zip(ys, ys[1:]) if b > a})
+    if not gaps:
+        raise DiplomacyError("cannot measure the faction list's row pitch (%d rows)" % len(ys))
+    return gaps[0]
+
+
+def _settled_y(bus, row_id, limit=3.0, agree=3):
+    """The row's y once `agree` consecutive reads return it unchanged (the list tweens)."""
+    prev, n, t0 = None, 0, time.time()
+    while time.time() - t0 < limit:
+        cur = int(_find(bus, row_id).get("y") or 0)
+        n = n + 1 if cur == prev else 0
+        prev = cur
+        if n >= agree - 1:
+            return cur
+    return prev if prev is not None else 0
+
+
+def scroll_to_row(bus, row_id, margin=6):
+    """Bring `row_id`'s centre into the list viewport in one exact burst of arrow clicks."""
     n = _find(bus, row_id)
     if not n.get("found"):
         raise DiplomacyError("no %s in the panel -- that faction is not deal-able right now"
                              % row_id)
     y0, y1 = _list_band(bus)
     h = int(n.get("h") or 44)
-
-    def _off(y):
-        if y < y0:
-            return y - y0                     # negative: scroll up
-        if y + h > y1:
-            return y + h - y1                 # positive: scroll down
+    centre = _settled_y(bus, row_id) + h // 2
+    lo, hi = y0 + margin, y1 - margin
+    if lo <= centre <= hi:
         return 0
-
-    off = _off(int(n.get("y") or 0))
-    if off == 0:
-        return 0
-    arrow = SCROLL_ARROW % ("bottom" if off > 0 else "top")
-    before = int(n.get("y") or 0)
-    bus.send("click", arrow, timeout=8.0)
-    after = int(_find(bus, row_id).get("y") or before)
-    step = abs(before - after)
-    if step == 0:
-        raise DiplomacyError("scroll arrow click moved nothing (row at y=%s, band %s..%s)"
-                             % (before, y0, y1))
-    clicks = 1
-    remaining = abs(_off(after))
-    for _ in range(min(max_clicks, (remaining + step - 1) // step)):
+    pitch = _row_pitch(bus)
+    if centre > hi:
+        clicks, arrow = -(-(centre - hi) // pitch), SCROLL_ARROW % "bottom"
+    else:
+        clicks, arrow = -(-(lo - centre) // pitch), SCROLL_ARROW % "top"
+    for _ in range(clicks):
         bus.send("click", arrow, timeout=8.0)
-        clicks += 1
-    final = _find(bus, row_id)
-    if _off(int(final.get("y") or 0)) != 0:
-        raise DiplomacyError("scrolled %d clicks but %s is still outside %s..%s (y=%s)"
-                             % (clicks, row_id, y0, y1, final.get("y")))
+    final = _settled_y(bus, row_id) + h // 2
+    if not lo <= final <= hi:
+        raise DiplomacyError("%d clicks of %spx left %s at centre %s, outside %s..%s -- the click "
+                             "count is wrong, not the direction"
+                             % (clicks, pitch, row_id, final, lo, hi))
     return clicks
 
 
@@ -134,7 +140,7 @@ def _text_of(bus, node_id):
 
 
 def success_chance(bus):
-    """label_deal_success_chance as a signed float, or None. Use chance_after_change to record it."""
+    """label_deal_success_chance as a signed float, or None."""
     raw = _text_of(bus, "label_deal_success_chance")
     if raw is None:
         return None
@@ -203,21 +209,32 @@ def close_panel(bus, tries=3, limit=2.5):
 
 
 def select_faction(bus, faction_key, limit=4.0):
-    """Open the negotiation with one faction. Hardware double-click -- a bus click will not do it."""
+    """Open the negotiation with one faction."""
     row_id = "faction_row_entry_%s" % faction_key
     scroll_to_row(bus, row_id)
-    n = _node(bus, row_id)
-    if n is None:
-        raise DiplomacyError("no %s in the panel -- that faction is not deal-able right now" % row_id)
-    _hardware_click(n, double=True)
+    for attempt in range(3):
+        n = _node(bus, row_id)
+        if n is None or not _path(n):
+            raise DiplomacyError("no %s in the panel -- that faction is not deal-able right now"
+                                 % row_id)
+        nav.bus_click(bus, _path(n))
+        if _wait(lambda: str(_find(bus, row_id).get("state") or "") == "selected", 1.5, step=0.2):
+            break
+        sys.stderr.write("diplomacy: %s did not take the click (attempt %d)\n"
+                         % (row_id, attempt + 1))
+    else:
+        raise DiplomacyError("%s never became selected after 3 bus clicks" % row_id)
+    # measured: a bus click selects but never opens the negotiation; only a real double-click
+    # does, and the confirmed selection above proves these coordinates are the right row
+    _hardware_click(_find(bus, row_id), double=True)
     if _wait(lambda: bool(offered_terms(bus)), limit):
         return True
-    raise DiplomacyError("double-clicked %s but no negotiation opened (no diplomatic_option_* "
-                         "appeared)" % row_id)
+    raise DiplomacyError("selected %s but no negotiation opened (no diplomatic_option_* appeared)"
+                         % row_id)
 
 
 def offered_terms(bus):
-    """{term: state} for every diplomatic_option_* on screen. Re-read between clicks."""
+    """{term: state} for every diplomatic_option_* on screen."""
     out = {}
     for n in _tree(bus):
         nid = str(n.get("id") or "")
@@ -232,25 +249,26 @@ def add_term(bus, term, limit=2.5):
     before = offered_terms(bus).get(term)
     if before is None or before == "inactive":
         return False
-    n = _node(bus, node_id)                       # resolved immediately before the click
+    n = _node(bus, node_id)
     if n is None or not n.get("visible") or not _path(n):
         return False
     nav.bus_click(bus, _path(n))
-    return _wait(lambda: offered_terms(bus).get(term) != before, limit)
+    return _wait(lambda: str(_find(bus, node_id).get("state") or "") not in ("", before), limit)
 
 
 def prepare(bus, faction_key, terms):
     """Open a negotiation and stage `terms`. Sends nothing. Returns what reached the table."""
     terms = list(terms)[:MAX_TERMS]
     open_panel(bus)
-    carried = success_chance(bus)                 # read before selecting: may be stale
+    carried = success_chance(bus)
     select_faction(bus, faction_key)
     staged, rejected = [], []
     for t in terms:
         (staged if add_term(bus, t) else rejected).append(t)
+    chance = _find(bus, "label_deal_success_chance").get("text") if staged else None
     return {"faction": faction_key, "requested": terms, "staged": staged,
             "unavailable": rejected,
-            "success_chance": chance_after_change(bus, carried, limit=1.0) if staged else None,
+            "success_chance": (str(chance).strip() or None) if chance is not None else None,
             "chance_carried_in": carried,
             "sendable": _sendable(bus)}
 
@@ -261,12 +279,12 @@ def _sendable(bus):
 
 
 def send(bus):
-    """Press Send. True if the button was live and pressed. Never retry an inactive Send."""
+    """Press Send. True if the button was live and pressed."""
     n = _node(bus, "button_send")
     if not (n and n.get("visible") and str(n.get("state")) in _CLICKABLE):
         return False
     _hardware_click(n)
-    time.sleep(2.5)
+    _wait(lambda: not _find(bus, "button_send").get("visible"), 2.5, step=0.2)
     return True
 
 
@@ -280,6 +298,13 @@ def propose(bus, faction_key, terms):
         out.update(prepare(bus, faction_key, terms))
         if not out["staged"]:
             out["failed_at"] = "deal_selection"
+            return out
+        if not out.get("sendable"):
+            # the game greys Send out for a deal the AI will not take: report it here rather
+            # than sending and paying the confirm timeout to learn the same thing
+            out["failed_at"] = "ai_would_refuse"
+            out["sent"] = False
+            out["refused_by_ai"] = True
             return out
         out["stage"] = "send"
         out["sent"] = send(bus)
