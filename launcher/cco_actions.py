@@ -173,6 +173,10 @@ def execute_confirmed(bus, ctx, pick):
             confirmed = False
         if confirmed or time.time() >= deadline:
             break
+        if not rec.get("executed"):
+            # the world still gets asked once -- a command can land despite a failed click --
+            # but a click that never happened does not earn the whole polling budget
+            break
         # a confirm that CANNOT come true must not spend the rest of the budget proving it
         if doomed is not None:
             try:

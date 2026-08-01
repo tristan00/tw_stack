@@ -290,19 +290,66 @@ def card_queue(path):
     return segs[i - 1] if i > 0 else None
 
 
+POOL_LIST = ("units_panel|main_units_panel|recruitment_docker|recruitment_options|"
+             "recruitment_listbox|recruitment_pool_list|list_clip|list_box")
+
+
 def recruitable_units(bus):
-    """`<unit_key>_recruitable` cards in units_panel, each tagged with its recruitment pool."""
+    """The recruitment cards on screen: pool, cost, upkeep and turns per card.
+
+    Cost and turns are per POOL, not per unit -- the same unit is dearer and slower globally
+    (measured: peasant spearmen 350g/1t local vs 629g/2t global), so they belong to the card."""
     try:
         tr = bus.send("tree", "units_panel 30 9000", timeout=20) or {}
     except Exception:
         return []
+    nodes = tr.get("nodes") or []
+    by_path = {}
+    for n in nodes:
+        by_path.setdefault(str(n.get("path") or ""), []).append(n)
+
+    def _child_text(card_path, *tail):
+        want = card_path + "|" + "|".join(tail)
+        for n in by_path.get(want, []):
+            t = str(n.get("text") or "").strip()
+            if t:
+                return t
+        return None
+
+    def _num(v):
+        try:
+            return float(str(v).replace(",", "").strip())
+        except (TypeError, ValueError):
+            return None
+
     out = []
-    for n in tr.get("nodes") or []:
+    for n in nodes:
         i = str(n.get("id") or "")
-        if i.endswith("_recruitable") and n.get("visible"):
-            path = n.get("path")
-            out.append({"key": i[:-len("_recruitable")], "state": n.get("state"),
-                        "path": path, "queue": card_queue(path)})
+        if not (i.endswith("_recruitable") and n.get("visible")):
+            continue
+        path = str(n.get("path") or "")
+        out.append({"key": i[:-len("_recruitable")], "state": n.get("state"), "path": path,
+                    "queue": card_queue(path),
+                    "cost": _num(_child_text(path, "external_holder", "RecruitmentCost", "Cost")),
+                    "upkeep": _num(_child_text(path, "external_holder", "UpkeepCost", "Upkeep")),
+                    "turns": _num(_child_text(path, "unit_icon", "Turns"))})
+    return out
+
+
+def recruitment_capacity(bus):
+    """{pool: {"total", "used", "free"}} from each pool's capacity strip.
+
+    Global slots are shared by every army in the faction; local slots are contested only
+    inside the province, so the two numbers drive very different decisions."""
+    out = {}
+    _res, pools = _find(bus, POOL_LIST, timeout=12.0)
+    for pool in pools or []:
+        _r, slots = _find(bus, "%s|%s|recruitment_cap|capacity_listview" % (POOL_LIST, pool),
+                          timeout=10.0)
+        if not slots:
+            continue
+        used = sum(1 for s in slots if str(s) == "used_slot")
+        out[pool] = {"total": len(slots), "used": used, "free": len(slots) - used}
     return out
 
 
@@ -310,12 +357,23 @@ def _recruit_snapshot(bus, ctx, pick):
     prepare(bus, "lord", ctx["entity_id"], expect_root="units_panel")
     r = _roots(bus)
     return {"treasury": _treasury(bus), "pending": _pending_recruits(bus, ctx["entity_id"]),
-            "units_panel_open": (r is not None and "units_panel" in r)}
+            "units_panel_open": (r is not None and "units_panel" in r),
+            "capacity": recruitment_capacity(bus)}
 
 
 def _recruit_gate(bus, ctx, pick, before):
     if not before.get("units_panel_open"):
         return False, "units_panel_not_open_CTD_guard"
+    _unit, queue = split_key(pick)
+    cap = before.get("capacity") or {}
+    if queue and cap:
+        pools = {k: v for k, v in cap.items()
+                 if str(k).rstrip("0123456789") == queue or str(k) == queue}
+        if not pools:
+            return False, "queue_%s_not_offered_here" % queue
+        if not any((v or {}).get("free") for v in pools.values()):
+            # a full pool refuses the click; spending the action to discover that is waste
+            return False, "%s_recruitment_slots_full" % queue
     return True, None
 
 
@@ -497,21 +555,13 @@ def _lord_execute_inner(bus, ctx, pick, before):
         _until(lambda: "character_panel" in (_roots(bus) or []), 1.8)
     want = str(pick["key"])
 
-    def _match(types):
-        """Anchored match of `want` against the panel's type ids; ambiguity returns None."""
-        hits = [t for t in types if want == t or want.endswith("_" + t)]
-        if len(hits) == 1:
-            return hits[0]
-        if len(hits) > 1:
-            sys.stderr.write("click_actions: AMBIGUOUS subtype %r -> %s; refusing to guess\n"
-                             % (want, hits))
-        return None
-
     lord_list = [k for k in _find(bus, LORD_TYPE_LIST)[1] if not k.startswith("button_template")]
     agent_list = [k for k in _find(bus, AGENT_TYPE_LIST)[1] if not k.startswith("button_template")]
-    btn, type_path, commit_id = _match(lord_list), LORD_TYPE_LIST, "button_raise"
+    btn, lore_hint = split_lord_key(bus, want, lord_list)
+    type_path, commit_id = LORD_TYPE_LIST, "button_raise"
     if btn is None:
-        btn, type_path, commit_id = _match(agent_list), AGENT_TYPE_LIST, "button_confirm"
+        btn, lore_hint = split_lord_key(bus, want, agent_list)
+        type_path, commit_id = AGENT_TYPE_LIST, "button_confirm"
     if btn is None:
         sys.stderr.write("click_actions: %r is neither a lord type %s nor a hero type %s"
                          % (want, lord_list, agent_list) + chr(10))
