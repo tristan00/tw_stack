@@ -86,6 +86,7 @@ class DecisionStore:
                    ("interrupt_decisions", "latency_ms", "INTEGER"),
                    ("interrupt_decisions", "tree_json", "TEXT"),
                    ("interrupt_decisions", "policy", "TEXT"),
+                   ("interrupt_decisions", "world_json", "TEXT"),
                    ("action_offers", "score", "REAL"),
                    ("action_offers", "exploit", "REAL"),
                    ("action_offers", "explore", "REAL"),
@@ -291,8 +292,8 @@ class DecisionStore:
         self.con.execute(
             "INSERT INTO interrupt_decisions(ts,campaign_id,turn,kind,root,root_context,"
             "n_options,options_json,chosen,chosen_context,executed,confirmed,counted,refusal,"
-            "latency_ms,campaign_json,tree_json,policy)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "latency_ms,campaign_json,tree_json,policy,world_json)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (row.get("ts") or time.time(),
              self.campaign_key(camp.get("faction"), camp.get("campaign_uuid")),
              int(camp.get("turn") or 0),
@@ -304,16 +305,17 @@ class DecisionStore:
              row.get("refusal"), row.get("latency_ms"),
              json.dumps(camp, default=str),
              json.dumps(row["tree"], default=str) if row.get("tree") else None,
-             row.get("policy")))
+             row.get("policy"),
+             json.dumps(row.get("world") or {}, default=str) if row.get("world") else None))
         self.con.commit()
 
     def interrupt_rows(self):
         """Every recorded interrupt-screen decision."""
         out = []
         for (iid, ts, camp, turn, kind, opts, chosen, executed, confirmed, counted, refusal,
-             cjson) in self.con.execute(
+             cjson, wjson) in self.con.execute(
                 "SELECT interrupt_id,ts,campaign_id,turn,kind,options_json,chosen,"
-                "executed,confirmed,counted,refusal,campaign_json"
+                "executed,confirmed,counted,refusal,campaign_json,world_json"
                 " FROM interrupt_decisions ORDER BY interrupt_id"):
             try:
                 options = json.loads(opts) if opts else {}
@@ -326,7 +328,8 @@ class DecisionStore:
             out.append({"interrupt_id": iid, "ts": ts, "campaign_id": camp, "turn": turn,
                         "screen": kind, "options": options, "chosen": chosen,
                         "executed": executed, "confirmed": confirmed, "counted": counted,
-                        "refusal": refusal, "campaign": campaign})
+                        "refusal": refusal, "campaign": campaign,
+                        "world": (json.loads(wjson) if wjson else {})})
         return out
 
     def target_series(self):

@@ -89,7 +89,13 @@ def run(ctx):
                         journal.respond(out_dir, rid, hash=h["hash"], roots=h["roots"])
                     elif kind == "interrupt":
                         cs = collect.campaign_state(bus)
-                        store.write_interrupt(dict(row, campaign=cs))
+                        try:
+                            ws = collect.world_state(bus)
+                        except Exception as e:
+                            ws = None
+                            sys.stderr.write("decisions_stream: world for interrupt -> %s\n"
+                                             % repr(e)[:90])
+                        store.write_interrupt(dict(row, campaign=cs, world=ws))
                         counts["interrupt"] = counts.get("interrupt", 0) + 1
                         ctx.emit({"kind": "decisions_interrupt", "screen": row.get("kind_screen")
                                   or row.get("screen"), "chosen": row.get("chosen"),
