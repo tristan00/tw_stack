@@ -75,9 +75,13 @@ class Executor:
         off = getattr(self, "_campaign_offset", None)
         if off is None:
             return False
+        # bounded: the reply file grows hundreds of MB in a session, and this runs on every
+        # stuck check -- read at most the last MB of the campaign's own region
         try:
+            size = os.path.getsize(self.bus.out_path)
+            start = max(off, size - 1_000_000)
             with open(self.bus.out_path, "rb") as f:
-                f.seek(off)
+                f.seek(start)
                 data = f.read()
         except OSError:
             return False
