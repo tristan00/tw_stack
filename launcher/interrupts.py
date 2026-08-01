@@ -656,6 +656,27 @@ def choose_dilemma(bus, open_roots):
         found = _dilemma_options(bus, root)
         if not found:
             ctrls = _clickable_controls(bus, root)
+            actionable = {i: p for i, p in ctrls.items() if i not in SCROLL_CHROME_IDS}
+            ack = sorted(i for i in actionable
+                         if any(t in i.lower() for t in ACCEPT_TOKENS)
+                         or i in ("button_dismiss", "button_close"))
+            if ack and len(ack) == len(actionable):
+                # marker but no choice records and accept-only controls: an event
+                # notification, not a dilemma -- acknowledge and record it as such
+                tree = _tree(bus, root)
+                opts = {i: {"context": None, "text": "acknowledge event"} for i in ack}
+                key = ack[0]
+                t0 = time.time()
+                clicked = _click(bus, actionable[key], settle=2.0)
+                gone = root not in roots(bus)
+                _record_choice("event_ack", root, opts, key, extra={"tree": tree},
+                               executed=clicked, confirmed=gone,
+                               refusal=None if gone else ("command_silently_refused" if clicked
+                                                          else "execute_failed"),
+                               latency_ms=int((time.time() - t0) * 1000))
+                if clicked:
+                    steps.append("event_ack:%s:%s" % (root, key))
+                break
             _report_unhandled(bus, "dilemma", ["no %s choice records" % DILEMMA_LIST],
                               sorted(ctrls), root=root)
             raise UnhandledScreen(
