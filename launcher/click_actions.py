@@ -1,38 +1,4 @@
-r"""click_actions.py -- v7 executors driven through UI COMPONENTS.
-
-Used ONLY where neither the CCO command layer nor the cm script layer exposes the action
-(verified by full CCO enumeration + CA script-API research). Everything here is driven by the
-bus `click` channel (SimulateLClick BY COMPONENT PATH) -- no screen coordinates, no synthetic
-mouse, so it cannot steal the user's cursor and does not depend on camera/resolution.
-
-⚠ SimulateLClick LIES IN TWO WAYS, both learned the hard way:
-  1. `clicked: True` is returned even when nothing happens -> every action post-asserts.
-  2. A FEW components ignore SimulateLClick entirely (verified no-ops: the diplomacy
-     faction_row_entry_* rows, and the end-turn button). Those need a hardware click -- which is
-     why nothing here depends on them (end turn is done with the CCO EndTurn command instead).
-
-LIVE-VERIFIED 2026-07-30:
-  edict  -- click hud_campaign|BL_parent|stack_incentives|button_<edict_key>
-            -> FactionProvinceManagerContext.SelectedInitiative.Key becomes that key.
-            Works while the stack is COLLAPSED (the button resolves by path even when only the
-            currently-selected button + stack_arrow are enumerable). No hover/expand needed.
-            NOTE: CanSetInitiative means "the SELECTED initiative can be set" -- it is NOT a
-            province-completeness gate (it reads false simply when nothing is selected).
-            NOTE: selection != activation. get_active_edict_key() stays empty until the turn ends;
-            get_selected_edict_key() mirrors the selection immediately.
-
-  recruit_unit -- path proven in the v6 loop (treasury drop confirmed live).
-            ⚠ CTD GUARD: clicking button_recruitment with NO army selected can crash the engine
-            (0xc0000409). Only ever click it with units_panel confirmed open.
-
-  recruit_lord -- full path captured from a live human demo (game's own [ui] click trace):
-            button_create_army -> lord_parent|list_box|<lord_type> -> general_candidate_<n>_
-            -> footer|button_raise. Confirmation cascade observed:
-            UnitCreated -> CharacterCreated(char_cqi) -> MilitaryForceCreated -> CharacterRecruited,
-            plus treasury 1764 -> 914 and a new cqi in the faction character list.
-            (Execution not yet self-run: awaiting a fresh campaign; the paths are recorded here so
-            the knowledge is not lost.)
-"""
+r"""click_actions.py -- executors driven through UI components; they register into cco_actions.REGISTRY."""
 from __future__ import annotations
 
 import sys
@@ -43,7 +9,6 @@ sys.path.insert(0, r"D:\tw_stack\launcher")
 
 from cco_actions import _G, _ev, register       # noqa: E402
 
-# ---- component paths (all captured live) -------------------------------------------------
 EDICT_STACK = "hud_campaign|BL_parent|stack_incentives"
 RECRUIT_BTN = ("hud_campaign|hud_center_docker|hud_center|small_bar|button_subpanel_parent|"
                "button_subpanel|button_group_army|button_recruitment")
@@ -51,9 +16,6 @@ CREATE_ARMY_BTN = ("hud_campaign|hud_center_docker|hud_center|small_bar|button_s
                    "button_subpanel|button_group_settlement|button_create_army")
 CHAR_PANEL = "character_panel|character_panel_info_holder"
 LORD_TYPE_LIST = CHAR_PANEL + "|lords_and_agents_holder|lord_parent|list_box"
-# ⚠ THE PANEL HAS TWO LISTS AND TWO COMMIT BUTTONS. lord_parent + button_raise recruits a LORD;
-# agent_parent + button_confirm recruits a HERO. Driving a hero subtype through the lord path
-# opens the panel, finds no matching type, and then leaves it open -- which wedged a whole run.
 AGENT_TYPE_LIST = CHAR_PANEL + "|lords_and_agents_holder|agent_parent|list_box"
 BUTTON_CONFIRM = CHAR_PANEL + "|footer|button_confirm"
 CANDIDATE_LIST = (CHAR_PANEL + "|general_selection_panel|main_holder|character_list_parent|"
@@ -62,8 +24,7 @@ BUTTON_RAISE = CHAR_PANEL + "|footer|button_raise"
 
 
 def _click(bus, path, timeout=10.0):
-    """SimulateLClick by path. Returns True only if the mod found AND clicked the component --
-    which still proves nothing about the game state (see module docstring)."""
+    """Returns True only if the component was found and clicked."""
     try:
         r = bus.send("click", path, timeout=timeout) or {}
     except Exception as e:
@@ -83,37 +44,8 @@ def _find(bus, path, timeout=8.0):
         return {}, []
 
 
-def _hw_click(bus, path, settle=1.2):
-    """HARDWARE click on a component's rect. Needed for components the bus refuses to
-    SimulateLClick -- notably ones reporting visible:False (verified: the raise-army
-    `general_candidate_<n>_` rows, which are found+active but invisible, so the mod's click
-    is a silent no-op while still returning clicked:True)."""
-    import nav
-    res, _ = _find(bus, path)
-    if res.get("x") is None:
-        sys.stderr.write("click_actions: no rect for %s\n" % path.rsplit("|", 1)[-1])
-        return False
-    sx, sy = nav.ui_to_screen(res["x"] + (res.get("w") or 0) / 2.0,
-                              res["y"] + (res.get("h") or 0) / 2.0)
-    nav.mouse("move", sx, sy)
-    time.sleep(0.3)
-    nav.mouse("click", sx, sy)
-    time.sleep(settle)
-    return True
-
-
 def engine_click(bus, component_id):
-    """Click a component ENGINE-SIDE by its id -- no OS cursor, so it can never steal the mouse.
-
-    `CcoComponent.SimulateLClick` is the only Simulate* in the whole CCO system and CA drive their
-    own UI with it (verbatim, dlc24_matters_of_state.twui.xml:8127:
-    context_function_id="Component(&quot;FC4F69A8-...&quot;).SimulateLClick"). `RootComponent` needs
-    no ExpressionState and `ChildContext` searches recursively, so it resolves runtime-spawned rows
-    like general_candidate_<n>_ that appear in no XML.
-
-    This replaces the hardware clicks that used to drive lord recruitment. It still proves nothing
-    on its own -- the caller must post-assert, exactly as with the bus click.
-    """
+    """Click a component by id, resolved recursively from RootComponent."""
     lua = ('common.call_context_command([[RootComponent.ChildContext("%s").SimulateLClick]]) '
            'return "sent"' % component_id)
     try:
@@ -123,45 +55,8 @@ def engine_click(bus, component_id):
         return False
 
 
-def _click_or_hw(bus, path):
-    """Try the (cursor-safe) bus click; fall back to a hardware click on the rect."""
-    res, _ = _find(bus, path)
-    if res.get("visible") is True and _click(bus, path):
-        return True
-    return _hw_click(bus, path)
-
-
-# ==== KNOWN STATE BEFORE EVERY CLICK =======================================================
-# THE RULE, applied by EVERY click executor without exception: never click into an unknown screen.
-# Put the game where we want it first -- clear stray popups, point the CAMERA at the subject, SELECT
-# the subject, and verify the panel we expect actually opened. Only then click.
-#
-# Why this is not optional. HUD buttons act on the CURRENT SELECTION and panels are per-selection,
-# so clicking with the wrong thing selected is a silent no-op at best and the WRONG ACTION at worst
-# -- and SimulateLClick returns clicked:True either way, so nothing downstream notices.
-#
-# Live proof of the cost: recruit_lord clicked `button_create_army` with NOTHING selected. It
-# reported found=True, clicked=True and opened nothing, so the lord-type list and candidate rows
-# never existed and the action failed 10 times out of 10 in real runs. We misdiagnosed that as
-# "invisible components" and bolted on hardware clicks that stole the user's cursor. With the
-# settlement selected first: settlement_panel -> character_panel -> 4 lord types -> 70 candidate
-# rows, several reporting visible=True. The panel was simply never open.
-#
-# Focus + selection are cco Void commands and the popup drain is a bus click, so establishing the
-# known state costs no OS cursor movement.
-
-
 def clear_screen(bus):
-    """Close whatever the game was left looking at: open PANELS first, then leftover popups.
-
-    ⚠ Popup draining alone is not enough. A panel (character_panel, settlement_panel, units_panel)
-    has no dismiss button, so nav.close_popups returns 0 and the panel stays up -- and a stale panel
-    BLOCKS the next selection from opening its own panel. Live: character_panel left open from a
-    previous attempt made select_settlement succeed while settlement_panel never appeared, so the
-    whole recruit chain refused.
-    `CloseAllPanels` is a verified CA global context command (used in campaign_tours.lua:3097),
-    click-free and cursor-free.
-    """
+    """Close open panels, then leftover popups; returns the number of popups closed."""
     import nav
     try:
         _ev(bus, 'common.call_context_command([[CloseAllPanels]]) return "sent"', timeout=15.0)
@@ -173,12 +68,6 @@ def clear_screen(bus):
         n = len(nav.close_popups(bus))
     except Exception as e:
         sys.stderr.write("click_actions: close_popups -> %s" % repr(e)[:80] + chr(10))
-    # ⚠ THE ONE THAT ACTUALLY CLOSES THE LORDS/HEROES PANEL.
-    # character_panel has NO close control -- its full 333-node tree contains only button_raise,
-    # button_confirm and button_info. CloseAllPanels does NOT close it (verified: roots unchanged),
-    # toggling button_create_army does NOT close it, and SimulateKey("escape") does NOT close it.
-    # A player closes it by clicking the map, which is exactly what nav.deselect does. Left open it
-    # blocks the next selection from opening its panel and wedges the entire run.
     try:
         if any(r not in nav.BASE_ROOTS for r in (nav.visible_roots(bus) or [])):
             nav.deselect(bus)
@@ -204,30 +93,13 @@ def select_character(bus, cqi):
     return r == "ok=true"
 
 
-def focus(bus, kind, entity_id):
-    """Point the CAMERA at the subject. Not cosmetic: it discards whatever view the game was left
-    on, so the click lands against a screen we put there rather than whatever preceded it."""
-    import nav
-    try:
-        r = (nav.focus_char(bus, int(entity_id)) if kind == "lord"
-             else nav.focus_settlement(bus, entity_id))
-        time.sleep(1.0)
-        return bool(r)
-    except Exception as e:
-        sys.stderr.write("click_actions: focus %s %s -> %s" % (kind, entity_id, repr(e)[:70]) + chr(10))
-        return False
-
-
 def prepare(bus, kind, entity_id, expect_root=None, timeout=6.0):
-    """clear popups -> camera on subject -> select subject -> verify expected panel.
+    """clear screen -> select subject (kind: "settlement" | "lord") -> wait for expect_root.
 
-    kind: "settlement" | "lord". Returns (ok, reason). LOUD by design: a click issued from an
-    unverified screen is the exact failure this exists to prevent, so callers must refuse to click
-    when this returns False rather than trying anyway.
+    Returns (ok, reason). Callers must not click when this returns False.
     """
     import nav
     clear_screen(bus)
-    focus(bus, kind, entity_id)
     if kind == "settlement":
         ok = select_settlement(bus, entity_id)
     elif kind == "lord":
@@ -261,22 +133,12 @@ def _roots(bus):
         return None
 
 
-# ----------------------------------------------------------------- STANCE LEGALITY WHITELIST
-# READ-ONLY enumerator (no clicking) -- the game's own answer to "which stances may this faction
-# use", which the cco StanceList does NOT give: StanceList returns EVERY stance in the game and
-# Activate will happily set a faction-ILLEGAL one (verified rule breach: a High Elf army entered
-# TUNNELING). The HUD stance stack only ever contains the legal ones, so it is the whitelist.
-#
-# ⚠ the stack is COLLAPSED most of the time, so only the current button reports visible:True. The
-# bus `find` handler enumerates direct children via ChildCount+Find(i), which is NOT visibility
-# gated, so it returns all of them anyway (verified: 13 buttons off a collapsed, invisible stack).
 STANCE_STACK = "hud_campaign|BL_parent|land_stance_button_stack|clip_parent|stack_background"
 _STANCE_PREFIX = "button_"
 
 
 def stance_options(bus):
-    """{stance_key: state} for every stance this faction may use. Empty dict = the stack could not
-    be read (LOUD: callers must treat that as "no stance offers", never as "no legal stances")."""
+    """{stance_key: state}; an empty dict means the stack could not be read."""
     _res, kids = _find(bus, STANCE_STACK, timeout=12.0)
     out = {}
     for k in kids:
@@ -290,7 +152,6 @@ def stance_options(bus):
     return out
 
 
-# ------------------------------------------------------------------------------- EDICT
 def _selected_edict(bus, region):
     return _ev(bus, _G + "local s=cco('CcoCampaignSettlement','settlement:%s');"
                          "local m=g(s,'FactionProvinceManagerContext'); if not m then return 'NO-MGR' end "
@@ -299,7 +160,7 @@ def _selected_edict(bus, region):
 
 
 def edict_options(bus, region):
-    """The province's edict keys (records) -- the option set for this settlement's province."""
+    """The edict keys available to this settlement's province."""
     raw = _ev(bus, _G + "local s=cco('CcoCampaignSettlement','settlement:%s');"
                         "local m=g(s,'FactionProvinceManagerContext'); if not m then return '' end "
                         "local l=g(m,'InitiativeList'); if type(l)~='table' then return '' end local o={} "
@@ -310,7 +171,7 @@ def edict_options(bus, region):
 
 def _edict_snapshot(bus, ctx, pick):
     region = ctx["entity_id"]
-    prepare(bus, "settlement", region)      # the HUD stack belongs to the SELECTED province
+    prepare(bus, "settlement", region)
     return {"selected": _selected_edict(bus, region), "options": edict_options(bus, region)}
 
 
@@ -323,13 +184,7 @@ def _edict_gate(bus, ctx, pick, before):
 
 
 def _edict_execute(bus, ctx, pick, before):
-    """Click the edict button EXACTLY ONCE.
-
-    ⚠ DO NOT re-click the button and DO NOT ESC/close the stack afterwards: either CANCELS the
-    queued commandment (this is what made an earlier attempt appear to select and then revert).
-    The button lives either promoted as a direct child of the stack, or inside
-    clip_parent|stack_background; the promoted id rotates as a preview, so resolve before clicking.
-    """
+    """Click the edict button exactly once; do not re-click or close the stack afterwards."""
     ok, why = prepare(bus, "settlement", ctx["entity_id"])
     if not ok:
         sys.stderr.write("click_actions: edict refused, not a known state -> %s" % why + chr(10))
@@ -353,19 +208,28 @@ register("edict", {
     "layer": "click", "signal": "selected_initiative_key",
     "snapshot": _edict_snapshot, "gates": [_edict_gate],
     "execute": _edict_execute, "confirm": _edict_confirm,
-    "timeout_s": 6.0, "poll_s": 1.2, "max_per_entity_turn": 1,
+    "timeout_s": 6.0, "poll_s": 1.2,
 })
 
 
-# ------------------------------------------------------------------------- RECRUIT UNIT
 def _pending_recruits(bus, cqi):
-    return _ev(bus, _G + "local c=cco('CcoCampaignCharacter','%s'); local mf=g(c,'MilitaryForceContext');"
-                         "if not mf then return -1 end local p=g(mf,'PendingRecruitmentUnitList');"
-                         "if type(p)=='table' then return #p end return -1" % cqi, timeout=12.0)
+    """Unit keys currently queued on this force, as a sorted comma string.
+
+    Reads Lua recruitment_items(), NOT the CCO PendingRecruitmentUnitList: that field measured 0
+    while the queue genuinely held 2 units, so it never moved and the confirm was carried entirely
+    by the treasury drop -- which false-positives on any concurrent spend.
+    """
+    return _ev(bus, "local c=cm:get_character_by_cqi(%s) "
+                    "if not c or not c:has_military_force() then return '' end "
+                    "local ok,it=pcall(function() return c:military_force():recruitment_items() end) "
+                    "if not ok or not it then return '' end "
+                    "local n=0 pcall(function() n=#it end) "
+                    "local ks={} for i=1,n do ks[#ks+1]=tostring(it[i]) end "
+                    "table.sort(ks) return table.concat(ks,',')" % cqi, timeout=12.0)
 
 
 def recruitable_units(bus):
-    """`<unit_key>_recruitable` cards currently in units_panel (requires the panel open)."""
+    """`<unit_key>_recruitable` cards currently in units_panel."""
     try:
         tr = bus.send("tree", "units_panel 30 9000", timeout=20) or {}
     except Exception:
@@ -386,20 +250,28 @@ def _recruit_snapshot(bus, ctx, pick):
 
 
 def _recruit_gate(bus, ctx, pick, before):
-    # CTD GUARD -- never toggle recruitment without units_panel open (engine crash 0xc0000409)
     if not before.get("units_panel_open"):
         return False, "units_panel_not_open_CTD_guard"
     return True, None
 
 
 def _recruit_execute(bus, ctx, pick, before):
+    """Runs the recruit click and always closes the panel afterwards, as recruit_lord does.
+    Leaving units_panel open changes the UI state the next action starts from."""
+    try:
+        return _recruit_execute_inner(bus, ctx, pick, before)
+    finally:
+        clear_screen(bus)
+
+
+def _recruit_execute_inner(bus, ctx, pick, before):
     ok, why = prepare(bus, "lord", ctx["entity_id"], expect_root="units_panel")
     if not ok:
         sys.stderr.write("click_actions: recruit_unit refused, not a known state -> %s" % why + chr(10))
         return False
     cards = recruitable_units(bus)
-    if not cards:                                # idempotent: the button TOGGLES the sub-panel,
-        if not _click(bus, RECRUIT_BTN):         # so only open it when no cards are showing
+    if not cards:                                # the button toggles: only open when no cards show
+        if not _click(bus, RECRUIT_BTN):
             return False
         time.sleep(1.4)
         cards = recruitable_units(bus)
@@ -411,36 +283,40 @@ def _recruit_execute(bus, ctx, pick, before):
 
 
 def _recruit_confirm(bus, ctx, pick, before):
-    t, p = _treasury(bus), _pending_recruits(bus, ctx["entity_id"])
+    """The requested unit must appear in the force's queue. Treasury is recorded, never decisive."""
+    t = _treasury(bus)
+    after = str(_pending_recruits(bus, ctx["entity_id"]) or "")
+    prior = str(before.get("pending") or "")
+    want = str(pick["key"])
+    queued = after.count(want) > prior.count(want)
     dropped = (t is not None and before.get("treasury") is not None and t < before["treasury"])
-    queued = (isinstance(p, (int, float)) and isinstance(before.get("pending"), (int, float))
-              and p > before["pending"])
-    return (dropped or queued), {"treasury": t, "pending": p}
+    return queued, {"treasury": t, "pending": after, "pending_before": prior,
+                    "treasury_dropped": dropped}
 
 
 register("recruit_unit", {
-    "layer": "click", "signal": "treasury_drop_or_pending_increase",
+    # recruitment_items() is true the instant the click lands, so this needs one read, not a poll
+    # loop -- the old 8.0/1.5 spent up to 5 rounds waiting on a signal that never arrives late.
+    "layer": "click", "signal": "unit_key_in_recruitment_items",
     "snapshot": _recruit_snapshot, "gates": [_recruit_gate],
     "execute": _recruit_execute, "confirm": _recruit_confirm,
-    "timeout_s": 8.0, "poll_s": 1.5, "spends_gold": True, "max_per_entity_turn": 4,
+    "timeout_s": 2.0, "poll_s": 1.0, "spends_gold": True,
 })
 
 
-# ------------------------------------------------------------------------- RECRUIT LORD
 def _character_count(bus):
-    """How many characters the faction has. ONE read, ONE number -- the whole recruit verdict.
-
-    Replaces a set-of-cqis built by splitting a string: a failed read produced {''}, which is
-    indistinguishable from "no new character", so a bus hiccup turned a SUCCESSFUL recruit into a
-    reported failure. Returns None when the read genuinely fails, so the caller can say "unknown"
-    instead of "did not happen".
-    """
-    v = _ev(bus, "local f=cm:get_local_faction(true) return f:character_list():num_items()",
-            timeout=12.0)
-    try:
-        return int(float(v))
-    except (TypeError, ValueError):
-        return None
+    """Number of characters in the faction, or None when unreadable."""
+    for attempt in range(3):
+        v = _ev(bus, "local f=cm:get_local_faction(true) return f:character_list():num_items()",
+                timeout=20.0)
+        try:
+            return int(float(v))
+        except (TypeError, ValueError):
+            if attempt < 2:
+                time.sleep(1.0)
+    sys.stderr.write("click_actions: character count UNREADABLE after 3 tries -- "
+                     "reporting unknown, NOT zero-growth" + chr(10))
+    return None
 
 
 def _character_cqis(bus):
@@ -451,7 +327,7 @@ def _character_cqis(bus):
 
 
 def lord_types(bus):
-    """Lord-type buttons in the raise-army panel (e.g. hef_prince / hef_princess / hef_sea_helm)."""
+    """Lord-type button ids in the raise-army panel."""
     _res, kids = _find(bus, LORD_TYPE_LIST)
     return [k for k in kids if not k.startswith("button_template")]
 
@@ -465,19 +341,16 @@ def lord_candidates(bus):
 def _lord_snapshot(bus, ctx, pick):
     n = _character_count(bus)
     if n is None:
-        return None                      # unreadable baseline -> snapshot_failed, never a bad one
+        return None
     return {"treasury": _treasury(bus), "n_chars": n}
 
 
 def _lord_execute(bus, ctx, pick, before):
-    """⚠ ALWAYS CLOSES THE PANEL. An early return that leaves character_panel open wedges the whole
-    run: the next action's prepare() cannot open its own panel, and the loop stalls there until the
-    watchdog kills the campaign. Live: a recruit_lord for a subtype with no valid candidates left
-    the panel up and the session died on it."""
+    """Runs the recruit sequence and always closes the panel afterwards."""
     try:
         return _lord_execute_inner(bus, ctx, pick, before)
     finally:
-        clear_screen(bus)          # CloseAllPanels -- unconditional, success or failure
+        clear_screen(bus)
 
 
 def _lord_execute_inner(bus, ctx, pick, before):
@@ -486,19 +359,22 @@ def _lord_execute_inner(bus, ctx, pick, before):
         sys.stderr.write("click_actions: recruit_lord refused, not a known state -> %s" % why + chr(10))
         return False
     r = _roots(bus)
-    if not (r and "character_panel" in r):       # idempotent: the button TOGGLES the panel
-        if not _click(bus, CREATE_ARMY_BTN):     # opens character_panel (raise-army)
+    if not (r and "character_panel" in r):       # the button toggles the panel
+        if not _click(bus, CREATE_ARMY_BTN):
             return False
         time.sleep(1.8)
-    # ⚠ ID MISMATCH: the offer key is the DB subtype (wh2_main_hef_prince) but the UI type button
-    # is the short form (hef_prince). Resolve against what the panel actually lists rather than
-    # assuming either shape -- prefixes differ per pack (wh2_main_, wh2_dlc10_, wh3_dlc27_...).
     want = str(pick["key"])
 
     def _match(types):
-        return next((t for t in types if want.endswith(t) or t.endswith(want) or t in want), None)
+        """Anchored match of `want` against the panel's type ids; ambiguity returns None."""
+        hits = [t for t in types if want == t or want.endswith("_" + t)]
+        if len(hits) == 1:
+            return hits[0]
+        if len(hits) > 1:
+            sys.stderr.write("click_actions: AMBIGUOUS subtype %r -> %s; refusing to guess\n"
+                             % (want, hits))
+        return None
 
-    # try the LORD list, then the HERO list; the commit button differs per mode
     lord_list = [k for k in _find(bus, LORD_TYPE_LIST)[1] if not k.startswith("button_template")]
     agent_list = [k for k in _find(bus, AGENT_TYPE_LIST)[1] if not k.startswith("button_template")]
     btn, type_path, commit_id = _match(lord_list), LORD_TYPE_LIST, "button_raise"
@@ -516,37 +392,24 @@ def _lord_execute_inner(bus, ctx, pick, before):
         sys.stderr.write("click_actions: no general_candidate rows for %r\n" % pick["key"])
         return False
     idx = int((pick.get("params") or {}).get("candidate_index", 0))
-    # ENGINE-SIDE click by component id. These rows are spawned at runtime (they exist in no XML)
-    # and often report visible:False, which is why the path-based bus click was a silent no-op and
-    # we used to fall back to a hardware click that stole the cursor.
     if not engine_click(bus, cands[min(idx, len(cands) - 1)]):
         return False
-    # button_raise is 'down_off' (disabled) until a candidate is selected -- that flip is the
-    # in-flight proof the selection landed, checked before committing.
     res, _ = _find(bus, BUTTON_RAISE)
     if res.get("state") != "active":
         sys.stderr.write("click_actions: button_raise not active after candidate select (state=%s)\n"
                          % res.get("state"))
         return False
-    return engine_click(bus, commit_id)          # button_raise (lord) / button_confirm (hero)
+    return engine_click(bus, commit_id)
 
 
 def _lord_confirm(bus, ctx, pick, before):
-    """Did the faction gain a character? That is the whole question.
-
-    A COUNT, not a set difference, and not an AND of two independent reads. The previous version
-    required both a new cqi AND a treasury drop, each from its own read -- so either one hiccuping
-    inside the confirm window flipped a real recruit to `command_silently_refused`. Live evidence:
-    recruit_lord scored 0/3 confirmed on recruits that had actually happened, and each false
-    negative burned the FULL confirm timeout (a success returns on the first poll), which made this
-    the largest time sink after end_turn.
-
-    The treasury drop is still recorded as corroborating evidence, but it is NOT required.
-    """
+    """True when the faction's character count grew; the treasury drop is recorded, not required."""
     n = _character_count(bus)
     t = _treasury(bus)
     before_n = before.get("n_chars")
-    grew = (n is not None and before_n is not None and n > before_n)
+    if n is None:
+        return False, {"n_chars": None, "n_chars_before": before_n, "unreadable": True}
+    grew = (before_n is not None and n > before_n)
     return grew, {"n_chars": n, "n_chars_before": before_n, "treasury": t,
                   "treasury_dropped": (t is not None and before.get("treasury") is not None
                                        and t < before["treasury"])}
@@ -556,5 +419,6 @@ register("recruit_lord", {
     "layer": "click", "signal": "new_character_cqi_and_treasury_drop",
     "snapshot": _lord_snapshot,
     "execute": _lord_execute, "confirm": _lord_confirm,
-    "timeout_s": 12.0, "poll_s": 2.0, "spends_gold": True, "max_per_entity_turn": 1,
+    # character count is true as soon as the raise lands; 12s bought nothing but 6 idle polls
+    "timeout_s": 6.0, "poll_s": 2.0, "spends_gold": True,
 })

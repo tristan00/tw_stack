@@ -1,38 +1,7 @@
-r"""verify_cco_commands.py -- the ONE-TIME live verification protocol for cco COMMANDS.
+r"""verify_cco_commands.py -- live verification of the cco commands, run on a disposable campaign.
 
-Run on a DISPOSABLE fresh campaign after any game patch / mod rebuild, BEFORE trusting any
-command in the loop. Each command gets a positive test (legal target, asserted from game
-state) and negative tests (illegal targets must refuse). Prints a verdict table.
-
-VERDICTS 2026-07-29 (WH3 v8.1.1, fresh Nagarythe turn 1 + turn-19 campaign):
-
-  command            verdict     notes
-  -----------------  ----------  ------------------------------------------------------------
-  stance Activate    GUARDED-OK  Executes + flips IsActive. ⚠ NO LEGALITY GUARD: set TUNNELING
-                                 on a High Elf army (rule breach). REQUIRES faction whitelist
-                                 pre-check (from the recorder's army_stances UI-stack capture).
-                                 CanBeActivated is a state gate (AP), NOT legality. Post-assert
-                                 IsActive is the only truth (calls always "succeed").
-  Construct          OK          Inline-expression args ONLY:
-                                 Call('Construct(PossibleUpgradeWithoutConversionsList[i])').
-                                 Positive: farm_1 treasury 5000->4000 (== DB cost), IsBuildingNew
-                                 flips. Negatives: locked slot + growth-gated settlement upgrade
-                                 both silently refused (treasury unchanged). Pre-check: req_met
-                                 + cost <= treasury + slot unlocked; post-assert treasury+flag.
-  SetInitiative      REJECTED    Takes an ExpressionState (UI-component object) -- UI-coupled.
-                                 ⚠ passing a Lua cco WRAPPER as a Call ARG HARD-HANGS THE ENGINE
-                                 (frozen process, bus dead, force-kill). Edicts execute via the
-                                 UI click verb. (No cm script-API setter either.)
-  RecruitUnit        ABSENT      Exists only on CcoCustomBattlePlayerSlot (custom battle).
-                                 Campaign recruitment stays UI capture + click verb.
-
-HARD RULES derived here (also in ui-capture/cco_queries.py docstring):
-  * NEVER pass Lua cco wrappers as Call() arguments -- engine hang. Inline expression args only.
-  * Commands report success even when refused -- post-asserts from game state are mandatory.
-  * A verdicts change (new patch) => rerun this script before the loop runs any command.
-
-    python verify_cco_commands.py           # runs the safe subset live (stance cycle + report)
-    python verify_cco_commands.py construct # ALSO queues a real building (spends gold!)
+    python verify_cco_commands.py           # stance cycle + report
+    python verify_cco_commands.py construct # ALSO queues a real building (spends gold)
 """
 from __future__ import annotations
 
@@ -83,7 +52,7 @@ def verify_stance(bus):
 
 
 def verify_construct(bus):
-    """Queues a REAL building (cheapest req-met possible in the first open slot). Spends gold."""
+    """Queues a real building in the first open slot. Spends gold."""
     ents = CQ.list_entities(bus)
     if not ents["regions"]:
         return "SKIP (no regions)"

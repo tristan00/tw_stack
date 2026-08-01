@@ -1,18 +1,3 @@
-r"""policy.py -- turns a ranking into ONE choice.
-
-The advisor scores every action the whole faction could take, then this picks one. It is the only
-place allowed to decide "do nothing here" or "end the turn", and it is the second place (after the
-launcher's executor) where the battle-UI keys are hard-blocked.
-
-    HOT   a trained Ranker exists -> take the top-scoring available offer, with an epsilon-greedy
-          slice of random picks that shrinks as the training set grows.
-    COLD  nothing trained yet -> uniform random over the available offers, with two priors that
-          keep a cold run from stalling: end_turn's weight RISES with the number of actions already
-          taken this turn, and noop keeps a small constant weight so entities retire.
-
-Both paths go through the same argmax over a `score` column, so a cold run and a hot run produce
-identically shaped decision records -- which is what makes cold-start data trainable later.
-"""
 from __future__ import annotations
 
 import os
@@ -24,26 +9,21 @@ sys.path.insert(0, _HERE)
 
 import model as M                                          # noqa: E402
 
-# battle-UI entries are NEVER selectable -- hardcoded here AND in the launcher's executor, because
-# the one thing a testing agent must never do is wander into a manual battle.
+# battle UI: never selectable
 FORBIDDEN_KEYS = frozenset({"button_attack", "button_spectate"})
 
-# 10, not 40. Measured on a live run: ~12s per decision (verify dominates, and a FAILED confirm
-# burns its whole timeout while a success returns on the first poll), so 40 actions/turn is ~8
-# minutes a turn = ~2.5h per 20-turn campaign. At 10 the cap rarely binds early-game anyway -- turn
-# 1 used 13 -- and it keeps a bad turn from eating the session.
 MAX_ACTIONS_PER_TURN = 10          # hard ceiling; the loop force-ends the turn at this
 MAX_ACTIONS_PER_ENTITY = 6         # an entity retires after this many confirmed actions in a turn
 
-# PER-ENTITY, PER-TURN CAPS BY ACTION TYPE.
-# Enforced HERE because the game's availability read cannot express it: after recruiting a lord the
-# pool still reports size=6 with CanRecruitCharacter=[True]*6, so `available` stays true forever and
-# the policy would happily try again every action. A second attempt in the same settlement/turn is
-# a guaranteed wasted action, and a wasted action costs the FULL confirm timeout.
-# Conservative by design: if a rule turns out not to exist we lose at most one extra action per
-# entity per turn; if it does exist we avoid a certain failure and a mislabelled row.
-PER_TURN_CAPS = {"recruit_lord": 1, "recruit_unit": 4, "edict": 1, "research": 1, "rites": 1}
-EPS_FLOOR = 0.05                   # never stop exploring entirely
+EPSILON = 0.2                      # P(uniform random pick)
+BETA = 0.1                         # P(argmax novelty); the remainder is argmax exploit
+
+# how many offers of a combinatorial action type enter the ranking at all, re-drawn per decision
+SUBSAMPLE_CAPS = {"diplomacy": 12}
+# per (context_kind, context_id, action_type), per turn
+PER_TURN_CAPS = {"recruit_lord": 1, "recruit_unit": 4, "edict": 1, "research": 1, "rites": 1,
+                 "diplomacy": 1,
+                 "stance": 1}
 COLD_NOOP_WEIGHT = 0.10            # cold-start prior mass on "this entity is done"
 
 
@@ -56,13 +36,14 @@ class Policy:
         self.max_actions_per_entity = max_actions_per_entity
         self.retired = set()           # (context_kind, context_id) done for this turn
         self.blacklist = set()         # (ck, cid, action_type, key) that failed confirmation
+        self.failed_types = set()      # action_type that failed once -> gated for the rest of the turn
         self.entity_actions = {}       # (ck, cid) -> confirmed actions this turn
         self.type_actions = {}         # (ck, cid, action_type) -> confirmed of THAT type this turn
 
-    # ------------------------------------------------------------------ turn bookkeeping
     def new_turn(self):
         self.retired.clear()
         self.blacklist.clear()
+        self.failed_types.clear()
         self.entity_actions.clear()
         self.type_actions.clear()
 
@@ -70,15 +51,9 @@ class Policy:
         self.retired.add((context_kind, str(context_id)))
 
     def note_result(self, pick, counted):
-        """A confirmed action advances that entity's counter; an unconfirmed one is blacklisted so
-        the same dead action is never retried a second time in the same turn."""
+        """A confirmed action advances that entity's counter; an unconfirmed one is blacklisted."""
         k = (pick["context_kind"], str(pick["context_id"]))
-        # ⚠ THE PER-TYPE CAP COUNTS ATTEMPTS, NOT CONFIRMATIONS.
-        # The game consumes the turn's allowance whether or not our confirm believed it. Counting
-        # only confirmed actions meant a false-negative confirm left the counter at 0, so the policy
-        # immediately tried again -- and the retry uses a different subtype/candidate, so the
-        # blacklist (which keys on the exact key) did not stop it either. Live: two recruit_lord
-        # attempts in one settlement in one turn, the first of which had actually succeeded.
+        # counts attempts, not confirmations -- must stay above the `if counted` branch
         tk = (k[0], k[1], pick["action_type"])
         self.type_actions[tk] = self.type_actions.get(tk, 0) + 1
         if counted:
@@ -86,17 +61,13 @@ class Policy:
             self.entity_actions[k] = n
             if n >= self.max_actions_per_entity:
                 self.retired.add(k)
-        else:
+        elif pick["action_type"] != "end_turn":
             self.blacklist.add((k[0], k[1], pick["action_type"], str(pick["key"])))
+            # one failure gates the whole TYPE for the rest of the turn -- a broken action path
+            # otherwise gets re-picked all turn (fail, re-rank, fail...) and eats the action budget
+            self.failed_types.add(pick["action_type"])
+        # end_turn is never blacklisted -- do not remove that exemption
 
-    @property
-    def epsilon(self):
-        if not self.ranker.ready:
-            return 1.0
-        rows = (self.ranker.meta or {}).get("rows") or 0
-        return max(EPS_FLOOR, min(1.0, 200.0 / max(rows, 1)))
-
-    # ------------------------------------------------------------------ the choice
     def eligible(self, ranked):
         """Available, not battle-UI, not blacklisted, not belonging to a retired entity."""
         out = []
@@ -108,52 +79,64 @@ class Policy:
             k = (r["context_kind"], str(r["context_id"]))
             if k in self.retired and r["action_type"] != "end_turn":
                 continue
+            if r["action_type"] in self.failed_types:
+                continue
             if (k[0], k[1], r["action_type"], str(r["key"])) in self.blacklist:
                 continue
             cap = PER_TURN_CAPS.get(r["action_type"])
             if cap is not None and self.type_actions.get((k[0], k[1], r["action_type"]), 0) >= cap:
-                continue                 # already done this many of this type here, this turn
+                continue
             out.append(r)
-        return out
+        return self._subsample(out)
+
+    def _subsample(self, rows):
+        """Thin the action types listed in SUBSAMPLE_CAPS down to their cap, uniformly."""
+        keep, pools = [], {}
+        for r in rows:
+            cap = SUBSAMPLE_CAPS.get(r["action_type"])
+            (pools.setdefault(r["action_type"], []) if cap else keep).append(r)
+        for atype, pool in pools.items():
+            cap = SUBSAMPLE_CAPS[atype]
+            keep.extend(pool if len(pool) <= cap else self.rng.sample(pool, cap))
+        return keep
 
     def choose(self, record, actions_taken=0):
-        """(pick, ranked) -- the action to execute next, and the full scored table behind it.
-
-        `pick` is {context_kind, context_id, action_type, key, params, policy, score, rank}.
-        Returns pick=None only when there is genuinely nothing eligible, which the loop treats as
-        "force the turn to end" rather than as an error.
-        """
+        """(pick, ranked) -- the action to execute next, and the full scored table. pick is None
+        when nothing is eligible."""
         ranked = self.ranker.score(record)
         hot = self.ranker.ready
-        if hot:
-            eps = self.epsilon
-            explore_pick = self.rng.random() < eps
-        else:
-            eps, explore_pick = 1.0, True
-        if not hot or explore_pick:
+        if not hot:
             self._cold_scores(ranked, actions_taken)
         for i, r in enumerate(ranked):
             r["rank"] = i + 1
         elig = self.eligible(ranked)
         if not elig:
             return None, ranked
-        best = max(elig, key=lambda r: r["score"] if r["score"] is not None else 0.0)
+        # THREE MODES, drawn per decision -- not one blended number. Blending exploit and explore
+        # lets an option mediocre at both outrank one excellent at either, which is the opposite of
+        # what novelty seeking is for.
+        #   EPSILON -> uniform random | BETA -> argmax novelty | remainder -> argmax exploit
+        roll = self.rng.random() if hot else 1.0
+        if hot and roll < EPSILON:
+            mode, best = "epsilon_random", self.rng.choice(elig)
+        elif hot and roll < EPSILON + BETA:
+            mode = "explore"
+            best = max(elig, key=lambda r: r.get("explore") or 0.0)
+        elif hot:
+            mode = "exploit"
+            best = max(elig, key=lambda r: r.get("exploit") or 0.0)
+        else:
+            mode = "cold_random"
+            best = max(elig, key=lambda r: r["score"] if r["score"] is not None else 0.0)
         pick = {"context_kind": best["context_kind"], "context_id": best["context_id"],
                 "action_type": best["action_type"], "key": best["key"],
                 "params": best.get("params") or {},
-                "policy": ("cold_random" if not hot else
-                           ("epsilon_explore" if explore_pick else "greedy")),
-                "score": best.get("score"), "rank": best.get("rank"),
-                "epsilon": round(eps, 4)}
+                "policy": mode,
+                "score": best.get("score"), "rank": best.get("rank")}
         return pick, ranked
 
     def _cold_scores(self, ranked, actions_taken):
-        """Uniform random over the available offers, with the two priors that keep a run moving.
-
-        end_turn's weight rises with how much has already been done this turn, so a cold run does a
-        handful of things and then ends the turn instead of grinding to the hard cap; noop keeps a
-        small constant weight so entities retire and the sweep shrinks.
-        """
+        """Uniform random scores, with end_turn weighted up by actions_taken and noop weighted down."""
         end_w = min(0.9, 0.05 + 0.9 * (actions_taken / float(max(self.max_actions_per_turn, 1))))
         for r in ranked:
             base = self.rng.random()
@@ -168,9 +151,11 @@ class Policy:
 
 
 def scores_for_store(ranked, limit=None):
-    """The ranking rows the recorder persists next to the offers (see store.attach_scores)."""
+    """The ranking rows the recorder persists next to the offers."""
     rows = ranked if limit is None else ranked[:limit]
     return [{"context_kind": r["context_kind"], "context_id": r["context_id"],
              "action_type": r["action_type"], "key": r["key"], "score": r.get("score"),
-             "exploit": r.get("exploit"), "explore": r.get("explore"), "rank": r.get("rank")}
+             "exploit": r.get("exploit"), "explore": r.get("explore"), "rank": r.get("rank"),
+             # the halves of exploit, so the UI can show global vs local instead of one number
+             "pct_global": r.get("pct_global"), "pct_local": r.get("pct_local")}
             for r in rows]

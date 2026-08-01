@@ -1,32 +1,3 @@
-r"""loop.py -- the v7 advisor game loop.
-
-THE LOOP (as specified): after every move, re-derive the WHOLE faction's possible actions, score
-them in ONE ranking, execute the top one, and repeat until the action limit is reached or end_turn
-is the chosen decision.
-
-    while True:
-        decision_id, record = recorder.request_snapshot()     # STREAM 2, read at this instant
-        pick, ranked        = policy.choose(record)
-        recorder.log_pick(decision_id, pick, ranked)          # STREAM 3 + the ranking behind it
-        if pick is end_turn: execute it, write the reward row, next turn
-        if pick is noop:     retire that entity, continue
-        result = launcher.execute(pick)                       # gates -> execute -> confirm
-        recorder.log_verification(decision_id, result)        # STREAM 4
-        launcher.resolve_battles()
-
-There is NO cycling through lords and then provinces: every entity's options compete in the same
-ranking, so a province's building can outrank a lord's attack. Entities leave the pool when the
-ranking picks their noop or they hit the per-entity action cap, which shrinks each subsequent sweep.
-
-BOUNDARIES THIS FILE KEEPS
-  * It never opens a bus. Game state arrives as DB records from the recorder; actions go out
-    through the launcher's Executor. That is the whole reason the recorder exists.
-  * Every executed action gets a record in ALL FOUR streams: the sweep writes the offers (2), the
-    pick writes the choice (3), the launcher's ActionRecord writes the verification (4), and each
-    turn writes one reward row (1). `verify_streams` at the end asserts exactly that.
-  * A watchdog thread polls the recorder's liveness digest; if the game stops changing (or the bus
-    stops answering) for STUCK_SECONDS, it screenshots and ends the run rather than hanging.
-"""
 from __future__ import annotations
 
 import os
@@ -34,16 +5,27 @@ import sys
 import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
+
+HUD_MISS_BUDGET = 12          # 12 x 5.0s
+HUD_MISS_PAUSE = 5.0
+_last_beat_turn = [None]      # last turn that beat the watchdog
 sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.join(r"D:\tw_stack", "decisions"))
 
-import journal                                             # noqa: E402  recorder request API
+import journal                                             # noqa: E402
 import policy as P                                         # noqa: E402
+
+sys.path.insert(0, os.path.join(r"D:\tw_stack", "launcher"))
+import trace as TR                                         # noqa: E402
 from watchdog import Watchdog                              # noqa: E402
 
 
+class CampaignLost(RuntimeError):
+    """The faction was destroyed."""
+
+
 class GameStuck(RuntimeError):
-    """The watchdog saw no progress. The run is over; the caller starts a fresh one."""
+    """The watchdog saw no progress."""
 
 
 class TurnResult(dict):
@@ -54,8 +36,24 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
                  stuck_seconds=None, on_stuck=None):
     """Play `turns` turns. Returns the per-turn report rows (also written to loop_report.jsonl)."""
     pol = pol or P.Policy()
+    TR.set_run_dir(run_dir)
     report_path = os.path.join(run_dir, "loop_report.jsonl")
     stuck = {"fired": False, "reason": None, "detail": None, "shot": None}
+    try:
+        executor.disable_ui_hotkeys()
+    except Exception as e:
+        log("!! could not disable the UI-hide hotkeys: %s" % repr(e)[:120])
+    import interrupt_model as IM
+    import interrupts as I
+    ranker = IM.InterruptRanker()
+    # installed whether or not a model is fitted; the ranker draws uniformly when cold
+    I.set_chooser(lambda screen, options, campaign: ranker.choose(screen, options, campaign))
+    if ranker.ready:
+        log("interrupt policy: trained(%d rows, screens=%s)"
+            % ((ranker.meta or {}).get("rows", 0),
+               ",".join((ranker.meta or {}).get("screens") or [])))
+    else:
+        log("interrupt policy: cold_random (advisor-hosted; no interrupt model fitted yet)")
 
     def _stuck(reason, detail):
         stuck.update(fired=True, reason=reason, detail=detail)
@@ -81,6 +79,14 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
             _append(report_path, row)
             log("== turn %s done: %d actions (%d confirmed), ended by %s =="
                 % (row["turn"], row["actions"], row["confirmed"], row["ended_by"]))
+            _turn_trail(run_dir, executor, row, len(rows), log)
+            if row["ended_by"] == "defeated":
+                raise CampaignLost("faction destroyed at turn %s after %d turns played"
+                                   % (row["turn"], len(rows)))
+            if row["ended_by"] == "no_campaign_ui":
+                raise GameStuck("no_campaign_ui: hud_campaign absent, nothing clickable "
+                                "(turn %s, %d actions, %d confirmed)"
+                                % (row["turn"], row["actions"], row["confirmed"]))
             if row["ended_by"] == "stuck":
                 raise GameStuck("%s: %s" % (stuck["reason"], stuck["detail"]))
     finally:
@@ -88,26 +94,134 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
     return rows
 
 
+SHOT_EVERY_TURNS = 5
+
+
+def _turn_trail(run_dir, executor, row, turn_index, log):
+    """One turn_trail.jsonl row per turn, plus a screenshot on turn 1, every SHOT_EVERY_TURNS, and
+    on any abnormal ending. Never raises."""
+    rec = {"ts": time.time(), "turn": row.get("turn"), "turn_index": turn_index,
+           "actions": row.get("actions"), "confirmed": row.get("confirmed"),
+           "ended_by": row.get("ended_by")}
+    for name, fn in (("roots", executor.visible_roots), ("ui_state", executor.ui_state)):
+        try:
+            rec[name] = fn()
+        except Exception as e:
+            rec[name] = None
+            rec[name + "_error"] = repr(e)[:100]
+    abnormal = row.get("ended_by") not in ("end_turn_chosen", "action_cap")
+    if abnormal or turn_index == 1 or turn_index % SHOT_EVERY_TURNS == 0:
+        try:
+            rec["screenshot"] = executor.screenshot(
+                "t%s_%s_%d" % (row.get("turn"), row.get("ended_by"), int(time.time())))
+        except Exception as e:
+            rec["screenshot_error"] = repr(e)[:100]
+    try:
+        _append(os.path.join(run_dir, "turn_trail.jsonl"), rec)
+    except Exception as e:
+        log("   !! turn trail not written: %s" % repr(e)[:120])
+    if abnormal:
+        log("   turn trail: ended_by=%s roots=%s ui=%s shot=%s"
+            % (row.get("ended_by"), ",".join(str(r) for r in (rec.get("roots") or []))[:140],
+               rec.get("ui_state"), rec.get("screenshot")))
+
+
+def _drain_interrupts(run_dir, log):
+    """Hand every interrupt-screen decision the launcher buffered to the recorder."""
+    try:
+        import interrupts as I
+        recs = I.drain_interrupt_records()
+    except Exception as e:
+        log("   !! could not drain interrupt records: %s" % repr(e)[:120])
+        return
+    for r in recs:
+        try:
+            journal.log_interrupt(run_dir, r)
+        except Exception as e:
+            log("   !! interrupt record not persisted: %s" % repr(e)[:120])
+    if recs:
+        log("   recorded %d interrupt decision(s): %s"
+            % (len(recs), ", ".join("%s->%s" % (x.get("kind"), x.get("chosen")) for x in recs)))
+
+
 def _run_turn(run_dir, executor, pol, wd, stuck, log):
     pol.new_turn()
     turn = journal.request_turn(run_dir)
     log("== TURN %s ==" % turn)
-    opening = executor.resolve_interrupts()          # a battle/diplomacy screen may still be up
+    opening = executor.resolve_interrupts()
+    _drain_interrupts(run_dir, log)
     if opening:
         log("   opening interrupts: %s" % ", ".join(str(s) for s in opening))
     actions, confirmed, ended_by, picks = 0, 0, "action_cap", []
     active = None                                   # None = every entity is in play
+    no_hud = 0
+    last_record = {}                                # newest snapshot, for the end-of-turn line
     while actions < pol.max_actions_per_turn:
         if stuck["fired"]:
             ended_by = "stuck"
             break
+        alive = executor.campaign_ui_alive()
+        if alive is False:
+            no_hud += 1
+            roots = executor.visible_roots()
+            log("   !! hud_campaign missing (%d/%d) -- roots=%s"
+                % (no_hud, HUD_MISS_BUDGET, ",".join(sorted(str(r) for r in roots))[:200]))
+            # check before spending any budget, and never try to drive this screen
+            lost = executor.defeat_screen(roots)
+            if lost:
+                log("   !! END-OF-CAMPAIGN SCREEN %r -- the campaign is OVER, not stalled. Ending "
+                    "as `defeated` without spending the HUD budget (turn %s, %d actions, roots=%s)"
+                    % (lost, turn, actions,
+                       ",".join(sorted(str(r) for r in roots))[:200]))
+                ended_by = "defeated"
+                break
+            steps = executor.resolve_interrupts()
+            if steps:
+                log("   hud recovery: %s" % ", ".join(str(s) for s in steps))
+            st = None
+            try:
+                st = executor.ui_state()
+            except Exception as e:
+                log("   !! ui_state failed: %s" % repr(e)[:100])
+            if st:
+                log("   ui state: cutscene=%s cinematic_ui=%s ui_hiding=%s"
+                    % (st.get("cutscene"), st.get("cinematic_ui"), st.get("ui_hiding")))
+            if no_hud == HUD_MISS_BUDGET // 2:
+                try:
+                    log("   forcing UI restore: %s" % executor.force_ui_restore())
+                except Exception as e:
+                    log("   !! force_ui_restore failed: %s" % repr(e)[:100])
+            if no_hud < HUD_MISS_BUDGET:
+                time.sleep(HUD_MISS_PAUSE)
+                continue
+            if no_hud >= HUD_MISS_BUDGET:
+                shot = None
+                try:
+                    shot = executor.screenshot("no_hud_t%s_%d" % (turn, int(time.time())))
+                except Exception as e:
+                    log("   !! HUD-gone screenshot failed: %s" % repr(e)[:120])
+                log("   !! campaign HUD is gone after %d recovery attempts, abandoning the turn "
+                    "(roots=%s, shot=%s)"
+                    % (no_hud, ",".join(sorted(str(r) for r in roots))[:200], shot))
+                ended_by = "no_campaign_ui"
+                break
+            continue
+        else:
+            no_hud = 0
         decision_id, record = journal.request_snapshot(run_dir, active=active)
+        last_record = record
+        if turn is not None and turn != _last_beat_turn[0]:
+            _last_beat_turn[0] = turn
+            wd.beat("turn_advanced")
         t_scored0 = time.time()
         pick, ranked = pol.choose(record, actions_taken=actions)
+        TR.advisor(pick, ranked_top=[{k: r.get(k) for k in
+                                      ("context_kind", "context_id", "action_type", "key",
+                                       "score", "exploit", "explore", "rank")}
+                                     for r in (ranked or [])[:10]],
+                   turn=turn, decision_id=decision_id, actions_taken=actions,
+                   n_offers=len(ranked or []))
         t_scored = time.time()
-        # the per-action phase breakdown, in ms: how long the recorder spent reading the game, how
-        # long the round trip added on top, how long scoring took, then execute+confirm. Recorded so
-        # a slow session can be READ rather than guessed at.
         timing = {"t_request": record.get("_t_request"), "t_received": record.get("_t_received"),
                   "collect_ms": record.get("_collect_ms"),
                   "roundtrip_ms": int((record.get("_t_received", t_scored0)
@@ -129,6 +243,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log):
             pol.retire(pick["context_kind"], pick["context_id"])
             journal.log_verification(run_dir, decision_id, _noop_record(pick))
             log("   %-9s %-24s -> retired" % ("noop", pick["context_id"][:24]))
+            wd.beat("noop_retired")
             active = _active_from(record, pol)
             continue
 
@@ -138,6 +253,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log):
         ok = bool(result.get("counted"))
         confirmed += 1 if ok else 0
         pol.note_result(pick, ok)
+        # only a confirmed action beats the watchdog
         if ok:
             wd.beat("confirmed:%s" % pick["action_type"])
         log("   %-16s %-34s %s%s"
@@ -145,8 +261,22 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log):
                "OK" if ok else "FAIL", "" if ok else " (%s)" % result.get("refusal")))
 
         if pick["action_type"] == "end_turn":
-            ended_by = "end_turn_chosen" if ok else "end_turn_failed"
-            break
+            if ok:
+                ended_by = "end_turn_chosen"
+                break
+            # do not break on a refused end_turn: retry it, bounded by the per-turn action cap
+            log("   end_turn refused -- retrying rather than settling on a turn that never ended")
+            ended_by = "end_turn_failed"
+            active = _active_from(record, pol)
+            continue
+        # let a battle screen appear and be driven before the next order goes out
+        if str(pick.get("action_type", "")).startswith("attack"):
+            time.sleep(2.5)
+            pre = executor.resolve_interrupts()
+            if pre:
+                log("   post-attack interrupts: %s" % ", ".join(str(s) for s in pre))
+                wd.beat("post_attack_interrupt")
+        _drain_interrupts(run_dir, log)
         steps = executor.resolve_interrupts()
         if steps:
             log("   interrupts: %s" % ", ".join(str(s) for s in steps))
@@ -156,46 +286,52 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log):
         ended_by = "action_cap"
         _force_end_turn(run_dir, executor, None, None, log)
 
-    # STREAM 1 BEFORE the AI plays: the reward row must describe the turn WE just played, sampled at
-    # the same point in every turn cycle, not after other factions have moved our numbers.
+    # the reward row is sampled before the AI phase, at the same point in every turn
+    terminal = ended_by in ("stuck", "no_campaign_ui", "defeated")
     target = None
-    if ended_by != "stuck":
+    if not terminal:
         target = journal.request_target(run_dir)
 
-    # ride out the AI turns -- defensive battles and incoming diplomacy land here, and the turn
-    # number does not advance until they are cleared
-    settle = executor.settle_between_turns(turn_before=turn)
+    if terminal:
+        settle = {"turn": None, "steps": [], "waited_s": 0.0, "skipped": ended_by}
+    else:
+        settle = executor.settle_between_turns(turn_before=turn,
+                                               abort=lambda: bool(stuck.get("fired")))
     if settle["steps"]:
         log("   inter-turn: %s (%.0fs)" % (", ".join(str(s) for s in settle["steps"]),
                                            settle["waited_s"]))
-    if settle["turn"] is None and ended_by not in ("stuck",):
+    if settle["turn"] is None and not terminal:
         log("   !! turn never advanced after %.0fs -- the watchdog decides from here"
             % settle["waited_s"])
+    camp = (last_record.get("campaign") or {})
+    state = {"faction": camp.get("faction"), "settlements": camp.get("settlements"),
+             "armies": camp.get("armies"), "treasury": camp.get("treasury"),
+             "income": camp.get("income"), "campaign_turn": camp.get("turn")}
+    log("   state: turn=%s settlements=%s armies=%s treasury=%s income=%s"
+        % (state["campaign_turn"], state["settlements"], state["armies"],
+           state["treasury"], state["income"]))
     return TurnResult({"kind": "turn", "turn": turn, "actions": actions, "confirmed": confirmed,
                        "ended_by": ended_by, "picks": picks, "target": target,
-                       "inter_turn": settle, "ts": time.time()})
+                       "state": state, "inter_turn": settle, "ts": time.time()})
 
 
 def _active_from(record, pol):
-    """The entities still in play, from the sweep we just took minus everything the policy retired.
-    Shrinking the sweep is what keeps re-deriving the whole faction affordable after every move."""
-    lords, regions, camp = [], [], True
+    """The entities still in play: this sweep minus everything the policy retired. The campaign
+    context is always kept -- end_turn is a campaign offer."""
+    lords, regions = [], []
     for e in record.get("entities") or []:
         k = (e["context_kind"], str(e["context_id"]))
         if k in pol.retired:
-            if e["context_kind"] == "campaign":
-                camp = False
             continue
         if e["context_kind"] == "lord":
             lords.append(e["context_id"])
         elif e["context_kind"] == "province":
             regions.append(e["context_id"])
-    return {"lords": lords, "regions": regions, "campaign": camp}
+    return {"lords": lords, "regions": regions, "campaign": True}
 
 
 def _noop_record(pick):
-    """A noop is a real, trivially-confirmed action: "the model saw N options and chose to stop"
-    is the label we want, not an absent row."""
+    """The verification record for a noop -- executed and confirmed."""
     return {"context_kind": pick["context_kind"], "context_id": pick["context_id"],
             "action_type": "noop", "key": "noop", "executed": True, "confirmed": True,
             "counted": True, "refusal": None, "policy": pick.get("policy"),
@@ -203,9 +339,7 @@ def _noop_record(pick):
 
 
 def _force_end_turn(run_dir, executor, decision_id, ranked, log):
-    """The turn hit the cap (or ran out of eligible actions) without the model choosing end_turn.
-    Ending it is the LOOP's decision, not the model's, so it is tagged that way and never trains as
-    if the ranking had picked it."""
+    """End the turn without the model having picked it; tagged `forced_end_turn`."""
     log("   forcing end_turn (loop decision, not the model's)")
     pick = {"context_kind": "campaign", "context_id": "campaign", "action_type": "end_turn",
             "key": "end_turn", "params": {}, "policy": "forced_end_turn"}
@@ -222,15 +356,8 @@ def _append(path, row):
         f.write(json.dumps(row, default=str) + "\n")
 
 
-# ------------------------------------------------------------------ the four-stream assertion
 def verify_streams(run_dir):
-    """Assert the contract: EVERY action has a record in all four streams.
-
-    stream 1  a reward row for every turn that ran
-    stream 2  offers for every decision point
-    stream 3  a chosen action for every decision point that was acted on
-    stream 4  executed/confirmed/counted evidence on every one of those
-    """
+    """Per-stream counts plus the all_*/orphan_picks consistency flags."""
     sys.path.insert(0, os.path.join(r"D:\tw_stack", "decisions"))
     from store import DecisionStore                          # noqa: E402
     s = DecisionStore(run_dir)
@@ -251,7 +378,7 @@ def verify_streams(run_dir):
         }
         out["all_points_have_offers"] = out["decision_points"] == out["points_with_offers"]
         out["all_taken_have_evidence"] = out["points_with_taken"] == out["taken_with_evidence"]
-        out["orphan_picks"] = out["awaiting_execution"]      # picks never verified -> must be 0
+        out["orphan_picks"] = out["awaiting_execution"]      # must be 0
         return out
     finally:
         s.close()

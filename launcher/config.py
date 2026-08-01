@@ -1,4 +1,4 @@
-"""Absolute paths for the port. This is the only file allowed to hold one."""
+"""Absolute paths. The only file allowed to hold one."""
 import os
 
 REPO = os.path.dirname(os.path.abspath(__file__))

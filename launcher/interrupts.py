@@ -1,55 +1,183 @@
-r"""interrupts.py -- every screen that appears WITHOUT the advisor asking for it.
-
-Most of these land between turns, while the AI factions play: a defensive battle, a diplomacy offer
-from someone who just declared on us, an event popup. None of them are advisor decisions yet, so
-the loop's job is simply to get past them without stranding the run on a screen nobody drives.
-
-    BATTLE          popup_pre_battle -> autoresolve -> popup_battle_results -> captives/occupation
-    DIPLOMACY       an incoming proposal -> DECLINE. Never accept: accepting silently rewrites the
-                    campaign (wars, treaties, payments) in ways the advisor never chose, and
-                    diplomacy is explicitly out of scope for this version.
-    EVENT POPUPS    generic dismiss buttons (nav.close_popups)
-
-⚠ THE HARD RULE: the manual-battle entries (button_attack / button_spectate) are NEVER clicked.
-Autoresolve only -- a testing agent dropped into a real-time battle is unrecoverable without a human.
-
-⚠ KNOWN LIMIT, deliberately not papered over: a MODAL popup pauses the game tick, and the mod runs
-on that tick, so the bus stops answering entirely. Nothing here can see or clear those. That case is
-the watchdog's: no progress -> screenshot -> abandon the run. Blind clicking at fixed coordinates was
-tried and rejected -- an unverified rescue is worse than a clean restart.
-"""
+"""interrupts.py -- driving screens that appear without the advisor asking for them."""
 from __future__ import annotations
 
+import random
 import sys
 import time
 
 sys.path.insert(0, r"D:\tw_stack\bus")
 sys.path.insert(0, r"D:\tw_stack\launcher")
 
-import nav                                                  # noqa: E402
+import nav
 
 _BR = "popup_battle_results|mid|battle_results|post_battle_results_panel"
 BATTLE_ROOTS = ("popup_pre_battle", "popup_battle_results", "settlement_captured")
-CAPTIVE_PREFERENCE = ("release", "enslave", "kill")
-OCCUPY_PREFERENCE = ("occupy", "loot & occupy", "sack", "raze")
-# an incoming proposal is refused by whichever of these the panel actually shows
+FORBIDDEN_CLICK_IDS = frozenset({"button_attack", "button_spectate", "button_retreat"})
+SCROLL_CHROME_IDS = frozenset({"top", "bottom", "handle", "vslider"})
+
+PREBATTLE_PREFERENCE = (
+    "button_autoresolve",
+    "button_continue_siege",
+)
+
+PREBATTLE_CHOOSABLE = (
+    "button_autoresolve",
+    "button_continue_siege",
+    "button_surround",
+    "button_retreat",
+)
+PREBATTLE_NEVER = frozenset(("button_attack", "button_spectate"))
+
+CAPTIVE_PREFIX = "button_captive_option_"
+
+
+def is_captive_option(control_id):
+    return str(control_id).startswith(CAPTIVE_PREFIX)
+
+
+CAPTIVE_OPTIONS = frozenset((
+    "button_captive_option_release",
+    "button_captive_option_enslave",
+    "button_captive_option_kill",
+    "button_captive_option_enslave_replenishment_only",
+    "button_captive_option_enslave_slaves_only",
+))
+ADVANCE_PREFERENCE = (
+    "button_accept",
+    "button_dismiss",
+)
+
+
+RESULTS_DECLINED = frozenset((
+    "button_call_up_the_trolls",
+))
+KNOWN_RESULTS_CONTROLS = CAPTIVE_OPTIONS | frozenset(ADVANCE_PREFERENCE) | RESULTS_DECLINED
+PREBATTLE_DECLINED = FORBIDDEN_CLICK_IDS | PREBATTLE_NEVER | frozenset(PREBATTLE_CHOOSABLE) | frozenset((
+    "button_sally_forth", "button_maintain_blockade",
+    "button_demand_surrender", "button_dismiss", "button_cancel_ready", "button_save",
+    "button_add_charges",
+))
+KNOWN_PREBATTLE_CONTROLS = frozenset(PREBATTLE_PREFERENCE) | PREBATTLE_DECLINED
+
+
+DISPLAY_CONTROLS = frozenset((
+    "army_button", "button_info", "button_preview_map",
+    "card_image_holder", "icon", "selected_frame",
+    "button_finance",
+    # classified from stuck_unhandled_battle_results_1785541961.png: the Tomb Kings' 0/8 books
+    # HUD counter, clickable while the results popup is open -- opens a panel, resolves nothing
+    "button_books_of_nagash",
+))
+DISPLAY_PREFIXES = ("unit_",)
+
+
+def _unknown_controls(ctrls, known):
+    """`button_*` ids in `ctrls` that are neither in `known` nor in DISPLAY_CONTROLS."""
+    return sorted(i for i in ctrls
+                  if str(i).startswith("button_")
+                  and i not in known and i not in DISPLAY_CONTROLS)
+
+
+_CHOOSER = [None]
+_CAMPAIGN = [None]
+_LAST_POLICY = [None]
+
+
+def set_chooser(fn):
+    """Install the chooser: fn(screen, options, campaign) -> (option, policy). Required."""
+    _CHOOSER[0] = fn
+
+
+def set_campaign(campaign):
+    """The campaign state passed to the chooser."""
+    _CAMPAIGN[0] = campaign
+
+
+def _campaign_hint():
+    return _CAMPAIGN[0]
+
+
+def _choose(screen, options, campaign=None):
+    """Pick one of `options` via the installed chooser. Callers pass only the legal set; a pick
+    outside it raises.
+    """
+    opts = sorted(options)
+    if not opts:
+        return None
+    fn = _CHOOSER[0]
+    if fn is None:
+        raise RuntimeError(
+            "no interrupt chooser installed -- the advisor owns this decision and must call "
+            "interrupts.set_chooser() before driving any screen. Refusing to invent a policy in "
+            "the launcher (screen=%s, offered=%s)" % (screen, opts))
+    got, policy = fn(screen, opts, campaign)
+    if got not in options:
+        raise RuntimeError(
+            "chooser returned %r which is NOT among the legal options %s for %s. Taking it anyway "
+            "is how button_attack eventually gets clicked." % (got, opts, screen))
+    _LAST_POLICY[0] = policy
+    sys.stderr.write("interrupts: SCREEN %s offered=%s -> %r (%s)\n" % (screen, opts, got, policy))
+    return got
+
+
+UNHANDLED_LOG = r"D:/twdata/runs/human/unhandled_screens.jsonl"
+
+
+def _report_unhandled(bus, screen, unknown, offered, root=None):
+    """Append an unhandled-option record (with screenshot) to UNHANDLED_LOG. Never raises.
+
+    The record must be enough to author the fix AFTER the screen is gone: the full tree of the
+    offending root(s) -- every node's id/path/text/context/state/bounds -- not just the unknown
+    ids. An id alone identifies nothing, and dilemma choices are cloned templates with no id.
+    """
+    import json
+    rec = {"ts": time.time(), "when": time.strftime("%Y-%m-%d %H:%M:%S"), "screen": screen,
+           "unknown": list(unknown), "offered": list(offered), "root": root}
+    try:
+        rec["roots"] = roots(bus)
+    except Exception:
+        rec["roots"] = None
+    try:
+        dump = [root] if root else [rt for rt in (rec["roots"] or [])
+                                    if rt not in nav.BASE_ROOTS and rt not in BENIGN_PANELS]
+        rec["trees"] = {rt: _tree(bus, rt) for rt in dump}
+    except Exception as e:
+        rec["trees_error"] = repr(e)[:120]
+    # the unknown ids' own nodes, pulled out of the dumps for quick reading
+    try:
+        want = {str(u) for u in unknown}
+        rec["unknown_nodes"] = [dict(n, root=rt) for rt, ns in (rec.get("trees") or {}).items()
+                                for n in ns if str(n.get("id") or "") in want]
+    except Exception as e:
+        rec["unknown_nodes_error"] = repr(e)[:120]
+    try:
+        rec["screenshot"] = (evidence(bus, "unhandled_%s" % screen) or {}).get("screenshot")
+    except Exception as e:
+        rec["screenshot_error"] = repr(e)[:120]
+    try:
+        import os
+        os.makedirs(os.path.dirname(UNHANDLED_LOG), exist_ok=True)
+        with open(UNHANDLED_LOG, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec, default=str) + "\n")
+    except Exception as e:
+        sys.stderr.write("interrupts: unhandled-screen record NOT written: %s\n" % repr(e)[:120])
+    sys.stderr.write("UNHANDLED_OPTION %s %s offered=%s shot=%s\n"
+                     % (screen, list(unknown), list(offered), rec.get("screenshot")))
+    return rec
+
+
+class UnhandledScreen(BaseException):
+    """An interrupt screen offered an option this code cannot pick or record.
+
+    BaseException so `except Exception` cannot catch it. Do not change the base class.
+    """
+ACCEPT_TOKENS = ("accept", "confirm", "button_ok", "button_yes")
 DECLINE_TOKENS = ("decline", "reject", "refuse", "cancel", "close", "no_deal")
+DIPLOMACY_NEVER_CLICK_PREFIXES = ("diplomatic_option",)
+DIPLOMACY_NEVER_CLICK_IDS = frozenset(("button_send",))
 _CLICKABLE = ("active", "hover", "selected")
-# ⚠ `diplomacy_dropdown` is a PERSISTENT HUD root, present on a perfectly clean screen (verified
-# live on turn 1 of a fresh campaign). Matching "diplo" alone would flag every single loop iteration
-# as an incoming proposal and fire a decline click at nothing.
 DIPLOMACY_HUD_ROOTS = frozenset(("diplomacy_dropdown",))
-# ⚠ ORDINARY PANELS ARE NOT INTERRUPTS. These are opened deliberately -- prepare() opens
-# settlement_panel/units_panel/character_panel to establish a known state before a click -- so
-# treating them as "something the game put on screen" made resolve() declare a stuck screen and
-# burn a screenshot on every single action during normal operation.
 BENIGN_PANELS = frozenset((
-    # ONLY panels the LOADER ITSELF opens in prepare(). Everything else on screen is something the
-    # GAME put there and must be dismissed -- being permissive here is why a "Path to Glory" advice
-    # panel sat on screen unclickable while the loop carried on around it.
-    # ⚠ do NOT add advice_interface / events / influence_gained: those are dismissible popups with a
-    # tick button, and listing them made the loop ignore them forever.
-    # ⚠ do NOT add character_panel: left open it BLOCKS the next selection and wedges the run.
     "units_panel", "settlement_panel", "recruitment_options",
 ))
 
@@ -69,7 +197,7 @@ def _wait_root(bus, root, tries=30, pause=1.0):
     return False
 
 
-CLICK_LOG = []          # (ts, path, clicked) for every click this module made -- read by the loop
+CLICK_LOG = []          # (ts, path, clicked)
 
 
 def _click(bus, path, settle=1.5):
@@ -87,11 +215,7 @@ def _click(bus, path, settle=1.5):
 
 
 def evidence(bus, why, shots_dir=None):
-    """Screenshot + the exact click history + the visible roots, for a screen we could not drive.
-
-    A stuck screen is precisely the case where the logs alone never tell you enough -- you need to
-    SEE what was in front of the clicks. Returns the report dict (and the PNG path if it captured).
-    """
+    """Screenshot + recent clicks + visible roots; returns the report dict."""
     import os
     import subprocess
     rep = {"why": why, "roots": roots(bus), "ts": time.time(),
@@ -113,15 +237,7 @@ def evidence(bus, why, shots_dir=None):
 
 
 def _found(bus, path):
-    """Found AND actually clickable.
-
-    ⚠ `found` alone is worthless here. The battle-results checkmark
-    (button_set_settlement_captured|button_accept) reports found=True on a results panel where it is
-    NOT visible, and SimulateLClick on it then returns clicked=True while doing nothing -- so the
-    caller loops forever on a control that can never work. Live cost of trusting `found`: 24 clicks
-    and 107 seconds per action. Requiring visible + a clickable state makes the caller fall through
-    to the control the panel really offers (button_dismiss).
-    """
+    """Found AND visible AND in a clickable state."""
     try:
         r = bus.send("find", path, timeout=8.0) or {}
         res = r.get("result") or {}
@@ -139,25 +255,8 @@ def _tree(bus, root, depth=22, nodes=4000):
         return []
 
 
-# --------------------------------------------------------------------------------- detection
 def cancel_declare_war(bus):
-    """Answer the modal "Declare War?" dialog with CANCEL MOVE -- never Declare War, never Request
-    Military Access.
-
-    The game raises this whenever a move/attack order would start a war ("Making this attack is an
-    act of war. Do you wish to proceed?"). Declaring war and requesting military access are both
-    DIPLOMACY, which the advisor did not choose and which is out of scope for this version, so the
-    only correct answer is to withdraw the order.
-
-    ⚠ This one matters out of proportion to its size: the dialog is MODAL, so until it is answered
-    every later action is silently refused. Live-verified -- one bad move order left it up and the
-    next nine actions all failed as `command_silently_refused` with no other symptom.
-
-    ⚠ UNVERIFIED ROOT ID: the dialog was cleared before its root could be captured, so this does
-    NOT match on a root name. It scans EVERY non-base visible root for a clickable control that
-    reads "Cancel Move" -- which is why it works without knowing what the dialog is called, and why
-    it is only tried when the ordinary dismiss-button drain has already found nothing.
-    """
+    """Click a "Cancel Move" control in any non-base root. Returns the steps taken."""
     steps = []
     for root in [x for x in roots(bus)
                  if x not in nav.BASE_ROOTS and x not in DIPLOMACY_HUD_ROOTS
@@ -181,15 +280,30 @@ def cancel_declare_war(bus):
 
 
 def diplomacy_roots(bus, r=None):
-    """Open diplomacy roots that are an actual PROPOSAL, excluding the persistent HUD dropdown."""
+    """Visible diplomacy roots, excluding DIPLOMACY_HUD_ROOTS."""
     r = roots(bus) if r is None else r
     return [x for x in r if "diplo" in str(x).lower() and x not in DIPLOMACY_HUD_ROOTS]
 
 
+DEFEAT_ROOT_TOKENS = ("defeat", "victory", "campaign_end", "game_over", "campaign_result")
+
+
+def defeat_screen(bus, r=None):
+    """Root name matching DEFEAT_ROOT_TOKENS, or None. Root-only: never walks a tree."""
+    r = roots(bus) if r is None else r
+    for x in r:
+        low = str(x).lower()
+        if any(tok in low for tok in DEFEAT_ROOT_TOKENS):
+            return x
+    return None
+
+
 def pending(bus):
-    """Which interrupt kinds are on screen right now: {'battle', 'diplomacy', 'popup'} subset."""
+    """Which interrupt kinds are on screen: a subset of {'battle', 'diplomacy', 'popup'}."""
     r = roots(bus)
     out = set()
+    if r and "hud_campaign" not in r:
+        out.add("popup")
     if any(x in r for x in BATTLE_ROOTS):
         out.add("battle")
     if diplomacy_roots(bus, r):
@@ -204,55 +318,123 @@ def in_battle(bus):
     return "battle" in pending(bus)
 
 
-# --------------------------------------------------------------------------------- battle
-def autoresolve(bus):
-    """Click autoresolve in the open pre-battle. NEVER touches the manual-battle buttons.
+def resolve_prebattle(bus):
+    """Drive the open pre-battle panel forward. Returns the control used, or False.
 
-    Covers BOTH pre-battle variants: the one we open by attacking, and the Battle Deployment screen
-    the game raises when a faction attacks US during its own turn. Same root (popup_pre_battle),
-    different layout -- which is why the button is RESOLVED BY SEARCH rather than a fixed path.
-
-    Prefers the bus click (SimulateLClick by path), which does not touch the OS cursor and so cannot
-    steal the mouse from whoever is at the keyboard. Verified on the deployment screen: the button
-    reports visible=True / state=active, which is exactly the condition SimulateLClick needs. The
-    hardware click stays as the fallback for the case where the bus click does not register.
+    The pick comes from PREBATTLE_CHOOSABLE minus PREBATTLE_NEVER, so nothing outside that
+    allowlist can be clicked.
     """
-    n = nav.find_rect(bus, "popup_pre_battle", "button_autoresolve")
-    if not n or n.get("path") is None:
-        sys.stderr.write("interrupts: button_autoresolve not found in popup_pre_battle\n")
+    ctrls = _clickable_controls(bus, "popup_pre_battle")
+    unknown = _unknown_controls(ctrls, KNOWN_PREBATTLE_CONTROLS)
+    if unknown:
+        _report_unhandled(bus, "pre_battle", unknown, sorted(ctrls), root="popup_pre_battle")
+        raise UnhandledScreen(
+            "pre-battle screen offers UNHANDLED option(s) %s -- add them to PREBATTLE_PREFERENCE "
+            "only if they resolve the battle WITHOUT entering it, otherwise to FORBIDDEN_CLICK_IDS. "
+            "clickable=%s" % (unknown, sorted(ctrls)))
+    legal = [i for i in PREBATTLE_CHOOSABLE if i in ctrls and i not in PREBATTLE_NEVER]
+    target = _choose("pre_battle", legal, _campaign_hint()) if legal else None
+    if target is None:
+        sys.stderr.write("interrupts: pre-battle offers no usable control -- clickable=%s\n"
+                         % ",".join(sorted(ctrls)[:10]))
         return False
-    if n.get("visible") and _click(bus, n["path"], settle=1.0):
-        if _wait_root(bus, "popup_battle_results", tries=20, pause=1.0):
-            return True
-        sys.stderr.write("interrupts: bus click on autoresolve did not open the results\n")
-    if n.get("x") is None:
+    opts = _options_of(bus, "popup_pre_battle", legal)
+    t0 = time.time()
+    clicked = _click(bus, ctrls[target], settle=1.5)
+    if not clicked:
+        _record_choice("pre_battle", "popup_pre_battle", opts, target,
+                       executed=False, confirmed=False, refusal="execute_failed",
+                       latency_ms=int((time.time() - t0) * 1000))
         return False
-    sx, sy = nav.ui_to_screen(n["x"] + n["w"] / 2.0, n["y"] + n["h"] / 2.0)
-    nav.mouse("move", sx, sy)
-    time.sleep(0.3)
-    nav.mouse("click", sx, sy)
-    return _wait_root(bus, "popup_battle_results", tries=30, pause=1.0)
+    if target in ("button_continue_siege", "button_surround", "button_retreat"):
+        name = target[len("button_"):]
+        ok = "popup_pre_battle" not in roots(bus)
+        if not ok:
+            sys.stderr.write("interrupts: %s clicked but the pre-battle is still open\n" % name)
+        outcome = name if ok else False
+    else:
+        ok = _wait_root(bus, "popup_battle_results", tries=20, pause=1.0)
+        outcome = "autoresolve" if ok else False
+    if not ok:
+        still_up = "popup_pre_battle" in roots(bus)
+        sys.stderr.write("interrupts: %s did NOT resolve the battle (pre_battle still open=%s)\n"
+                         % (target, still_up))
+    _record_choice("pre_battle", "popup_pre_battle", opts, target,
+                   executed=clicked, confirmed=bool(ok),
+                   refusal=None if ok else "command_silently_refused",
+                   latency_ms=int((time.time() - t0) * 1000))
+    return outcome
+
+
+def _clickable_controls(bus, root="popup_battle_results"):
+    """{id: path} for every visible+clickable node under `root`."""
+    out = {}
+    for n in _tree(bus, root, 22, 4000):
+        if not n.get("visible") or str(n.get("state")) not in _CLICKABLE:
+            continue
+        nid = str(n.get("id") or "")
+        if nid and nid not in out:
+            out[nid] = n.get("path")
+    return out
 
 
 def handle_results(bus):
-    """Take whatever post-battle option is on screen. Returns the steps performed."""
+    """Drive the post-battle panel to closure. Returns the steps performed."""
     steps = []
-    cap = "%s|button_set_settlement_captured|button_accept" % _BR
-    if _found(bus, cap) and _click(bus, cap, settle=2.5):
-        steps.append("settlement_captured_checkmark")
-    for choice in CAPTIVE_PREFERENCE:
-        p = "%s|button_set_win_holder|button_set_win|button_captive_option_%s" % (_BR, choice)
-        if _found(bus, p):
-            if _click(bus, p):
-                steps.append("captives:%s" % choice)
+    last, repeats, idle_waits = None, 0, 0
+    for _ in range(4):
+        if "popup_battle_results" not in roots(bus):
             break
+        ctrls = _clickable_controls(bus)
+        unknown = _unknown_controls([c for c in ctrls if not is_captive_option(c)],
+                                    KNOWN_RESULTS_CONTROLS)
+        if unknown:
+            _report_unhandled(bus, "battle_results", unknown, sorted(ctrls),
+                              root="popup_battle_results")
+            raise UnhandledScreen(
+                "battle-results screen offers UNHANDLED option(s) %s -- add each one to "
+                "CAPTIVE_OPTIONS if it is a captive's fate (it then joins the uniform draw and is "
+                "recorded under its own id), or to ADVANCE_PREFERENCE if it advances the panel. "
+                "clickable=%s" % (unknown, sorted(ctrls)))
+        fates = sorted(i for i in ctrls if is_captive_option(i))
+        target = (_choose("battle_results", fates, _campaign_hint()) if fates
+                  else next((i for i in ADVANCE_PREFERENCE if i in ctrls), None))
+        if target is None:
+            idle_waits += 1
+            if idle_waits > 1:
+                sys.stderr.write("interrupts: results panel still offers no advance control (%s)\n"
+                                 % ",".join(sorted(ctrls)[:6]))
+                break
+            time.sleep(1.0)
+            continue
+        decisions = sorted([i for i in ctrls if is_captive_option(i)]
+                           + [i for i in ADVANCE_PREFERENCE if i in ctrls])
+        opts_before = _options_of(bus, "popup_battle_results", decisions)
+        repeats = repeats + 1 if target == last else 0
+        if repeats >= 2:
+            sys.stderr.write("interrupts: %s clicked twice with no effect -- not hammering it\n"
+                             % target)
+            _record_choice("battle_results", "popup_battle_results", opts_before, target,
+                           executed=True, confirmed=False, refusal="command_silently_refused")
+            break
+        last = target
+        t0 = time.time()
+        roots_before = set(roots(bus))
+        clicked = _click(bus, ctrls[target], settle=2.5)
+        moved = set(roots(bus)) != roots_before
+        _record_choice("battle_results", "popup_battle_results", opts_before, target,
+                       executed=clicked, confirmed=bool(moved),
+                       refusal=None if moved else ("command_silently_refused" if clicked
+                                                   else "execute_failed"),
+                       latency_ms=int((time.time() - t0) * 1000))
+        steps.append("%s:%s" % (target, clicked))
     if "settlement_captured" in roots(bus):
         steps.append("occupation:%s" % (occupy(bus) or "none"))
     return steps
 
 
 def occupy(bus):
-    """Click the first PRESENT occupation option, preferring Occupy. Returns the label clicked."""
+    """Pick one of the captured settlement's options. Returns the label clicked, or None."""
     opts = {}
     for n in _tree(bus, "settlement_captured", 22, 3000):
         if n.get("id") == "dy_option" and n.get("text"):
@@ -260,27 +442,33 @@ def occupy(bus):
     if not opts:
         sys.stderr.write("interrupts: settlement_captured has no dy_option nodes\n")
         return None
-    for want in OCCUPY_PREFERENCE:
-        if want in opts:
-            return want if _click(bus, opts[want] + "|option_button", settle=2.5) else None
-    label, path = next(iter(opts.items()))
-    return label if _click(bus, path + "|option_button", settle=2.5) else None
+    detail = {k: {"context": None, "text": k} for k in opts}
+    want = _choose("occupation", sorted(opts), _campaign_hint())
+    t0 = time.time()
+    clicked = _click(bus, opts[want], settle=2.5)
+    if not clicked:
+        _record_choice("occupation", "settlement_captured", detail, want,
+                       executed=False, confirmed=False, refusal="execute_failed",
+                       latency_ms=int((time.time() - t0) * 1000))
+        return None
+    gone = "settlement_captured" not in roots(bus)
+    if not gone:
+        sys.stderr.write("interrupts: occupation %r clicked but settlement_captured is still open\n"
+                         % want)
+    _record_choice("occupation", "settlement_captured", detail, want,
+                   executed=clicked, confirmed=gone,
+                   refusal=None if gone else "command_silently_refused",
+                   latency_ms=int((time.time() - t0) * 1000))
+    return want if gone else None
 
 
 def resolve_battle(bus, max_rounds=4):
-    """⚠ NEVER REPEAT A STEP THAT DEMONSTRABLY DID NOTHING.
-
-    The battle-results checkmark reports `clicked: True` even when the popup does not close (the
-    bus click lies -- see click_actions). Looping on "is a battle root still open" therefore span:
-    live, this re-clicked settlement_captured_checkmark 24 times and burned 107 SECONDS per action,
-    which was ~105s of every ~117s decision cycle. So each round must make the ROOT SET change; if
-    it does not, the screen is stuck on something we cannot drive and looping is pure waste.
-    """
+    """Drive battle screens, stopping as soon as a round leaves the root set unchanged."""
     steps = []
     for _ in range(max_rounds):
         before = tuple(roots(bus))
         if "popup_pre_battle" in before:
-            steps.append("autoresolve:%s" % autoresolve(bus))
+            steps.append("prebattle:%s" % resolve_prebattle(bus))
         elif "popup_battle_results" in before or "settlement_captured" in before:
             steps.extend(handle_results(bus))
             time.sleep(1.5)
@@ -294,62 +482,212 @@ def resolve_battle(bus, max_rounds=4):
     return steps
 
 
-# --------------------------------------------------------------------------------- diplomacy
-def decline_diplomacy(bus):
-    """Refuse an incoming proposal by clicking whichever decline/close control the panel shows.
-
-    Resolved by SCANNING the open diplomacy root for a clickable button whose id carries a decline
-    token -- not by a hardcoded path, because the panel differs by proposal type. Post-asserted:
-    the root has to be gone afterwards, or this reports failure.
-    """
+def answer_diplomacy(bus):
+    """Answer an incoming proposal with one of its DECLINE controls. Returns the steps taken."""
     steps = []
     for root in diplomacy_roots(bus):
-        target = None
+        answers = {}                                 # id -> (path, "accept" | "decline")
         for n in _tree(bus, root):
-            nid = str(n.get("id") or "").lower()
-            if (n.get("visible") and str(n.get("state")) in _CLICKABLE
-                    and any(tok in nid for tok in DECLINE_TOKENS)):
-                target = n.get("path")
-                break
-        if target and _click(bus, target, settle=2.0):
-            steps.append("diplomacy_declined:%s" % target.rsplit("|", 1)[-1])
-        else:
-            sys.stderr.write("interrupts: no clickable decline control in %s\n" % root)
-        if root in roots(bus):                       # post-assert: it must actually be gone
-            sys.stderr.write("interrupts: diplomacy root %s still open after decline\n" % root)
+            nid = str(n.get("id") or "")
+            low = nid.lower()
+            if not n.get("visible") or str(n.get("state")) not in _CLICKABLE:
+                continue
+            if low.startswith(DIPLOMACY_NEVER_CLICK_PREFIXES) or nid in DIPLOMACY_NEVER_CLICK_IDS:
+                continue
+            if nid in FORBIDDEN_CLICK_IDS:
+                continue
+            kind = ("accept" if any(t in low for t in ACCEPT_TOKENS)
+                    else "decline" if any(t in low for t in DECLINE_TOKENS)
+                    else None)
+            if kind and nid not in answers:
+                answers[nid] = (n.get("path"), kind)
+        if not answers:
+            sys.stderr.write("interrupts: no clickable answer control in %s\n" % root)
             steps.append("diplomacy_stuck:%s" % root)
+            continue
+        detail = _options_of(bus, root, sorted(answers))
+        for k, (_path, kind) in answers.items():
+            detail[k] = dict(detail.get(k) or {}, answer=kind)
+        declines = sorted(k for k, (_p, kind) in answers.items() if kind == "decline")
+        if not declines:
+            sys.stderr.write("interrupts: %s offers no DECLINE control -- refusing to answer it "
+                             "rather than accepting something the advisor never chose (offered=%s)\n"
+                             % (root, sorted(answers)))
+            steps.append("diplomacy_stuck:%s" % root)
+            continue
+        want = random.choice(declines)
+        target, kind = answers[want]
+        sys.stderr.write("interrupts: diplomacy %s -- %d answer(s) %s, picking %r (%s) at random\n"
+                         % (root, len(answers), sorted(answers), want, kind))
+        t0 = time.time()
+        clicked = _click(bus, target, settle=2.0)
+        gone = root not in roots(bus)
+        if clicked:
+            steps.append("diplomacy_%s:%s" % (kind, want))
+        if not gone:
+            sys.stderr.write("interrupts: diplomacy root %s still open after %s\n" % (root, kind))
+        if not clicked or not gone:
+            steps.append("diplomacy_stuck:%s" % root)
+        _record_choice("diplomacy", root, detail, want, extra={"answer": kind},
+                       executed=clicked, confirmed=gone,
+                       refusal=None if gone else ("command_silently_refused" if clicked
+                                                  else "execute_failed"),
+                       latency_ms=int((time.time() - t0) * 1000))
     return steps
 
 
-# --------------------------------------------------------------------------------- everything
-_stuck_sig = [None]         # the root signature we already gave up on
+_stuck_sig = [None]
 
 
 def forget_stuck():
-    """Called when something external changed the screen (a turn ended, an action was confirmed),
-    so the next stuck screen is retried rather than assumed identical."""
+    """Clear the stuck-screen memo so the next stuck screen is retried."""
     _stuck_sig[0] = None
+
+
+def choose_dilemma(bus, open_roots):
+    """Answer a dilemma by clicking one of its choice records. Returns the steps taken.
+
+    Battle roots are skipped here; resolve_battle owns them.
+    """
+    steps = []
+    for root in open_roots:
+        if (root in nav.BASE_ROOTS or root in DIPLOMACY_HUD_ROOTS or root in BENIGN_PANELS
+                or root in BATTLE_ROOTS):
+            continue
+        if not _is_dilemma(bus, root):
+            continue
+        found = _dilemma_options(bus, root)
+        if not found:
+            ctrls = _clickable_controls(bus, root)
+            _report_unhandled(bus, "dilemma", ["no %s choice records" % DILEMMA_LIST],
+                              sorted(ctrls), root=root)
+            raise UnhandledScreen(
+                "dilemma %s is open but no choice records were found under %s -- refusing to click "
+                "anything. clickable=%s" % (root, DILEMMA_LIST, sorted(ctrls)))
+        opts = {k: v["path"] for k, v in found.items()}
+        detail = {"root": root, "root_context": None,
+                  "options": {k: {"context": v["context"], "text": v["text"]}
+                              for k, v in found.items()}}
+        key = _choose("dilemma", sorted(opts), _campaign_hint())
+        sys.stderr.write("interrupts: dilemma %s -- %d options -> %r\n" % (root, len(opts), key))
+        t0 = time.time()
+        clicked = _click(bus, opts[key], settle=2.5)
+        gone = root not in roots(bus)
+        if clicked:
+            steps.append("dilemma:%s:%s" % (root, key))
+        _record_choice("dilemma", root, detail["options"], key,
+                       # the screen as we SAW it, kept even when we believe we handled it -- a
+                       # misread dilemma recorded as handled is otherwise unprovable
+                       extra={"root_context": detail.get("root_context"),
+                              "tree": _tree(bus, root)},
+                       executed=clicked, confirmed=gone,
+                       refusal=None if gone else ("command_silently_refused" if clicked
+                                                  else "execute_failed"),
+                       latency_ms=int((time.time() - t0) * 1000))
+        break
+    return steps
+
+
+_INTERRUPT_LOG = []
+
+
+def _record_choice(kind, root, options, chosen, extra=None,
+                   executed=None, confirmed=None, refusal=None, latency_ms=None):
+    """Buffer one interrupt-screen decision. `options` is {id: {"context":..., "text":...}}.
+
+    counted = executed AND confirmed. Pass confirmed only from a post-assert on game state, never
+    from a click reporting True; leave it None when not checked (stored as NULL).
+    """
+    confirmed_b = None if confirmed is None else bool(confirmed)
+    executed_b = None if executed is None else bool(executed)
+    counted = None if confirmed_b is None else bool(executed_b and confirmed_b)
+    _INTERRUPT_LOG.append(dict(extra or {}, kind=kind, root=root, options=options,
+                               chosen=chosen,
+                               chosen_context=(options.get(chosen) or {}).get("context"),
+                               executed=executed_b, confirmed=confirmed_b, counted=counted,
+                               refusal=refusal, latency_ms=latency_ms,
+                               policy=_LAST_POLICY[0], ts=time.time()))
+
+
+def drain_interrupt_records():
+    """Take and clear everything recorded since the last drain."""
+    out = list(_INTERRUPT_LOG)
+    del _INTERRUPT_LOG[:]
+    return out
+
+
+def _options_of(bus, root, ids):
+    """{id: {"context","text"}} for the given control ids, read from the tree."""
+    out = {}
+    try:
+        for n in _tree(bus, root, 22, 4000):
+            nid = str(n.get("id") or "")
+            if nid in ids and nid not in out:
+                out[nid] = {"context": (str(n["context"]) if n.get("context") else None),
+                            "text": (str(n.get("text") or "") or None)}
+    except Exception as e:
+        sys.stderr.write("interrupts: option detail read failed on %s -> %r\n" % (root, e))
+    for i in ids:
+        out.setdefault(i, {"context": None, "text": None})
+    return out
+
+
+DILEMMA_MARKER = "dilemma_active"
+DILEMMA_LIST = "dilemma_list"
+
+
+def _dilemma_options(bus, root):
+    """{record: {"path","text","context"}} for each path segment directly under DILEMMA_LIST."""
+    tree = _tree(bus, root, 22, 4000)
+    texts = [(str(n.get("path") or ""), str(n.get("text") or "").strip())
+             for n in tree if str(n.get("text") or "").strip()]
+    out = {}
+    for n in tree:
+        if not n.get("visible") or str(n.get("state")) not in _CLICKABLE:
+            continue
+        path = str(n.get("path") or "")
+        parts = path.split("|")
+        if DILEMMA_LIST not in parts:
+            continue
+        i = parts.index(DILEMMA_LIST)
+        if i + 1 >= len(parts):
+            continue
+        record = parts[i + 1]
+        prev = out.get(record)
+        if prev is not None and len(prev["path"]) <= len(path):
+            continue
+        sub = "|".join(parts[:i + 2])
+        label = sorted(t for p, t in texts if p == sub or p.startswith(sub + "|"))
+        out[record] = {"path": path, "text": (label[0] if label else None),
+                       "context": (str(n["context"]) if n.get("context") else None)}
+    return out
+
+
+def _is_dilemma(bus, root):
+    """True if any node path under `root` contains DILEMMA_MARKER."""
+    return any(DILEMMA_MARKER in str(n.get("path") or "") for n in _tree(bus, root, 22, 4000))
 
 
 def resolve(bus, max_rounds=6):
     """Clear every interrupt currently on screen. Returns the steps taken ([] = clean screen).
 
-    THIS RUNS AFTER EVERY ACTION, so its cost on a clean screen must be ONE `roots` call (~101ms)
-    and nothing more.
-
-    Two limiters, both learned from a live 107s-per-action stall:
-      * a round that leaves the visible root set UNCHANGED means nothing here can drive it, so stop
-        instead of walking every open panel's tree again (the outer loop used to multiply the inner
-        one, 6 x 4 = 24 clicks on a control that could never work);
-      * once a root set has been declared stuck, DO NOT RE-ATTEMPT IT -- no trees, no clicks, no
-        repeat screenshot -- until the roots actually change. A screen we could not drive a second
-        ago is not going to yield to the same clicks a second later.
+    Runs after every action: one `roots` call on a clean screen. A round that leaves the root set
+    unchanged stops the loop, and a root set already declared stuck is not re-walked.
     """
     steps = []
     for _ in range(max_rounds):
         before = tuple(roots(bus))
         if before and before == _stuck_sig[0]:
-            return ["stuck_unchanged"]          # cheap: one roots call, then out
+            try:
+                n = len(nav.close_popups(bus))
+            except Exception as e:
+                sys.stderr.write("interrupts: close_popups (memo probe) -> %s\n" % repr(e)[:80])
+                n = 0
+            if not n:
+                return ["stuck_unchanged"]
+            _stuck_sig[0] = None
+            steps.append("popups_cleared:%d" % n)
+            continue
         kinds = pending(bus)
         if not kinds:
             _stuck_sig[0] = None
@@ -360,7 +698,7 @@ def resolve(bus, max_rounds=6):
                 break
             continue
         if "diplomacy" in kinds:
-            steps.extend(decline_diplomacy(bus))
+            steps.extend(answer_diplomacy(bus))
             if tuple(roots(bus)) == before:
                 break
             continue
@@ -372,20 +710,18 @@ def resolve(bus, max_rounds=6):
         if n:
             steps.append("popups_cleared:%d" % n)
             continue
-        # Nothing carried a standard dismiss button. Before giving up, try the modals whose
-        # controls are named differently -- "Declare War?" answers to "Cancel Move", not button_ok,
-        # so the generic drain silently does nothing and the run stalls behind it.
         s = cancel_declare_war(bus)
         if s:
             steps.extend(s)
             continue
-        # something is open that we cannot dismiss -- record it with a screenshot so the next
-        # unhandled screen is diagnosable instead of just slow
-        if [x for x in before if x not in nav.BASE_ROOTS and x not in DIPLOMACY_HUD_ROOTS
-                and x not in BENIGN_PANELS]:
-            steps.append("undismissable:%s" % ",".join(x for x in before if x not in nav.BASE_ROOTS))
-            if before != _stuck_sig[0]:
-                evidence(bus, "undismissable")
-            _stuck_sig[0] = before
+        odd = [x for x in before if x not in nav.BASE_ROOTS and x not in DIPLOMACY_HUD_ROOTS
+               and x not in BENIGN_PANELS]
+        if odd:
+            drivable = any(_clickable_controls(bus, x) for x in odd)
+            steps.append("%s:%s" % ("undismissable" if drivable else "transient", ",".join(odd)))
+            if drivable:
+                if before != _stuck_sig[0]:
+                    evidence(bus, "undismissable")
+                _stuck_sig[0] = before
         break
     return steps

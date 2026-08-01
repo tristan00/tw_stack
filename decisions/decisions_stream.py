@@ -1,27 +1,5 @@
-r"""decisions_stream.py -- the v7 recorder stream. THE ONLY PROCESS THAT READS THE GAME FOR THE
-ADVISOR, and THE SOLE WRITER of decisions.sqlite.
-
-v7 data is a clean break from v6: no UI-component scraping, no input/shot capture, no offline
-synthesis of "what probably happened". The only thing recorded is DECISION POINTS -- the raw
-campaign/world/entity state, every action that was offered, the one that was chosen, and hard
-evidence of whether it actually happened -- plus one reward row per turn.
-
-It services four request kinds off <run>/decisions_requests.jsonl:
-
-    snapshot      read the game NOW -> persist a faction-wide decision point -> reply decision_id
-    target        read + persist this turn's reward row                      -> reply row
-    turn          reply the current turn number
-    pick          attach the advisor's chosen offer (+ its ranking) to a decision   [stream 3]
-    verification  attach the launcher's ActionRecord to a decision                  [stream 4]
-
-Contract with the manager (same as every other stream):
-    run(ctx)  with ctx.emit / ctx.now / ctx.is_running / ctx.on_error / ctx.out_dir
-ctx.out_dir is re-read every iteration, so an R3 campaign swap moves the DB to the new run dir.
-
-Loud by design: a malformed or unserviceable request is answered with an explicit error (so the
-advisor raises instead of hanging) AND reported through ctx.on_error -- it is never dropped,
-because a missing decision point is indistinguishable from "the advisor did nothing".
-"""
+"""The recorder stream: the only reader of the game for the advisor and the sole writer of
+decisions.sqlite. Services requests off <run>/decisions_requests.jsonl."""
 from __future__ import annotations
 
 import os
@@ -47,15 +25,7 @@ def run(ctx):
     last_uuid = [None]
 
     def campaign_changed(snap_camp):
-        """Notice a campaign change and RECORD it -- but do NOT rotate the run dir.
-
-        ONE DIRECTORY, MANY CAMPAIGNS. v7 separates campaigns by the minted campaign uuid, which is
-        the primary key of every row, so a single decisions.sqlite holds several playthroughs with
-        no ambiguity. Rotating directories on top of that bought nothing and cost a great deal: the
-        advisor, the UI and the trainer each had to chase a moving path, and a missed rotation (the
-        manager's log-based detector does not fire for a command-started campaign) silently split
-        or merged runs. Identity lives in the data now, not in the filesystem.
-        """
+        """Record a campaign change; one directory holds many campaigns, so the run dir never rotates."""
         u = (snap_camp or {}).get("campaign_uuid")
         if not u or u == last_uuid[0]:
             return False
@@ -63,7 +33,7 @@ def run(ctx):
             ctx.emit({"kind": "decisions_status", "status": "campaign_changed",
                       "from": last_uuid[0], "to": u, "same_dir": True})
         last_uuid[0] = u
-        return False                   # never swaps; the return value is kept for callers' clarity
+        return False                   # never swaps
     counts = {"snapshot": 0, "target": 0, "turn": 0, "hash": 0, "pick": 0,
               "verification": 0, "error": 0}
     while ctx.is_running():
@@ -83,11 +53,6 @@ def run(ctx):
                     if kind == "snapshot":
                         t0 = time.time()
                         snap = collect.snapshot(bus, active=row.get("active"))
-                        # A campaign change mid-request is answered with an ERROR, not a decision id.
-                        # The reply has to go to the dir the advisor is polling, but the decision
-                        # belongs in the NEW campaign's store -- writing one and pointing at the
-                        # other would hand back an id that does not exist where the advisor looks.
-                        # Failing loudly makes the advisor re-resolve, which is the correct move.
                         if campaign_changed(snap.get("campaign")):
                             seq = 0                      # decision_seq restarts with the campaign
                         did = store.write_decision(snap, decision_seq=seq)
@@ -96,8 +61,6 @@ def run(ctx):
                         n = sum(len(e["offers"]) for e in snap["entities"])
                         journal.respond(out_dir, rid, decision_id=did,
                                         collect_ms=int((time.time() - t0) * 1000))
-                        # the per-phase profile goes to THIS JSONL, never the DB -- profiling must
-                        # not add writes (or locks) to the store the advisor is reading
                         ctx.emit({"kind": "decisions_point", "decision_id": did,
                                   "entities": len(snap["entities"]), "offers": n,
                                   "turn": snap["campaign"].get("turn"),
@@ -106,13 +69,16 @@ def run(ctx):
                     elif kind == "target":
                         r = collect.target_row(bus)
                         wrote = store.write_target_row(r)
+                        # per-entity LOCAL reward inputs, same cadence as the global row
+                        ents = collect.entity_target_rows(bus)
+                        store.write_entity_target_rows(
+                            store.campaign_key(r.get("campaign_id"), r.get("campaign_uuid")),
+                            r.get("turn"), ents)
                         counts["target"] += 1
                         journal.respond(out_dir, rid, row=r, inserted=bool(wrote))
                         ctx.emit({"kind": "decisions_target", "turn": r.get("turn"),
                                   "inserted": bool(wrote)})
                     elif kind == "turn":
-                        # the cheap request the advisor makes right after starting a campaign, so
-                        # this is where the rotation normally gets noticed
                         cs = collect.campaign_state(bus)
                         campaign_changed(cs)
                         counts["turn"] += 1
@@ -122,6 +88,14 @@ def run(ctx):
                         h = collect.state_hash(bus)
                         counts["hash"] += 1
                         journal.respond(out_dir, rid, hash=h["hash"], roots=h["roots"])
+                    elif kind == "interrupt":
+                        # fire-and-forget: nothing waits on a reply
+                        cs = collect.campaign_state(bus)
+                        store.write_interrupt(dict(row, campaign=cs))
+                        counts["interrupt"] = counts.get("interrupt", 0) + 1
+                        ctx.emit({"kind": "decisions_interrupt", "screen": row.get("kind_screen")
+                                  or row.get("screen"), "chosen": row.get("chosen"),
+                                  "turn": cs.get("turn")})
                     elif kind == "pick":
                         did = row.get("decision_id")
                         store.attach_scores(did, row.get("scores"))
@@ -148,9 +122,13 @@ def run(ctx):
                 except Exception as e:                    # one bad request never kills the stream
                     counts["error"] += 1
                     ctx.on_error("decisions-%s" % kind, e)
-                    ctx.emit({"kind": "decisions_error", "req_kind": kind, "err": repr(e)[:200]})
-                    if rid:                               # unblock the waiting advisor, loudly
-                        journal.respond(out_dir, rid, error=repr(e)[:300])
+                    # keep the tail as well as the head
+                    _m = repr(e)
+                    ctx.emit({"kind": "decisions_error", "req_kind": kind,
+                              "err": _m if len(_m) <= 700 else _m[:200] + " ...<<cut>>... " + _m[-500:]})
+                    if rid:                               # unblock the waiting advisor
+                        journal.respond(out_dir, rid, error=(lambda _m: _m if len(_m) <= 700 else
+                                                 _m[:200] + " ...<<cut>>... " + _m[-500:])(repr(e)))
         except Exception as e:
             ctx.on_error("decisions-stream", e)
             time.sleep(5.0)

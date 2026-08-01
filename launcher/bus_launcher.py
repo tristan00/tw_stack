@@ -1,16 +1,3 @@
-r"""bus_launcher -- launch WH3 and drive the FRONTEND to a loaded campaign over the command bus.
-
-NO PIXELS. Every step navigates by UI-component path via the mod's find/click commands (the mod
-arms the bus in the FrontEnd environment: it logs `frontend_armed` and exposes find_uicomponent).
-All paths below were discovered LIVE on WH3 v8.1.1 (2026-07-27) by enumerating the real menu tree,
-and are addressed by SEMANTIC keys (button ids, culture keys, faction keys) -- so they are robust to
-resolution and layout, unlike the retired absolute-pixel-fraction launcher.
-
-Flow:  spawn -> frontend_armed -> Campaign -> New -> [pick campaign card by label] -> LORD
-        -> [Change Race -> pick culture] -> [pick lord by faction key] -> Start -> `started`.
-
-    python bus_launcher.py [plan]        # plan defaults to "nagarythe"; "empire_default" = accept default lord
-"""
 from __future__ import annotations
 
 import json
@@ -28,8 +15,8 @@ GAME_DIR = r"D:\SteamLibrary\steamapps\common\Total War WARHAMMER III"
 EXE = os.path.join(GAME_DIR, "Warhammer3.exe")
 PACK_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist", "tw.pack")
 PACK_DST = os.path.join(GAME_DIR, "data", "tw.pack")
+ROSTER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "startable_factions.json")
 
-# ---- frontend navigation paths (discovered live) -----------------------------------------
 P_CAMPAIGN = "main|left_holder|buttons_holder|buttons_list|campaign|button_campaign"
 P_NEW = ("main|left_holder|buttons_holder|buttons_list|campaign_frame|campaign_buttons|"
          "start_campaign_new|button_start_campaign_new")
@@ -47,24 +34,7 @@ P_LEADER_NAME = ("campaign_select_new|right_holder|tab_lord|lord_details_panel|"
 P_FACTION_NAME = ("campaign_select_new|right_holder|tab_lord|lord_details_panel|"
                   "name_and_icon_holder|name_clip|name_holder|label_faction_name")
 P_START = "campaign_select_new|button_start_parent|button_start_campaign"
-P_CONTINUE = "custom_loading_screen|bottom_parent|button_continue"   # loading-screen dismiss (post-load)
-
-# Named plans: culture_key selects the race tile, faction_key selects the lord (matched as a
-# SUBSTRING of the CcoFrontendFactionLeader<faction_key><n> id, so the volatile numeric suffix is
-# ignored). lord=None accepts the race's default lord. Extend freely -- keys are the game's own.
-PLANS = {
-    "nagarythe":       {"culture": "wh2_main_hef_high_elves", "faction": "wh2_main_hef_nagarythe",
-                        "name": "High Elves / Alith Anar (Nagarythe)"},
-    "cathay_zhao_ming": {"culture": "wh3_main_cth_cathay", "faction": "wh3_main_cth_the_western_provinces",
-                        "name": "Grand Cathay / Zhao Ming"},
-    "cathay_miao_ying": {"culture": "wh3_main_cth_cathay", "faction": "wh3_main_cth_the_northern_provinces",
-                        "name": "Grand Cathay / Miao Ying"},
-    "slaanesh_masque": {"culture": "wh3_main_sla_slaanesh", "faction": "sla_masque",
-                        "name": "Slaanesh / The Masque"},
-    "beastmen_taurox": {"culture": "wh_dlc03_bst_beastmen", "faction": "taurox",
-                        "name": "Beastmen / Taurox"},
-    "empire_default":  {"culture": None, "faction": None, "name": "The Empire / default lord"},
-}
+P_CONTINUE = "custom_loading_screen|bottom_parent|button_continue"   # loading-screen dismiss
 
 
 def _log(msg):
@@ -74,8 +44,8 @@ def _log(msg):
 class BusLauncher:
     def __init__(self):
         self.bus = None
+        self.last_startable = []
 
-    # ---- process / pack ------------------------------------------------------------------
     def ensure_pack(self):
         if os.path.isfile(PACK_DST):
             _log("mod pack present (untouched): %s" % PACK_DST)
@@ -104,7 +74,7 @@ class BusLauncher:
                     f.seek(start)
                     data = f.read()
             except OSError:
-                data = b""  # intentional: OUT_PATH not readable yet -> retry next poll (expected during boot)
+                data = b""  # not readable yet -> retry next poll
             for line in data.decode("utf-8", "replace").splitlines():
                 line = line.strip()
                 if not line:
@@ -112,16 +82,13 @@ class BusLauncher:
                 try:
                     obj = json.loads(line)
                 except ValueError:
-                    continue  # intentional: skip partial/non-JSON result line, per-poll parse (no per-line log)
+                    continue
                 if obj.get("cmd") in kinds:
                     return obj
             time.sleep(1.0)
         return None
 
-    # ---- bus helpers ---------------------------------------------------------------------
     def _send(self, channel, payload="", timeout=15, tries=3):
-        """Send with a few retries: the mod can drop the very first command right after arming,
-        and a transient timeout must not abort a whole launch."""
         last = None
         for _ in range(tries):
             try:
@@ -132,22 +99,21 @@ class BusLauncher:
         raise last
 
     def _wait_bus_ready(self, timeout=40):
-        """After frontend_armed the mod needs a moment before it answers reliably; probe with
-        `roots` until a round-trip succeeds so the first real navigation command is never dropped."""
+        """Probe `roots` until a round-trip succeeds."""
         t0 = time.time()
         while time.time() - t0 < timeout:
             try:
                 self.bus.send("roots", "", timeout=8)
                 return True
             except TWError:
-                time.sleep(1.0)  # intentional: bus not ready yet -> retry (expected right after arming)
+                time.sleep(1.0)
         return False
 
     def _roots_safe(self):
         try:
             return self.bus.send("roots", "", timeout=12).get("kids", [])
         except TWError:
-            return []  # intentional: bus not ready -> empty roots, polled by caller (expected; not logged)
+            return []
 
     def click(self, path, settle=1.2):
         r = self._send("click", path, timeout=15)
@@ -177,17 +143,16 @@ class BusLauncher:
             time.sleep(1.0)
         return False
 
-    # ---- selection by label / key (robust to volatile numeric suffixes) ------------------
     def _child_path_matching(self, container, substrings, leaf):
-        """Return the path <container>|<child>|<leaf> for the first direct child of `container`
-        whose id contains ALL of `substrings`, else None. Uses a shallow tree walk."""
+        """Path <container>|<child>|<leaf> for the first direct child whose id contains all of
+        `substrings`, else None."""
         t = self.tree(container, depth=1, nodes=200)
         for nd in (t.get("nodes") or []):
             p = nd.get("path", "")
             if p == container:
                 continue
             cid = nd.get("id") or ""
-            # only direct children (path == container|<cid>)
+            # direct children only
             if p.count("|") != container.count("|") + 1:
                 continue
             if all(s in cid for s in substrings):
@@ -195,7 +160,7 @@ class BusLauncher:
         return None
 
     def _campaign_card(self, label):
-        """Find the campaign card whose button_txt equals `label` (e.g. 'Immortal Empires')."""
+        """Path of the campaign card whose button_txt equals `label`."""
         t = self.tree(P_LIST_PARENT, depth=1, nodes=200)
         for nd in (t.get("nodes") or []):
             p = nd.get("path", "")
@@ -207,10 +172,7 @@ class BusLauncher:
         return None
 
     def advance_to_hud(self, timeout=200):
-        """After 'started', reach the INTERACTIVE HUD: dismiss the loading-screen Continue button,
-        then skip the intro cinematic until hud_campaign is visible. Returns True on success.
-        (Discovered live: 'started' fires when the model loads, but the game then parks on the
-        loading screen's Continue and plays an intro cinematic before the HUD is interactive.)"""
+        """Dismiss the loading-screen Continue and skip cutscenes until hud_campaign is visible."""
         t0 = time.time()
         did_continue = False
         while time.time() - t0 < timeout:
@@ -224,7 +186,7 @@ class BusLauncher:
             try:
                 self.bus.send("eval", "cm:skip_all_campaign_cutscenes()", timeout=10)
             except TWError:
-                pass  # intentional: cutscene-skip eval is best-effort, polled each pass (expected; not logged)
+                pass
             for k in self._roots_safe():
                 if k.get("id") == "hud_campaign" and k.get("visible"):
                     _log("interactive HUD reached (hud_campaign visible)")
@@ -232,29 +194,12 @@ class BusLauncher:
             time.sleep(2.0)
         return False
 
-    # ---- campaign lifecycle by COMMAND (no clicking, no coordinates) ----------------------
-    #
-    # Both of these are engine commands found in the game's OWN shipped documentation and used by
-    # CA's own scripts. They replace the click/hardware-click paths entirely:
-    #
-    #   cm:quit()                        "Immediately exits to the frontend" (lib_campaign_manager)
-    #                                    -> LIVE: main menu in 6s, and CRUCIALLY the bus stays alive
-    #                                       the whole time because no modal is ever opened.
-    #   CcoFrontendRoot.StartCampaign(campaign_key, faction_key, "SP_NORMAL")
-    #                                    -> LIVE: campaign loaded in 28s, turn 1.
-    #
-    # Why this matters beyond speed: the escape menu is MODAL, a modal PAUSES THE GAME TICK, and the
-    # mod's handlers run on that tick -- so with the menu open the bus is dead and nothing can be
-    # located through it. The old path therefore needed hardware clicks at screenshot-read
-    # coordinates. These commands never open the menu at all, so that whole class of fragility is
-    # gone. (Confirmed by enumeration: esc_menu.twui.xml has ZERO context-command bindings -- its
-    # buttons are C++ callbacks, so there never was a command BEHIND the menu. These bypass it.)
     CAMPAIGN_KEYS = {"Immortal Empires": "wh3_main_combi",
                      "Realm of Chaos": "wh3_main_chaos",
                      "Prologue": "wh3_main_prologue"}
 
     def quit_to_main_menu(self, timeout=120):
-        """Leave a running campaign and return to the main menu, without respawning the process."""
+        """Leave a running campaign for the main menu, without respawning the process."""
         if self.bus is None:
             self.bus = Bus()
         r = self._send("eval", "local ok,e=pcall(function() cm:quit() end) "
@@ -269,21 +214,18 @@ class BusLauncher:
             time.sleep(2.0)
         raise TWError("cm:quit() dispatched but the main menu never appeared within %ds" % timeout)
 
-    def start_campaign(self, plan_name="nagarythe", campaign="Immortal Empires", load_timeout=360):
-        """Main menu -> playable campaign, by command. Post-asserted on the interactive HUD."""
-        plan = PLANS.get(plan_name)
-        if plan is None:
-            raise TWError("unknown plan %r (have %s)" % (plan_name, list(PLANS)))
+    def start_campaign(self, faction, campaign="Immortal Empires", load_timeout=360):
+        """Main menu -> playable campaign. `faction` is a faction key."""
         ckey = self.CAMPAIGN_KEYS.get(campaign, campaign)
-        faction = plan.get("faction")
+        faction = str(faction or "").strip()
         if not faction:
-            raise TWError("plan %r has no faction key, which StartCampaign requires" % plan_name)
+            raise TWError("start_campaign needs a faction key (see startable_factions())")
+        # do not add a roots ack-poll here
+        lua = ("local ok,e=pcall(function() cco('CcoFrontendRoot',''):Call("
+               "'StartCampaign(\"%s\", \"%s\", \"SP_NORMAL\")') end) "
+               "return 'ok='..tostring(ok)..' err='..tostring(e)" % (ckey, faction))
         _log("StartCampaign(%s, %s, SP_NORMAL)" % (ckey, faction))
-        r = self._send("eval",
-                       "local ok,e=pcall(function() cco('CcoFrontendRoot',''):Call("
-                       "'StartCampaign(\"%s\", \"%s\", \"SP_NORMAL\")') end) "
-                       "return 'ok='..tostring(ok)..' err='..tostring(e)" % (ckey, faction),
-                       timeout=30)
+        r = self._send("eval", lua, timeout=30)
         if not str((r or {}).get("result", "")).startswith("ok=true"):
             raise TWError("StartCampaign did not dispatch: %s" % r)
         started = self.wait_for({"started"}, load_timeout)
@@ -294,17 +236,14 @@ class BusLauncher:
         _log("CAMPAIGN PLAYABLE: %s / %s" % (ckey, faction))
         return started
 
-    def restart_campaign(self, plan_name="nagarythe", campaign="Immortal Empires",
-                         load_timeout=360):
-        """Quit the current campaign and start a FRESH one -- both steps by command."""
+    def restart_campaign(self, faction, campaign="Immortal Empires", load_timeout=360):
+        """Quit the current campaign and start a fresh one."""
         self.quit_to_main_menu()
-        return self.start_campaign(plan_name, campaign, load_timeout)
+        return self.start_campaign(faction, campaign, load_timeout)
 
-    # ---- the launch sequence -------------------------------------------------------------
-    def launch(self, plan_name="nagarythe", campaign="Immortal Empires", boot_timeout=240,
-               load_timeout=360):
-        if plan_name not in PLANS:
-            raise TWError("unknown plan %r (have %s)" % (plan_name, list(PLANS)))
+    def launch(self, faction, campaign="Immortal Empires", boot_timeout=90, load_timeout=360):
+        if not str(faction or "").strip():
+            raise TWError("launch() needs a faction key -- none given")
         self.ensure_pack()
         self.spawn()
         _log("waiting for frontend_armed ...")
@@ -315,66 +254,46 @@ class BusLauncher:
         if not self._wait_bus_ready():
             raise TWError("bus never became ready after frontend_armed")
         _log("bus ready.")
-        # command-driven (CcoFrontendRoot.StartCampaign); drive_frontend is the click fallback
-        return self.start_campaign(plan_name, campaign, load_timeout)
+        return self.start_campaign(faction, campaign, load_timeout)
 
-    def drive_frontend(self, plan_name="nagarythe", campaign="Immortal Empires", load_timeout=360):
-        """Main menu -> playable campaign BY CLICKING. Kept as the fallback for the case where
-        StartCampaign is unavailable; start_campaign() is the normal path."""
-        plan = PLANS.get(plan_name)
-        if plan is None:
-            raise TWError("unknown plan %r (have %s)" % (plan_name, list(PLANS)))
-        self.click(P_CAMPAIGN)
-        _log("clicked Campaign")
-        self.click(P_NEW)
-        _log("clicked New")
-        if not self.wait_root("campaign_select_new", 30):
-            raise TWError("campaign_select_new never appeared after New")
+    def startable_factions(self):
+        """Faction keys from the harvested roster file."""
+        import json
+        if not os.path.exists(ROSTER_PATH):
+            raise TWError("no startable-faction roster at %s -- regenerate it with "
+                          "harvest_startable_factions() at campaign-select" % ROSTER_PATH)
+        # utf-8-sig: the roster file may carry a BOM
+        with open(ROSTER_PATH, encoding="utf-8-sig") as fh:
+            keys = (json.load(fh) or {}).get("factions") or []
+        if not keys:
+            raise TWError("startable-faction roster %s contains no factions" % ROSTER_PATH)
+        return list(keys)
 
-        card = self._campaign_card(campaign)
-        if not card:
-            raise TWError("campaign card %r not found" % campaign)
-        self.click(card)
-        _log("selected campaign: %s" % campaign)
-
-        self.click(P_LORD)
-        _log("opened LORD tab")
-
-        if plan.get("culture"):
-            self.click(P_CHANGE_RACE)
-            race = self._child_path_matching(P_CULTURE_LIST, ["CcoCultureRecord", plan["culture"]],
-                                             "race_button")
-            if not race:
-                raise TWError("race not found for culture %s" % plan["culture"])
-            self.click(race)
-            _log("picked race: %s" % plan["culture"])
-
-        if plan.get("faction"):
-            lord = self._child_path_matching(P_LORD_LIST,
-                                             ["CcoFrontendFactionLeader", plan["faction"]],
-                                             "lord_button")
-            if not lord:
-                raise TWError("lord not found for faction %s" % plan["faction"])
-            self.click(lord)
-            leader = self.text_of(P_LEADER_NAME)
-            faction = self.text_of(P_FACTION_NAME)
-            _log("picked lord: %s / %s" % (leader, faction))
-
-        self.click(P_START, settle=0.5)
-        _log("clicked Start Campaign -- loading (up to %ds) ..." % load_timeout)
-        started = self.wait_for({"started"}, load_timeout)
-        if not started:
-            raise TWError("campaign did not load ('started' never logged) within %ds" % load_timeout)
-        _log("campaign model loaded ('started'); advancing to the interactive HUD ...")
-        if not self.advance_to_hud():
-            raise TWError("reached 'started' but never got the interactive HUD (loading/cinematic stuck)")
-        _log("CAMPAIGN PLAYABLE (interactive HUD): %s" % json.dumps(started)[:160])
-        return started
+    def harvest_startable_factions(self, timeout=30.0):
+        """Re-read the faction keys from the live frontend. Requires campaign-select to be open."""
+        import re
+        import interrupts
+        if self.bus is None:
+            self.bus = Bus()
+        reply = self.bus.send("roots", timeout=timeout)
+        if not reply or reply.get("error") or reply.get("roots") is None:
+            raise TWError("startable_factions: the bus did not return a root list (%r)" % (reply,))
+        keys, seen = [], set()
+        for root in reply["roots"]:
+            nodes = interrupts._tree(self.bus, root, 18, 20000)
+            for n in nodes:
+                m = re.match(r"CcoFrontendFactionLeader:(.+)$", str(n.get("context") or ""))
+                if m and m.group(1) not in seen:
+                    seen.add(m.group(1))
+                    keys.append(m.group(1))
+        return keys
 
 
 def main():
-    plan = sys.argv[1] if len(sys.argv) > 1 else "nagarythe"
-    BusLauncher().launch(plan)
+    if len(sys.argv) < 2:
+        raise SystemExit("usage: bus_launcher.py <faction_key>   "
+                         "(list them with BusLauncher().startable_factions())")
+    BusLauncher().launch(sys.argv[1])
 
 
 if __name__ == "__main__":

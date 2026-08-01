@@ -1,16 +1,3 @@
-r"""profile_run.py -- where the loop's time actually goes.
-
-    python advisor_v7/profile_run.py [run_dir]
-
-READS ONLY decisions_stream.jsonl (append-only text). It never opens decisions.sqlite, so it cannot
-take a lock, block the recorder's writer, or perturb the run it is measuring -- profiling a live
-session has to be free, or it is measuring itself.
-
-Two levels:
-  PER PHASE   inside the recorder's snapshot: campaign_state / world_state / legal_stances /
-              lord_state / lord_offers / province_state / province_offers / campaign_offers
-  PER CYCLE   the whole decision point (collect + everything else the recorder did)
-"""
 from __future__ import annotations
 
 import glob

@@ -1,23 +1,4 @@
-r"""dumps.py -- COMPREHENSIVE one-shot capture of the current WH3 screen + game state.
-
-Part of the launcher library. Grabs as much as the bus + game API expose about the CURRENT screen in
-a single call, and -- crucially -- WORKS AROUND and DETECTS the mod's built-in limits so a caller
-knows when a capture is incomplete instead of silently trusting a truncated tree:
-
-  * the `tree` handler defaults to 500 nodes -> we pass a high node budget and flag `truncated`;
-  * the `tree` handler does VISIBLE-ONLY descent (twcontrol.lua: it will not walk into a node whose
-    visible==false) -> we recover those hidden subtrees one level via `find`, whose child_ids /
-    child_contexts are enumerated UNCONDITIONALLY;
-  * option KEYS live in the node `path`/`id` even when the curated `context` field is empty.
-
-All bus I/O goes through the passed-in Bus instance -- this module never re-implements bus transport
-(that is the bus project's job). Nothing here drives the game; it is pure read/inspect.
-
-Usage:
-    import dumps
-    d = dumps.dump_screen(bus, log_path=LIVE_SCRIPT_LOG, save_dir=OUT)   # dict, + JSON if save_dir
-    print(d["filter_hits"])          # <- non-empty means the raw capture was capped/filtered
-"""
+r"""dumps.py -- one-shot read-only capture of the current WH3 screen + game state."""
 from __future__ import annotations
 import collections
 import json
@@ -29,13 +10,11 @@ _TREE_T = 30.0
 
 
 def _warn(where, exc):
-    """Log (NEVER swallow silently) a soft failure during capture. Project rule: an element/query that
-    is not found or errors must AT LEAST log, so a silent gap can never masquerade as a complete dump."""
     sys.stderr.write("dumps: %s -> %s\n" % (where, repr(exc)[:120]))
 
 
 def _ev(bus, lua):
-    """eval a Lua expression, returning its result or None. On error: logs (not silent) and returns None."""
+    """eval a Lua expression, returning its result or None."""
     try:
         return (bus.send("eval", lua, timeout=_T) or {}).get("result")
     except Exception as exc:
@@ -44,11 +23,8 @@ def _ev(bus, lua):
 
 
 def _recover_hidden(bus, nodes, cap=80):
-    """The tree walk skips descent into visible==False nodes. Recover what it hid: for each hidden
-    node ask `find` for its direct children (the mod enumerates child_ids/child_contexts regardless of
-    visibility). Returns [{path, child_ids, child_contexts}] for the hidden nodes that ACTUALLY have
-    children -- i.e. the subtrees the visible-only tree dropped. Bounded to `cap` finds so a giant
-    panel can't fan out into thousands of calls."""
+    """[{path, child_ids, child_contexts}] for hidden nodes with children, via `find`. At most
+    `cap` finds."""
     out = []
     hidden = [n for n in nodes if n.get("visible") is False and n.get("path")]
     for n in hidden[:cap]:
@@ -65,7 +41,7 @@ def _recover_hidden(bus, nodes, cap=80):
 
 
 def dump_tree(bus, root, depth=40, nodes=16000):
-    """One panel's full component tree with cap-detection. Returns {nodes[], truncated, ...summary}."""
+    """One panel's component tree. Returns {nodes[], truncated, ...summary}."""
     try:
         tr = bus.send("tree", "%s %d %d" % (root, depth, nodes), timeout=_TREE_T) or {}
     except Exception as exc:
@@ -83,17 +59,10 @@ def dump_tree(bus, root, depth=40, nodes=16000):
 
 
 def dump_screen(bus, log_path=None, save_dir=None, deep=True, depth=40, nodes=16000, log_tail=400):
-    """COMPREHENSIVE capture of the current screen + game state across EVERY available stream, with the
-    mod's caps worked around AND reported in `filter_hits`:
-      roots + every visible panel's full tree (id/state/visible/rect/path/context), high node budget;
-      per-panel `truncated` flag when the budget was still hit;
-      hidden subtrees the visible-only descent skipped, recovered one level via `find` (deep=True);
-      entity streams (chars/setts/forces/hostiles) + snapshot;
-      game state via eval (faction/turn/treasury/at_war/regions);
-      a tail of the passive script-log (clicks / keypresses / [ui] traces / TWSTATE events) if log_path.
-    Returns the dict; if save_dir given, writes dump.json + per-panel tree_<panel>.json there.
-    `filter_hits` is the headline: EMPTY means the capture was complete; non-empty lists what was
-    capped/filtered so the caller never mistakes a truncated capture for the whole screen."""
+    """Capture roots, every visible panel's tree, the entity streams and the game state.
+
+    Returns the dict; with `save_dir`, also writes dump.json + tree_<panel>.json there.
+    An empty `filter_hits` means the capture was complete."""
     D = {
         "roots": [], "open_panels": [], "panels": {}, "entities": {}, "state": {},
         "log_tail": None, "filter_hits": [],

@@ -1,29 +1,3 @@
-r"""features.py -- the v7 featurizer. Turns STORED DECISION RECORDS into model rows.
-
-Its inputs come from decisions.sqlite (via decisions/journal.read_decision or store.training_rows)
-and from the offline reference sqlite. It never opens a bus and never talks to the game -- that is
-the recorder's job, and keeping it that way is what guarantees TRAINING AND PREDICTION FEATURIZE
-IDENTICALLY: both read the same stored records through this same function.
-
-ONE UNIFORM SCHEMA ACROSS ALL OFFERS -- the same COLUMNS for every action type, so a building and
-an attack can be ranked against each other. The VALUES are not uniform, and that is the whole point:
-within a single decision point only camp_* is constant. prov_* differs by which province the row is
-about, lord_* differs by which lord, near_* differs by where that entity physically stands, and
-opt_* differs per action. (Deliberate: noisier at first than per-action-type feature spaces, but
-structurally cleaner and the only shape a single global ranking can be trained on.)
-
-    camp_*  the campaign block          faction, turn, income, settlements, treasury, force counts
-                                        -- the ONLY block shared by every row of a decision point
-    prov_*  the LOCAL province block    the province at the action's locus (joined from the record)
-    lord_*  the SUBJECT lord block      only when a lord is the subject; nulls otherwise
-    near_*  the LOCAL force picture     friendly/enemy armies + settlements around the locus,
-                                        as ring counts + closest distance (computed here, from the
-                                        raw positions the recorder stored)
-    opt_*   the action                  type, key, availability, its own params, and the game-DB
-                                        record for that key (cost, tier, upkeep, ...)
-
-E1 = f(state, action) sees all of it. E2 = g(state) sees everything except opt_*.
-"""
 from __future__ import annotations
 
 import math
@@ -31,19 +5,22 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(r"D:\tw_stack", "advisor", "reference"))
-import features_db as DB                                  # noqa: E402  offline sqlite, no game
+import features_db as DB                                  # noqa: E402
 
-# distance rings (logical map units) for the local force picture
-RINGS = (10, 25, 50)
+RINGS = (10, 25, 50)                                      # map units
+# nearest items per channel that get full geometry (dist + direction + strength)
+NEAR_K = {"enemy": 3, "enemysett": 3, "friend": 2, "neutral": 1, "ownsett": 2}
+NEAR_K_DEFAULT = 2
 
-# every action type the launcher can execute -- fixed order so the categorical is stable
+# append only: the order is the categorical's encoding
 ACTION_TYPES = ("stance", "building", "research", "skills", "items", "item_unequip", "rites",
                 "recruit_unit", "recruit_lord", "edict", "attack_army", "attack_settlement",
-                "garrison", "leave_garrison", "end_turn", "noop")
+                "garrison", "leave_garrison", "end_turn", "noop",
+                "move", "diplomacy")
 
 
 def _f(v):
-    """Numeric coercion: bools become 0/1, unparseable becomes None (CatBoost reads it as NaN)."""
+    """Bools become 0/1, unparseable becomes None."""
     if isinstance(v, bool):
         return 1.0 if v else 0.0
     try:
@@ -52,26 +29,42 @@ def _f(v):
         return None
 
 
-# ------------------------------------------------------------------------------ blocks
+def _resource_feats(campaign):
+    """`res_<key>` per pooled resource, plus how many there are."""
+    res = (campaign or {}).get("resources") or {}
+    out = {"camp_n_resources": float(len(res))}
+    for k, v in res.items():
+        out["res_%s" % k] = _f(v)
+    return out
+
+
 def campaign_block(campaign, world):
     w = world or {}
     armies = w.get("armies") or []
     hostiles = w.get("hostiles") or []
-    return {"camp_faction": campaign.get("faction"),
+    return dict(_resource_feats(campaign), **{"camp_faction": campaign.get("faction"),
             "camp_turn": _f(campaign.get("turn")),
             "camp_income": _f(campaign.get("income")),
             "camp_settlements": _f(campaign.get("settlements")),
             "camp_treasury": _f(campaign.get("treasury")),
             "camp_is_researching": _f(campaign.get("is_researching")),
-            "camp_armies": float(sum(1 for a in armies if a.get("has_army") and a.get("is_general"))),
+            "camp_armies": float(sum(1 for a in armies if a.get("has_army"))),
+            "camp_army_units": float(sum((a.get("units") or 0) for a in armies if a.get("has_army"))),
+            "camp_enemy_units_known": float(sum((h.get("units") or 0) for h in hostiles
+                                                if h.get("kind") == "army")),
             "camp_characters": float(len(armies)),
+            "camp_lords": float(sum(1 for a in armies if a.get("has_army"))),
+            "camp_heroes": float(sum(1 for a in armies if not a.get("has_army"))),
             "camp_enemy_armies": float(sum(1 for h in hostiles if h.get("kind") == "army")),
-            "camp_enemy_settlements": float(sum(1 for h in hostiles if h.get("kind") == "settlement"))}
+            "camp_enemy_settlements": float(sum(1 for h in hostiles
+                                                if h.get("kind") == "settlement"))})
 
 
 _EMPTY_LORD = {"lord_rank": None, "lord_skill_points": None, "lord_units": None,
                "lord_pending_recruits": None, "lord_ap_pct": None, "lord_garrisoned": None,
                "lord_besieging": None, "lord_acted": None, "lord_stance": None,
+               "lord_subtype": None, "lord_is_leader": None,
+               "lord_x": None, "lord_y": None, "lord_has_army": None,
                "lord_present": 0.0}
 
 
@@ -83,7 +76,11 @@ def lord_block(state):
             "lord_pending_recruits": _f(state.get("pending_recruits")),
             "lord_ap_pct": _f(state.get("ap_pct")), "lord_garrisoned": _f(state.get("garrisoned")),
             "lord_besieging": _f(state.get("besieging")), "lord_acted": _f(state.get("acted")),
-            "lord_stance": state.get("stance"), "lord_present": 1.0}
+            "lord_stance": state.get("stance"),
+            "lord_subtype": state.get("subtype"), "lord_is_leader": _f(state.get("is_leader")),
+            "lord_x": _f(state.get("x")), "lord_y": _f(state.get("y")),
+            "lord_has_army": (1.0 if state.get("units") is not None else 0.0),
+            "lord_present": 1.0}
 
 
 _EMPTY_PROV = {"prov_province": None, "prov_complete": None, "prov_max_slots": None,
@@ -102,40 +99,194 @@ def province_block(state):
             "prov_active_edict": state.get("active_edict"),
             "prov_public_order": _f(state.get("public_order")),
             "prov_buildings": _f(state.get("buildings")),
-            "prov_is_capital": _f(state.get("is_capital")), "prov_present": 1.0}
+            "prov_is_capital": _f(state.get("is_capital")), "prov_present": 1.0,
+            **_corruption_feats(state.get("corruption"))}
+
+
+CORRUPTION_KEYS = ("wh3_main_corruption_chaos", "wh3_main_corruption_khorne",
+                   "wh3_main_corruption_nurgle", "wh3_main_corruption_skaven",
+                   "wh3_main_corruption_slaanesh", "wh3_main_corruption_tzeentch",
+                   "wh3_main_corruption_vampiric")
+
+
+def _corruption_feats(corr):
+    c = corr or {}
+    out = {"corr_%s" % k.rsplit("_", 1)[-1]: _f(c.get(k)) for k in CORRUPTION_KEYS}
+    known = [v for v in out.values() if v is not None]
+    out["corr_total"] = float(sum(known)) if known else None
+    out["corr_max"] = float(max(known)) if known else None
+    return out
+
+
+def positioning_block(near, world, prov_key, locus=None):
+    """pos_*/agg_*/prov_* features for one locus."""
+    out = {}
+    fe, en = near.get("near_friend_1_dist"), near.get("near_enemy_1_dist")
+    out["pos_enemy_minus_friend"] = (en - fe) if (fe is not None and en is not None) else None
+    out["pos_exposed"] = (1.0 if en < fe else 0.0) if (fe is not None and en is not None) else None
+    w0 = world or {}
+    lx = float(locus[0]) if (locus and locus[0] is not None) else None
+    ly = float(locus[1]) if (locus and locus[1] is not None) else None
+    for nm, items in (("friend", [a for a in (w0.get("armies") or []) if a.get("has_army")]),
+                      ("enemy", [h for h in (w0.get("hostiles") or [])
+                                 if h.get("kind") == "army"])):
+        pts = [(float(i["x"]), float(i["y"])) for i in items
+               if i.get("x") is not None and i.get("y") is not None]
+        out["agg_%s_n" % nm] = float(len(pts))
+        known = [u for u in (i.get("units") for i in items) if u is not None]
+        out["agg_%s_units" % nm] = float(sum(known)) if known else None
+        if pts and lx is not None and ly is not None:
+            ds = [math.hypot(px - lx, py - ly) for px, py in pts]
+            out["agg_%s_mean_dist" % nm] = round(sum(ds) / len(ds), 2)
+            cx = sum(p[0] for p in pts) / len(pts)
+            cy = sum(p[1] for p in pts) / len(pts)
+            out["agg_%s_centroid_dist" % nm] = round(math.hypot(cx - lx, cy - ly), 2)
+            s, c = bearing(cx - lx, cy - ly)
+            out["agg_%s_centroid_sin" % nm], out["agg_%s_centroid_cos" % nm] = s, c
+        else:
+            for suf in ("mean_dist", "centroid_dist", "centroid_sin", "centroid_cos"):
+                out["agg_%s_%s" % (nm, suf)] = None
+    r0 = RINGS[0] if RINGS else None
+    f0 = near.get("near_friend_r%d" % r0) if r0 else None
+    e0 = near.get("near_enemy_r%d" % r0) if r0 else None
+    out["pos_support_ratio"] = (((f0 or 0.0) + 1.0) / ((e0 or 0.0) + 1.0)
+                               if (f0 is not None or e0 is not None) else None)
+    w = world or {}
+    if prov_key:
+        arm = [a for a in (w.get("armies") or []) if a.get("province") == prov_key]
+        hos = [h for h in (w.get("hostiles") or [])
+               if h.get("province") == prov_key and h.get("kind") in ("army", "neutral_army")]
+        out["prov_own_lords"] = float(sum(1 for a in arm if a.get("has_army")))
+        out["prov_own_heroes"] = float(sum(1 for a in arm if not a.get("has_army")))
+        out["prov_enemy_known"] = float(sum(1 for h in hos if h.get("kind") == "army"))
+        out["prov_neutral_known"] = float(sum(1 for h in hos if h.get("kind") == "neutral_army"))
+    else:
+        out["prov_own_lords"] = out["prov_own_heroes"] = None
+        out["prov_enemy_known"] = out["prov_neutral_known"] = None
+    return out
+
+
+def province_buildings_block(provinces, prov_state):
+    """pbld_<key> per building in this province's owned settlements, pbldnow_<key> per one being
+    built, plus counts."""
+    out = {"pbld_count": None, "pbld_inprogress": None}
+    if not prov_state or not prov_state.get("settlement_present"):
+        return out
+    pk = prov_state.get("province")
+    same = [s for s in (provinces or {}).values()
+            if s.get("settlement_present") and s.get("province") == pk] or [prov_state]
+    keys, inprog = set(), 0
+    for s in same:
+        for k in (s.get("built") or {}).values():
+            if k:
+                keys.add(str(k))
+        for v in (s.get("building_now") or {}).values():
+            inprog += 1
+            if v.get("key"):
+                out["pbldnow_%s" % v["key"]] = 1.0
+    for k in keys:
+        out["pbld_%s" % k] = 1.0
+    out["pbld_count"] = float(len(keys))
+    out["pbld_inprogress"] = float(inprog)
+    return out
+
+
+def lord_recruit_block(state):
+    """lrec_<key> per unit mid-recruitment, plus the count."""
+    ks = (state or {}).get("pending_recruit_keys") or []
+    out = {"lrec_inprogress": float(len(ks))}
+    for k in ks:
+        out["lrec_%s" % k] = 1.0
+    return out
+
+
+def carried_province_block(provinces, here):
+    """own_* totals over every owned settlement, carried regardless of where the actor is."""
+    owned = [s for s in (provinces or {}).values() if s.get("settlement_present")]
+    n = len(owned)
+    out = {"own_provinces": float(len({s.get("province") for s in owned})) if n else 0.0,
+           "own_settlements": float(n),
+           "own_buildings_total": float(sum(len(s.get("built") or {}) for s in owned)),
+           "own_building_now": float(sum(len(s.get("building_now") or {}) for s in owned)),
+           "own_free_slots": float(sum((_f(s.get("free_slots")) or 0.0) for s in owned)),
+           "here_is_ours": 1.0 if here else 0.0}
+    return out
+
+
+def bearing(dx, dy):
+    """(sin, cos) of the direction (dx, dy); (None, None) for a zero-length vector."""
+    d = math.hypot(dx, dy)
+    if d < 1e-9:
+        return None, None
+    return round(dy / d, 4), round(dx / d, 4)
+
+
+def _units_of(item):
+    """Known troop count, or None when unknown -- never 0."""
+    u = item.get("units")
+    return None if u is None else _f(u)
 
 
 def near_block(world, locus):
-    """The LOCAL force picture around a locus (x, y), from the raw positions the recorder stored."""
+    """near_* per channel around locus (x, y): ring counts, and the nearest few with distance,
+    direction and strength."""
     w = world or {}
-    groups = (("friend", [a for a in (w.get("armies") or [])
-                          if a.get("has_army") and a.get("is_general")]),
+    groups = (("friend", [a for a in (w.get("armies") or []) if a.get("has_army")]),
               ("enemy", [h for h in (w.get("hostiles") or []) if h.get("kind") == "army"]),
+              ("neutral", [h for h in (w.get("hostiles") or []) if h.get("kind") == "neutral_army"]),
               ("enemysett", [h for h in (w.get("hostiles") or []) if h.get("kind") == "settlement"]),
               ("ownsett", list(w.get("settlements") or [])))
     out = {}
     for name, items in groups:
         out["near_%s_closest" % name] = None
         out["near_%s_total" % name] = float(len(items))
+        out["near_%s_strength" % name] = None          # troops of the nearest one
+        out["near_%s_strength_r25" % name] = None      # known troops within 25
+        out["near_%s_dir_sin" % name] = None
+        out["near_%s_dir_cos" % name] = None
+        for k in range(NEAR_K.get(name, NEAR_K_DEFAULT)):
+            pre = "near_%s_%d" % (name, k + 1)
+            out[pre + "_dist"] = out[pre + "_strength"] = None
+            out[pre + "_dir_sin"] = out[pre + "_dir_cos"] = None
         for r in RINGS:
             out["near_%s_r%d" % (name, r)] = None
     if not locus or locus[0] is None or locus[1] is None:
         return out
     x, y = float(locus[0]), float(locus[1])
     for name, items in groups:
-        ds = sorted(math.hypot(float(i["x"]) - x, float(i["y"]) - y)
-                    for i in items if i.get("x") is not None and i.get("y") is not None)
-        if name == "friend" and ds and ds[0] < 1e-6:
-            ds = ds[1:]                      # the subject army itself is not "nearby company"
+        pairs = sorted(((math.hypot(float(i["x"]) - x, float(i["y"]) - y), i) for i in items
+                        if i.get("x") is not None and i.get("y") is not None),
+                       key=lambda p: p[0])
+        if name == "friend" and pairs and pairs[0][0] < 1e-6:
+            pairs = pairs[1:]                # drop the subject itself
+        ds = [d for d, _ in pairs]
         out["near_%s_closest" % name] = round(ds[0], 2) if ds else None
         for r in RINGS:
             out["near_%s_r%d" % (name, r)] = float(sum(1 for d in ds if d <= r))
+        for k in range(NEAR_K.get(name, NEAR_K_DEFAULT)):
+            pre = "near_%s_%d" % (name, k + 1)
+            if k < len(pairs):
+                d, it = pairs[k]
+                out[pre + "_dist"] = round(d, 2)
+                out[pre + "_strength"] = _units_of(it)
+                s, c = bearing(float(it["x"]) - x, float(it["y"]) - y)
+                out[pre + "_dir_sin"], out[pre + "_dir_cos"] = s, c
+            else:
+                out[pre + "_dist"] = out[pre + "_strength"] = None
+                out[pre + "_dir_sin"] = out[pre + "_dir_cos"] = None
+        if pairs:
+            d0, nearest = pairs[0]
+            out["near_%s_strength" % name] = _units_of(nearest)
+            s, c = bearing(float(nearest["x"]) - x, float(nearest["y"]) - y)
+            out["near_%s_dir_sin" % name], out["near_%s_dir_cos" % name] = s, c
+            known = [_units_of(i) for d, i in pairs if d <= 25]
+            known = [u for u in known if u is not None]
+            out["near_%s_strength_r25" % name] = float(sum(known)) if known else None
     return out
 
 
-# ------------------------------------------------------------------------------ action block
 def _db_features(action_type, key):
-    """The game's own record for the action -- costs, tiers, upkeep. Offline sqlite lookup."""
+    """The offline DB record for this action key, or {}."""
     if action_type == "building":
         d = dict(DB.building_features(key))
         d.update({("chain_" + k): v for k, v in
@@ -155,21 +306,82 @@ def _db_features(action_type, key):
 _COST_FIELDS = ("create_cost", "recruitment_cost", "cost_per_round", "influence_cost")
 
 
-def action_block(offer, locus, treasury):
-    """opt_* for one offer: what it is, whether it was on, its params, and its DB record."""
+def _target_units(atype, params, key, world):
+    """Defender strength for an action that starts a fight, else None."""
+    w = world or {}
+    if atype == "attack_army":
+        cqi = (params or {}).get("target_cqi")
+        if cqi is None:
+            return None
+        for h in (w.get("hostiles") or []):
+            if h.get("kind") == "army" and str(h.get("cqi")) == str(cqi):
+                return _units_of(h)
+        return None
+    if atype == "attack_settlement":
+        for h in (w.get("hostiles") or []):
+            if h.get("kind") == "settlement" and str(h.get("region")) == str(key):
+                return _units_of(h)
+        return None
+    return None
+
+
+DIPLO_TERM_FEATS = ("nonaggression_pact", "trade_agreement", "defensive_alliance", "soft_access",
+                    "military_alliance", "vassal", "confederation", "declare_war")
+
+
+def _diplomacy_feats(atype, params):
+    """dip_* features for a diplomacy offer; {} for anything else."""
+    if atype != "diplomacy":
+        return {}
+    terms = list(params.get("terms") or [])
+    out = {
+        "dip_target": params.get("faction"),
+        "dip_standing": _f(params.get("standing")),
+        "dip_standing_abs": (abs(_f(params.get("standing")))
+                             if _f(params.get("standing")) is not None else None),
+        "dip_hostile_attitude": (1.0 if (_f(params.get("standing")) or 0.0) < 0 else 0.0),
+        "dip_at_war": _f(params.get("at_war")),
+        "dip_allied": _f(params.get("allied")),
+        "dip_trade": _f(params.get("trade")),
+        "dip_their_vassal": _f(params.get("their_vassal")),
+        "dip_has_any_tie": 1.0 if any(_f(params.get(k)) for k in
+                                      ("allied", "trade", "their_vassal")) else 0.0,
+        "dip_n_terms": float(len(terms)),
+        "dip_is_pair": 1.0 if len(terms) > 1 else 0.0,
+    }
+    for t in DIPLO_TERM_FEATS:
+        out["dip_term_%s" % t] = 1.0 if t in terms else 0.0
+    return out
+
+
+def action_block(offer, locus, treasury, world=None, self_units=None):
+    """opt_* for one offer: what it is, whether it was on, its params, geometry and DB record."""
     atype, key = offer.get("action_type"), str(offer.get("key"))
     params = offer.get("params") or {}
     out = {"opt_type": atype, "opt_key": key,
            "opt_available": 1.0 if offer.get("available") else 0.0,
            "opt_gate": offer.get("gate") or "none"}
-    # target geometry: the recorder stored the target's raw position, the distance is ours to make
+    out.update(_diplomacy_feats(atype, params))
     tx, ty = params.get("x"), params.get("y")
     if locus and tx is not None and ty is not None and locus[0] is not None:
-        out["opt_target_dist"] = round(math.hypot(float(tx) - float(locus[0]),
-                                                  float(ty) - float(locus[1])), 2)
+        dx, dy = float(tx) - float(locus[0]), float(ty) - float(locus[1])
+        out["opt_target_dist"] = round(math.hypot(dx, dy), 2)
+        out["opt_target_dir_sin"], out["opt_target_dir_cos"] = bearing(dx, dy)
     else:
         out["opt_target_dist"] = None
+        out["opt_target_dir_sin"] = out["opt_target_dir_cos"] = None
+    tgt_units = _target_units(atype, params, key, world)
+    out["opt_self_units"] = _f(self_units)
+    out["opt_target_units"] = tgt_units
+    if out["opt_self_units"] is not None and tgt_units is not None:
+        out["opt_strength_diff"] = out["opt_self_units"] - tgt_units
+        out["opt_strength_ratio"] = out["opt_self_units"] / max(tgt_units, 1.0)
+    else:
+        out["opt_strength_diff"] = out["opt_strength_ratio"] = None
     out["opt_target_faction"] = params.get("target_faction")
+    out["opt_trait"] = params.get("trait")
+    out["opt_n_traits"] = _f(params.get("n_traits"))
+    out["opt_cand_rank"] = _f(params.get("cand_rank"))
     out["opt_slot_index"] = _f(params.get("slot_index"))
     out["opt_candidate_index"] = _f(params.get("candidate_index"))
     out["opt_rite_index"] = _f(params.get("rite_index"))
@@ -188,7 +400,6 @@ def action_block(offer, locus, treasury):
     return out
 
 
-# ------------------------------------------------------------------------------ assembly
 def _locus(context_kind, state, world, provinces):
     if context_kind in ("lord", "hero"):
         return (state.get("x"), state.get("y"))
@@ -209,19 +420,28 @@ def state_row(record, entity):
     ck, st = entity.get("context_kind"), entity.get("state") or {}
     row = campaign_block(record.get("campaign") or {}, world)
     row["ctx_kind"] = ck
-    # a HERO is a character, so it uses the same character block as a lord -- the force-derived
-    # fields simply come back empty, which is itself signal (no army = no stance/move options)
     if ck in ("lord", "hero"):
+        here = provinces.get(st.get("region"))                        # None => not on our ground
         row.update(lord_block(st))
-        row.update(province_block(provinces.get(st.get("region"))))   # the province he stands in
+        row.update(lord_recruit_block(st))
+        row.update(province_block(here))
+        row.update(province_buildings_block(provinces, here))
+        row.update(carried_province_block(provinces, here))
     elif ck == "province":
         row.update(dict(_EMPTY_LORD))
         row.update(province_block(st))
+        row.update(province_buildings_block(provinces, st))
+        row.update(carried_province_block(provinces, st))
     else:
         cap = next((p for p in provinces.values() if p.get("is_capital")), None)
         row.update(dict(_EMPTY_LORD))
         row.update(province_block(cap))
-    row.update(near_block(world, _locus(ck, st, world, provinces)))
+        row.update(province_buildings_block(provinces, cap))
+        row.update(carried_province_block(provinces, cap))
+    loc = _locus(ck, st, world, provinces)
+    near = near_block(world, loc)
+    row.update(near)
+    row.update(positioning_block(near, world, st.get("province"), loc))
     return row
 
 
@@ -233,17 +453,18 @@ def offer_rows(record, entity):
     st = entity.get("state") or {}
     locus = _locus(entity.get("context_kind"), st, world, provinces)
     treasury = _f((record.get("campaign") or {}).get("treasury"))
+    self_units = _f(st.get("units"))
     base = state_row(record, entity)
     out = []
     for o in entity.get("offers") or []:
         row = dict(base)
-        row.update(action_block(o, locus, treasury))
+        row.update(action_block(o, locus, treasury, world=world, self_units=self_units))
         out.append((o, row))
     return out
 
 
 def decision_rows(record):
-    """[(entity, offer, E1 row)] for a whole faction-wide decision point -- the ranking's input."""
+    """[(entity, offer, E1 row)] for a whole decision point."""
     out = []
     for e in record.get("entities") or []:
         for offer, row in offer_rows(record, e):
@@ -251,10 +472,8 @@ def decision_rows(record):
     return out
 
 
-# ------------------------------------------------------------------------------ column typing
 def split_columns(rows):
-    """(numeric_cols, categorical_cols) over a list of feature dicts. A column is numeric only if
-    every value present is a number; anything else is categorical (CatBoost handles them natively)."""
+    """(numeric_cols, categorical_cols): numeric only if every present value is a number."""
     cols = {}
     for r in rows:
         for k, v in r.items():
@@ -268,7 +487,7 @@ def split_columns(rows):
 
 
 def matrix(rows, num, cat):
-    """CatBoost-ready matrix: numerics as floats (None -> nan), categoricals as strings."""
+    """Numerics as floats (None -> nan), categoricals as strings."""
     out = []
     for r in rows:
         vals = []

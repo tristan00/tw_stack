@@ -1,36 +1,4 @@
-r"""cco_actions.py -- v7 EXECUTION core: the confirmed-action engine, the action REGISTRY, and
-every CCO-LED executor. Click-based executors live in click_actions.py and register into the
-same REGISTRY (cco is always tried first; a click executor exists only where cco failed the
-verification protocol -- see verify_cco_commands.py verdicts).
-
-THE RULE THAT MAKES v7 DATA TRUSTWORTHY (the "how do we know a move failed" answer):
-every action runs   snapshot(before) -> gates -> execute -> poll confirm(after) -> record
-and `taken = executed AND confirmed`. An API "ok"/"clicked" is recorded but trusted for
-NOTHING -- commands report success even when the engine refuses (verified: Construct on a
-locked slot, stance Activate on an AP-blocked stance). Distinct failure classes are recorded
-so the trainer can exclude and the humans can debug:
-    forbidden_key | snapshot_failed | pre_check_refused | execute_failed |
-    command_silently_refused (no state change by timeout) | executed_unconfirmed (partial)
-
-ENGINE-SAFETY (live-verified 2026-07-29):
-  * NEVER pass a Lua cco wrapper as a Call() argument -- HARD-HANGS the engine. All Call
-    strings live in the _LUA_* templates below; only str/int keys are ever interpolated.
-  * Every per-entry Call goes through the pcall safe-getter g() (zero-return trap).
-
-Spec contract (a dict in REGISTRY, keyed by action_type):
-    layer       "cco" | "click"
-    snapshot    fn(bus, ctx, pick) -> dict            # before-state; doubles as gate input
-    gates       [fn(bus, ctx, pick, before) -> (ok, reason)]
-    execute     fn(bus, ctx, pick, before) -> bool    # issued (never trusted)
-    confirm     fn(bus, ctx, pick, before) -> (bool, after_dict)
-    timeout_s / poll_s                                 # confirm polling
-    retryable   bool                                   # False for irreversible (battles, gifts)
-    spends_gold bool                                   # engages the treasury-floor gate
-    max_per_entity_turn int
-
-ctx  = {"context_kind": "lord"|"settlement"|"campaign", "entity_id": str, ...}
-pick = {"action_type": str, "key": str, "params": {...}, "policy": str}
-"""
+r"""cco_actions.py -- confirmed-action engine, action REGISTRY, and the cco-layer executors."""
 from __future__ import annotations
 
 import json
@@ -40,19 +8,15 @@ import time
 sys.path.insert(0, r"D:\tw_stack\bus")
 sys.path.insert(0, r"D:\tw_stack\launcher")
 
-TREASURY_FLOOR = 500        # never spend below this (tunable; config.py may override)
+TREASURY_FLOOR = 500        # gold
 try:
     import config as _cfg
     TREASURY_FLOOR = getattr(_cfg, "TREASURY_FLOOR", TREASURY_FLOOR)
 except Exception:
     pass
 
-# battle-UI entries are NEVER selectable/executable -- hardcoded at advisor AND executor layer
 FORBIDDEN_KEYS = frozenset({"button_attack", "button_spectate"})
 
-# ---------------------------------------------------------------------------- lua templates
-# ALL cco Call strings live here (grep-able wrapper-ban invariant: no Call( ever receives a
-# Lua local; arguments are inline expression text composed from str/int only).
 _G = ("local function g(c,p) local ok,v=pcall(function() return c:Call(p) end);"
       "if ok and v~=nil then return v end return nil end "
       "local function ts(v) return tostring(v) end ")
@@ -80,6 +44,15 @@ _LUA_SLOT_STATE = (_G +
     "for i,x in ipairs(slots) do if g(x,'Index')==%(slot)d then "
     "return ts(g(x,'IsBuildingNew')) end end return 'NO-SLOT'")
 
+_LUA_SLOT_QUEUED = (_G +
+    "local s=cco('CcoCampaignSettlement','settlement:%(region)s');"
+    "if not s then return 'NO-CTX' end local slots=s:Call('BuildingSlotList');"
+    "if type(slots)~='table' then return 'NO-SLOTLIST' end "
+    "for i,x in ipairs(slots) do if g(x,'Index')==%(slot)d then "
+    "local ci=g(x,'ConstructionItemContext') if not ci then return 'NONE' end "
+    "local cl=g(ci,'BuildingLevelRecordContext') "
+    "return ts(cl and g(cl,'Key') or 'NONE') end end return 'NO-SLOT'")
+
 _LUA_CONSTRUCT = (_G +
     "local s=cco('CcoCampaignSettlement','settlement:%(region)s');"
     "if not s then return 'NO-CTX' end local slots=s:Call('BuildingSlotList');"
@@ -95,8 +68,7 @@ _LUA_CONSTRUCT = (_G +
 
 
 def _ev(bus, lua, timeout=15.0):
-    """One eval; returns result or None (loud stderr, never an exception -- the engine turns
-    None into an explicit refusal so a bus miss can't masquerade as anything else)."""
+    """One eval; returns the result, or None on any failure."""
     try:
         r = bus.send("eval", lua, timeout=timeout) or {}
     except Exception as e:
@@ -112,7 +84,6 @@ def _treasury(bus):
     return _ev(bus, _LUA_TREASURY, timeout=8.0)
 
 
-# ---------------------------------------------------------------------------- the engine
 REGISTRY = {}
 
 
@@ -121,15 +92,13 @@ def register(action_type, spec):
     spec.setdefault("poll_s", 1.2)
     spec.setdefault("retryable", True)
     spec.setdefault("spends_gold", False)
-    spec.setdefault("max_per_entity_turn", 3)
     spec.setdefault("gates", [])
     REGISTRY[action_type] = spec
     return spec
 
 
 def execute_confirmed(bus, ctx, pick):
-    """Run one action through snapshot -> gates -> execute -> poll-confirm. Returns the
-    ActionRecord dict (see module docstring). `counted` is the ONLY field that means taken."""
+    """Run one action through snapshot -> gates -> execute -> poll-confirm; returns a record dict."""
     atype = pick.get("action_type")
     rec = {"ts": time.time(), "context_kind": ctx.get("context_kind"),
            "entity_id": str(ctx.get("entity_id")), "action_type": atype,
@@ -149,81 +118,81 @@ def execute_confirmed(bus, ctx, pick):
         rec.update(executed=True, confirmed=True, counted=True,
                    confirm={"signal": "none", "before": {}, "after": {}, "latency_ms": 0})
         return rec
+    _t_start = time.time()
+    _t = {}
+    _ts = time.time()
     try:
         before = spec["snapshot"](bus, ctx, pick)
     except Exception as e:
         rec["refusal"] = "snapshot_failed"
         rec["confirm"] = {"signal": None, "error": repr(e)[:160]}
+        rec["timing"] = {"snapshot_ms": int((time.time() - _ts) * 1000), "total_ms":
+                         int((time.time() - _t_start) * 1000)}
         return rec
+    _t["snapshot_ms"] = int((time.time() - _ts) * 1000)
     if before is None:
         rec["refusal"] = "snapshot_failed"
+        rec["timing"] = dict(_t, total_ms=int((time.time() - _t_start) * 1000))
         return rec
+    _tg = time.time()
     if spec["spends_gold"]:
         cost = (pick.get("params") or {}).get("cost") or 0
         t = before.get("treasury")
         if t is not None and t - cost < TREASURY_FLOOR:
             rec["gates"] = {"passed": False, "failed_gate": "treasury_floor"}
             rec["refusal"] = "pre_check_refused"
+            rec["timing"] = dict(_t, gates_ms=int((time.time() - _tg) * 1000),
+                                 total_ms=int((time.time() - _t_start) * 1000))
             return rec
     for gate in spec["gates"]:
         ok, reason = gate(bus, ctx, pick, before)
         if not ok:
             rec["gates"] = {"passed": False, "failed_gate": reason}
             rec["refusal"] = "pre_check_refused"
+            rec["timing"] = dict(_t, gates_ms=int((time.time() - _tg) * 1000),
+                                 total_ms=int((time.time() - _t_start) * 1000))
             return rec
+    _t["gates_ms"] = int((time.time() - _tg) * 1000)
     t0 = time.time()
     try:
         rec["executed"] = bool(spec["execute"](bus, ctx, pick, before))
     except Exception as e:
-        rec["refusal"] = "execute_failed"
-        rec["confirm"] = {"signal": None, "error": repr(e)[:160]}
-        return rec
-    if not rec["executed"]:
-        # ⚠ DO NOT TRUST "execute failed" EITHER. The executor reporting failure says only that OUR
-        # click/command path gave up somewhere -- it says nothing about the GAME. A UI sequence can
-        # complete its effect and still return False on a later step (a state check, a click that
-        # reports not-registered, a cleanup error). Live proof: recruit_lord returned False, was
-        # recorded `execute_failed`, and the lord HAD BEEN RECRUITED (cqi 1042 present, faction
-        # count 3 -> 4). We threw away a real success and mislabelled the training row.
-        # The post-assert is the only truth, so ask the world once before declaring failure.
-        try:
-            confirmed, after = spec["confirm"](bus, ctx, pick, before)
-        except Exception as e:
-            confirmed, after = False, {"error": repr(e)[:160]}
-        rec["confirmed"] = bool(confirmed)
-        rec["counted"] = bool(confirmed)
-        rec["confirm"] = {"signal": spec.get("signal"), "before": before, "after": after,
-                          "latency_ms": int((time.time() - t0) * 1000), "polls": 0,
-                          "executor_reported": False}
-        rec["refusal"] = None if confirmed else "execute_failed"
-        if confirmed:
-            sys.stderr.write("cco_actions: %s executor said FAILED but the world says it "
-                             "HAPPENED -- counting it" % atype + chr(10))
-        return rec
-    deadline = t0 + spec["timeout_s"]
+        # do not return here: always fall through to the post-assert
+        rec["executed"] = False
+        rec["execute_error"] = repr(e)[:160]
+    _t["execute_ms"] = int((time.time() - t0) * 1000)
+    _tc = time.time()
+    deadline = time.time() + spec["timeout_s"]      # starts after execute; confirm runs at least once
     confirmed, after, polls = False, {}, 0
-    while time.time() < deadline:
-        time.sleep(spec["poll_s"])
+    while True:
         polls += 1
         try:
             confirmed, after = spec["confirm"](bus, ctx, pick, before)
         except Exception as e:
             after = {"error": repr(e)[:160]}
             confirmed = False
-        if confirmed:
+        if confirmed or time.time() >= deadline:
             break
+        time.sleep(spec["poll_s"])
     rec["confirmed"] = bool(confirmed)
-    rec["counted"] = rec["executed"] and rec["confirmed"]
+    rec["counted"] = rec["confirmed"]
     rec["confirm"] = {"signal": spec.get("signal"), "before": before, "after": after,
                      "latency_ms": int((time.time() - t0) * 1000), "polls": polls,
                      "timeout_s": spec["timeout_s"]}
+    _t["confirm_ms"] = int((time.time() - _tc) * 1000)
+    _t["polls"] = polls
+    _t["confirm_wasted_ms"] = 0 if confirmed else _t["confirm_ms"]
+    _t["total_ms"] = int((time.time() - _t_start) * 1000)
+    rec["timing"] = _t
     if not rec["counted"]:
-        changed = any(after.get(k) != before.get(k) for k in after) if isinstance(after, dict) else False
-        rec["refusal"] = "executed_unconfirmed" if changed else "command_silently_refused"
+        # compare only keys present in both
+        changed = (any(after.get(k) != before.get(k) for k in after if k in before)
+                   if isinstance(after, dict) and isinstance(before, dict) else False)
+        rec["refusal"] = ("executed_unconfirmed" if changed else
+                          "command_silently_refused" if rec["executed"] else "execute_failed")
     return rec
 
 
-# ---------------------------------------------------------------------------- cco: STANCE
 def _stances(bus, cqi):
     raw = _ev(bus, _LUA_STANCE_STATE % {"cqi": cqi}, timeout=15.0)
     if raw in (None, "NO-FORCE", "NO-LIST"):
@@ -247,13 +216,6 @@ def _stance_snapshot(bus, ctx, pick):
             "can_activate": tgt.get("can_activate"), "can_afford": tgt.get("can_afford")}
 
 
-# The HUD stance stack is the game's own answer to "which stances may this faction use". The cco
-# StanceList cannot answer it -- it lists every stance in the game and Activate will happily set a
-# faction-ILLEGAL one (verified rule breach: a High Elf army entered TUNNELING). This gate reads the
-# stack ITSELF rather than trusting a whitelist passed in by the caller: the executor must be able
-# to refuse an illegal stance even when the advisor asks for one.
-# ⚠ the stack is collapsed most of the time, so only the current button is `visible` -- but the bus
-# `find` handler enumerates children via ChildCount+Find(i), which is NOT visibility gated.
 _STANCE_STACK = "hud_campaign|BL_parent|land_stance_button_stack|clip_parent|stack_background"
 
 
@@ -279,9 +241,9 @@ def _legal_stances(bus):
 def _stance_gate_whitelist(bus, ctx, pick, before):
     wl = _legal_stances(bus)
     if not wl:
-        return False, "stance_legality_unreadable"         # loud: never assume "everything is legal"
+        return False, "stance_legality_unreadable"
     if pick["key"] not in wl:
-        return False, "stance_not_in_legality_whitelist"   # engine sets ILLEGAL stances; never bypass
+        return False, "stance_not_in_legality_whitelist"
     return True, None
 
 
@@ -310,17 +272,10 @@ register("stance", {
     "snapshot": _stance_snapshot,
     "gates": [_stance_gate_whitelist, _stance_gate_state],
     "execute": _stance_execute, "confirm": _stance_confirm,
-    "timeout_s": 5.0, "poll_s": 1.2, "max_per_entity_turn": 1,
+    "timeout_s": 5.0, "poll_s": 1.2,
 })
 
 
-# ---------------------------------------------------------------------------- cco: BUILDING
-# The cco layer exposes NO cost/affordability property on a building-level record (probed live:
-# Cost / ConstructionCost / CreateCost / CanAfford / IsAffordable / PurchaseCost all return nil, and
-# BuildingRequirementsMet covers requirements only -- NOT gold). So the price comes from the game's
-# own DB, decoded offline into reference.sqlite (marble_1 = 1000 gold, verified). Without it the
-# treasury gate can never fire and an unaffordable build reaches the engine, which accepts the
-# command and silently does nothing -- the exact failure this whole layer exists to prevent.
 def _build_cost(key):
     try:
         sys.path.insert(0, r"D:\tw_stack\advisor\reference")
@@ -342,7 +297,7 @@ def _building_snapshot(bus, ctx, pick):
     cost = (pick.get("params") or {}).get("cost")
     if cost is None:
         cost = _build_cost(pick["key"])
-        pick.setdefault("params", {})["cost"] = cost      # feeds the engine's treasury-floor gate
+        pick.setdefault("params", {})["cost"] = cost      # feeds the treasury-floor gate
     return {"treasury": t, "slot_is_building_new": is_new == "true", "cost": cost}
 
 
@@ -364,27 +319,27 @@ def _building_execute(bus, ctx, pick, before):
 
 
 def _building_confirm(bus, ctx, pick, before):
+    """True when the slot is queued with the requested building key."""
     slot = int((pick.get("params") or {}).get("slot_index"))
     t1 = _treasury(bus)
-    is_new = _ev(bus, _LUA_SLOT_STATE % {"region": ctx["entity_id"], "slot": slot})
-    ok = (is_new == "true") and (t1 is not None and before.get("treasury") is not None
-                                 and t1 < before["treasury"])
-    return ok, {"treasury": t1, "slot_is_building_new": is_new == "true"}
+    queued = _ev(bus, _LUA_SLOT_QUEUED % {"region": ctx["entity_id"], "slot": slot})
+    after = {"treasury": t1, "queued": queued,
+             "spent": (None if (t1 is None or before.get("treasury") is None)
+                       else round(before["treasury"] - t1, 2))}
+    if queued is None or str(queued).startswith("NO-"):
+        return False, dict(after, unreadable=True)
+    return (str(queued) == str(pick["key"])), after
 
 
 register("building", {
-    "layer": "cco", "signal": "treasury_drop_and_is_building_new",
+    "layer": "cco", "signal": "slot_queued_with_requested_building",
     "snapshot": _building_snapshot,
     "gates": [_building_gate_slot],
     "execute": _building_execute, "confirm": _building_confirm,
-    "timeout_s": 6.0, "poll_s": 2.0, "spends_gold": True, "max_per_entity_turn": 2,
+    "timeout_s": 6.0, "poll_s": 2.0, "spends_gold": True,
 })
 
 
-# ---------------------------------------------------------------------------- cco: RESEARCH
-# faction -> TechnologyManagerContext -> TechnologyList -> entry with NodeKey -> StartResearching.
-# LIVE-VERIFIED: is_currently_researching False->True, CurrentResearchingTechnologyContext.NodeKey
-# == picked key; a prereq-gated tier-5 tech was silently refused (engine self-guards).
 _LUA_TECH = (_G +
     "local f=cco('CcoCampaignFaction','%(fac)s'); local m=g(f,'TechnologyManagerContext');"
     "if not m then return 'NO-MGR' end local l=g(m,'TechnologyList');"
@@ -430,17 +385,7 @@ def _research_execute(bus, ctx, pick, before):
 
 
 def _research_confirm(bus, ctx, pick, before):
-    """Research is a GOAL, not an immediate assignment.
-
-    LIVE-VERIFIED: StartResearching on a node further up the tree starts the first researchable
-    node on the path to it instead -- asking for wh2_main_tech_hef_5_01 left
-    CurrentResearchingTechnologyContext on wh2_main_tech_hef_5_00. Demanding an exact key match
-    therefore reports a real, successful command as `executed_unconfirmed`.
-
-    So the signal is "research is now underway and the active tech CHANGED", and the tech that
-    actually started is recorded as `actual` -- the request and the outcome both stay visible
-    instead of one silently standing in for the other.
-    """
+    """True when research is underway and the active tech changed; `actual` is the tech that started."""
     cur = _current_tech(bus, before["faction"])
     researching = _researching(bus)
     started = (researching == "true"
@@ -453,15 +398,10 @@ register("research", {
     "layer": "cco", "signal": "is_researching_and_current_tech",
     "snapshot": _research_snapshot, "gates": [_research_gate],
     "execute": _research_execute, "confirm": _research_confirm,
-    "timeout_s": 6.0, "poll_s": 1.5, "max_per_entity_turn": 1,
+    "timeout_s": 6.0, "poll_s": 1.5,
 })
 
 
-# ---------------------------------------------------------------------------- cco: SKILLS
-# CharacterSkill::AddPoint (Void) then Character::CommitSkillChoices (Void).
-# LIVE-VERIFIED: has_skill False->True, SkillPointsAvailable 1->0, HasUncommitedSkills true->false.
-# NOTE has_skill flips at AddPoint (BEFORE commit) -- the reliable confirm is has_skill AND
-# uncommitted back to false. A rank-locked skill with 0 points produced ZERO state change.
 _LUA_SKILLS = (_G + "local c=cco('CcoCampaignCharacter','%(cqi)s'); local l=g(c,'SkillList');"
                     "if type(l)~='table' then return 'NO-LIST' end ")
 
@@ -521,16 +461,10 @@ register("skills", {
     "layer": "cco", "signal": "has_skill_flip_and_committed",
     "snapshot": _skills_snapshot, "gates": [_skills_gate],
     "execute": _skills_execute, "confirm": _skills_confirm,
-    "timeout_s": 6.0, "poll_s": 1.2, "max_per_entity_turn": 3,
+    "timeout_s": 6.0, "poll_s": 1.2,
 })
 
 
-# ---------------------------------------------------------------------------- cco: ITEMS
-# Ancillary equip/unequip. LIVE-VERIFIED: RemoveAncillary (Void) 1->0; equip via the TWO-ARG
-# form EquipToCharacter(SelectedCharacter(), NullContext()) 0->1 -- the ONE-ARG form silently
-# no-ops. SelectedCharacter() is resolved by first calling the Void command Select on the
-# character (also verified). Gate CanCharacterEquip(SelectedCharacter()) correctly read false
-# when already equipped, and a repeat call then changed nothing.
 _LUA_POOL = (_G + "local f=cco('CcoCampaignFaction','%(fac)s'); local l=g(f,'AncillaryList');"
                   "if type(l)~='table' then return 'NO-LIST' end ")
 
@@ -573,7 +507,7 @@ def _items_gate(bus, ctx, pick, before):
 
 def _items_execute(bus, ctx, pick, before):
     idx = int(pick["params"]["pool_index"])
-    _select_character(bus, ctx["entity_id"])          # refresh SelectedCharacter() binding
+    _select_character(bus, ctx["entity_id"])
     res = _ev(bus, (_LUA_POOL % {"fac": before["faction"]}) +
               "local a=l[%d]; if not a then return 'NO-ITEM' end "
               "pcall(function() a:Call('EquipToCharacter(SelectedCharacter(), NullContext())') end); "
@@ -595,7 +529,7 @@ register("items", {
     "layer": "cco", "signal": "equipped_count_increase",
     "snapshot": _items_snapshot, "gates": [_items_gate],
     "execute": _items_execute, "confirm": _items_confirm,
-    "timeout_s": 6.0, "poll_s": 1.2, "max_per_entity_turn": 2,
+    "timeout_s": 6.0, "poll_s": 1.2,
 })
 
 
@@ -625,14 +559,11 @@ def _unequip_confirm(bus, ctx, pick, before):
 register("item_unequip", {
     "layer": "cco", "signal": "equipped_count_decrease",
     "snapshot": _unequip_snapshot, "execute": _unequip_execute, "confirm": _unequip_confirm,
-    "timeout_s": 5.0, "poll_s": 1.2, "max_per_entity_turn": 2,
+    "timeout_s": 5.0, "poll_s": 1.2,
 })
 
 
-# ---------------------------------------------------------------------------- cco: RITES
-# faction AvailableRitualList[i]:Perform. LIVE-VERIFIED: CanPerformRitual true->false and
-# IsComplete false->true on exactly the performed entry. NOTE the ritual objects expose no
-# readable key/name property, so rites are addressed by LIST INDEX (params.rite_index).
+# rites are addressed by list index (params.rite_index)
 _LUA_RITES = (_G + "local f=cco('CcoCampaignFaction','%(fac)s'); local l=g(f,'AvailableRitualList');"
                    "if type(l)~='table' then return 'NO-LIST' end ")
 
@@ -674,31 +605,26 @@ register("rites", {
     "layer": "cco", "signal": "can_perform_false_and_complete",
     "snapshot": _rites_snapshot, "gates": [_rites_gate],
     "execute": _rites_execute, "confirm": _rites_confirm,
-    "timeout_s": 8.0, "poll_s": 1.5, "max_per_entity_turn": 2,
+    "timeout_s": 8.0, "poll_s": 1.5,
 })
 
 
-# ---------------------------------------------------------------------------- cco: END TURN
-# CampaignRoot::EndTurn (Void). LIVE-VERIFIED: turn 1 -> 2 with NO notification suppression and
-# NO hardware click -- this retires the v6 suppress + hardware-click-the-rect dance entirely.
 def _endturn_snapshot(bus, ctx, pick):
     t = _ev(bus, "return cm:model():turn_number()", timeout=8.0)
     return None if t is None else {"turn": t}
 
 
 def _endturn_execute(bus, ctx, pick, before):
+    """Clear the screen, then issue EndTurn. Failure to clear is not fatal."""
+    try:
+        import click_actions
+        click_actions.clear_screen(bus)
+    except Exception as e:
+        sys.stderr.write("cco_actions: end_turn clear_screen -> %s\n" % repr(e)[:100])
     return _ev(bus, _G + "local r=cco('CcoCampaignRoot',''); "
                          "pcall(function() r:Call('EndTurn') end); return 'called'") == "called"
 
 
-# ⚠ THE TURN NUMBER IS NOT "IT IS OUR TURN". cm:model():turn_number() advances when the ROUND
-# advances, while the AI factions are still playing theirs. Acting in that window is silently
-# refused by the engine for EVERYTHING -- live-proven: on "turn 3" with whose_turn_is_it() ==
-# {wh2_main_def_karond_kar}, Construct was refused at two different settlements (including one we
-# had never built in), research pre-check-refused, and lord recruitment failed. It all looked like
-# a mysterious building bug and was simply "not our turn".
-#
-# whose_turn_is_it() returns a faction LIST, not a faction (calling :name() on it errors).
 _LUA_OUR_TURN = ("local me=cm:get_local_faction_name(true) "
                  "local ok,l=pcall(function() return cm:model():world():whose_turn_is_it() end) "
                  "if not ok or not l then return 'unknown' end "
@@ -708,50 +634,52 @@ _LUA_OUR_TURN = ("local me=cm:get_local_faction_name(true) "
 
 
 def is_our_turn(bus):
-    """True / False / None(unknown) -- whether the human faction currently holds the turn."""
+    """True / False / None when unreadable."""
     v = _ev(bus, _LUA_OUR_TURN, timeout=10.0)
     return None if v not in ("true", "false") else (v == "true")
 
 
 def _endturn_confirm(bus, ctx, pick, before):
-    """Waiting for the turn to advance is NOT enough -- it will not advance while the AI's turn is
-    blocked on something that needs us.
+    """Confirm the end-turn order landed, clearing interrupts between polls."""
+    def _took_effect():
+        """True when the turn number moved or the turn is no longer ours."""
+        tt = _ev(bus, "return cm:model():turn_number()", timeout=8.0)
+        try:
+            moved = (tt is not None and float(tt) > float(before["turn"]))
+        except (TypeError, ValueError):
+            moved = False
+        ours = is_our_turn(bus)
+        return (moved or ours is False), tt
 
-    ⚠ THE CASE THIS EXISTS FOR: a faction attacks US during its own turn, so a Battle Deployment
-    (popup_pre_battle) opens mid inter-turn. The turn number then never moves, and a confirm that
-    only polls the turn number sits there for its whole timeout doing nothing while the battle waits
-    for a click. So every poll also CLEARS INTERRUPTS -- autoresolving a defensive battle, taking
-    the post-battle options, declining diplomacy -- and only then re-reads the turn.
-    """
-    t = _ev(bus, "return cm:model():turn_number()", timeout=8.0)
+    def _back_to_us():
+        """True when the turn advanced AND the turn is ours again."""
+        tt = _ev(bus, "return cm:model():turn_number()", timeout=8.0)
+        try:
+            moved = (tt is not None and float(tt) > float(before["turn"]))
+        except (TypeError, ValueError):
+            moved = False
+        return (moved and is_our_turn(bus) is True), tt
+
+    ok, t = _took_effect()
     steps = []
-    try:
-        advanced = (t is not None and float(t) > float(before["turn"]))
-    except (TypeError, ValueError):
-        advanced = False
-    if not advanced:
+    if not ok:
         try:
             import interrupts
             steps = interrupts.resolve(bus)
             if steps:
-                t = _ev(bus, "return cm:model():turn_number()", timeout=8.0)
-                try:
-                    advanced = (t is not None and float(t) > float(before["turn"]))
-                except (TypeError, ValueError):
-                    advanced = False
+                ok, t = _took_effect()
         except Exception as e:
             sys.stderr.write("cco_actions: end_turn interrupt sweep -> %s\n" % repr(e)[:120])
-    return advanced, {"turn": t, "interrupts": steps}
+    return ok, {"turn": t, "our_turn": is_our_turn(bus), "interrupts": steps}
 
 
 register("end_turn", {
     "layer": "cco", "signal": "turn_number_increment",
     "snapshot": _endturn_snapshot, "execute": _endturn_execute, "confirm": _endturn_confirm,
-    "timeout_s": 200.0, "poll_s": 4.0, "retryable": False, "max_per_entity_turn": 1,
+    "timeout_s": 45.0, "poll_s": 3.0, "retryable": False,      # must stay under the 120s watchdog
 })
 
 
-# ---------------------------------------------------------------------------- noop
 register("noop", {"layer": "cco", "signal": "none",
                   "snapshot": lambda bus, ctx, pick: {},
                   "execute": lambda bus, ctx, pick, before: True,
@@ -759,7 +687,6 @@ register("noop", {"layer": "cco", "signal": "none",
 
 
 if __name__ == "__main__":
-    # live smoke: stance flip + revert through the ENGINE (whitelist faked to the known-legal set)
     from bus import Bus
     b = Bus()
     cqi = _ev(b, "local f=cm:get_local_faction(true); return f:faction_leader():command_queue_index()")
