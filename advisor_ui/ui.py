@@ -367,23 +367,29 @@ def faction_action_stats(runs_root=RUNS_ROOT):
         except sqlite3.Error:
             continue
         try:
-            for camp, cjson in c.execute(
-                    "SELECT campaign_id, MIN(campaign) FROM decision_points GROUP BY campaign_id"):
+            rows = list(c.execute(
+                "SELECT d.campaign_id, d.ts, d.campaign, t.action_type, t.counted, t.latency_ms"
+                " FROM decision_points d JOIN action_taken t ON t.decision_id=d.decision_id"
+                " WHERE t.refusal IS NOT 'awaiting_execution'"
+                " ORDER BY d.campaign_id, d.decision_id"))
+            for i, (camp, ts, cjson, at, counted, lat) in enumerate(rows):
                 try:
                     fac = (json.loads(cjson) or {}).get("faction")
                 except Exception:
                     fac = None
                 if not fac:
                     continue
-                for at, counted, lat in c.execute(
-                        "SELECT t.action_type, t.counted, t.latency_ms FROM action_taken t"
-                        " JOIN decision_points d ON d.decision_id=t.decision_id"
-                        " WHERE d.campaign_id=? AND t.refusal IS NOT 'awaiting_execution'",
-                        (camp,)):
-                    s = main[(fac, at)]
-                    s[0] += 1
-                    s[1] += 1 if counted else 0
-                    s[2] += (lat or 0) / 1000.0
+                # TRUE cost = gap to the next decision (the latency fields hide the waits
+                # between actions); falls back to latency for a campaign's last decision
+                true_s = (lat or 0) / 1000.0
+                if i + 1 < len(rows) and rows[i + 1][0] == camp and rows[i + 1][1] and ts:
+                    gap = rows[i + 1][1] - ts
+                    if 0 <= gap <= 600:
+                        true_s = gap
+                s = main[(fac, at)]
+                s[0] += 1
+                s[1] += 1 if counted else 0
+                s[2] += true_s
             for cjson, kind, counted, lat in c.execute(
                     "SELECT campaign_json, kind, counted, latency_ms FROM interrupt_decisions"):
                 try:
@@ -434,7 +440,9 @@ def _matrix_tables(data, title):
 def render_faction_matrix():
     main, inter = faction_action_stats()
     intro = ("<p class=muted>Every campaign across every run dir. A cell far below its column's "
-             "norm is a faction-specific gap; a slow cell is a faction-specific stall. Interrupt "
+             "norm is a faction-specific gap; a slow cell is a faction-specific stall. Main-action "
+             "time is TRUE cost &mdash; decision-to-next-decision wall clock, which includes the "
+             "hidden waits the latency fields miss; interrupt time is click latency. Interrupt "
              "screens count the same confirmation law as actions.</p>")
     return intro + _matrix_tables(main, "main actions") + _matrix_tables(inter, "interrupt screens")
 
