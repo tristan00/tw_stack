@@ -941,8 +941,17 @@ local function arm_event_recorder()
       end, true)
     core:add_listener("twcontrol_incident", "IncidentOccuredEvent", true,
       function(context)
+        -- context:incident() returned nil on every one of 330 recorded incidents, so the key
+        -- was lost. Try each candidate accessor and report which one answered.
+        local key, via = nil, nil
+        for _, acc in ipairs({ "incident", "incident_key", "string", "dilemma", "key" }) do
+          if key == nil then
+            local v = try(function() return context[acc](context) end)
+            if v ~= nil then key = v; via = acc end
+          end
+        end
         log({ cmd = "incident_occured", turn = turn(),
-              incident = or_null(try(function() return context:incident() end)),
+              incident = or_null(key), via = or_null(via),
               faction = or_null(try(function() return context:faction():name() end)) })
       end, true)
     -- wait signals: python tails these rows instead of sleeping/polling the UI
