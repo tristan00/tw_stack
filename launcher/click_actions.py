@@ -109,8 +109,15 @@ def select_character(bus, cqi):
 
 
 def prepare(bus, kind, entity_id, expect_root=None, timeout=6.0):
-    """Clear the screen, select the subject ("settlement"|"lord"), await expect_root; -> (ok, reason)."""
+    """Clear the screen, select the subject ("settlement"|"lord"), await expect_root; -> (ok, reason).
+
+    The snapshot and the execute of one action both call this; when the second call would
+    rebuild a state that is still standing, it returns immediately instead of closing the
+    panel it is about to reopen."""
     import nav
+    if (expect_root and is_selected(bus, kind, entity_id) is True
+            and expect_root in (nav.visible_roots(bus) or [])):
+        return True, "already_ready"
     clear_screen(bus)
     if kind == "settlement":
         ok = select_settlement(bus, entity_id)
@@ -131,6 +138,22 @@ def prepare(bus, kind, entity_id, expect_root=None, timeout=6.0):
             time.sleep(0.5)
         return False, "expected_panel_%s_never_opened" % expect_root
     return True, "ready"
+
+
+def is_selected(bus, kind, entity_id):
+    """Is this exact character/settlement the one currently selected? None when unreadable.
+
+    IsSelected is validated: it answers true/false on a real context and nil on a wrong
+    property name, so nil is treated as unknown and never as 'no'."""
+    ctor = ("cco('CcoCampaignCharacter','%s')" % entity_id if kind == "lord"
+            else "cco('CcoCampaignSettlement','settlement:%s')" % entity_id)
+    try:
+        v = _ev(bus, _G + "local c=%s if not c then return 'nil' end "
+                          "return ts(g(c,'IsSelected'))" % ctor, timeout=8.0)
+    except Exception:
+        return None
+    v = str(v or "").lower()
+    return True if v == "true" else (False if v == "false" else None)
 
 
 def _treasury(bus):
@@ -366,7 +389,7 @@ register("recruit_unit", {
 
 def _character_count(bus):
     """Number of characters in the faction, or None when unreadable."""
-    for attempt in range(3):
+    for attempt in range(1):
         v = _ev(bus, "local f=cm:get_local_faction(true) return f:character_list():num_items()",
                 timeout=20.0)
         try:
