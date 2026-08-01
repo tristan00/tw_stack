@@ -191,7 +191,18 @@ class BusLauncher:
                 self.bus.send("eval", "cm:skip_all_campaign_cutscenes()", timeout=10)
             except TWError:
                 pass
-            for k in self._roots_safe():
+            roots = self._roots_safe()
+            # scripted intro cinematics ignore skip_all_campaign_cutscenes; the spacebar
+            # bar marks them and hardware ESC is the skip that works
+            if any(k.get("id") in ("campaign_space_bar_options", "black_fade")
+                   and k.get("visible") for k in roots):
+                import subprocess
+                r = subprocess.run(
+                    ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                     os.path.join(os.path.dirname(os.path.abspath(__file__)), "ps", "input.ps1"),
+                     "key", "ESCAPE"], capture_output=True, text=True, timeout=30)
+                _log("cinematic on screen -> hardware ESC (%s)" % (r.stdout or "").strip()[:60])
+            for k in roots:
                 if k.get("id") == "hud_campaign" and k.get("visible"):
                     _log("interactive HUD reached (hud_campaign visible)")
                     return True
