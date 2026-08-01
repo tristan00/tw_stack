@@ -1,7 +1,6 @@
 r"""verify_cco_commands.py -- live verification of the cco commands, run on a disposable campaign.
 
-    python verify_cco_commands.py           # stance cycle + report
-    python verify_cco_commands.py construct # ALSO queues a real building (spends gold)
+    python verify_cco_commands.py [construct]     # 'construct' also builds, spending gold
 """
 from __future__ import annotations
 

@@ -1,23 +1,5 @@
 """bus_stats -- low-overhead call-measurement layer for the WH3 command-bus client.
 
-WHY: the recorder issues many `find`s per second, some for components that DON'T EXIST on
-the current faction (e.g. `rituals_panel` / `great_game_rituals` for Wood Elves). The mod then
-runs a slow full-tree search that returns nothing -- a "junk call" that never returns anything.
-This module quantifies those: it aggregates per (channel, key) how many calls HIT (returned
-something), came back EMPTY (found=false / null result), TIMED OUT, or ERRORED, plus the wasted
-time, and persists the totals to a sqlite DB so a report can surface the worst offenders.
-
-DESIGN (hot-path safe):
-  * `Bus.send` calls `record(channel, key, outcome, elapsed_ms)` once per call. That does an
-    in-memory dict accumulate under a short-held lock -- NO disk I/O on the hot path.
-  * Deltas are flushed to sqlite in batches (every N calls or T seconds) and on process exit
-    (atexit). The DB upsert-ACCUMULATES, so several bus clients (recorder + agent) writing the
-    same DB sum correctly across processes.
-  * EVERY DB touch is wrapped in try/except with a 1-line stderr note. Instrumentation must
-    NEVER break the bus: a failure here is swallowed, never propagated.
-  * Gate: ON by default; set env `BUS_STATS=0` to disable. DB path env-overridable via
-    `BUS_STATS_DB` (default D:/totalwar_runner/data/bus_stats.sqlite).
-
 Report:  `python bus_stats.py`  -> totals + the JUNK list (keys with calls>=5 and hits==0).
 """
 
@@ -31,35 +13,20 @@ import threading
 import time
 from collections import deque
 
-# --------------------------------------------------------------------------------------
-# Config (env-overridable) -- read once at import.
-# --------------------------------------------------------------------------------------
 DEFAULT_DB_PATH = "D:/totalwar_runner/data/bus_stats.sqlite"
-KEY_MAXLEN = 400          # truncate long payloads (e.g. eval Lua) so keys stay bounded
-FLUSH_EVERY_N = 200       # flush to disk after this many recorded calls ...
-FLUSH_EVERY_S = 10.0      # ... or after this many seconds, whichever comes first
+KEY_MAXLEN = 400
+FLUSH_EVERY_N = 200
+FLUSH_EVERY_S = 10.0
 
 VALID_OUTCOMES = ("hit", "empty", "timeout", "error")
 
-# --------------------------------------------------------------------------------------
-# ACTIVE junk-find short-circuit ("barrier") config.
-# A (channel,key) that has been called >= GUARD_THRESHOLD times with ZERO hits (only
-# empty/timeout replies) is a "dead key": the component simply does NOT exist on the
-# current faction, so every find re-searches the whole tree and burns up to `timeout`
-# seconds for nothing. We suppress those: return a well-formed synthetic MISS immediately
-# WITHOUT touching the mod. This is SESSION-scoped in-memory state -- it MUST be reset on
-# a bus/session reset (reset_suppression), because a component absent for one faction may
-# exist for the next campaign. A periodic re-probe (1 in GUARD_REPROBE_EVERY) lets a dead
-# key through to re-check, so a component that starts existing gets un-suppressed on its own.
-# --------------------------------------------------------------------------------------
-GUARD_CHANNELS = ("find", "tree")   # ONLY option-set finds are short-circuited; NEVER eval/act/click/roots
-GUARD_THRESHOLD = 3                 # dead after this many returns with hits == 0
-GUARD_REPROBE_EVERY = 25            # let 1 in K suppressible calls through to re-check a dead key
-# Light stress backoff (Task 2): during a timeout storm, detect dead keys one call sooner.
-GUARD_STRESS_WINDOW = 40            # rolling window of recent guard-channel outcomes
-GUARD_STRESS_TIMEOUT_FRAC = 0.5     # >= this fraction of the window timing out == "stressed"
-GUARD_STRESS_MIN_SAMPLES = 10       # ignore the window until it has at least this many samples
-GUARD_STRESS_THRESHOLD = 2          # more aggressive dead-key threshold while stressed
+GUARD_CHANNELS = ("find", "tree")
+GUARD_THRESHOLD = 3
+GUARD_REPROBE_EVERY = 25
+GUARD_STRESS_WINDOW = 40
+GUARD_STRESS_TIMEOUT_FRAC = 0.5
+GUARD_STRESS_MIN_SAMPLES = 10
+GUARD_STRESS_THRESHOLD = 2
 
 
 def _env_enabled() -> bool:
@@ -71,8 +38,7 @@ def _env_enabled() -> bool:
 
 
 def _env_guard_enabled() -> bool:
-    """True unless BUS_GUARD is explicitly set to a falsey value (0/false/no/off). Gates the
-    ACTIVE junk-find short-circuit; OFF => the send path behaves exactly as before (no barrier)."""
+    """True unless BUS_GUARD is explicitly set to a falsey value (0/false/no/off)."""
     v = os.environ.get("BUS_GUARD")
     if v is None:
         return True
@@ -84,31 +50,17 @@ def _env_db_path() -> str:
     return os.environ.get("BUS_STATS_DB") or DEFAULT_DB_PATH
 
 
-# --------------------------------------------------------------------------------------
-# Outcome classification -- pure, defensive (never raises).
-# --------------------------------------------------------------------------------------
 def classify_outcome(channel: str, reply) -> str:
-    """Classify a *successful* (arrived) reply dict as 'hit' or 'empty'.
-
-    A find reply looks like {"cmd":"find","result":{"found":bool,...},"child_ids":[...]} .
-    HIT  = something came back: result.found truthy, OR child_ids non-empty, OR a non-null,
-           non-empty `result` payload (covers eval/act/roots replies).
-    EMPTY= the reply arrived but carries nothing: found=false / null / empty result.
-
-    Timeouts and other exceptions are classified by `send`, not here. Returns 'error' only if
-    this classifier itself hits an unexpected shape (defensive; never raises).
-    """
+    """Classify an arrived reply dict as 'hit' (something came back) or 'empty'; 'error' if the shape is unexpected."""
     try:
         if not isinstance(reply, dict):
             return "empty"
         result = reply.get("result")
         child_ids = reply.get("child_ids")
-        # find/tree emptiness lives in result.found (result is the describe() dict)
         if isinstance(result, dict) and "found" in result:
             if result.get("found"):
                 return "hit"
             return "hit" if child_ids else "empty"
-        # some replies carry `found` at the top level (click/children/tree)
         if isinstance(reply.get("found"), bool):
             if reply.get("found"):
                 return "hit"
@@ -116,12 +68,11 @@ def classify_outcome(channel: str, reply) -> str:
         if child_ids:
             return "hit"
         if result is not None:
-            # an empty container ("", [], {}) is not a hit
             if isinstance(result, (str, list, dict, tuple)) and len(result) == 0:
                 return "empty"
             return "hit"
         return "empty"
-    except Exception as e:  # never let classification raise into the bus
+    except Exception as e:
         sys.stderr.write("bus_stats: classify_outcome failed -> %s\n" % repr(e)[:120])
         return "error"
 
@@ -137,9 +88,6 @@ def make_key(channel: str, payload: str) -> str:
     return s
 
 
-# --------------------------------------------------------------------------------------
-# The in-memory aggregator + batched sqlite flush.
-# --------------------------------------------------------------------------------------
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS call_stats (
     channel  TEXT NOT NULL,
@@ -170,13 +118,7 @@ ON CONFLICT(channel, key) DO UPDATE SET
 
 
 class StatsTracker:
-    """In-memory per-(channel,key) accumulator with batched, accumulate-on-conflict sqlite flush.
-
-    Thread-safe. The hot path (`record`) only touches an in-memory dict under a briefly-held lock;
-    disk writes happen in `flush`, off the lock, at most every FLUSH_EVERY_N calls / FLUSH_EVERY_S
-    seconds and once at exit. Holds only DELTAS since the last flush, so multiple processes writing
-    the same DB sum correctly (the DB upsert accumulates).
-    """
+    """In-memory per-(channel,key) accumulator with batched, accumulate-on-conflict sqlite flush."""
 
     def __init__(self, db_path: str, flush_every_n: int = FLUSH_EVERY_N,
                  flush_every_s: float = FLUSH_EVERY_S, register_atexit: bool = True) -> None:
@@ -190,7 +132,6 @@ class StatsTracker:
         if register_atexit:
             atexit.register(self.close)
 
-    # ---- hot path -----------------------------------------------------------------
     def record(self, channel: str, key: str, outcome: str, elapsed_ms: float) -> None:
         """Accumulate one call in memory; trigger a batched flush when due. Never raises."""
         try:
@@ -202,24 +143,23 @@ class StatsTracker:
                 if row is None:
                     row = [0, 0, 0, 0, 0, 0.0, 0.0]
                     self._pending[k] = row
-                row[0] += 1                                  # calls
-                row[1] += 1 if outcome == "hit" else 0       # hits
-                row[2] += 1 if outcome == "empty" else 0     # empties
-                row[3] += 1 if outcome == "timeout" else 0   # timeouts
-                row[4] += 1 if outcome == "error" else 0     # errors
-                row[5] += float(elapsed_ms)                  # total_ms
-                row[6] = time.time()                         # last_ts
+                row[0] += 1
+                row[1] += 1 if outcome == "hit" else 0
+                row[2] += 1 if outcome == "empty" else 0
+                row[3] += 1 if outcome == "timeout" else 0
+                row[4] += 1 if outcome == "error" else 0
+                row[5] += float(elapsed_ms)
+                row[6] = time.time()
                 self._calls_since_flush += 1
                 due = (self._calls_since_flush >= self.flush_every_n
                        or (time.time() - self._last_flush) >= self.flush_every_s)
             if due:
                 self.flush()
-        except Exception as e:  # instrumentation must never break the bus
+        except Exception as e:
             sys.stderr.write("bus_stats: record failed -> %s\n" % repr(e)[:120])
 
-    # ---- batched flush ------------------------------------------------------------
     def flush(self) -> None:
-        """Write pending deltas to the sqlite DB (accumulate-on-conflict). Off the lock. Never raises."""
+        """Write pending deltas to the sqlite DB (accumulate-on-conflict). Never raises."""
         try:
             with self._lock:
                 if not self._pending:
@@ -236,7 +176,6 @@ class StatsTracker:
         try:
             self._write(snapshot)
         except Exception as e:
-            # deltas in `snapshot` are dropped (acceptable: never grow unbounded / never break bus)
             sys.stderr.write("bus_stats: flush write failed (%d keys dropped) -> %s\n"
                              % (len(snapshot), repr(e)[:100]))
 
@@ -265,38 +204,17 @@ class StatsTracker:
         self.flush()
 
 
-# --------------------------------------------------------------------------------------
-# ACTIVE junk-find short-circuit -- the in-memory "barrier".
-# --------------------------------------------------------------------------------------
 def synthetic_miss(channel: str, payload: str) -> dict:
-    """Build a well-formed synthetic MISS reply for a short-circuited find/tree, shaped EXACTLY
-    like the mod's real not-found reply (twcontrol.lua handlers.find / handlers.tree) so every
-    caller (panel_open, _child_ids, enumerate, classify_outcome) treats it as closed/empty, NOT a
-    crash. `short_circuited: True` is additive so a short-circuit is auditable in the reply itself.
-    """
+    """Synthetic MISS reply for a short-circuited find/tree; must stay shaped like the mod's real not-found reply (twcontrol.lua handlers.find / handlers.tree)."""
     if channel == "tree":
-        # handlers.tree not-found: found=false, empty nodes, count 0.
         return {"seq": -1, "cmd": "tree", "path": payload, "count": 0,
                 "truncated": False, "found": False, "nodes": [], "short_circuited": True}
-    # handlers.find not-found: result={found:false}, empty child arrays.
     return {"seq": -1, "cmd": "find", "path": payload, "result": {"found": False},
             "child_ids": [], "child_contexts": [], "short_circuited": True}
 
 
 class SuppressionGuard:
-    """Session-scoped, in-memory dead-key detector + re-probe. Thread-safe; the hot path is a dict
-    lookup and a few integer ops under a briefly-held lock -- NO disk I/O.
-
-    A (channel,key) is DEAD once it has been called >= threshold times with ZERO hits. For a dead
-    key, should_short_circuit() returns True (suppress the call) except every reprobe_every-th check,
-    when it returns False so the caller issues a real find and re-checks whether the component now
-    exists. A single hit clears deadness permanently (hits stays > 0).
-
-    Task 2 (light stress backoff): a bounded rolling window of recent guard-channel outcomes; when a
-    timeout STORM is detected the effective dead-key threshold drops to GUARD_STRESS_THRESHOLD so the
-    barrier engages one call sooner. No inter-call sleep is added (that would inject latency into the
-    bus); the short-circuit itself is the real protection.
-    """
+    """Session-scoped, thread-safe dead-key detector: a (channel,key) called >= threshold times with zero hits is suppressed, with a periodic re-probe."""
 
     def __init__(self, threshold: int = GUARD_THRESHOLD, reprobe_every: int = GUARD_REPROBE_EVERY,
                  stress_window: int = GUARD_STRESS_WINDOW,
@@ -322,9 +240,9 @@ class SuppressionGuard:
             if st is None:
                 st = [0, 0, 0]
                 self._state[(channel, key)] = st
-            st[0] += 1                                   # calls
+            st[0] += 1
             if outcome == "hit":
-                st[1] += 1                               # hits -> clears/keeps the key alive
+                st[1] += 1
             self._recent.append(1 if outcome == "timeout" else 0)
 
     def _effective_threshold_locked(self) -> int:
@@ -335,8 +253,7 @@ class SuppressionGuard:
         return self.threshold
 
     def should_short_circuit(self, channel: str, key: str) -> bool:
-        """True => skip the real send and return a synthetic miss. False => do a real round-trip
-        (key is alive, under-observed, or due for a periodic re-probe). Never raises."""
+        """True => skip the real send and return a synthetic miss; False => do a real round-trip."""
         if channel not in GUARD_CHANNELS:
             return False
         with self._lock:
@@ -345,11 +262,11 @@ class SuppressionGuard:
                 return False
             calls, hits, sup = st
             if hits > 0 or calls < self._effective_threshold_locked():
-                return False                             # alive, or not enough evidence yet
+                return False
             sup += 1
             st[2] = sup
             if sup % self.reprobe_every == 0:
-                return False                             # periodic re-probe: let one real find through
+                return False
             return True
 
     def is_stressed(self) -> bool:
@@ -358,15 +275,12 @@ class SuppressionGuard:
             return self._effective_threshold_locked() < self.threshold
 
     def reset(self) -> None:
-        """Drop ALL dead-key state + the stress window. Called on a bus/session/campaign reset."""
+        """Drop ALL dead-key state and the stress window."""
         with self._lock:
             self._state.clear()
             self._recent.clear()
 
 
-# --------------------------------------------------------------------------------------
-# Module-level singleton wiring used by Bus.send.
-# --------------------------------------------------------------------------------------
 _tracker: StatsTracker | None = None
 _tracker_lock = threading.Lock()
 _disabled_logged = False
@@ -385,9 +299,7 @@ def guard_enabled() -> bool:
 
 
 def active() -> bool:
-    """True if the send-path wrapper must engage at all (measurement OR the barrier). When this is
-    False (both BUS_STATS and BUS_GUARD off) send() delegates straight to _send_impl -- exact
-    current, uninstrumented behaviour."""
+    """True if the send-path wrapper must engage at all (measurement OR the barrier)."""
     return _env_enabled() or _env_guard_enabled()
 
 
@@ -428,16 +340,11 @@ def install_tracker(tracker: StatsTracker | None) -> None:
 
 
 def reset_tracker() -> None:
-    """Test hook: drop the singleton so the next get_tracker() rebuilds from env. Also clears the
-    dead-key suppression -- a tracker reset marks a session boundary, and suppression is
-    session-scoped (a component absent for one faction may exist for the next campaign)."""
+    """Test hook: drop the singleton so the next get_tracker() rebuilds from env, and clear suppression."""
     install_tracker(None)
     reset_suppression()
 
 
-# --------------------------------------------------------------------------------------
-# Guard wiring used by Bus.send (all defensive: instrumentation must NEVER break the bus).
-# --------------------------------------------------------------------------------------
 def get_guard() -> SuppressionGuard | None:
     """Return the process-wide suppression guard (lazily built), or None if BUS_GUARD is off."""
     global _guard
@@ -473,9 +380,7 @@ def note_outcome(channel: str, key: str, outcome: str) -> None:
 
 
 def short_circuit_reply(channel: str, payload: str, key: str) -> dict | None:
-    """If this find/tree key is dead, return a synthetic MISS reply (skip the mod entirely); else
-    None so send() does a normal round-trip. NEVER raises -- any failure falls back to a real send,
-    so the barrier can never break the bus."""
+    """If this find/tree key is dead, return a synthetic MISS reply (skipping the mod); else None. Never raises."""
     try:
         g = get_guard()
         if g is None:
@@ -490,20 +395,15 @@ def short_circuit_reply(channel: str, payload: str, key: str) -> dict | None:
 
 
 def reset_suppression() -> None:
-    """Clear ALL session-scoped dead-key suppression. Call on every bus/session/campaign reset
-    (e.g. manager.reset_bus_files): a component absent for one faction may exist for the next
-    campaign, so suppression must never survive a reset. Does NOT build a guard just to clear it."""
+    """Clear ALL session-scoped dead-key suppression; call on every bus/session/campaign reset."""
     try:
-        g = _guard          # operate on the existing instance only; None => nothing to clear
+        g = _guard
         if g is not None:
             g.reset()
     except Exception as e:
         sys.stderr.write("bus_stats: reset_suppression failed -> %s\n" % repr(e)[:120])
 
 
-# --------------------------------------------------------------------------------------
-# Reporting.
-# --------------------------------------------------------------------------------------
 def load_rows(db_path: str | None = None) -> list[dict]:
     """Read every call_stats row as a dict. Returns [] if the DB is missing/unreadable."""
     path = db_path or _env_db_path()

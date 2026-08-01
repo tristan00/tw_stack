@@ -30,11 +30,7 @@ DEFAULT_FACTION = "wh2_main_hef_nagarythe"
 
 
 class GameManager:
-    """Launches WH3 and drives the frontend to a new campaign, then waits for the command-bus mod.
-
-    Frontend clicks are fractions of the live client rect (the constants below); each step is gated
-    on a screenshot diff (ps/imgdiff.ps1) rather than a fixed sleep.
-    """
+    """Launches WH3 and drives the frontend to a new campaign, then waits for the command-bus mod."""
 
     GAME_DIR = _GAME_DIR
     REPO = _REPO
@@ -302,8 +298,7 @@ class GameManager:
     def _img_diff(self, path_a: str, path_b: str,
                   region: tuple[float, float, float, float] | None = None) -> float | None:
         """Mean abs per-channel diff (0..255) of two frames, or None. `region` is (fl,ft,fr,fb)
-        crop fractions applied to both frames first.
-        """
+        crop fractions applied to both frames first."""
         args = [path_a, path_b]
         if region is not None:
             args += [region[0], region[1], region[2], region[3]]
@@ -629,9 +624,7 @@ class GameManager:
         return True
 
     def _open_accordion(self, base_menu: str) -> bool:
-        """Click Campaign until the left-column crop diff vs `base_menu` clears LEFTCOL_THRESH.
-        One click per attempt: a second click on an open accordion closes it.
-        """
+        """Click Campaign until the left-column crop diff vs `base_menu` clears LEFTCOL_THRESH."""
         cfx, cfy = self.MENU_CAMPAIGN
         region = (0, 0, self.LEFTCOL_FR, 1)
         for attempt, dx in enumerate((0.0, 0.014, -0.012)):
@@ -718,8 +711,7 @@ class GameManager:
 
     def _drive_race_and_lord(self, plan: dict, base_fac: str) -> str:
         """Race tile -> lord (or the default when plan['lord'] is None) -> Start; returns the
-        loading frame. `base_fac` is the tile-click baseline.
-        """
+        loading frame."""
         race = self._try_candidates(
             plan["tiles"], base_fac, per_timeout=8, total_timeout=self.T_TRANSITION,
             label="%s tile->lord-details" % plan["name"], before_tag="31_race")

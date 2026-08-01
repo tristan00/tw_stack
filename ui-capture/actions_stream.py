@@ -1,18 +1,6 @@
 r"""actions stream -- per-entity ACTIONABLE-STATE collection into actions.sqlite (the 5th stream).
 
-Sweeps the game's own computed action spaces via cco_queries (pure data, no UI): per-LORD
-(stances, force/recruit-queue snapshot, action points) and per-SETTLEMENT (buildable set per
-slot, province edicts). Cadence per the approved plan: a FULL sweep at every new turn, plus
-ON-DEMAND refreshes requested through <run>/actions_requests.jsonl (appended by the advisor_ui
-server's POST /api/actions/refresh; this stream tails it).
-
-Storage (in ctx.out_dir, re-read every iteration so R3 campaign swaps are followed):
-    actions.sqlite   snapshots (append-only history)  +  latest (upsert, the quick-check surface)
-Stream rows (ctx.emit -> actions_stream.jsonl): sweep summaries + loud error/status rows --
-an empty sweep is ALWAYS distinguishable from a broken one (CcoQueryError => error row +
-ctx.on_error; never a silent empty).
-
-Contract with the manager -- run(ctx):  ctx.emit / ctx.now / ctx.is_running / ctx.on_error.
+run(ctx) sweeps lords and settlements via cco_queries at every new turn, plus on-demand refreshes.
 """
 from __future__ import annotations
 
@@ -30,8 +18,8 @@ sys.path.insert(0, _HERE)
 import cco_queries as CQ                 # noqa: E402
 from bus import Bus                      # noqa: E402
 
-POLL = 2.0             # main loop cadence (turn check + request tail)
-BUS_BACKOFF = 10.0     # after a bus-dead sweep failure
+POLL = 2.0
+BUS_BACKOFF = 10.0
 REQ_FILE = "actions_requests.jsonl"
 DB_FILE = "actions.sqlite"
 _TAIL_BYTES = 512 * 1024
@@ -59,9 +47,7 @@ def _write(con, ts, turn, kind, eid, atype, payload):
 
 
 def _current_turn(out_dir):
-    """Newest human faction row's (turn, faction) from logs/script_log_*.tail -- the same
-    TWSTATE source the advisor watch parses (runtime.py); no bus load. (None, None) until a
-    state row exists."""
+    """Newest human faction row's (turn, faction) from logs/script_log_*.tail; (None, None) until a state row exists."""
     best = (None, None)
     for p in glob.glob(os.path.join(out_dir, "logs", "script_log_*.tail")):
         try:
@@ -134,7 +120,7 @@ def run(ctx, bus=None):
     while ctx.is_running():
         try:
             out_dir = ctx.out_dir
-            if out_dir != cur_dir:                       # first run or R3 campaign swap
+            if out_dir != cur_dir:
                 if con is not None:
                     con.close()
                 con = _db(out_dir)
@@ -143,8 +129,7 @@ def run(ctx, bus=None):
                 req_off = 0
             turn, faction = _current_turn(out_dir)
             if turn is None:
-                # mid-turn attach: the per-turn TWSTATE dump predates the tail -> one cheap
-                # bus eval supplies the initial turn (loud CcoQueryError if the bus is down)
+                # mid-turn attach: no TWSTATE dump in the tail yet, so ask the game directly.
                 turn = int(CQ._ev(bus, "return cm:model():turn_number()"))
             if turn is not None and turn != swept_turn:
                 t0 = time.time()
@@ -181,12 +166,12 @@ def run(ctx, bus=None):
                         ctx.on_error("actions-refresh %s:%s" % (kind, eid), e)
                         ctx.emit({"kind": "actions_error", "entity": "%s:%s" % (kind, eid),
                                   "err": str(e)[:200]})
-        except CQ.CcoQueryError as e:                    # bus-level failure: back off, stay alive
+        except CQ.CcoQueryError as e:
             ctx.on_error("actions-stream bus", e)
             ctx.emit({"kind": "actions_status", "status": "bus_unavailable", "err": str(e)[:160]})
             time.sleep(BUS_BACKOFF)
             continue
-        except Exception as e:                           # never die silently; manager logs it
+        except Exception as e:
             ctx.on_error("actions-stream", e)
             time.sleep(BUS_BACKOFF)
             continue

@@ -96,7 +96,6 @@ def _attack_sett_gate(bus, ctx, pick, before):
 
 
 def _attack_sett_execute(bus, ctx, pick, before):
-    # exactly two args -- do not add a third
     return _ev(bus, "local ok,e=pcall(function() cm:attack_region('%s','%s') end); "
                     "return 'ok='..tostring(ok)" % (_LOOKUP % ctx["entity_id"], pick["key"]),
                timeout=20.0) == "ok=true"
@@ -134,7 +133,6 @@ def _garrison_gate(bus, ctx, pick, before):
 
 
 def _garrison_execute(bus, ctx, pick, before):
-    # key form: settlement:<region_key>
     key = pick["key"] if str(pick["key"]).startswith("settlement:") else "settlement:%s" % pick["key"]
     return _ev(bus, "local ok,e=pcall(function() cm:join_garrison('%s','%s') end); "
                     "return 'ok='..tostring(ok)" % (_LOOKUP % ctx["entity_id"], key), timeout=20.0) == "ok=true"

@@ -13,15 +13,6 @@ class IncompatibleStore(RuntimeError):
     """This decisions.sqlite predates the current schema and cannot be read."""
 
 _DDL = """
--- ⚠ SEPARATE SCHEMA, DELIBERATELY. Interrupt screens (pre-battle, battle results, occupation,
--- dilemma) are decisions we currently answer by FIXED PREFERENCE, not by the model, and their
--- option sets are UI controls rather than the offer rows the advisor ranks. Forcing them into
--- action_offers would mean inventing offers the policy never scored and corrupting the confirm-rate
--- and ranking statistics built on that table. They are recorded here so the data exists for when
--- they become scored action types; nothing reads this yet, by design.
---   options_json  every control that was on offer, with its component context and label
---   chosen        the control id we clicked; chosen_context its engine handle
---   campaign_json the campaign block AT THE MOMENT OF THE CHOICE (the "pre" state)
 CREATE TABLE IF NOT EXISTS interrupt_decisions(
   interrupt_id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts REAL, campaign_id TEXT, turn INTEGER,
@@ -29,17 +20,7 @@ CREATE TABLE IF NOT EXISTS interrupt_decisions(
   n_options INTEGER, options_json TEXT,
   chosen TEXT, chosen_context TEXT,
   campaign_json TEXT,
-  -- ⚠ THE SAME CONFIRMATION LAW AS action_taken: taken = executed AND confirmed.
-  -- This table used to record only what was OFFERED and what was CLICKED, with no way to say
-  -- whether it worked. Measured cost: seven pre-battle retreats were stored as clean taken
-  -- decisions while resolve_prebattle returned False on every one of them -- the battle never
-  -- resolved, the same army was re-attacked, and the dataset said the retreat happened. A screen
-  -- decision that silently did nothing is indistinguishable from one that worked, which is exactly
-  -- the failure the main action space was built to make impossible.
   executed INTEGER, confirmed INTEGER, counted INTEGER, refusal TEXT, latency_ms INTEGER,
-  -- full UI tree of the screen AT THE MOMENT OF THE CHOICE. A "handled" dilemma the handler
-  -- actually misread is otherwise unprovable -- the belief that we handled it is exactly what
-  -- hides the evidence that we did not.
   tree_json TEXT);
 
 CREATE TABLE IF NOT EXISTS entity_target_rows(
@@ -119,7 +100,7 @@ class DecisionStore:
             exists = self.con.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
             if not exists:
-                continue                       # fresh DB: the DDL will create it correctly
+                continue
             cols = {r[1] for r in self.con.execute("PRAGMA table_info(%s)" % table)}
             if col not in cols:
                 raise IncompatibleStore(
@@ -200,9 +181,7 @@ class DecisionStore:
         return 1
 
     def attach_scores(self, decision_id, scores):
-        """`scores` = [{context_kind, context_id, action_type, key, score, exploit, explore, rank,
-        pct_global, pct_local}]. pct_* are the two halves of exploit; pct_local is NULL for an
-        entity kind the local model does not cover."""
+        """Attach per-offer scores to one decision; returns the number of offer rows updated."""
         n = 0
         for s in scores or []:
             n += self.con.execute(
@@ -281,17 +260,16 @@ class DecisionStore:
                 "world": json.loads(dp["world"] or "{}"), "entities": ents}
 
     def labelled_decisions(self, confirmed_only=False):
-        """Every decision point with a chosen action: (record, taken_key, counted), where
-        taken_key = (context_kind, context_id, action_type, action_key)."""
+        """Every decision point with a chosen action: (record, taken_key, counted)."""
         out = []
         for (did,) in self.con.execute("SELECT decision_id FROM decision_points").fetchall():
             t = self.con.execute(
                 "SELECT context_kind,context_id,action_type,action_key,counted,refusal"
                 " FROM action_taken WHERE decision_id=?", (did,)).fetchone()
             if t is None:
-                continue                       # nothing was chosen
+                continue
             if t[5] == "awaiting_execution":
-                continue                       # still in flight
+                continue
             if confirmed_only and not t[4]:
                 continue
             out.append((self.read_decision(did), (t[0], str(t[1]), t[2], str(t[3])), bool(t[4])))
@@ -306,7 +284,6 @@ class DecisionStore:
         """One interrupt-screen decision."""
         camp = row.get("campaign") or {}
         opts = row.get("options") or {}
-        # counted = executed AND confirmed; stays None while confirmed is unknown
         counted = row.get("counted")
         if counted is None and row.get("confirmed") is not None:
             counted = bool(row.get("executed")) and bool(row.get("confirmed"))
@@ -346,7 +323,6 @@ class DecisionStore:
                 campaign = json.loads(cjson) if cjson else {}
             except Exception:
                 campaign = {}
-            # counted stays None when unknown -- never coerced to a boolean
             out.append({"interrupt_id": iid, "ts": ts, "campaign_id": camp, "turn": turn,
                         "screen": kind, "options": options, "chosen": chosen,
                         "executed": executed, "confirmed": confirmed, "counted": counted,

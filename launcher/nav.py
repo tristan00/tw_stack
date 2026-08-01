@@ -21,7 +21,6 @@ DISMISS_BUTTON_IDS = frozenset((
     "button_continue",
 ))
 
-# never scanned for popups
 PERSISTENT_ROOTS = frozenset((
     "3d_ui_parent", "hud_campaign", "resources_bar", "menu_bar", "panel_manager",
     "under_advisor_docker", "ai_attack_targets_parent", "mission_indicator_parent",
@@ -93,7 +92,6 @@ def list_lords_and_heroes(bus):
         out.append({"cqi": c.get("cqi"), "subtype": c.get("subtype"),
                     "is_leader": c.get("is_leader"),
                     "kind": "lord" if c.get("has_army") else "hero"})
-    # dedup by cqi
     seen, uniq = set(), []
     for c in out:
         if c["cqi"] not in seen:
@@ -124,7 +122,7 @@ def list_settlements(bus, include_enemy=True):
 import subprocess as _sp
 
 UI_BASE_W, UI_BASE_H = 1984.0, 1116.0
-CLIENT = (0, 0, 2560, 1440)                 # screen rect of the game client
+CLIENT = (0, 0, 2560, 1440)
 CENTER = (1280, 720)
 _PS_INPUT = r"D:\tw_stack\launcher\ps\input.ps1"
 
@@ -136,8 +134,7 @@ def ui_to_screen(ux, uy, client=CLIENT):
 
 
 def mouse(action, x=None, y=None, d=None):
-    """Synthetic mouse/key via ps/input.ps1, at absolute screen pixels.
-    action = move | click | rclick | dclick | drag | wheel | key."""
+    """Synthetic input via ps/input.ps1 at absolute pixels: move|click|rclick|dclick|drag|wheel|key."""
     cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", _PS_INPUT, action]
     for v in (x, y, d):
         if v is not None:
@@ -158,8 +155,8 @@ def bus_click(bus, path):
 
 
 def find_rect(bus, root, match):
-    """First node under `root` whose id==match or whose path ends with `match`, as a dict with
-    x,y,w,h in UI coords + path. Prefers a visible, positioned node."""
+    """First node under `root` whose id==match or whose path ends with `match` (x,y,w,h in UI
+    coords + path), preferring a visible, positioned one."""
     tr = bus.send("tree", "%s 30 9000" % root, timeout=_TREE_T) or {}
     if not tr.get("nodes"):
         _warn("find_rect(%s, %s)" % (root, match), "empty/None tree reply (bus miss)")
@@ -199,7 +196,6 @@ def hw_hover(bus, root, match, frac=(0.5, 0.5), settle=0.9):
     return {"screen": [sx, sy], "path": n.get("path")}
 
 
-# roots present on the plain campaign map; anything else visible is a panel
 BASE_ROOTS = frozenset((
     "ai_attack_targets_parent", "3d_ui_parent", "mission_indicator_parent", "hud_campaign",
     "menu_bar", "panel_manager", "under_advisor_docker", "tooltip_default", "saving_icon",

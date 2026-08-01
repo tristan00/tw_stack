@@ -29,15 +29,13 @@ class Executor:
         self.counted = 0
 
     def execute(self, pick):
-        """Run one advisor pick through the confirmed-action engine. Never raises; a failure comes
-        back as an ActionRecord with `counted` False and a refusal class."""
+        """Run one advisor pick through the confirmed-action engine; returns an ActionRecord dict."""
         ctx = {"context_kind": _ENTITY_KIND.get(pick.get("context_kind"), pick.get("context_kind")),
                "entity_id": str(pick.get("context_id"))}
         run = {"action_type": pick.get("action_type"), "key": pick.get("key"),
                "params": pick.get("params") or {}, "policy": pick.get("policy")}
         if run["action_type"] == "end_turn":
-            # settle_between_turns tails the mod's rows from before the click, so the
-            # turn_start row can never race past the wait
+            # offset captured before the click so the turn_start row cannot race past the wait
             self._end_turn_offset = self.bus.out_offset()
         trace.launcher("execute_start", action_type=run["action_type"], key=run["key"],
                        context_kind=pick.get("context_kind"), context_id=str(pick.get("context_id")),
@@ -72,9 +70,7 @@ class Executor:
         self._campaign_offset = self.bus.out_offset()
 
     def defeated_row_seen(self):
-        """The mod's faction_destroyed row for us, written during THIS campaign -- readable
-        after the defeat modal has killed the bus, which is when the eval probe goes blind.
-        No campaign boundary marked -> False: degrade toward 'stuck', never toward 'defeated'."""
+        """True when the mod wrote a faction_destroyed row for us during this campaign."""
         import json
         off = getattr(self, "_campaign_offset", None)
         if off is None:
@@ -100,20 +96,12 @@ class Executor:
         return False
 
     def settle_between_turns(self, timeout=420.0, poll=4.0, turn_before=None, abort=None):
-        """Ride out the AI turns after end_turn, clearing interrupts.
-
-        Returns {"turn": <new turn or None>, "steps": [...], "waited_s": float}.
-        """
+        """Ride out the AI turns after end_turn; returns {"turn", "steps", "waited_s"}."""
         t0 = time.time()
         steps = []
 
         def _aborted():
-            """Checked between every slow call, not once per iteration.
-
-            resolve_interrupts and turn_number each make bus calls that burn their full timeout
-            when the bus is dead, so one iteration can run for tens of seconds. Testing abort only
-            at the top let a fired watchdog sit unnoticed for 215s.
-            """
+            """True when the caller's abort predicate fires."""
             return abort is not None and abort()
 
         def _bail():
@@ -135,8 +123,6 @@ class Executor:
         while time.time() - t0 < timeout:
             if _aborted():
                 return _bail()
-            # primary wake: the mod pushes turn_start (with region count) the moment our
-            # turn begins -- pure file tail, no bus round-trips
             row, off = self.bus.wait_row(("turn_start", "faction_destroyed"),
                                          timeout=poll, offset=off, pred=_row_wanted)
             if row is not None:
@@ -154,7 +140,6 @@ class Executor:
                 steps.extend(s)
             rounds += 1
             if rounds % 8 == 0:
-                # belt and braces every ~8 rounds: engine reads, in case a row was missed
                 t = self.turn_number()
                 if t is not None and (turn_before is None or t > turn_before):
                     return {"turn": t, "steps": steps, "waited_s": round(time.time() - t0, 1)}
@@ -294,12 +279,7 @@ class Executor:
         return "main" in self.visible_roots()
 
     def ensure_campaign(self, plan, campaign="Immortal Empires", fresh=False):
-        """Guarantee a playable campaign, from whatever state the game is in.
-
-        in a campaign + fresh=False -> nothing to do
-        in a campaign + fresh=True  -> quit to menu and start a new one
-        at the main menu            -> start one
-        """
+        """Guarantee a playable campaign, from whatever state the game is in."""
         if self.at_main_menu():
             import bus_launcher
             bl = bus_launcher.BusLauncher()

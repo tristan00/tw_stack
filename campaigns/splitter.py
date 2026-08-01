@@ -1,40 +1,6 @@
 r"""splitter -- detect campaign boundaries in a recorded run and partition every stream.
 
-WHY
-    One run directory (D:/twdata/runs/human/<run_id>/) can contain MORE THAN ONE campaign:
-    the player quits to menu and starts a new faction, or the recorder keeps tailing across
-    game relaunches. Downstream code that assumes "one run == one campaign" then mixes two
-    factions' data together. This module cuts a run cleanly along campaign boundaries.
-
-BOUNDARY DETECTION (pure, reusable -- the recorder can call the same logic live)
-    The game's script_log carries the mod's per-faction summary rows:
-        TWSTATE {"kind":"faction",...,"is_human":true,"faction":..,"subculture":..,"turn":..}
-    The human faction's (faction, subculture) IS the campaign identity. A new campaign begins
-    when that identity changes, or when the same faction restarts from turn 1 after having
-    progressed past it (a fresh game, not a reload-continuation). This is exactly the rule the
-    runs.py corpus scanner already uses; here it is generalised to also split WITHIN a single
-    script_log file (quit-to-menu + new game in one process) when a file's head identity differs
-    from its tail identity. `segment_blocks()` is the pure kernel; `CampaignTracker` is the
-    incremental form a live recorder would feed one faction row at a time.
-
-STREAM CORRELATION (offline)
-    * state log  : each campaign owns exact BYTE RANGES in each script_log*.tail (line-aligned),
-                   so state lines are attributed exactly, no clock involved.
-    * events / ui / shots : these are keyed by recorder-seconds `t`. The recorder's own
-                   log_tail events append `bytes` to each .tail, so the running cumulative sum of
-                   `bytes` per .tail is an exact BYTE-OFFSET -> recorder-t map. Each campaign's
-                   first state byte maps to a cut point in t; the resulting non-overlapping
-                   t-windows tile the whole timeline, so every event/ui/shot lands in exactly one
-                   campaign (the first campaign absorbs pre-session recorder preamble).
-
-INVARIANT
-    For every stream, sum(per-campaign parts) + shared/unattributed == original. Proven by
-    split_run()'s reconciliation block. Auxiliary .tail logs (mp_log, lua_mod_log) and meta.json
-    cannot be split by faction and are reported as run-level `shared`.
-
-    python splitter.py <run-dir>        # print campaigns + reconciliation for one run
-
-API: split_run(run), detect_campaigns(run), segment_blocks(blocks), CampaignTracker.
+    python splitter.py <run-dir> [--no-state-lines]
 """
 from __future__ import annotations
 
@@ -49,7 +15,6 @@ HEAD_BYTES = 2_000_000
 TAIL_BYTES = 2_000_000
 INF = float("inf")
 
-# The player-faction summary row. We require both markers on the same line before trusting it.
 _HUMAN_MARK = b'"is_human":true'
 _FACTION_MARK = b'"kind":"faction"'
 _RE_FACTION = re.compile(rb'"faction":"([a-z0-9_]+)"')
@@ -59,13 +24,8 @@ _RE_GAME_T = re.compile(rb"<([\d.]+)s>")
 _RE_LOGSTAMP = re.compile(r"script_log_(\d{6})_(\d{4})")
 
 
-# --------------------------------------------------------------------------- #
-# pure boundary kernel                                                         #
-# --------------------------------------------------------------------------- #
 def _is_new_campaign(cur: dict | None, ident: tuple, min_turn: int, restart_turn: int) -> bool:
-    """The one boundary rule, shared by the batch segmenter and the live tracker.
-    New campaign iff there is no current one, OR the human identity changed, OR the same
-    faction restarted from an early turn after having progressed past it (fresh game)."""
+    """True for a new campaign: no current one, a changed human identity, or the same faction restarting from an early turn."""
     if cur is None:
         return True
     if ident != cur["id"]:
@@ -76,31 +36,21 @@ def _is_new_campaign(cur: dict | None, ident: tuple, min_turn: int, restart_turn
 
 
 def segment_blocks(blocks: list[dict], restart_turn: int = 1) -> tuple[list[dict], list[dict]]:
-    """Merge ordered identity BLOCKS into campaigns (pure; no I/O).
-
-    Each block is {id:(faction,subculture)|None, min_turn, max_turn, ...extra}. A block whose id
-    is None carries no player identity (a frontend/menu/reload fragment): it attaches to the
-    CURRENT campaign as a continuation, or -- if it precedes any campaign -- forward to the first
-    campaign, so its bytes are never lost yet no phantom 'unknown' campaign is minted.
-
-    Returns (campaigns, orphan_blocks). `campaigns` are the real (faction,subculture) spans, each
-    {id, faction, subculture, min_turn, max_turn, blocks:[...]}. `orphan_blocks` are leading
-    identity-less blocks in a run that NEVER reaches a real identity (nothing to attach to); the
-    caller accounts for them as unattributed. Every input block lands in exactly one place."""
+    """Merge ordered identity blocks into campaigns (pure; no I/O); returns (campaigns, leading identity-less orphan blocks)."""
     camps: list[dict] = []
-    pending: list[dict] = []                     # leading identity-less blocks, attach forward
+    pending: list[dict] = []
     for b in blocks:
         cur = camps[-1] if camps else None
-        if b["id"] is None:                      # no identity -> continuation of current campaign
+        if b["id"] is None:
             if cur is not None:
                 cur["blocks"].append(b)
                 cur["max_turn"] = max(cur["max_turn"], b.get("max_turn", 0))
             else:
-                pending.append(b)                # nothing to attach to yet; hold for first campaign
+                pending.append(b)
             continue
         if _is_new_campaign(cur, b["id"], b.get("min_turn", 0), restart_turn):
             nc = _new_camp(b)
-            if not camps and pending:            # first real campaign absorbs leading fragments
+            if not camps and pending:
                 nc["blocks"] = pending + nc["blocks"]
                 pending = []
             camps.append(nc)
@@ -120,11 +70,7 @@ def _new_camp(b: dict) -> dict:
 
 
 class CampaignTracker:
-    """Incremental form of the boundary kernel, for live use inside the recorder.
-
-    Feed each observed human-faction row via observe(); it returns True on the row that STARTS
-    a new campaign (the recorder would swap its output directory at that point). Same rule as
-    segment_blocks(), so offline splits and live splits agree by construction."""
+    """Incremental form of the boundary kernel: observe() returns True on the row that STARTS a new campaign."""
 
     def __init__(self, restart_turn: int = 1):
         self.restart_turn = restart_turn
@@ -132,7 +78,7 @@ class CampaignTracker:
         self.index = -1
 
     def observe(self, faction: str | None, subculture: str | None, turn: int | None) -> bool:
-        if faction is None:                      # continuation row -> stays in current campaign
+        if faction is None:
             return False
         ident = (faction, subculture)
         mn = int(turn) if isinstance(turn, int) else 0
@@ -145,13 +91,7 @@ class CampaignTracker:
 
 
 def scan_state_rows(chunk: bytes):
-    """Yield (faction, subculture, turn, line_offset) for every human-faction row in a raw byte
-    `chunk`, where line_offset is the byte position of that line's START within the chunk.
-
-    The live recorder feeds these to a CampaignTracker; line_offset lets a tail chunk be split
-    byte-exactly at a campaign boundary (bytes before the boundary line -> old dir, from it on ->
-    new dir), so live splits are byte-identical to what the offline splitter would compute. Uses
-    the same _parse_human_line kernel as the offline path, so the two agree by construction."""
+    """Yield (faction, subculture, turn, line_offset) for every human-faction row in `chunk`, line_offset being the byte position of that line's start."""
     off = 0
     for raw in chunk.splitlines(keepends=True):
         p = _parse_human_line(raw)
@@ -160,9 +100,6 @@ def scan_state_rows(chunk: bytes):
         off += len(raw)
 
 
-# --------------------------------------------------------------------------- #
-# state-log scanning -> identity blocks                                        #
-# --------------------------------------------------------------------------- #
 def _parse_human_line(raw: bytes) -> dict | None:
     """(faction, subculture, turn) from one is_human faction row, or None if not one."""
     if _HUMAN_MARK not in raw or _FACTION_MARK not in raw:
@@ -177,8 +114,7 @@ def _parse_human_line(raw: bytes) -> dict | None:
 
 
 def _scan_head_tail(path: str, size: int) -> dict:
-    """Cheap HEAD+TAIL identity probe of one script_log. Returns head/tail identity, turn range,
-    and whether the head identity differs from the tail identity (-> needs a full scan)."""
+    """Cheap HEAD+TAIL identity probe of one script_log: head/tail identity, turn range, and whether they differ."""
     with open(path, "rb") as f:
         head = f.read(HEAD_BYTES)
         if size > HEAD_BYTES + TAIL_BYTES:
@@ -202,7 +138,6 @@ def _scan_head_tail(path: str, size: int) -> dict:
                 turns.append(p["turn"])
                 if is_head:
                     hmin.append(p["turn"])
-    # bare turn ints across head+tail widen the max-turn estimate cheaply
     for chunk in (head, tail):
         turns += [int(t) for t in _RE_TURN.findall(chunk)]
     return {"head_id": head_id, "tail_id": tail_id,
@@ -212,8 +147,7 @@ def _scan_head_tail(path: str, size: int) -> dict:
 
 
 def _full_scan_blocks(path: str) -> list[dict]:
-    """Stream one script_log start-to-end and cut it into line-aligned identity blocks.
-    Used only when HEAD+TAIL shows the file's identity changes mid-file (rare)."""
+    """Stream one script_log start-to-end and cut it into line-aligned identity blocks."""
     blocks: list[dict] = []
     off = 0
     cur: dict | None = None
@@ -236,7 +170,6 @@ def _full_scan_blocks(path: str) -> list[dict]:
     except OSError as e:
         sys.stderr.write("splitter: full-scan %s skipped -> %s\n" % (os.path.basename(path), repr(e)[:80]))
         return []
-    # extend each block's byte_hi to the next block's start (line-aligned), last to EOF
     for i, b in enumerate(blocks):
         b["byte_lo"] = 0 if i == 0 else blocks[i]["byte_lo"]
         b["byte_hi"] = blocks[i + 1]["byte_lo"] if i + 1 < len(blocks) else off
@@ -246,9 +179,7 @@ def _full_scan_blocks(path: str) -> list[dict]:
 
 
 def _file_blocks(path: str) -> list[dict]:
-    """Identity blocks for one script_log.tail. Fast path: one block for the whole file when the
-    identity is constant (the usual case, one game session per log). Full-scan only on mid-file
-    identity change. A file with no is_human row at all becomes a single continuation block."""
+    """Identity blocks for one script_log.tail: one block for the whole file unless its identity changes mid-file."""
     try:
         size = os.path.getsize(path)
     except OSError as e:
@@ -259,7 +190,7 @@ def _file_blocks(path: str) -> list[dict]:
         blk = _full_scan_blocks(path)
         if blk:
             return blk
-    ident = ht["head_id"] or ht["tail_id"]      # head-or-tail, mirroring runs.py
+    ident = ht["head_id"] or ht["tail_id"]
     return [{"file": path, "byte_lo": 0, "byte_hi": size, "id": ident,
              "min_turn": ht["min_turn"], "max_turn": ht["max_turn"]}]
 
@@ -290,12 +221,8 @@ def _readable_start(stamp: str | None) -> str | None:
         return None
 
 
-# --------------------------------------------------------------------------- #
-# byte-offset -> recorder-t index (from the recorder's own log_tail events)    #
-# --------------------------------------------------------------------------- #
 def build_byte_time_index(run: str) -> dict:
-    """Per-.tail (cum_end_bytes, t) tables from log_tail events: the running size of each .tail at
-    recorder-time t. Lets us map any byte offset in a .tail back to when the recorder wrote it."""
+    """Per-.tail (cum_end_bytes, t) tables from log_tail events: the running size of each .tail at recorder-time t."""
     idx: dict[str, dict] = {}
     p = os.path.join(run, "events.jsonl")
     if not os.path.isfile(p):
@@ -333,37 +260,27 @@ def _byte_to_t(idx: dict, dst_basename: str, off: int) -> float | None:
     e = idx.get(dst_basename)
     if not e or not e["cum"]:
         return None
-    i = bisect.bisect_left(e["cum"], off)        # first chunk whose cum_end >= off
+    i = bisect.bisect_left(e["cum"], off)
     if i >= len(e["t"]):
         i = len(e["t"]) - 1
     return e["t"][i]
 
 
-# --------------------------------------------------------------------------- #
-# detection: campaigns + state byte-ranges + recorder-t windows               #
-# --------------------------------------------------------------------------- #
 def detect_campaigns(run: str) -> list[dict]:
-    """Campaigns in a run: identity, turn span, exact state byte-ranges, and a recorder-t window.
-    The t-windows are non-overlapping and tile [0, +inf) so every timed record maps to exactly one
-    campaign (campaign 0 starts at t=0, absorbing pre-session recorder preamble)."""
+    """Campaigns in a run: identity, turn span, exact state byte-ranges, and a non-overlapping recorder-t window tiling [0, inf)."""
     run = run.rstrip("/\\")
     blocks: list[dict] = []
     for f in _session_logs(run):
         blocks.extend(_file_blocks(f))
-    camps, _orphans = segment_blocks(blocks)     # leading identity-less fragments (if any) are
-                                                 # accounted as 'unattributed' by split_run's coverage
+    camps, _orphans = segment_blocks(blocks)
     idx = build_byte_time_index(run)
-    # raw start-t of each campaign = when its first state byte was written by the recorder
     for i, c in enumerate(camps):
         b0 = c["blocks"][0]
         c["state_segments"] = [{"file": b["file"], "byte_lo": b["byte_lo"], "byte_hi": b["byte_hi"]}
                                for b in c["blocks"]]
         rt = _byte_to_t(idx, os.path.basename(b0["file"]), b0["byte_lo"])
         c["_raw_start"] = rt
-        # campaign 0 is anchored at t=0 by construction; a later campaign whose first state byte
-        # cannot be mapped to a recorder-t (no log_tail events) has no reliable timed-stream cut.
         c["t_resolved"] = (i == 0) or (rt is not None)
-    # cut points: force monotonic; campaign 0 starts at 0.0 (absorbs preamble)
     starts = []
     prev = 0.0
     for i, c in enumerate(camps):
@@ -396,9 +313,6 @@ def _campaign_id(index: int, faction: str | None) -> str:
     return "%02d_%s" % (index + 1, safe)
 
 
-# --------------------------------------------------------------------------- #
-# stream counting helpers (for reconciliation)                                #
-# --------------------------------------------------------------------------- #
 def _count_bytes_lines(path: str, lo: int = 0, hi: int | None = None) -> tuple[int, int]:
     """(#bytes, #lines) in [lo, hi) of a file, counted in chunks (memory-safe on multi-GB logs)."""
     try:
@@ -489,18 +403,11 @@ def _partition_shots(run: str, camps: list[dict]) -> dict:
             "events_without_file": missing}
 
 
-# --------------------------------------------------------------------------- #
-# top-level: full partition + reconciliation                                  #
-# --------------------------------------------------------------------------- #
 def split_run(run: str, count_state_lines: bool = True) -> dict:
-    """Full per-campaign partition of a run + a reconciliation proving sum-of-parts == original
-    for every stream. Reads only; writes nothing. `count_state_lines=False` skips newline counting
-    on the (possibly multi-GB) state logs, reporting byte totals only."""
+    """Full per-campaign partition of a run plus a reconciliation proving sum-of-parts == original for every stream; reads only."""
     run = run.rstrip("/\\")
     camps = detect_campaigns(run)
 
-    # ---- state log: attribute exact byte ranges; reconcile per source file ----
-    # Group segments by source file first, so each (possibly multi-GB) log is read at most once.
     by_file: dict[str, list[tuple]] = {}
     for c in camps:
         for seg in c["state_segments"]:
@@ -510,7 +417,7 @@ def split_run(run: str, count_state_lines: bool = True) -> dict:
     for f in _session_logs(run):
         base = os.path.basename(f)
         try:
-            size = os.path.getsize(f)                       # ORIGINAL bytes: independent of segments
+            size = os.path.getsize(f)
         except OSError as e:
             sys.stderr.write("splitter: stat %s skipped -> %s\n" % (base, repr(e)[:80]))
             continue
@@ -519,30 +426,27 @@ def split_run(run: str, count_state_lines: bool = True) -> dict:
                "unattributed_bytes": 0, "unattributed_lines": None}
         whole = len(segs) == 1 and segs[0][2] == 0 and segs[0][3] >= size
         if count_state_lines:
-            rec["lines"] = _count_bytes_lines(f)[1]         # ORIGINAL lines: one whole-file read
+            rec["lines"] = _count_bytes_lines(f)[1]
         covered_b = 0
         covered_l = 0
         for cidx, path, lo, hi in segs:
-            nb = min(hi, size) - lo                         # PARTS bytes: segment arithmetic
+            nb = min(hi, size) - lo
             if not count_state_lines:
                 nl = None
             elif whole:
-                nl = rec["lines"]                           # single full-file segment: no re-read
+                nl = rec["lines"]
             else:
-                nl = _count_bytes_lines(path, lo, hi)[1]    # real within-file split: count the range
+                nl = _count_bytes_lines(path, lo, hi)[1]
             pr = rec["parts"].setdefault(cidx, {"bytes": 0, "lines": 0})
             pr["bytes"] += nb
             covered_b += nb
             if nl is not None:
                 pr["lines"] += nl
                 covered_l += nl
-        # any bytes/lines no campaign claims (a run that never reaches a player identity) are
-        # reported honestly as unattributed -- never silently dropped.
         rec["unattributed_bytes"] = size - covered_b
         if count_state_lines and rec["lines"] is not None:
             rec["unattributed_lines"] = rec["lines"] - covered_l
         state_files[base] = rec
-    # aux .tail logs that carry no campaign identity -> run-level shared
     aux_tails = sorted(os.path.basename(x) for x in
                        glob.glob(os.path.join(run, "logs", "*.tail"))
                        if "script_log" not in os.path.basename(x))
@@ -570,15 +474,12 @@ def split_run(run: str, count_state_lines: bool = True) -> dict:
             "shots": shots_recon,
         },
         "shared": {"aux_tails": aux_tails, "meta": os.path.isfile(os.path.join(run, "meta.json"))},
-        # False when a later campaign's start could not be mapped to recorder-t (no log_tail
-        # events): state-log split stays exact, but timed streams collapse onto campaign 0.
         "timed_streams_resolved": all(c["t_resolved"] for c in camps),
     }
 
 
 def _reconcile_state(state_files: dict, camps: list[dict], count_lines: bool) -> dict:
-    """Per source script_log: original bytes/lines vs (summed parts + unattributed); flags mismatch.
-    The invariant is part_bytes + unattributed_bytes == orig_bytes (likewise lines)."""
+    """Per source script_log: original bytes/lines vs summed parts + unattributed, flagging any mismatch."""
     by_index = {c["index"]: c["id_str"] for c in camps}
     files_out = {}
     ok = True
@@ -604,9 +505,6 @@ def _reconcile_state(state_files: dict, camps: list[dict], count_lines: bool) ->
     return {"files": files_out, "all_ok": ok, "unattributed_bytes_total": tot_unattr_b}
 
 
-# --------------------------------------------------------------------------- #
-# cli                                                                         #
-# --------------------------------------------------------------------------- #
 def _fmt_t(t) -> str:
     return "inf" if t is None or t == INF else "%.1f" % t
 

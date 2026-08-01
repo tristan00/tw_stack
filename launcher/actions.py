@@ -22,8 +22,7 @@ def _warn(where, detail):
 
 
 def mouse(action: str, x: int = CX, y: int = CY, d=None) -> str:
-    """Drive ps/input.ps1: click|rclick|dclick|move|drag|wheel|key at absolute screen pixels.
-    Returns its stdout."""
+    """Drive ps/input.ps1: click|rclick|dclick|move|drag|wheel|key at absolute screen pixels."""
     cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", _PS, action]
     for v in (x, y, d):
         if v is not None:
@@ -175,7 +174,6 @@ def occupy_settlement(bus, choice="Occupy") -> bool:
     tr = bus.send("tree", "settlement_captured 22 3000", timeout=15.0) or {}
     for n in (tr.get("nodes") or []):
         if n.get("id") == "dy_option" and str(n.get("text")).strip().lower() == choice.strip().lower():
-            # the clickable is the parent option_button
             opt = str(n.get("path")).rsplit("|dy_option", 1)[0]
             r = bus.send("click", opt, timeout=8.0) or {}
             time.sleep(2.5)
@@ -190,7 +188,6 @@ def clear_popups(bus) -> int:
     return len(nav.close_popups(bus))
 
 
-# cco Call() args must be inline expressions -- never pass a Lua cco wrapper as an argument
 _CCO_G = ("local function g(c,p) local ok,v=pcall(function() return c:Call(p) end);"
           "if ok and v~=nil then return v end return nil end ")
 
@@ -204,8 +201,7 @@ def _cco_ev(bus, lua, timeout=15.0):
 
 
 def cco_activate_stance(bus, char_cqi, stance_key, legal_keys) -> bool:
-    """Activate a stance on the lord's force. `legal_keys` is a mandatory whitelist: a key outside
-    it is refused. Post-asserts that IsActive flips."""
+    """Activate a stance on the lord's force; any key outside `legal_keys` is refused."""
     if not legal_keys or stance_key not in legal_keys:
         _warn("cco_activate_stance", "REFUSED %r: not in legality whitelist %s"
               % (stance_key, sorted(legal_keys or [])))
@@ -238,8 +234,7 @@ def cco_activate_stance(bus, char_cqi, stance_key, legal_keys) -> bool:
 
 
 def cco_construct(bus, region, slot_index, building_key, expected_cost=None) -> bool:
-    """Queue `building_key` in `region`'s slot `slot_index`. Post-asserts that the treasury dropped
-    and the slot reads IsBuildingNew."""
+    """Queue `building_key` in `region`'s slot `slot_index`; True once the slot reads new."""
     t0 = _ev(bus, "cm:get_faction(cm:get_local_faction_name(true)):treasury()")
     if expected_cost is not None and t0 is not None and t0 < expected_cost:
         _warn("cco_construct", "pre-check: treasury %s < cost %s" % (t0, expected_cost))

@@ -1,19 +1,5 @@
-r"""manager -- the capture orchestrator.
-
-Ported from record.py:main + write_meta, but decomposed: the manager owns the run directory,
-the single shared T0 clock, meta.json, the thread-safe writers, and the input->shots `shot_req`
-coupling; each capture stream (input / shots / logs / -- later -- ui) is an independent module
-it runs as a daemon thread, exactly record.py's "independent failsafe threads" design (so one
-stream dying never stops the others, and the shared clock is trivially consistent).
-
-Streams are passed IN (not hardcoded), so the manager has no game/bus dependency and is fully
-testable offline; the CLI (`main`) is the only place that imports the concrete stream repos.
-
-A stream is a dict:  {"run": callable(ctx, **kwargs), "out_file": "events.jsonl", "name": str,
-                      "kwargs": {...}}
-and receives a `Ctx` duck-typing:  emit(row) / out_dir / now() / is_running() / shot_req /
-on_error(where, exc).
-"""
+r"""manager -- the capture orchestrator: owns the run directory, the shared T0 clock, meta.json and
+the thread-safe writers, and runs each capture stream as a daemon thread."""
 from __future__ import annotations
 
 import json
@@ -22,30 +8,20 @@ import sys
 import threading
 import time
 
-# Recorder version stamped into meta.json. v6 = the decomposed tw_stack recorder (this pipeline);
-# v5 was the monolith record.py. Bump on any change to capture behaviour.
 RECORDER_VERSION = "v7"
 
-# R3 campaign-swap: the live CampaignTracker lives in the campaigns/ repo (same boundary kernel the
-# offline splitter uses, so live + offline splits agree). Imported best-effort: if unavailable the
-# manager still records exactly as before, just single-campaign (observe_state becomes a no-op).
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "campaigns"))
 try:
     from splitter import CampaignTracker           # noqa: E402
-except Exception as e:                             # noqa: BLE001 -- degrade to single-campaign
+except Exception as e:                             # noqa: BLE001
     CampaignTracker = None
     sys.stderr.write("manager: CampaignTracker import failed (campaign-swap disabled) -> %s\n"
                      % repr(e)[:80])
 
 
 class Ctx:
-    """Per-stream context: a thin, game-free surface over the shared run state.
-
-    `out_dir` and `_emit` are MUTABLE: the R3 campaign-swap re-points them (to a fresh run dir and
-    that dir's writer) when a new campaign starts, so a stream keeps calling ctx.emit()/reading
-    ctx.out_dir and transparently lands in the new dir. Streams that cache os.path.join(ctx.out_dir,
-    ...) once must re-read it each iteration to follow a swap (logs + shots do)."""
+    """Per-stream context: a thin, game-free surface over the shared run state."""
 
     def __init__(self, out_dir, t0, stop_event, shot_req, emit, on_error,
                  on_state=None, swap=None):
@@ -55,8 +31,6 @@ class Ctx:
         self.shot_req = shot_req
         self._emit = emit
         self._on_error = on_error
-        # R3 hooks (default: single-campaign no-ops, so a stream driven by a minimal FakeCtx or a
-        # manager without a tracker behaves exactly as before).
         self._on_state = on_state or (lambda *a, **k: False)
         self._swap = swap or (lambda: None)
 
@@ -73,25 +47,16 @@ class Ctx:
         self._on_error(where, exc)
 
     def on_state(self, faction, subculture, turn):
-        """Report one observed human-faction identity row to the run's CampaignTracker. Returns
-        True iff this row STARTS a new campaign that requires an output-dir swap (never on the very
-        first campaign). Advances the tracker but does NOT perform the swap -- the caller flushes
-        pre-boundary bytes to the current dir, then calls swap()."""
+        """Report one human-faction identity row to the tracker; True iff a dir swap is due."""
         return self._on_state(faction, subculture, turn)
 
     def swap(self):
-        """Perform the deferred campaign-swap: open a fresh run dir and re-point every stream's
-        writer + out_dir to it. Called by the state stream at a byte-exact campaign boundary."""
+        """Open a fresh run dir and re-point every stream's writer + out_dir to it."""
         self._swap()
 
 
 class _Writer:
-    """A thread-safe append-only JSONL writer for <out_dir>/<name> (record.py:writer parity).
-
-    A callable object (so existing `w(row)` call sites are unchanged) that additionally exposes
-    close() -- needed by the R3 campaign-swap, which retires a run dir's writers when it opens a
-    fresh dir. Every write flushes, so a swap never has to worry about buffered rows: whatever a
-    writer has been handed is already on disk before it is retired."""
+    """A thread-safe append-only JSONL writer for <out_dir>/<name>; every write flushes."""
 
     def __init__(self, out_dir, name):
         self.out_dir = out_dir
@@ -107,7 +72,7 @@ class _Writer:
                 self._f.flush()
         except Exception as e:
             self._errs += 1
-            if self._errs == 1:          # CRITICAL (silent data loss): log the FIRST failure only, suppress the rest
+            if self._errs == 1:
                 sys.stderr.write("manager: writer(%s) write failed -> %s (further errors suppressed)\n"
                                  % (self.name, repr(e)[:80]))
 
@@ -115,17 +80,17 @@ class _Writer:
         try:
             with self._lock:
                 self._f.close()
-        except Exception as e:           # closing a writer must never be fatal to a swap/stop
+        except Exception as e:
             sys.stderr.write("manager: writer(%s) close failed -> %s\n" % (self.name, repr(e)[:80]))
 
 
 def _writer(out_dir, name):
-    """Factory kept for call-site parity; returns a callable, closable _Writer."""
+    """Returns a callable, closable _Writer for <out_dir>/<name>."""
     return _Writer(out_dir, name)
 
 
 def _errlog(out_dir):
-    """A never-fatal error sink -> <out_dir>/errors.log (record.py:log_err parity)."""
+    """A never-fatal error sink -> <out_dir>/errors.log."""
     import traceback
     _errs = [0]
 
@@ -136,16 +101,14 @@ def _errlog(out_dir):
                                              "".join(traceback.format_exception(exc))))
         except Exception as e:
             _errs[0] += 1
-            if _errs[0] == 1:            # last-resort sink itself failed: announce once on stderr so it is not invisible
+            if _errs[0] == 1:
                 sys.stderr.write("manager: errors.log write failed -> %s (further errors suppressed)\n"
                                  % repr(e)[:80])
     return on_error
 
 
 def _run_guarded(run, ctx, kwargs, name, on_error):
-    """Run a stream, logging (never swallowing silently) an unhandled crash. record.py let a
-    top-level raise kill a daemon thread with only a stderr traceback; here a dead stream is
-    recorded to errors.log so a silently-missing stream is diagnosable."""
+    """Run a stream, recording an unhandled crash to errors.log."""
     try:
         run(ctx, **kwargs)
     except Exception as e:
@@ -156,14 +119,7 @@ CURRENT_POINTER = "CURRENT_RUN"
 
 
 def write_current_pointer(out_root, out_dir):
-    """Publish which run dir is LIVE, at a stable path the advisor can read.
-
-    The recorder opens a fresh run dir whenever the campaign changes (R3 swap). Anything holding the
-    old path then talks to a directory nobody is servicing any more -- which is exactly what happened
-    the first time the advisor restarted a campaign: it kept posting requests into the previous dir
-    and timed out waiting for a recorder that had already moved on. A pointer file means the advisor
-    follows the recorder instead of guessing.
-    """
+    """Publish which run dir is LIVE, at a stable path the advisor can read."""
     try:
         with open(os.path.join(out_root, CURRENT_POINTER), "w", encoding="utf-8") as f:
             f.write(str(out_dir).replace("\\", "/"))
@@ -172,25 +128,14 @@ def write_current_pointer(out_root, out_dir):
 
 
 def write_meta(out_dir, t0, meta_overrides=None):
-    """Write <out_dir>/meta.json (geometry + environment + versions) and return it. The caller
-    supplies environment fields (recorder_version, game_dir, ...) via meta_overrides; the manager
-    adds started / t0_epoch / out / screen. record.py:write_meta parity, minus the hardcoded env.
-
-    Args:
-        out_dir: The run directory.
-        t0: The shared T0 epoch seconds.
-        meta_overrides: Extra fields to merge (recorder_version, game_dir, shots_enabled, ...).
-
-    Returns:
-        The meta dict that was written.
-    """
+    """Write <out_dir>/meta.json (geometry + environment + versions) and return the meta dict."""
     meta = {"started": time.strftime("%Y-%m-%d %H:%M:%S"), "t0_epoch": t0, "out": out_dir}
     try:
         import ctypes
         u32 = ctypes.windll.user32
         u32.SetProcessDPIAware()
         meta["screen"] = [u32.GetSystemMetrics(0), u32.GetSystemMetrics(1)]
-    except Exception as e:                       # non-Windows / headless -> record the reason
+    except Exception as e:
         meta["screen_error"] = str(e)
     meta.update(meta_overrides or {})
     try:
@@ -202,8 +147,7 @@ def write_meta(out_dir, t0, meta_overrides=None):
 
 
 def _new_run_dir(out_root):
-    """A fresh <out_root>/<YYYYmmdd_HHMMSS> run dir, uniquified with a numeric suffix so a swap in
-    the same wall-clock second as the previous dir never collides. Created before returning."""
+    """A fresh <out_root>/<YYYYmmdd_HHMMSS> run dir, numerically uniquified and already created."""
     base = time.strftime("%Y%m%d_%H%M%S")
     out = os.path.join(out_root, base)
     n = 1
@@ -215,73 +159,47 @@ def _new_run_dir(out_root):
 
 
 class Recording:
-    """A live capture run: the run dir(s), the shared clock, the stream threads, stop(), and -- for
-    R3 -- the live CampaignTracker + the campaign-swap that re-points every stream to a fresh dir.
-
-    Swap design (why it works with the existing stream architecture):
-      * Every stream writes through ctx.emit() -> ctx._emit (a _Writer), and file-writing streams
-        (logs, shots) build their path from ctx.out_dir. Both are MUTABLE per-ctx attributes.
-      * observe_state() feeds the tracker one human-faction row (fed by the logs stream, which is
-        the only place the faction identity flows past). It returns True only on the row that starts
-        a 2nd+ campaign.
-      * The logs stream, holding that boundary line, flushes the pre-boundary bytes to the CURRENT
-        dir, then calls ctx.swap() -> perform_swap(): a fresh dir is opened, new _Writers created,
-        and EVERY ctx's _emit + out_dir re-pointed to it; the boundary line onward is written to the
-        new dir. State bytes are thus split byte-exactly, matching the offline splitter.
-      * Old writers are NOT closed on swap (only at stop): a concurrent emit from another stream that
-        raced the swap still lands in the old dir rather than being dropped -- nothing is lost. The
-        state stream drives the swap synchronously, so the campaign's own turn rows are never at
-        risk. (Limitation: a handful of non-state input/ui rows within the sub-second swap window
-        may land in the previous dir; documented, and never dropped.)"""
+    """A live capture run: the run dir(s), the shared clock, the stream threads, stop() and the
+    campaign-swap that re-points every stream to a fresh dir."""
 
     def __init__(self, out_dir, t0, stop_event, threads, events_writer, *,
                  out_root=None, writers=None, ctxs=None, on_error=None,
                  meta_overrides=None, restart_turn=1, reset_bus=None, swap_dirs=False):
-        self.swap_dirs = swap_dirs        # v7 default: ONE dir for the whole session (see should_swap)
+        self.swap_dirs = swap_dirs
         self.out_dir = out_dir
         self.out_root = out_root
         self.t0 = t0
         self._stop = stop_event
         self._threads = threads
         self._events = events_writer
-        self._writers = writers if writers is not None else {}     # name -> current _Writer
-        self._all_writers = list(self._writers.values())           # every writer ever opened (close at stop)
-        self._ctxs = ctxs or []                                    # [(ctx, out_file_name)]
+        self._writers = writers if writers is not None else {}
+        self._all_writers = list(self._writers.values())
+        self._ctxs = ctxs or []
         self._on_error = on_error
         self._meta_overrides = dict(meta_overrides or {})
         self._reset_bus = reset_bus or reset_bus_files
         self._tracker = CampaignTracker(restart_turn) if CampaignTracker is not None else None
         self._swap_lock = threading.Lock()
-        self.campaign_index = 0                                     # 0 == the initial dir
+        self.campaign_index = 0
         self.swap_count = 0
-        self.dirs = [out_dir]                                       # every run dir this session produced
+        self.dirs = [out_dir]
 
     def observe_state(self, faction, subculture, turn):
-        """Feed one human-faction identity row to the tracker (called from the logs stream).
-        Returns True iff this row starts a 2nd+ campaign (i.e. a swap is due); advances the tracker
-        but performs NO swap. No-op / False when the tracker is unavailable -> single-campaign."""
+        """Feed one human-faction identity row to the tracker; True iff a dir swap is due."""
         if self._tracker is None:
             return False
         try:
             started_new = self._tracker.observe(faction, subculture, turn)
-        except Exception as e:                       # a bad row must never break capture
+        except Exception as e:
             sys.stderr.write("manager: tracker.observe failed -> %s\n" % repr(e)[:80])
             return False
-        # ⚠ v7: DIRECTORY ROTATION IS OFF BY DEFAULT (--swap-dirs re-enables the v6 behaviour).
-        # v7 keys every row by the minted campaign uuid, so one decisions.sqlite holds many
-        # playthroughs unambiguously. Rotating on top of that made every consumer chase a moving
-        # path, and the log-based detection below does NOT fire for a command-started campaign
-        # (cm:quit() + StartCampaign) -- so it silently failed to rotate anyway. Identity belongs
-        # in the data, not the filesystem.
         if not self.swap_dirs:
             return False
-        # index 0 is the first campaign (keeps the initial dir); index >= 1 needs a fresh dir.
         return bool(started_new and self._tracker.index >= 1)
 
     def perform_swap(self):
-        """Open a fresh run dir and re-point every stream's writer + out_dir to it. Idempotent under
-        the swap lock; safe to call from a stream thread. Returns the new dir (or the current dir on
-        failure -- capture continues regardless)."""
+        """Open a fresh run dir and re-point every stream's writer + out_dir to it; returns the
+        new dir (or the current one if it could not be created)."""
         with self._swap_lock:
             try:
                 new_dir = _new_run_dir(self.out_root)
@@ -293,19 +211,15 @@ class Recording:
             self.swap_count += 1
             self.campaign_index = self._tracker.index if self._tracker is not None else self.campaign_index + 1
 
-            # 1. mark the departure on the OLD events writer (still open) before re-pointing.
             self._events({"t": round(time.time() - self.t0, 3), "kind": "campaign_swap_out",
                           "to": new_dir, "campaign_index": self.campaign_index})
 
-            # 2. fresh writers under the new dir (one per name the run uses); keep old ones OPEN so a
-            #    racing emit lands in the old dir rather than dropping.
+            # old writers stay open so an emit racing the swap still lands in the old dir
             new_writers = {name: _writer(new_dir, name) for name in self._writers}
             self._all_writers.extend(new_writers.values())
 
-            # 3. a per-dir error sink so errors.log follows the current campaign.
             new_on_error = _errlog(new_dir)
 
-            # 4. re-point every stream: its emitter -> the matching new writer, its out_dir -> new dir.
             for ctx, out_file in self._ctxs:
                 ctx._emit = new_writers.get(out_file, new_writers["events.jsonl"])
                 ctx.out_dir = new_dir
@@ -316,9 +230,8 @@ class Recording:
             self._on_error = new_on_error
             self.out_dir = new_dir
             self.dirs.append(new_dir)
-            write_current_pointer(self.out_root, new_dir)   # the advisor follows this, see below
+            write_current_pointer(self.out_root, new_dir)
 
-            # 5. fresh meta.json + a 'start' row for the new dir (so each dir reads like a run).
             meta = dict(self._meta_overrides)
             meta["campaign_index"] = self.campaign_index
             meta["swapped_from"] = prev_dir
@@ -327,21 +240,20 @@ class Recording:
                           "wall": time.strftime("%Y-%m-%d %H:%M:%S"), "out": new_dir,
                           "campaign_index": self.campaign_index, "swap": True})
 
-            # 6. the append-only bus files reset on a campaign boundary (mod resyncs on truncation).
             try:
                 self._reset_bus()
-            except Exception as e:                   # bus reset must never break a swap
+            except Exception as e:
                 sys.stderr.write("manager: reset_bus_files on swap failed -> %s\n" % repr(e)[:80])
             return new_dir
 
     def stop(self, join_timeout=3.0):
         """Flip the shared run flag, write the terminal 'stop' row, join the streams, close writers."""
         self._stop.set()
-        time.sleep(0.8)                          # let in-flight polls drain (record.py parity)
+        time.sleep(0.8)                          # let in-flight polls drain
         self._events({"t": round(time.time() - self.t0, 3), "kind": "stop"})
         for th in self._threads:
             th.join(timeout=join_timeout)
-        for w in self._all_writers:              # release every writer opened this session
+        for w in self._all_writers:
             w.close()
 
     def alive(self):
@@ -350,21 +262,8 @@ class Recording:
 
 def start(out_root, streams, *, recorder_version, meta_overrides=None,
           restart_turn=1, reset_bus=None, swap_dirs=False):
-    """Create the run dir + shared clock + meta, then launch each stream as a daemon thread.
-
-    Args:
-        out_root: Parent directory; the run lands in <out_root>/<YYYYmmdd_HHMMSS>.
-        streams: List of stream dicts (see module docstring).
-        recorder_version: Stamped into meta.json (what `runs` gates on).
-        meta_overrides: Extra meta fields (game_dir, appdata_logs, shots_enabled, ...).
-        restart_turn: The CampaignTracker restart threshold (a same-faction restart from a turn
-            <= this, after progressing past it, counts as a new campaign). Default 1.
-        reset_bus: Callable invoked on each campaign-swap to reset the bus files; defaults to
-            reset_bus_files. Injectable so an offline test can run swaps without touching the bus.
-
-    Returns:
-        A Recording handle (call .stop() to end it; it swaps run dirs on campaign boundaries).
-    """
+    """Create the run dir + shared clock + meta, launch each stream ({"run": callable(ctx, **kwargs),
+    "name", "out_file", "kwargs"}) as a daemon thread; returns a Recording handle."""
     t0 = time.time()
     out = _new_run_dir(out_root)
     stop_event = threading.Event()
@@ -394,8 +293,6 @@ def start(out_root, streams, *, recorder_version, meta_overrides=None,
     for s in streams:
         w = get_writer(s.get("out_file", "events.jsonl"))
         out_file = s.get("out_file", "events.jsonl")
-        # R3: wire this ctx's state/swap hooks to the (already-constructed) Recording, so the logs
-        # stream can drive the campaign-swap through ctx while the other streams follow the re-point.
         ctx = Ctx(out, t0, stop_event, shot_req, w, on_error,
                   on_state=rec.observe_state, swap=rec.perform_swap)
         rec._ctxs.append((ctx, out_file))
@@ -411,26 +308,12 @@ def start(out_root, streams, *, recorder_version, meta_overrides=None,
 
 
 def reset_bus_files():
-    """Truncate the two GLOBAL append-only command-bus files to 0 bytes. These are transient RPC
-    plumbing (client->mod commands + mod->client replies), NOT captured data, and are never rotated
-    -> they grow unbounded (hit 2.46 GB and degraded the bus). Emptying them is safe because the mod
-    supports TRUNCATION RESYNC (when the file's max seq drops below its last_seq it resets
-    last_seq=0), so a fresh empty file re-syncs on the mod's next poll. Call at session START only.
-
-    Paths come from the bus module's CMD_PATH/OUT_PATH when importable (so they stay in sync with the
-    bus), else the two hard-coded defaults. Each file is truncated in its own try/except and is never
-    fatal: a locked/unwritable file is logged to stderr (1 line) and skipped.
-
-    Reusable by design so the future R3 campaign-swap can call it on a campaign switch too.
-
-    Returns:
-        Total bytes present across the files before truncation (for a size note); 0 if none/failed.
-    """
+    """Truncate the two global append-only command-bus files; returns the bytes discarded."""
     import sys
     try:
         import bus
         paths = [bus.CMD_PATH, bus.OUT_PATH]
-    except Exception as e:                       # bus not on sys.path (e.g. reused standalone) -> defaults
+    except Exception as e:
         paths = ["D:/totalwar_runner/data/commands.txt", "D:/totalwar_runner/data/twcontrol.jsonl"]
         sys.stderr.write("manager: bus import failed, using hardcoded bus paths -> %s\n" % repr(e)[:80])
     total = 0
@@ -438,13 +321,10 @@ def reset_bus_files():
         try:
             if os.path.exists(p):
                 total += os.path.getsize(p)
-            open(p, "w", encoding="utf-8").close()   # truncate to 0 bytes (creates empty if missing)
-        except Exception as e:                       # locked/unwritable -> log once and continue (never fatal)
+            open(p, "w", encoding="utf-8").close()
+        except Exception as e:
             sys.stderr.write("manager: reset_bus_files(%s) failed -> %s (continuing)\n"
                              % (p, repr(e)[:80]))
-    # A bus reset is a session/campaign boundary: clear the bus guard's SESSION-scoped dead-key
-    # suppression too (a component absent for one faction may exist for the next campaign). Best-effort
-    # hook, never hard-wired -- if bus_stats is unavailable the reset still succeeds.
     try:
         import bus_stats
         bus_stats.reset_suppression()
@@ -455,11 +335,7 @@ def reset_bus_files():
 
 
 def main():
-    """CLI: assemble the real input/shots/logs streams and record until Ctrl-C (record.py parity).
-
-    This is the ONLY place that imports the concrete stream repos + config; kept thin so the
-    orchestrator itself stays game-free and testable.
-    """
+    """CLI: assemble the real input/shots/logs streams and record until Ctrl-C."""
     import sys
 
     here = os.path.dirname(os.path.abspath(__file__))
@@ -482,27 +358,23 @@ def main():
         out_root = "D:/twdata/runs/human"
         sys.stderr.write("manager: config import failed, using hardcoded paths -> %s\n" % repr(e)[:80])
 
-    # v7 ROSTER: the old high-noise streams are OFF by default. v7 records DECISION POINTS
-    # (context features + offered actions + chosen action + verification) and one reward row per
-    # turn -- nothing else. `logs` stays on: it is passive (the game writes it anyway) and is what
-    # drives campaign-swap detection. The v6 streams remain opt-in for debugging only.
     argv = sys.argv[1:]
     shots_on = "--shots" in argv or "--debug" in argv
-    input_on = "--input" in argv                           # v6 kbd/mouse capture (opt-IN now)
-    ui_on = "--ui" in argv                                 # v6 UI-component scraping (opt-IN now)
-    actions_on = "--v6-actions" in argv                    # v6 cco sweep stream (superseded)
-    decisions_on = "--no-decisions" not in argv            # v7 decision store: ON by default
-    shot_every = 60.0                                       # an optional number after --shots overrides it
+    input_on = "--input" in argv
+    ui_on = "--ui" in argv
+    actions_on = "--v6-actions" in argv
+    decisions_on = "--no-decisions" not in argv
+    shot_every = 60.0
     if "--shots" in argv:
         i = argv.index("--shots")
         if i + 1 < len(argv):
             try:
                 shot_every = float(argv[i + 1])
             except ValueError:
-                pass  # intentional: non-numeric token after --shots (e.g. another flag) -> keep default
+                pass
     log_dirs = [game_dir, appdata]
 
-    was = reset_bus_files()                                 # empty the append-only bus files at START; mod resyncs
+    was = reset_bus_files()
     print("reset bus files (was %.1f MB)" % (was / (1024 * 1024)), flush=True)
 
     streams = [
@@ -522,14 +394,14 @@ def main():
         streams.append({"run": actions_stream.run, "name": "actions",
                         "out_file": "actions_stream.jsonl"})
 
-    swap_dirs = "--swap-dirs" in argv          # v7 default: ONE dir per session (see should_swap)
+    swap_dirs = "--swap-dirs" in argv
     rec = start(out_root, streams, recorder_version=RECORDER_VERSION, swap_dirs=swap_dirs,
                 meta_overrides={"game_dir": game_dir, "appdata_logs": appdata,
                                 "shots_enabled": shots_on, "ui_enabled": ui_on,
                                 "actions_enabled": actions_on,
                                 "decisions_enabled": decisions_on,
                                 "input_enabled": input_on})
-    write_current_pointer(out_root, rec.out_dir)          # advisor/UI follow this, not a fixed path
+    write_current_pointer(out_root, rec.out_dir)
     print("RECORDING -> %s  (streams: %s)" % (rec.out_dir, [s["name"] for s in streams]), flush=True)
     print("  Ctrl-C to stop.", flush=True)
     try:

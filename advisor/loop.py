@@ -6,9 +6,9 @@ import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
-HUD_MISS_BUDGET = 12          # 12 x 5.0s
+HUD_MISS_BUDGET = 12
 HUD_MISS_PAUSE = 5.0
-_last_beat_turn = [None]      # last turn that beat the watchdog
+_last_beat_turn = [None]
 sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.join(r"D:\tw_stack", "decisions"))
 
@@ -47,7 +47,6 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
     import interrupt_model as IM
     import interrupts as I
     ranker = IM.InterruptRanker()
-    # installed whether or not a model is fitted; the ranker draws uniformly when cold
     I.set_chooser(lambda screen, options, campaign: ranker.choose(screen, options, campaign))
     if ranker.ready:
         log("interrupt policy: trained(%d rows, screens=%s)"
@@ -98,7 +97,6 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
                 raise GameStuck("%s: %s" % (stuck["reason"], stuck["detail"]))
     finally:
         wd.stop()
-        # a raise inside a handler must not eat the interrupt decisions buffered before it
         _drain_interrupts(run_dir, log)
     return rows
 
@@ -107,8 +105,8 @@ SHOT_EVERY_TURNS = 5
 
 
 def _turn_trail(run_dir, executor, row, turn_index, log):
-    """One turn_trail.jsonl row per turn, plus a screenshot on turn 1, every SHOT_EVERY_TURNS, and
-    on any abnormal ending. Never raises."""
+    """One turn_trail.jsonl row per turn, plus a screenshot on turn 1, every SHOT_EVERY_TURNS and on
+    any abnormal ending. Never raises."""
     rec = {"ts": time.time(), "turn": row.get("turn"), "turn_index": turn_index,
            "actions": row.get("actions"), "confirmed": row.get("confirmed"),
            "ended_by": row.get("ended_by")}
@@ -164,7 +162,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log):
     actions, confirmed, ended_by, picks = 0, 0, "action_cap", []
     active = None                                   # None = every entity is in play
     no_hud = 0
-    last_record = {}                                # newest snapshot, for the end-of-turn line
+    last_record = {}
     while actions < pol.max_actions_per_turn:
         if stuck["fired"]:
             ended_by = "stuck"
@@ -175,7 +173,6 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log):
             roots = executor.visible_roots()
             log("   !! hud_campaign missing (%d/%d) -- roots=%s"
                 % (no_hud, HUD_MISS_BUDGET, ",".join(sorted(str(r) for r in roots))[:200]))
-            # check before spending any budget, and never try to drive this screen
             lost = executor.defeat_screen(roots)
             if lost:
                 log("   !! END-OF-CAMPAIGN SCREEN %r -- the campaign is OVER, not stalled. Ending "
@@ -263,7 +260,6 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log):
         ok = bool(result.get("counted"))
         confirmed += 1 if ok else 0
         pol.note_result(pick, ok)
-        # only a confirmed action beats the watchdog
         if ok:
             wd.beat("confirmed:%s" % pick["action_type"])
         log("   %-16s %-34s %s%s"
@@ -274,13 +270,10 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log):
             if ok:
                 ended_by = "end_turn_chosen"
                 break
-            # do not break on a refused end_turn: retry it, bounded by the per-turn action cap
             log("   end_turn refused -- retrying rather than settling on a turn that never ended")
             ended_by = "end_turn_failed"
             active = _active_from(record, pol)
             continue
-        # let a battle screen appear and be driven before the next order goes out; the mod's
-        # panel/battle rows end the wait the moment the screen exists (2.5s is the cap)
         if str(pick.get("action_type", "")).startswith("attack"):
             executor.bus.wait_row(("panel", "battle_completed", "dilemma_issued"), timeout=2.5,
                                   offset=pre_off,
@@ -332,8 +325,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log):
 
 
 def _active_from(record, pol):
-    """The entities still in play: this sweep minus everything the policy retired. The campaign
-    context is always kept -- end_turn is a campaign offer."""
+    """The entities still in play: this sweep minus everything the policy retired."""
     lords, regions = [], []
     for e in record.get("entities") or []:
         k = (e["context_kind"], str(e["context_id"]))
@@ -394,7 +386,7 @@ def verify_streams(run_dir):
         }
         out["all_points_have_offers"] = out["decision_points"] == out["points_with_offers"]
         out["all_taken_have_evidence"] = out["points_with_taken"] == out["taken_with_evidence"]
-        out["orphan_picks"] = out["awaiting_execution"]      # must be 0
+        out["orphan_picks"] = out["awaiting_execution"]
         return out
     finally:
         s.close()

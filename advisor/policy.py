@@ -9,22 +9,20 @@ sys.path.insert(0, _HERE)
 
 import model as M                                          # noqa: E402
 
-# battle UI: never selectable
 FORBIDDEN_KEYS = frozenset({"button_attack", "button_spectate"})
 
-MAX_ACTIONS_PER_TURN = 10          # hard ceiling; the loop force-ends the turn at this
-MAX_ACTIONS_PER_ENTITY = 6         # an entity retires after this many confirmed actions in a turn
+MAX_ACTIONS_PER_TURN = 10
+MAX_ACTIONS_PER_ENTITY = 6
 
 EPSILON = 0.2                      # P(uniform random pick)
 BETA = 0.1                         # P(argmax novelty); the remainder is argmax exploit
 
-# how many offers of a combinatorial action type enter the ranking at all, re-drawn per decision
 SUBSAMPLE_CAPS = {"diplomacy": 12}
 # per (context_kind, context_id, action_type), per turn
 PER_TURN_CAPS = {"recruit_lord": 1, "recruit_unit": 4, "edict": 1, "research": 1, "rites": 1,
                  "diplomacy": 1,
                  "stance": 1}
-COLD_NOOP_WEIGHT = 0.10            # cold-start prior mass on "this entity is done"
+COLD_NOOP_WEIGHT = 0.10
 
 
 class Policy:
@@ -36,7 +34,7 @@ class Policy:
         self.max_actions_per_entity = max_actions_per_entity
         self.retired = set()           # (context_kind, context_id) done for this turn
         self.blacklist = set()         # (ck, cid, action_type, key) that failed confirmation
-        self.failed_types = set()      # action_type that failed once -> gated for the rest of the turn
+        self.failed_types = set()
         self.entity_actions = {}       # (ck, cid) -> confirmed actions this turn
         self.type_actions = {}         # (ck, cid, action_type) -> confirmed of THAT type this turn
 
@@ -63,10 +61,7 @@ class Policy:
                 self.retired.add(k)
         elif pick["action_type"] != "end_turn":
             self.blacklist.add((k[0], k[1], pick["action_type"], str(pick["key"])))
-            # one failure gates the whole TYPE for the rest of the turn -- a broken action path
-            # otherwise gets re-picked all turn (fail, re-rank, fail...) and eats the action budget
             self.failed_types.add(pick["action_type"])
-        # end_turn is never blacklisted -- do not remove that exemption
 
     def eligible(self, ranked):
         """Available, not battle-UI, not blacklisted, not belonging to a retired entity."""
@@ -112,10 +107,6 @@ class Policy:
         elig = self.eligible(ranked)
         if not elig:
             return None, ranked
-        # THREE MODES, drawn per decision -- not one blended number. Blending exploit and explore
-        # lets an option mediocre at both outrank one excellent at either, which is the opposite of
-        # what novelty seeking is for.
-        #   EPSILON -> uniform random | BETA -> argmax novelty | remainder -> argmax exploit
         roll = self.rng.random() if hot else 1.0
         if hot and roll < EPSILON:
             mode, best = "epsilon_random", self.rng.choice(elig)
@@ -156,6 +147,5 @@ def scores_for_store(ranked, limit=None):
     return [{"context_kind": r["context_kind"], "context_id": r["context_id"],
              "action_type": r["action_type"], "key": r["key"], "score": r.get("score"),
              "exploit": r.get("exploit"), "explore": r.get("explore"), "rank": r.get("rank"),
-             # the halves of exploit, so the UI can show global vs local instead of one number
              "pct_global": r.get("pct_global"), "pct_local": r.get("pct_local")}
             for r in rows]
