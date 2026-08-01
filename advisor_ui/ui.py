@@ -355,6 +355,90 @@ def starts_summary(runs_root=RUNS_ROOT):
     return sorted(out, key=lambda a: (-a["n"], -a["avg_turns"]))
 
 
+def faction_action_stats(runs_root=RUNS_ROOT):
+    """{(faction, action_type): [tried, ok, seconds]} for main picks and interrupt screens."""
+    import collections
+    main = collections.defaultdict(lambda: [0, 0, 0.0])
+    inter = collections.defaultdict(lambda: [0, 0, 0.0])
+    for db in sorted(glob.glob(os.path.join(runs_root, "*", "decisions.sqlite")),
+                     key=os.path.getmtime):
+        try:
+            c = sqlite3.connect("file:%s?mode=ro" % db.replace("\\", "/"), uri=True, timeout=5.0)
+        except sqlite3.Error:
+            continue
+        try:
+            for camp, cjson in c.execute(
+                    "SELECT campaign_id, MIN(campaign) FROM decision_points GROUP BY campaign_id"):
+                try:
+                    fac = (json.loads(cjson) or {}).get("faction")
+                except Exception:
+                    fac = None
+                if not fac:
+                    continue
+                for at, counted, lat in c.execute(
+                        "SELECT t.action_type, t.counted, t.latency_ms FROM action_taken t"
+                        " JOIN decision_points d ON d.decision_id=t.decision_id"
+                        " WHERE d.campaign_id=? AND t.refusal IS NOT 'awaiting_execution'",
+                        (camp,)):
+                    s = main[(fac, at)]
+                    s[0] += 1
+                    s[1] += 1 if counted else 0
+                    s[2] += (lat or 0) / 1000.0
+            for cjson, kind, counted, lat in c.execute(
+                    "SELECT campaign_json, kind, counted, latency_ms FROM interrupt_decisions"):
+                try:
+                    fac = (json.loads(cjson) or {}).get("faction")
+                except Exception:
+                    fac = None
+                if not fac:
+                    continue
+                s = inter[(fac, kind)]
+                s[0] += 1
+                s[1] += 1 if counted else 0
+                s[2] += (lat or 0) / 1000.0
+        except sqlite3.Error:
+            pass
+        finally:
+            c.close()
+    return main, inter
+
+
+def _matrix_tables(data, title):
+    kinds = sorted({k for (_f, k) in data})
+    facs = sorted({f for (f, _k) in data})
+    if not kinds:
+        return "<h2>%s</h2><p class=dim>no data recorded yet</p>" % _esc(title)
+    head = "<tr><th>faction" + "".join("<th>%s" % _esc(k) for k in kinds) + "</tr>"
+    rate_rows, time_rows = [], []
+    for f in facs:
+        rc, tc = [], []
+        for k in kinds:
+            t, ok, secs = data.get((f, k), (0, 0, 0.0))
+            if not t:
+                rc.append("<td class=dim>-</td>")
+                tc.append("<td class=dim>-</td>")
+                continue
+            pct = 100.0 * ok / t
+            cls = "ok" if pct >= 80 else ("warn" if pct >= 40 else "bad")
+            rc.append("<td class=%s>%.0f%% <span class=dim>(%d/%d)</span></td>" % (cls, pct, ok, t))
+            avg = secs / t
+            tcls = "ok" if avg < 5 else ("warn" if avg < 15 else "bad")
+            tc.append("<td class=%s>%.0fs <span class=dim>(%.1fs/try)</span></td>" % (tcls, secs, avg))
+        rate_rows.append("<tr><td>%s</td>%s</tr>" % (_esc(f), "".join(rc)))
+        time_rows.append("<tr><td>%s</td>%s</tr>" % (_esc(f), "".join(tc)))
+    return ("<h2>%s &mdash; pass rate</h2><div class=scroll><table>%s%s</table></div>"
+            "<h2>%s &mdash; total time (avg per try)</h2><div class=scroll><table>%s%s</table></div>"
+            % (_esc(title), head, "".join(rate_rows), _esc(title), head, "".join(time_rows)))
+
+
+def render_faction_matrix():
+    main, inter = faction_action_stats()
+    intro = ("<p class=muted>Every campaign across every run dir. A cell far below its column's "
+             "norm is a faction-specific gap; a slow cell is a faction-specific stall. Interrupt "
+             "screens count the same confirmation law as actions.</p>")
+    return intro + _matrix_tables(main, "main actions") + _matrix_tables(inter, "interrupt screens")
+
+
 def render_starts():
     rows = starts_summary()
     if not rows:
@@ -440,6 +524,7 @@ def render_index(con, run_dir):
     head = ("<h1>advisor v7</h1><div class=dim>%s</div>" % _esc(run_dir)) + "<div class=cards>%s</div>" % cards
     panels = [("overview", render_leaders(con) + render_history(con)),
               ("starts", render_starts()),
+              ("action x faction", render_faction_matrix()),
               ("blocking menus", render_interrupts()),
               ("actions", per_type + seqtbl),
               ("timeline", render_timeline(con)),
