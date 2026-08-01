@@ -97,6 +97,8 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
                 raise GameStuck("%s: %s" % (stuck["reason"], stuck["detail"]))
     finally:
         wd.stop()
+        # a raise inside a handler must not eat the interrupt decisions buffered before it
+        _drain_interrupts(run_dir, log)
     return rows
 
 

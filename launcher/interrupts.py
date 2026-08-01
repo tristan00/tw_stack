@@ -85,6 +85,7 @@ def _unknown_controls(ctrls, known):
 _CHOOSER = [None]
 _CAMPAIGN = [None]
 _LAST_POLICY = [None]
+_LAST_SCORES = [None]
 
 
 def set_chooser(fn):
@@ -114,13 +115,16 @@ def _choose(screen, options, campaign=None):
             "no interrupt chooser installed -- the advisor owns this decision and must call "
             "interrupts.set_chooser() before driving any screen. Refusing to invent a policy in "
             "the launcher (screen=%s, offered=%s)" % (screen, opts))
-    got, policy = fn(screen, opts, campaign)
+    got, policy, scores = fn(screen, opts, campaign)
     if got not in options:
         raise RuntimeError(
             "chooser returned %r which is NOT among the legal options %s for %s. Taking it anyway "
             "is how button_attack eventually gets clicked." % (got, opts, screen))
     _LAST_POLICY[0] = policy
-    sys.stderr.write("interrupts: SCREEN %s offered=%s -> %r (%s)\n" % (screen, opts, got, policy))
+    _LAST_SCORES[0] = dict(scores or {})
+    sys.stderr.write("interrupts: SCREEN %s offered=%s -> %r (%s) scores=%s\n"
+                     % (screen, opts, got, policy,
+                        {k: round(v, 4) for k, v in sorted((scores or {}).items())}))
     return got
 
 
@@ -726,6 +730,9 @@ def _record_choice(kind, root, options, chosen, extra=None,
     confirmed_b = None if confirmed is None else bool(confirmed)
     executed_b = None if executed is None else bool(executed)
     counted = None if confirmed_b is None else bool(executed_b and confirmed_b)
+    scores = _LAST_SCORES[0] or {}
+    if scores:
+        options = {k: dict(v or {}, score=scores.get(k)) for k, v in options.items()}
     _INTERRUPT_LOG.append(dict(extra or {}, kind=kind, root=root, options=options,
                                chosen=chosen,
                                chosen_context=(options.get(chosen) or {}).get("context"),

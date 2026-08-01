@@ -7,6 +7,7 @@ import json
 import os
 import sqlite3
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "advisor"))
@@ -274,6 +275,58 @@ def render_interrupts(runs_root=RUNS_ROOT):
         return ("<h2>blocking menus</h2><p class=muted>policy: %s</p>"
                 "<p class=muted>no interrupt decisions recorded yet</p>" % state)
 
+    recent = []
+    for db in sorted(glob.glob(os.path.join(runs_root, "*", "decisions.sqlite")),
+                     key=os.path.getmtime, reverse=True)[:3]:
+        try:
+            c = sqlite3.connect("file:%s?mode=ro" % db.replace("\\", "/"), uri=True, timeout=5.0)
+        except sqlite3.Error:
+            continue
+        try:
+            cols = {r[1] for r in c.execute("PRAGMA table_info(interrupt_decisions)")}
+            pol = "policy" if "policy" in cols else "NULL"
+            for ts, kind, oj, pick, counted, ref, lat, p, cj in c.execute(
+                    "SELECT ts, kind, options_json, chosen, counted, refusal, latency_ms, %s,"
+                    " campaign_json FROM interrupt_decisions ORDER BY interrupt_id DESC LIMIT 40"
+                    % pol):
+                try:
+                    opts = json.loads(oj) if oj else {}
+                except Exception:
+                    opts = {}
+                try:
+                    fac = (json.loads(cj) or {}).get("faction")
+                except Exception:
+                    fac = None
+                recent.append((ts, kind, opts, pick, counted, ref, lat, p, fac))
+        except sqlite3.Error:
+            pass
+        finally:
+            c.close()
+    recent.sort(key=lambda r: -(r[0] or 0))
+    rec_rows = []
+    for ts, kind, opts, pick, counted, ref, lat, p, fac in recent[:40]:
+        cells = []
+        for k in sorted(opts, key=lambda k: -(opts[k] or {}).get("score") or 0
+                        if isinstance((opts[k] or {}).get("score"), float) else 0):
+            sc = (opts[k] or {}).get("score") if isinstance(opts[k], dict) else None
+            label = "%s=%s" % (_esc(k.replace("button_", "").replace("captive_option_", "")),
+                               ("%.3f" % sc) if isinstance(sc, (int, float)) else "-")
+            cells.append("<b>%s</b>" % label if k == pick else label)
+        state = ("<span class=ok>OK</span>" if counted
+                 else "<span class=bad>%s</span>" % _esc(ref or "fail"))
+        rec_rows.append(
+            "<tr><td class=dim>%s</td><td>%s</td><td class=dim>%s</td><td>%s</td>"
+            "<td>%s</td><td class=dim>%s</td><td class=dim>%s</td></tr>"
+            % (time.strftime("%H:%M:%S", time.localtime(ts or 0)), _esc(kind),
+               _esc((fac or "?")[:26]), state,
+               ", ".join(cells) or "<span class=dim>-</span>",
+               _esc(p or "-"), ("%.1fs" % (lat / 1000.0)) if lat else "-"))
+    recent_tbl = ("<h2>recent interrupt decisions &mdash; predicted values per option "
+                  "(chosen in bold)</h2><div class=scroll><table>"
+                  "<tr><th>time<th>screen<th>faction<th>result<th>options=score<th>policy"
+                  "<th>latency</tr>%s</table></div>"
+                  % ("".join(rec_rows) or "<tr><td class=dim colspan=7>none recorded</td></tr>"))
+
     rows = []
     for (kind, opt), n in sorted(chosen.items(), key=lambda kv: (kv[0][0], -kv[1])):
         seen = offered.get((kind, opt), 0)
@@ -283,14 +336,15 @@ def render_interrupts(runs_root=RUNS_ROOT):
                     % (_esc(kind), _esc(opt), n, seen,
                        "&mdash;" if rate is None else "%.0f%%" % rate))
     screens = " &middot; ".join("%s <b>%d</b>" % (_esc(k), v) for k, v in per_screen.items())
-    return ("<h2>blocking menus <span class=dim>(%d decisions)</span></h2>"
+    head = ("<h2>blocking menus <span class=dim>(%d decisions)</span></h2>"
             "<p class=muted>policy: %s</p>"
-            "<p class=muted>%s</p>"
-            "<p class=muted>Dilemmas, pre-battle, post-battle and occupation. <b>taken</b> is how "
-            "often we picked that option; <b>offered</b> is how often the screen showed it, so the "
-            "rate exposes whether a choice is genuinely being explored or never gets picked.</p>"
-            "<div class=scroll><table><tr><th>screen<th>option<th>taken<th>offered<th>rate</tr>"
-            "%s</table></div>" % (total, state, screens, "".join(rows)))
+            "<p class=muted>%s</p>" % (total, state, screens))
+    agg = ("<p class=muted>Dilemmas, pre-battle, post-battle and occupation. <b>taken</b> is how "
+           "often we picked that option; <b>offered</b> is how often the screen showed it, so the "
+           "rate exposes whether a choice is genuinely being explored or never gets picked.</p>"
+           "<div class=scroll><table><tr><th>screen<th>option<th>taken<th>offered<th>rate</tr>"
+           "%s</table></div>" % "".join(rows))
+    return head + recent_tbl + agg
 
 
 def starts_summary(runs_root=RUNS_ROOT):
