@@ -842,12 +842,14 @@ _LUA_CAMPAIGN_OFFERS = (_G +
     "local f=cco('CcoCampaignFaction','%(fac)s') local m=g(f,'TechnologyManagerContext') "
     "local cur='none' if m then local c=g(m,'CurrentResearchingTechnologyContext') "
     "if c then cur=ts(g(c,'NodeKey')) end end "
+    "local pts=ts(g(m,'ResearchPoints')) "
     "local tech={} local l=m and g(m,'TechnologyList') "
     "if type(l)=='table' then for i=1,#l do tech[#tech+1]=ts(g(l[i],'NodeKey'))"
-    "..'~'..ts(g(l[i],'IsResearched'))..'~'..ts(g(l[i],'CanResearch')) end end "
+    "..'~'..ts(g(l[i],'IsResearched'))..'~'..ts(g(l[i],'CanResearch'))"
+    "..'~'..ts(g(l[i],'Cost')) end end "
     "local rites={} local r=g(f,'AvailableRitualList') "
     "if type(r)=='table' then for i=1,#r do rites[#rites+1]=ts(g(r[i],'CanPerformRitual')) end end "
-    "return cur..'||'..table.concat(tech,',')..'||'..table.concat(rites,',')")
+    "return cur..'||'..table.concat(tech,',')..'||'..table.concat(rites,',')..'||'..pts")
 
 
 def current_research(bus, faction_cqi):
@@ -869,14 +871,21 @@ def campaign_offers(bus, campaign):
         raise CollectError("campaign offers malformed: %r" % raw[:120])
     current, tech_raw, rites_raw = parts[0], parts[1], parts[2]
     current = None if current in ("none", "nil", "") else current
+    points = _num(parts[3]) if len(parts) > 3 else None
     for row in tech_raw.split(","):
         p = row.split("~")
         if len(p) < 3:
             continue
         key, done, can = p[0], p[1] == "true", p[2] == "true"
+        cost = _num(p[3]) if len(p) > 3 else None
         gate = None if can else ("researched" if done else
                                  "in_progress" if key == current else "prerequisites_not_met")
-        offers.append(_offer("research", key, can, gate, in_progress=(key == current)))
+        if current and can:
+            # the engine keeps reporting CanResearch for other techs while one is in progress,
+            # and every such pick is refused by the pre-check: 38 of 57 in one batch
+            can, gate = False, "already_researching"
+        offers.append(_offer("research", key, can, gate, in_progress=(key == current),
+                             cost=cost, points_available=points, current_research=current))
     for i, flag in enumerate(rites_raw.split(",")):
         if flag not in ("true", "false"):
             continue
