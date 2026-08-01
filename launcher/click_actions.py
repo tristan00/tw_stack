@@ -55,12 +55,26 @@ def engine_click(bus, component_id):
         return False
 
 
+def _until(pred, cap, step=0.2):
+    """True as soon as `pred` holds; `cap` is a ceiling, not a sleep."""
+    deadline = time.time() + cap
+    while time.time() < deadline:
+        try:
+            if pred():
+                return True
+        except Exception:
+            pass
+        time.sleep(step)
+    return False
+
+
 def clear_screen(bus):
     """Close open panels, then leftover popups; returns the number of popups closed."""
     import nav
     try:
         _ev(bus, 'common.call_context_command([[CloseAllPanels]]) return "sent"', timeout=15.0)
-        time.sleep(1.0)
+        _until(lambda: not [r for r in (nav.visible_roots(bus) or [])
+                            if r not in nav.BASE_ROOTS], 1.0)
     except Exception as e:
         sys.stderr.write("click_actions: CloseAllPanels -> %s" % repr(e)[:80] + chr(10))
     n = 0
@@ -71,7 +85,8 @@ def clear_screen(bus):
     try:
         if any(r not in nav.BASE_ROOTS for r in (nav.visible_roots(bus) or [])):
             nav.deselect(bus)
-            time.sleep(1.2)
+            _until(lambda: not [r for r in (nav.visible_roots(bus) or [])
+                                if r not in nav.BASE_ROOTS], 1.2)
     except Exception as e:
         sys.stderr.write("click_actions: deselect -> %s" % repr(e)[:80] + chr(10))
     return n
@@ -81,7 +96,7 @@ def select_settlement(bus, region):
     r = _ev(bus, _G + "local s=cco('CcoCampaignSettlement','settlement:%s') if not s then return 'NO-SETT' end "
                       "local ok,e=pcall(function() s:Call('Select') end) return 'ok='..tostring(ok)" % region,
             timeout=20.0)
-    time.sleep(1.5)
+    _until(lambda: bool(_roots(bus)), 1.5)
     return r == "ok=true"
 
 
@@ -89,15 +104,12 @@ def select_character(bus, cqi):
     r = _ev(bus, _G + "local c=cco('CcoCampaignCharacter','%s') if not c then return 'NO-CHAR' end "
                       "local ok,e=pcall(function() c:Call('Select') end) return 'ok='..tostring(ok)" % cqi,
             timeout=20.0)
-    time.sleep(1.2)
+    _until(lambda: bool(_roots(bus)), 1.2)
     return r == "ok=true"
 
 
 def prepare(bus, kind, entity_id, expect_root=None, timeout=6.0):
-    """clear screen -> select subject (kind: "settlement" | "lord") -> wait for expect_root.
-
-    Returns (ok, reason). Callers must not click when this returns False.
-    """
+    """Clear the screen, select the subject ("settlement"|"lord"), await expect_root; -> (ok, reason)."""
     import nav
     clear_screen(bus)
     if kind == "settlement":
@@ -184,7 +196,7 @@ def _edict_gate(bus, ctx, pick, before):
 
 
 def _edict_execute(bus, ctx, pick, before):
-    """Click the edict button exactly once; do not re-click or close the stack afterwards."""
+    """Click this province's edict button in the incentives stack."""
     ok, why = prepare(bus, "settlement", ctx["entity_id"])
     if not ok:
         sys.stderr.write("click_actions: edict refused, not a known state -> %s" % why + chr(10))
@@ -213,12 +225,7 @@ register("edict", {
 
 
 def _pending_recruits(bus, cqi):
-    """Unit keys currently queued on this force, as a sorted comma string.
-
-    Reads Lua recruitment_items(), NOT the CCO PendingRecruitmentUnitList: that field measured 0
-    while the queue genuinely held 2 units, so it never moved and the confirm was carried entirely
-    by the treasury drop -- which false-positives on any concurrent spend.
-    """
+    """Unit keys currently queued on this force, as a sorted comma string."""
     return _ev(bus, "local c=cm:get_character_by_cqi(%s) "
                     "if not c or not c:has_military_force() then return '' end "
                     "local ok,it=pcall(function() return c:military_force():recruitment_items() end) "
@@ -256,8 +263,7 @@ def _recruit_gate(bus, ctx, pick, before):
 
 
 def _recruit_execute(bus, ctx, pick, before):
-    """Runs the recruit click and always closes the panel afterwards, as recruit_lord does.
-    Leaving units_panel open changes the UI state the next action starts from."""
+    """Run the recruit click, always closing the panel afterwards."""
     try:
         return _recruit_execute_inner(bus, ctx, pick, before)
     finally:
@@ -270,10 +276,10 @@ def _recruit_execute_inner(bus, ctx, pick, before):
         sys.stderr.write("click_actions: recruit_unit refused, not a known state -> %s" % why + chr(10))
         return False
     cards = recruitable_units(bus)
-    if not cards:                                # the button toggles: only open when no cards show
+    if not cards:
         if not _click(bus, RECRUIT_BTN):
             return False
-        time.sleep(1.4)
+        _until(lambda: bool(recruitable_units(bus)), 1.4)
         cards = recruitable_units(bus)
     card = next((c for c in cards if c["key"] == pick["key"]), None)
     if card is None:
@@ -283,7 +289,7 @@ def _recruit_execute_inner(bus, ctx, pick, before):
 
 
 def _recruit_confirm(bus, ctx, pick, before):
-    """The requested unit must appear in the force's queue. Treasury is recorded, never decisive."""
+    """True when the requested unit appears in the force's recruitment queue."""
     t = _treasury(bus)
     after = str(_pending_recruits(bus, ctx["entity_id"]) or "")
     prior = str(before.get("pending") or "")
@@ -295,8 +301,6 @@ def _recruit_confirm(bus, ctx, pick, before):
 
 
 register("recruit_unit", {
-    # recruitment_items() is true the instant the click lands, so this needs one read, not a poll
-    # loop -- the old 8.0/1.5 spent up to 5 rounds waiting on a signal that never arrives late.
     "layer": "click", "signal": "unit_key_in_recruitment_items",
     "snapshot": _recruit_snapshot, "gates": [_recruit_gate],
     "execute": _recruit_execute, "confirm": _recruit_confirm,
@@ -346,7 +350,7 @@ def _lord_snapshot(bus, ctx, pick):
 
 
 def _lord_execute(bus, ctx, pick, before):
-    """Runs the recruit sequence and always closes the panel afterwards."""
+    """Run the raise-army sequence, always closing the panel afterwards."""
     try:
         return _lord_execute_inner(bus, ctx, pick, before)
     finally:
@@ -359,10 +363,10 @@ def _lord_execute_inner(bus, ctx, pick, before):
         sys.stderr.write("click_actions: recruit_lord refused, not a known state -> %s" % why + chr(10))
         return False
     r = _roots(bus)
-    if not (r and "character_panel" in r):       # the button toggles the panel
+    if not (r and "character_panel" in r):
         if not _click(bus, CREATE_ARMY_BTN):
             return False
-        time.sleep(1.8)
+        _until(lambda: "character_panel" in (_roots(bus) or []), 1.8)
     want = str(pick["key"])
 
     def _match(types):
@@ -386,7 +390,7 @@ def _lord_execute_inner(bus, ctx, pick, before):
         return False
     if not _click(bus, "%s|%s" % (type_path, btn)):
         return False
-    time.sleep(1.5)
+    _until(lambda: bool(lord_candidates(bus)), 1.5)
     cands = lord_candidates(bus)
     if not cands:
         sys.stderr.write("click_actions: no general_candidate rows for %r\n" % pick["key"])
@@ -403,7 +407,7 @@ def _lord_execute_inner(bus, ctx, pick, before):
 
 
 def _lord_confirm(bus, ctx, pick, before):
-    """True when the faction's character count grew; the treasury drop is recorded, not required."""
+    """True when the faction's character count grew."""
     n = _character_count(bus)
     t = _treasury(bus)
     before_n = before.get("n_chars")
@@ -419,6 +423,5 @@ register("recruit_lord", {
     "layer": "click", "signal": "new_character_cqi_and_treasury_drop",
     "snapshot": _lord_snapshot,
     "execute": _lord_execute, "confirm": _lord_confirm,
-    # character count is true as soon as the raise lands; 12s bought nothing but 6 idle polls
     "timeout_s": 6.0, "poll_s": 2.0, "spends_gold": True,
 })
