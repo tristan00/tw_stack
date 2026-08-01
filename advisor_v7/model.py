@@ -1,37 +1,10 @@
-r"""model.py -- the v7 ranker: ONE model set over the whole faction.
-
-STRUCTURE (carried over from v6, which the user confirmed):
-    E1 = f(state, action)   CatBoost on the full feature row  -> the exploit signal
-    E2 = g(state)           CatBoost on the state-only row    -> the per-entity baseline
-    impact = E1 - E2        the action's predicted contribution
-
-Why the subtraction matters here more than it did in v6: v7 makes ONE ranking across every entity,
-and E2 is constant only WITHIN an entity, not across them. Subtracting it removes each entity's own
-baseline, so "how much does this action add" is comparable between a lord's attack and a province's
-building. Without it the ranking would just prefer whichever entity happens to sit in a good state.
-
-    explore = IsolationForest novelty over the same rows, min-maxed  (v6's explorer, unchanged)
-    combined = (1-BETA)*exploit + BETA*explore
-
-TARGET (FW-6, unchanged from v6): per campaign-turn,
-    0.5 * campaign_best_half + 0.5 * delta_half
-where the best half is the mean of each part's per-campaign PEAK plus a survival leg (the campaign's
-last recorded turn), and the delta half is the mean of each part's forward H-turn delta. Parts are
-income, settlements, power_rank (stored INVERTED upstream so high=good), allies, vassals, each
-min-max normalized INDIVIDUALLY so every component is monotone "higher is better".
-
-Everything is featurized through advisor_v7/features.py from STORED DECISION RECORDS -- the same
-function and the same records at fit time and at decision time. No bus, ever.
-
-    python model.py train [runs_root]     fit from every run's decisions.sqlite
-    python model.py report                what is in the store
-"""
 from __future__ import annotations
 
 import glob
 import json
 import os
 import pickle
+import shutil
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -42,119 +15,128 @@ import features as F                                       # noqa: E402
 from store import DecisionStore, IncompatibleStore        # noqa: E402
 
 MODEL_DIR = os.path.join(_HERE, "models_store")
+LOCAL_MODEL_DIR = os.path.join(_HERE, "models_store_local")
+# local reward weight: one SD of local impact is worth W_LOCAL SDs of global.
+# inference-time dial -- changing it needs no refit.
+W_LOCAL = 0.25
+# per-entity local reward: character level / summed main-settlement level
+LOCAL_KINDS = ("lord", "hero", "province")
 RUNS_ROOT = "D:/twdata/runs/human"
-H = 8                       # forward horizon for the delta half
-BETA = 0.15                 # explore weight in `combined`
-VALUE_PARTS = ("income", "settlements", "power_rank", "allies", "vassals")
-MIN_ROWS = 40               # below this the policy stays cold-start (see policy.py)
+BETA = 0.10                 # explore weight
+VALUE_PARTS = ("income", "settlements", "power_rank", "allies", "vassals", "lord_level")
+TARGET_PARTS = ("settlements", "power_rank", "lord_level", "vassals")
+LOWER_IS_BETTER = ("power_rank",)
+MIN_ROWS = 40
 
 
-# ------------------------------------------------------------------ FW-6 target
 def _mm0(v, lo, hi):
-    """min-max to [0,1]; a degenerate population range contributes 0.0, never a spurious 0.5."""
+    """min-max to [0,1]; a degenerate range gives 0.0."""
     return max(0.0, min(1.0, (v - lo) / (hi - lo))) if hi > lo else 0.0
 
 
 def target_ranges(series):
-    """Population ranges for the FW-6 blend, over {campaign: {turn: {part: value}}}."""
+    """Per part: every campaign's best value, sorted."""
     peaks = {p: [] for p in VALUE_PARTS}
-    deltas = {p: [] for p in VALUE_PARTS}
-    maxturns = []
     for turns in series.values():
         if not turns:
             continue
-        ts = sorted(turns)
-        last = ts[-1]
-        maxturns.append(last)
         for p in VALUE_PARTS:
-            vals = [turns[t].get(p) for t in ts if turns[t].get(p) is not None]
+            vals = [turns[t].get(p) for t in sorted(turns) if turns[t].get(p) is not None]
             if vals:
-                peaks[p].append(max(vals))
-        for t in ts:
-            now = turns[t]
-            end = turns.get(min(t + H, last), now)          # CLAMP to the last recorded turn
-            for p in VALUE_PARTS:
-                a = now.get(p)
-                if a is None:
-                    continue
-                deltas[p].append((end.get(p, a) if end.get(p) is not None else a) - a)
+                peaks[p].append(min(vals) if p in LOWER_IS_BETTER else max(vals))
+    return {"dist": {p: sorted(peaks[p]) for p in VALUE_PARTS}}
 
-    def rng(xs):
-        return (min(xs), max(xs)) if xs else (0.0, 1.0)
-    return {"peak": {p: rng(peaks[p]) for p in VALUE_PARTS},
-            "delta": {p: rng(deltas[p]) for p in VALUE_PARTS}, "maxturn": rng(maxturns)}
+
+def _pct(v, sample, lower_is_better=False):
+    """Mid-rank percentile of `v` within `sample`, in [0,1], always "higher is better"."""
+    n = len(sample)
+    if n == 0:
+        return 0.5
+    below = sum(1 for x in sample if x < v)
+    equal = sum(1 for x in sample if x == v)
+    pct = (below + 0.5 * equal) / n
+    return (1.0 - pct) if lower_is_better else pct
 
 
 def target(series, campaign, turn, ranges):
-    """The FW-6 value of one campaign-turn, or None when that turn was never recorded."""
+    """Mean percentile of each TARGET_PART's peak over the turns after `turn`; None if unlabelled."""
     turns = series.get(campaign) or {}
     turn = int(turn or 0)
     if turn not in turns:
         return None
-    ts = sorted(turns)
-    last = ts[-1]
-    now = turns[turn]
-    end = turns.get(min(turn + H, last), now)
-    best = []
-    for p in VALUE_PARTS:
-        vals = [turns[t].get(p) for t in ts if turns[t].get(p) is not None]
-        if vals:
-            best.append(_mm0(max(vals), *ranges["peak"][p]))
-    best.append(_mm0(last, *ranges["maxturn"]))              # survival leg lives in the best half
-    best_half = sum(best) / len(best) if best else 0.0
-    deltas = []
-    for p in VALUE_PARTS:
-        a = now.get(p)
-        if a is None:
+    future = [t for t in sorted(turns) if t > turn]
+    if not future:
+        return None
+    parts = []
+    for p in TARGET_PARTS:
+        vals = [turns[t].get(p) for t in future if turns[t].get(p) is not None]
+        if not vals:
             continue
-        b = end.get(p, a)
-        deltas.append(_mm0((a if b is None else b) - a, *ranges["delta"][p]))
-    delta_half = sum(deltas) / len(deltas) if deltas else 0.0
-    return 0.5 * best_half + 0.5 * delta_half
+        low = p in LOWER_IS_BETTER
+        best = min(vals) if low else max(vals)
+        parts.append(_pct(best, ranges["dist"].get(p) or [], lower_is_better=low))
+    return (sum(parts) / len(parts)) if parts else None
 
 
-# ------------------------------------------------------------------ dataset
+def local_ranges(eseries):
+    """Per context_kind: every entity's peak value, sorted. Kinds are NOT pooled -- a lord level
+    and a settlement level have different scales."""
+    peaks = {}
+    for ents in eseries.values():
+        for (kind, _cid), turns in ents.items():
+            vals = [v for _t, v in sorted(turns.items()) if v is not None]
+            if vals:
+                peaks.setdefault(kind, []).append(max(vals))
+    return {k: sorted(v) for k, v in peaks.items()}
+
+
+def local_target(eseries, campaign, kind, cid, turn, lranges):
+    """Percentile of this entity's FUTURE MAX value, within its own kind. None if unlabelled."""
+    ents = eseries.get(campaign) or {}
+    turns = ents.get((kind, str(cid)))
+    if not turns:
+        return None
+    turn = int(turn or 0)
+    future = [t for t in sorted(turns) if t > turn]
+    if not future:
+        return None
+    vals = [turns[t] for t in future if turns[t] is not None]
+    if not vals:
+        return None
+    return _pct(max(vals), lranges.get(kind) or [])
+
+
 def gather(runs_root=RUNS_ROOT):
-    """Every confirmed decision point across every run, featurized into (E1 rows, E2 rows, y).
-
-    Only the CHOSEN action of each decision point becomes a training row: the target describes what
-    happened after that action, so attaching it to actions that were NOT chosen would be a lie. The
-    unchosen offers are still used -- at decision time, scored by the same model through their own
-    feature rows. (This is v6's arrangement, unchanged.)
-
-    ⚠ Chosen means CHOSEN, not confirmed: refused actions are training rows too. The model answers
-    "should this be attempted here", and an attempt is the better predictor of whether to attempt
-    again -- dropping refusals would silently delete whole action types (every lord-recruit, whose
-    click path fails) from the data.
-    """
+    """The chosen action of every labelled decision point, as (E1 rows, E2 rows, y)."""
     dbs = sorted(glob.glob(os.path.join(runs_root, "*", "decisions.sqlite")))
-    decisions, series, skipped_dbs = [], {}, []
+    decisions, series, eseries, skipped_dbs = [], {}, {}, []
     for db in dbs:
         run_dir = os.path.dirname(db)
         try:
             s = DecisionStore(run_dir)
         except IncompatibleStore as e:
-            # a store from before the faction-wide redesign -- skip it LOUDLY rather than let one
-            # legacy directory abort training over every campaign we do have
             skipped_dbs.append(os.path.basename(run_dir))
             sys.stderr.write("model: skipping %s -> %s\n" % (run_dir, str(e)[:120]))
             continue
         try:
             for rec, taken, counted in s.labelled_decisions():
                 decisions.append((rec, taken, counted))
-            # campaigns are keyed by their MINTED uuid, so several playthroughs can share one store
-            # (and one run dir) without their turn-series merging
             for camp, turns in s.target_series().items():
                 series.setdefault(camp, {}).update(turns)
+            for camp, ents in s.entity_series().items():
+                for k, tv in ents.items():
+                    eseries.setdefault(camp, {}).setdefault(k, {}).update(tv)
         finally:
             s.close()
     ranges = target_ranges(series)
+    lranges = local_ranges(eseries)
     full, state, ys, groups, confirmed = [], [], [], [], []
+    ylocal = []
     skipped = 0
     for rec, taken, was_counted in decisions:
         y = target(series, rec.get("campaign_id"), rec.get("turn"), ranges)
         if y is None:
-            skipped += 1                    # no reward row for that turn yet -> unlabelled
+            skipped += 1
             continue
         for ent, offer, row in F.decision_rows(rec):
             if (ent["context_kind"], str(ent["context_id"]),
@@ -163,16 +145,19 @@ def gather(runs_root=RUNS_ROOT):
             full.append(row)
             state.append(F.state_row(rec, ent))
             ys.append(y)
+            ylocal.append(local_target(eseries, rec.get("campaign_id"),
+                                       ent["context_kind"], ent["context_id"],
+                                       rec.get("turn"), lranges))
             groups.append(rec.get("campaign_id"))
             confirmed.append(was_counted)
-    return {"full": full, "state": state, "y": ys, "groups": groups,
+    return {"full": full, "state": state, "y": ys, "y_local": ylocal,
+            "n_local": sum(1 for v in ylocal if v is not None), "groups": groups,
             "confirmed": confirmed, "n_confirmed": sum(1 for c in confirmed if c),
             "n_decisions": len(decisions), "skipped_unlabelled": skipped,
             "runs": len(dbs) - len(skipped_dbs), "skipped_dbs": skipped_dbs,
             "campaigns": len(series)}
 
 
-# ------------------------------------------------------------------ train / load / score
 def train(runs_root=RUNS_ROOT):
     from catboost import CatBoostRegressor, Pool
     from sklearn.ensemble import IsolationForest
@@ -187,28 +172,121 @@ def train(runs_root=RUNS_ROOT):
     e1 = CatBoostRegressor(iterations=300, depth=4, learning_rate=0.05, loss_function="RMSE",
                            verbose=0)
     e1.fit(Pool(X, y, cat_features=cat_idx))
-    e1.save_model(os.path.join(MODEL_DIR, "e1.cbm"))
     snum, scat = F.split_columns(srows)
     Xs = F.matrix(srows, snum, scat)
     scat_idx = list(range(len(snum), len(snum) + len(scat)))
     e2 = CatBoostRegressor(iterations=300, depth=4, learning_rate=0.05, loss_function="RMSE",
                           verbose=0)
     e2.fit(Pool(Xs, y, cat_features=scat_idx))
-    e2.save_model(os.path.join(MODEL_DIR, "e2.cbm"))
-    # EXPLORE: IsolationForest novelty over the same (state+action) vectors, ordinal-encoded
     Xa, cat_maps = _encode(rows, num, cat)
     iso = IsolationForest(n_estimators=200, random_state=0, n_jobs=-1)
     iso.fit(Xa)
     nov = [-s for s in iso.score_samples(Xa)]
-    pickle.dump({"iso": iso, "cat_maps": cat_maps}, open(os.path.join(MODEL_DIR, "iso.pkl"), "wb"))
     preds = list(e1.predict(Pool(X, cat_features=cat_idx)))
+    e2preds = list(e2.predict(Pool(Xs, cat_features=scat_idx)))
+    impacts = [a - b for a, b in zip(preds, e2preds)]
+    data["_impacts"] = impacts
+    sd_global = _sd(impacts)
     meta = {"num": num, "cat": cat, "state_num": snum, "state_cat": scat,
-            "exp_lo": min(preds), "exp_hi": max(preds),
+            "exp_lo": min(impacts), "exp_hi": max(impacts), "sd_global": sd_global,
+            "w_local": W_LOCAL,
             "nov_lo": min(nov), "nov_hi": max(nov), "rows": len(rows),
-            "campaigns": sorted(set(data["groups"])), "beta": BETA, "H": H}
-    json.dump(meta, open(os.path.join(MODEL_DIR, "meta.json"), "w"))
+            "campaigns": sorted(set(data["groups"])), "beta": BETA,
+            "target": "future_max(%s)" % ",".join(TARGET_PARTS)}
+    # stage then os.replace: the four artefacts must land together or not at all
+    stage = MODEL_DIR + ".staging"
+    shutil.rmtree(stage, ignore_errors=True)
+    os.makedirs(stage)
+    e1.save_model(os.path.join(stage, "e1.cbm"))
+    e2.save_model(os.path.join(stage, "e2.cbm"))
+    pickle.dump({"iso": iso, "cat_maps": cat_maps}, open(os.path.join(stage, "iso.pkl"), "wb"))
+    json.dump(meta, open(os.path.join(stage, "meta.json"), "w"))
+    for name in ("e1.cbm", "e2.cbm", "iso.pkl", "meta.json"):
+        os.replace(os.path.join(stage, name), os.path.join(MODEL_DIR, name))
+    shutil.rmtree(stage, ignore_errors=True)
     mae = sum(abs(a - b) for a, b in zip(preds, y)) / len(y)
-    return {"trained": True, "rows": len(rows), "mae_in_sample": round(mae, 5), **_counts(data)}
+    local = _train_local(data, num, cat, snum, scat, sd_global)
+    return {"trained": True, "rows": len(rows), "mae_in_sample": round(mae, 5),
+            "local": local, **_counts(data)}
+
+
+def _sd(xs):
+    n = len(xs)
+    if n < 2:
+        return 0.0
+    m = sum(xs) / n
+    return (sum((x - m) ** 2 for x in xs) / (n - 1)) ** 0.5
+
+
+def _ranks(vals):
+    """Fractional rank of each value in [0,1], ties sharing the average rank.
+
+    Ranked WITHIN the offer set being scored, not against the training distribution. Training rows
+    are only the actions the policy chose, so they are biased toward good ones -- ranking live
+    offers against them pushed the majority below anything ever picked and collapsed them to 0.
+    Ranking within the decision is uniform by construction and is what the score is used for:
+    choosing among these offers, now.
+    """
+    n = len(vals)
+    if n == 0:
+        return []
+    if n == 1:
+        return [0.5]
+    order = sorted(range(n), key=lambda i: vals[i])
+    out = [0.0] * n
+    i = 0
+    while i < n:
+        j = i
+        while j + 1 < n and vals[order[j + 1]] == vals[order[i]]:
+            j += 1
+        share = (i + j) / 2.0 / (n - 1)             # average rank across the tie group
+        for k in range(i, j + 1):
+            out[order[k]] = share
+        i = j + 1
+    return out
+
+
+def _train_local(data, num, cat, snum, scat, sd_global):
+    """Second E1/E2 pair fitted on the LOCAL label, over the rows that have one.
+
+    Returns a status dict. Never raises: no local rows simply means no local model, and the
+    ranker then scores on global alone.
+    """
+    from catboost import CatBoostRegressor, Pool
+    idx = [i for i, v in enumerate(data["y_local"]) if v is not None]
+    if len(idx) < MIN_ROWS:
+        return {"trained": False, "rows": len(idx), "need": MIN_ROWS}
+    rows = [data["full"][i] for i in idx]
+    srows = [data["state"][i] for i in idx]
+    yl = [data["y_local"][i] for i in idx]
+    X = F.matrix(rows, num, cat)
+    cat_idx = list(range(len(num), len(num) + len(cat)))
+    Xs = F.matrix(srows, snum, scat)
+    scat_idx = list(range(len(snum), len(snum) + len(scat)))
+    e1 = CatBoostRegressor(iterations=300, depth=4, learning_rate=0.05, loss_function="RMSE",
+                           verbose=0)
+    e1.fit(Pool(X, yl, cat_features=cat_idx))
+    e2 = CatBoostRegressor(iterations=300, depth=4, learning_rate=0.05, loss_function="RMSE",
+                           verbose=0)
+    e2.fit(Pool(Xs, yl, cat_features=scat_idx))
+    li = [a - b for a, b in zip(e1.predict(Pool(X, cat_features=cat_idx)),
+                                e2.predict(Pool(Xs, cat_features=scat_idx)))]
+    sd_local = _sd(li)
+    meta = {"num": num, "cat": cat, "state_num": snum, "state_cat": scat,
+            "sd_local": sd_local, "rows": len(idx),
+            "kinds": sorted({r.get("ctx_kind") or r.get("context_kind") or "?" for r in rows})}
+    stage = LOCAL_MODEL_DIR + ".staging"
+    shutil.rmtree(stage, ignore_errors=True)
+    os.makedirs(stage)
+    e1.save_model(os.path.join(stage, "e1.cbm"))
+    e2.save_model(os.path.join(stage, "e2.cbm"))
+    json.dump(meta, open(os.path.join(stage, "meta.json"), "w"))
+    os.makedirs(LOCAL_MODEL_DIR, exist_ok=True)
+    for name in ("e1.cbm", "e2.cbm", "meta.json"):
+        os.replace(os.path.join(stage, name), os.path.join(LOCAL_MODEL_DIR, name))
+    shutil.rmtree(stage, ignore_errors=True)
+    return {"trained": True, "rows": len(idx), "sd_local": round(sd_local, 6),
+            "sd_global": round(sd_global, 6)}
 
 
 def _counts(data):
@@ -216,8 +294,7 @@ def _counts(data):
 
 
 def _encode(rows, num, cat, cat_maps=None):
-    """Numeric matrix for IsolationForest: numerics as-is, categoricals ordinal-encoded (an unseen
-    category gets a fresh index, which the forest tends to isolate == naturally novel)."""
+    """Numeric matrix for IsolationForest; categoricals ordinal-encoded, unseen -> a fresh index."""
     if cat_maps is None:
         cat_maps = {c: {v: i for i, v in enumerate(sorted({str(r.get(c, "?")) for r in rows}))}
                     for c in cat}
@@ -232,8 +309,7 @@ def _encode(rows, num, cat, cat_maps=None):
 
 
 class Ranker:
-    """Loaded model set. `ready` is False when nothing is trained yet -- the policy then runs its
-    cold-start behaviour instead of pretending to have an opinion."""
+    """Loaded model set; `ready` is False when nothing is trained yet."""
 
     def __init__(self, model_dir=MODEL_DIR):
         self.ready = False
@@ -253,18 +329,27 @@ class Ranker:
         except Exception as e:
             sys.stderr.write("model: load failed -> %s\n" % repr(e)[:160])
             self.ready = False
+            return
+        # local pair is OPTIONAL: absent means score on global alone
+        self.lmeta = None
+        self.l1 = self.l2 = None
+        lmeta_path = os.path.join(LOCAL_MODEL_DIR, "meta.json")
+        try:
+            if os.path.isfile(lmeta_path):
+                from catboost import CatBoostRegressor as _C
+                self.lmeta = json.load(open(lmeta_path))
+                self.l1 = _C(); self.l1.load_model(os.path.join(LOCAL_MODEL_DIR, "e1.cbm"))
+                self.l2 = _C(); self.l2.load_model(os.path.join(LOCAL_MODEL_DIR, "e2.cbm"))
+        except Exception as e:
+            # a missing or broken LOCAL pair must not disable the global ranker
+            sys.stderr.write("model: local pair not loaded -> %s\n" % repr(e)[:160])
+            self.lmeta = self.l1 = self.l2 = None
 
-    def score(self, record, beta=BETA):
-        """Rank EVERY offer of a stored decision record.
-
-        Returns [{context_kind, context_id, action_type, key, available, gate, params,
-                  exploit, explore, impact, score}] sorted best-first. `score` is what the policy
-        picks on; `impact` (E1-E2) is the cross-entity-comparable quantity it is built from.
-        """
+    def score(self, record, beta=BETA, w_local=None):
+        """Every offer of a stored decision record, scored, sorted best-first."""
         triples = F.decision_rows(record)
         if not self.ready or not triples:
-            # COLD PATH: deliberately imports nothing from catboost/sklearn, so a fresh machine can
-            # collect the first campaign's data before any ML dependency is installed.
+            # imports no catboost/sklearn: this path must work without them installed
             return [{"context_kind": e["context_kind"], "context_id": e["context_id"],
                      "action_type": o["action_type"], "key": o["key"],
                      "available": o["available"], "gate": o["gate"], "params": o.get("params") or {},
@@ -276,7 +361,7 @@ class Ranker:
         X = F.matrix(rows, m["num"], m["cat"])
         f1 = list(self.e1.predict(Pool(X, cat_features=list(
             range(len(m["num"]), len(m["num"]) + len(m["cat"]))))))
-        # E2 is per ENTITY, not per offer -- compute it once per entity and reuse
+        # E2 is per entity, not per offer
         seen, srows, order = {}, [], []
         for e, _o, _r in triples:
             k = (e["context_kind"], str(e["context_id"]))
@@ -291,15 +376,61 @@ class Ranker:
         if self.iso is not None:
             Xa, _ = _encode(rows, m["num"], m["cat"], self.iso["cat_maps"])
             nov = [-float(s) for s in self.iso["iso"].score_samples(Xa)]
+        # LOCAL impacts, when the second pair is loaded. An entity kind with no local label gets
+        # None and is scored on global alone -- no penalty for lacking a local component.
+        li = None
+        lmeta = getattr(self, "lmeta", None) or {}
+        lkinds = set(lmeta.get("kinds") or ())
+        w = float(w_local if w_local is not None else (m.get("w_local") or W_LOCAL))
+        if getattr(self, "l1", None) is not None and lkinds:
+            lm = self.lmeta
+            Xl = F.matrix(rows, lm["num"], lm["cat"])
+            lf1 = list(self.l1.predict(Pool(Xl, cat_features=list(
+                range(len(lm["num"]), len(lm["num"]) + len(lm["cat"]))))))
+            Xls = F.matrix(srows, lm["state_num"], lm["state_cat"])
+            lg = list(self.l2.predict(Pool(Xls, cat_features=list(
+                range(len(lm["state_num"]), len(lm["state_num"]) + len(lm["state_cat"]))))))
+            li = [lf1[j] - lg[order[j]] for j in range(len(rows))]
+        # PERCENTILE BLEND. Each impact is ranked WITHIN this decision's offers and centred, giving
+        # a uniform [-0.5, +0.5]; the two halves are then added. Uniform by construction, so no
+        # distributional assumption and nothing to clamp against.
+        impacts = [f1[i] - g[order[i]] for i in range(len(rows))]
+        # Gate on the kinds the local pair was ACTUALLY trained on, read from its own meta -- not
+        # the LOCAL_KINDS constant, which can drift out of step with a trained artefact. A
+        # campaign-context offer has no local meaning and must not be ranked on one.
+        local_imp = [li[i] if (li is not None and triples[i][0]["context_kind"] in lkinds) else None
+                     for i in range(len(rows))]
+        pg_rank = _ranks(impacts)
+        # local ranks are taken among the covered rows ONLY, so an uncovered offer neither gets a
+        # rank nor shifts anyone else's
+        lidx = [i for i, v in enumerate(local_imp) if v is not None]
+        pl_rank = [None] * len(rows)
+        for pos, val in zip(lidx, _ranks([local_imp[i] for i in lidx])):
+            pl_rank[pos] = val
+
         out = []
         for i, (e, o, _r) in enumerate(triples):
-            exploit = _mm(f1[i], m["exp_lo"], m["exp_hi"])
+            impact = impacts[i]
+            lo_imp = local_imp[i]
+            pctg = pg_rank[i]
+            pctl = pl_rank[i]
+            if pctl is not None:
+                # divide by the weight actually applied, so an offer WITHOUT a local component is
+                # not shrunk toward the middle relative to one that has it
+                exploit = ((pctg - 0.5) + w * (pctl - 0.5)) / (1.0 + w) + 0.5
+            else:
+                exploit = pctg
             explore = _mm(nov[i], m["nov_lo"], m["nov_hi"]) if nov[i] is not None else 0.5
             out.append({"context_kind": e["context_kind"], "context_id": e["context_id"],
                         "action_type": o["action_type"], "key": o["key"],
                         "available": o["available"], "gate": o["gate"],
                         "params": o.get("params") or {},
-                        "impact": round(f1[i] - g[order[i]], 5),
+                        "impact": round(impact, 5),
+                        "impact_local": (round(lo_imp, 5) if lo_imp is not None else None),
+                        # the two halves of exploit, so the UI can show the split
+                        "pct_global": round(pctg, 4),
+                        "pct_local": (round(pctl, 4) if pctl is not None else None),
+                        "w_local": w,
                         "exploit": round(exploit, 4), "explore": round(explore, 4),
                         "score": round((1 - beta) * exploit + beta * explore, 4)})
         out.sort(key=lambda r: -(r["score"] if r["score"] is not None else -1))

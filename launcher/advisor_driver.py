@@ -1,17 +1,4 @@
-r"""advisor_driver.py -- ADVISOR-DRIVEN turn-1 driver (the launcher's online test harness for the advisor).
-
-Closes the loop: for each decision menu, this driver asks the ADVISOR SERVICE to score the menu via
-GET /api/advise (no advisor import -- pure service consumption), takes the TOP AVAILABLE option by the
-blended `combined` score, and EXECUTES it with a launcher ACTION verb (actions.py), then verifies from
-game state.
-
-Boundary (per project direction):
-  * ENUMERATION + scoring  -> the advisor (reused, not rebuilt here).
-  * EXECUTION of the chosen -> actions.py verbs (parameterized by the chosen key).
-  * this driver just BRIDGES: read top choice -> call the action verb -> verify.
-
-advice_endpoint() is the sole consumption primitive: the endpoint is the one connection to the advisor.
-"""
+r"""advisor_driver.py -- drives menus from the advisor service's /api/advise picks."""
 from __future__ import annotations
 import json
 import os
@@ -24,19 +11,13 @@ sys.path.insert(0, r"D:\tw_stack\bus")
 sys.path.insert(0, r"D:\tw_stack\launcher")
 
 RUNS_ROOT = r"D:\twdata\runs\human"
-ADVISE_URL = "http://127.0.0.1:8770/api/advise"    # the advisor UI service's v0 request-advice endpoint
+ADVISE_URL = "http://127.0.0.1:8770/api/advise"
 
-# HARDCODED denylist: options that leave the campaign UI for the battle UI, which is out of scope and
-# not realistically automatable. These are ALWAYS treated as unavailable -- never picked, and execute()
-# refuses them even if handed one directly. (pre_battle: button_attack = "Fight Battle";
-# button_spectate also enters the battle UI.)
 FORBIDDEN_KEYS = frozenset({"button_attack", "button_spectate"})
 
 
 def advice_endpoint(menu_type, run_id=None, timeout=30.0):
-    """v0 BUTTON-PRESS path: ask the advisor SERVICE to score `menu_type` NOW via /api/advise (the same
-    endpoint the UI buttons hit). Returns the top-available pick {key,name,combined,...,x,y,w,h} or None.
-    This is how the launcher 'tells the advisor it is at menu X and needs predictions' -- no import."""
+    """Top-available pick {key,name,combined,...,x,y,w,h} for `menu_type`, or None."""
     q = {"type": menu_type}
     if run_id:
         q["run"] = run_id
@@ -60,7 +41,7 @@ def advice_endpoint(menu_type, run_id=None, timeout=30.0):
 
 
 def freshest_run():
-    """The run dir with the most-recently-written data files (mirrors the advisor UI's freshness)."""
+    """The run dir with the most-recently-written data files."""
     best, best_m = None, -1.0
     try:
         for name in os.listdir(RUNS_ROOT):
@@ -79,9 +60,7 @@ def freshest_run():
 
 
 def _top_available(options):
-    """Advisor's pick from a type's options: highest `combined` whose `available` is not False.
-    FORBIDDEN_KEYS are always unavailable (battle-UI entries). Returns the option dict, or None
-    when NO allowed option is available -- no unavailable-pick fallback; the caller fails loudly."""
+    """Highest-`combined` option whose `available` is not False and whose key is allowed, else None."""
     typed = [o for o in sorted(options, key=lambda o: -(o.get("combined") or 0.0))
              if (o.get("key") or o.get("id")) not in FORBIDDEN_KEYS]
     for o in typed:
@@ -92,21 +71,16 @@ def _top_available(options):
 
 
 def drive_menu(bus, run_dir, menu_type, opener=None, verifier=None, find_verb=None, timeout=35.0):
-    """One ADVISOR-DRIVEN decision, the full bridge loop:
-      1. opener(bus) -> reach/open the menu (so the recorder captures it + watch scores it);
-      2. advice_endpoint() -> the service scores the menu NOW -> top-available pick;
-      3. EXECUTE: pure-click the pick's captured coords (execute), OR call find_verb(bus, key) when the
-         pick has no coords (building's DB-synth set) -- a targeted find is 'action', not enumeration;
-      4. verifier(bus) -> assert from game state.
-    Returns a result dict (menu_type, pick, executed, verify, note)."""
+    """opener -> advice_endpoint -> execute (find_verb or coord click) -> verifier.
+
+    Returns a result dict (menu, pick, executed, verify, note).
+    """
     if opener:
         try:
             opener(bus)
         except Exception as exc:
             return {"menu": menu_type, "note": "opener failed: %s" % repr(exc)[:80]}
     run_id = os.path.basename(str(run_dir).rstrip("/\\")) if run_dir else None
-    # v0: request advice from the service endpoint (the button-press path, same one the UI hits);
-    # retry for recorder-capture lag on captured menus (building is DB-synth -> immediate).
     pick = None
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -116,9 +90,7 @@ def drive_menu(bus, run_dir, menu_type, opener=None, verifier=None, find_verb=No
         time.sleep(1.5)
     if not pick:
         return {"menu": menu_type, "note": "no advice from /api/advise within %ss" % timeout}
-    # EXECUTE -- exactly ONE path per pick, no chaining (a failure must name its path loudly):
-    # a find_verb (targeted action: building, occupation) takes the pick's key; otherwise skills
-    # commits via its node's |card and full-coord menus pure-click (execute).
+    # exactly one execution path per pick, no chaining
     if find_verb is not None:
         executed = bool(find_verb(bus, pick.get("key")))
     elif menu_type == "skills" or (pick.get("x") is not None and pick.get("y") is not None):
@@ -133,18 +105,12 @@ def drive_menu(bus, run_dir, menu_type, opener=None, verifier=None, find_verb=No
 
 
 def execute(bus, menu_type, pick):
-    """Launcher ACTION side of the bridge: commit the advisor's chosen option by PURE-CLICKING its
-    captured coords (recorder's UI-virtual x/y -> screen via nav) + the per-type confirm. The launcher
-    thus only ACTS on a key+coords handed to it -- it never enumerated. Returns True if clicked.
-    If the pick has NO captured coords (building's DB-synthesized set), returns False: those menus need a
-    targeted actions.py verb (a find is 'action', not enumeration), handled by the caller."""
+    """Click the pick's captured coords (or, for skills, its node's |card). True if clicked."""
     import nav
     key = (pick or {}).get("key")
-    if key in FORBIDDEN_KEYS:                            # battle-UI entries: never click, no exceptions
+    if key in FORBIDDEN_KEYS:
         sys.stderr.write("advisor_driver: REFUSING forbidden key %r (battle UI is out of scope)\n" % key)
         return False
-    # SKILLS commit via the skill node's |card child (the coord-center of the node is NOT the clickable).
-    # A targeted find of the ONE chosen node (not a list-all) is 'action', not enumeration.
     if menu_type == "skills":
         n = nav.find_rect(bus, "character_details_panel", key)
         if not n or not n.get("path"):
@@ -163,21 +129,14 @@ def execute(bus, menu_type, pick):
     time.sleep(0.3)
     nav.mouse("click", sx, sy)
     time.sleep(1.0)
-    if menu_type == "research":                          # confirm the research pick
+    if menu_type == "research":
         nav.bus_click(bus, "technology_panel|button_ok_holder|button_ok")
         time.sleep(1.0)
     return True
 
 
-# ------------------------------------------------------------------ the assembled advisor-driven TURN
-# The online test run, in THE TASK's exact order (battles FIRST -- they are where XP + loot come from):
-#   1. attack the nearest enemy army -> pre_battle advice LOGGED, autoresolve FORCED (test consistency,
-#      per user) -> advisor drives the captives decision;
-#   2. attack the Shrine settlement  -> same forced autoresolve -> advisor drives occupation;
-#   3. only then recruit -> build -> research -> skills -> items (skills/items need the battles' XP/loot).
-# Every step was walked LIVE on a fresh campaign (2026-07-29, run 20260729_153609) before being coded.
-LORD_CQI = 56    # Alith Anar (Nagarythe) -- the default campaign's starting lord
-SHRINE = "wh3_main_combi_region_shrine_of_ladrielle"    # THE TASK's settlement target
+LORD_CQI = 56
+SHRINE = "wh3_main_combi_region_shrine_of_ladrielle"
 
 
 def _open_research(bus):
@@ -192,7 +151,7 @@ def _open_recruit(bus):
     turn1.clear_intro(bus)
     if not turn1._select_army(bus, LORD_CQI):
         raise RuntimeError("could not select lord %d's army" % LORD_CQI)
-    if "units_panel" not in nav.visible_roots(bus):     # CTD GUARD (turn1.recruit)
+    if "units_panel" not in nav.visible_roots(bus):
         raise RuntimeError("units_panel not open -- refusing to toggle recruitment")
     nav.bus_click(bus, turn1._RECRUIT_BTN)
     time.sleep(1.4)
@@ -226,7 +185,7 @@ def _wait_root(bus, root, tries=20, pause=1.0):
 
 
 def _attack(bus, dx, dy, what):
-    """Select the lord's army and right-click map display position (dx,dy) -> popup_pre_battle."""
+    """Select the lord's army and right-click map position (dx,dy); waits for popup_pre_battle."""
     import turn1
     if not turn1._select_army(bus, LORD_CQI):
         raise RuntimeError("could not select lord %d's army (attacking %s)" % (LORD_CQI, what))
@@ -236,16 +195,14 @@ def _attack(bus, dx, dy, what):
 
 
 def _log_advice(mtype, run_id):
-    """Request + LOG the advisor's pick for a menu without acting on it (the forced-autoresolve
-    pre_battle steps still exercise + report the advice path)."""
+    """Request and print the advisor's pick for a menu without acting on it."""
     a = advice_endpoint(mtype, run_id, timeout=20.0)
     print("  advisor(%s) pick [LOGGED ONLY]: %s" % (mtype, a), flush=True)
     return a
 
 
 def _force_autoresolve(bus):
-    """FORCED autoresolve (test consistency, per user): click the live pre_battle autoresolve
-    button, then wait for battle results. Loud fail at every step."""
+    """Click the pre_battle autoresolve button and wait for popup_battle_results."""
     import nav
     n = nav.find_rect(bus, "popup_pre_battle", "button_autoresolve")
     if not n or n.get("x") is None:
@@ -259,9 +216,7 @@ def _force_autoresolve(bus):
 
 
 def _occupation_verb(bus, key):
-    """Targeted occupation action: the pick's key IS the option node id under
-    settlement_captured|button_parent|<key>; commit via its |option_button (walked live: the
-    capture has x but no y, so this menu executes by find, not pure click)."""
+    """Commit the occupation option whose node id is `key`, via its |option_button."""
     import turn1, nav
     n = turn1._find_node(bus, "settlement_captured", lambda x: str(x.get("id")) == str(key))
     if not n:
@@ -273,8 +228,7 @@ def _occupation_verb(bus, key):
 
 
 def run_turn(bus, run_dir):
-    """THE TASK's advisor-driven turn, exact order -- battles first, economy after.
-    Returns the per-menu result dicts; every step verifies from objective game state."""
+    """Run the scripted turn (battles, then economy); returns the per-menu result dicts."""
     import turn1, nav
     run_id = os.path.basename(str(run_dir).rstrip("/\\")) if run_dir else None
     results = []
@@ -290,7 +244,6 @@ def run_turn(bus, run_dir):
         results.append(res)
         return res
 
-    # ---- 1. ARMY BATTLE: forced autoresolve (advice logged), advisor drives captives ----------
     print("== battle 1: nearest enemy army ==", flush=True)
     turn1.clear_intro(bus)
     e = turn1._nearest_enemy_army(bus)
@@ -299,7 +252,7 @@ def run_turn(bus, run_dir):
     ex = turn1._ev(bus, "cm:get_character_by_cqi(%d):display_position_x()" % e["cqi"])
     ey = turn1._ev(bus, "cm:get_character_by_cqi(%d):display_position_y()" % e["cqi"])
     _attack(bus, ex, ey, "army cqi %s" % e["cqi"])
-    time.sleep(3.0)                     # recorder capture window for the pre_battle menu_open
+    time.sleep(3.0)
     _log_advice("pre_battle", run_id)
     _force_autoresolve(bus)
     print("== captives (advisor-driven) ==", flush=True)
@@ -309,7 +262,6 @@ def run_turn(bus, run_dir):
     dead = turn1._ev(bus, "not cm:get_character_by_cqi(%d)" % e["cqi"])
     record("captives", res, {"target_dead": bool(dead)})
 
-    # ---- 2. SETTLEMENT BATTLE: forced autoresolve, advisor drives occupation ------------------
     print("== battle 2: %s ==" % SHRINE, flush=True)
     turn1.clear_intro(bus)
     dx = turn1._ev(bus, "cm:get_region('%s'):settlement():display_position_x()" % SHRINE)
@@ -333,10 +285,6 @@ def run_turn(bus, run_dir):
     mine = [s.get("region") for s in (bus.send("setts", "", timeout=6) or {}).get("setts") or []]
     record("occupation", res, {"own_region": any(short in (m or "") for m in mine)})
 
-    # ---- 3. ECONOMY, only after the battles: recruit -> build -> research -> skills -> items --
-    # building is EXCLUDED until the buildable-option data path is proven (investigation open:
-    # how to enumerate a slot's buildable set from data, no UI hovering) -- it would need a
-    # find_verb executor, and shipping a UI-search one prematurely was reverted per user.
     for mtype, opener, find_verb, close_details in (
             ("recruit", _open_recruit, None, False),
             ("research", _open_research, None, False),
@@ -365,11 +313,6 @@ def run_turn(bus, run_dir):
     return results
 
 
-# ------------------------------------------------------------------ the advisor GAME LOOP (cco era)
-# Cycle every lord (stances via cco, recruit via the proven UI path), every settlement (building via
-# cco Construct; edict advice REPORTED, execution not yet implemented -- needs a complete province to
-# verify the UI stack click), then campaign menus (research via the proven UI path) -- then END TURN
-# and repeat for N turns. Every cco execution: pre-check -> command -> post-assert (actions.py verbs).
 API = "http://127.0.0.1:8770"
 
 
@@ -399,7 +342,7 @@ def _actions_row(run_id, entity_kind, entity_id, action_type):
 
 
 def _wait_actions_turn(run_id, turn, timeout=90.0):
-    """Block until the actions stream's entities row reaches `turn` (the turn-start sweep)."""
+    """Block until the actions stream's entities row reaches `turn`; returns its payload."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         row = _actions_row(run_id, "campaign", "entities", "entities")
@@ -416,9 +359,7 @@ def _advise_entity(run_id, mtype, entity_kind, entity_id):
 
 
 def _bootstrap_stance_whitelist(bus, run_id, cqi):
-    """The stance legality whitelist comes from the recorder's army_stances UI-stack capture,
-    which fires when an army is SELECTED. If advice shows no legal stances yet, select the
-    lord's army once (proven turn1 navigation), give the recorder a beat, and deselect."""
+    """Stance advice for `cqi`; selects the army once first if no option is marked legal yet."""
     import turn1, nav
     d = _advise_entity(run_id, "stance", "lord", cqi)
     if d and any(o.get("legal") for o in d.get("options") or []):
@@ -427,15 +368,14 @@ def _bootstrap_stance_whitelist(bus, run_id, cqi):
     if not turn1._select_army(bus, int(cqi)):
         sys.stderr.write("loop: whitelist bootstrap could not select lord %s\n" % cqi)
         return d
-    time.sleep(6.0)                       # recorder capture beat (poll + enumerate)
+    time.sleep(6.0)
     nav.deselect(bus)
     time.sleep(1.0)
     return _advise_entity(run_id, "stance", "lord", cqi)
 
 
 def run_campaign_loop(bus, run_dir, turns=3):
-    """The advisor-driven CAMPAIGN loop: lords -> settlements -> campaign menus -> end turn, xN.
-    Writes one report row per turn to <run_dir>/loop_report.jsonl. Loud everywhere."""
+    """lords -> settlements -> campaign menus -> end turn, xN; appends to <run_dir>/loop_report.jsonl."""
     import turn1, nav
     import actions as ACT
     run_id = os.path.basename(str(run_dir).rstrip("/\\"))
@@ -453,7 +393,6 @@ def run_campaign_loop(bus, run_dir, turns=3):
         acted, failures = [], []
         ents = _wait_actions_turn(run_id, turn)
 
-        # ---- LORD phase --------------------------------------------------------------
         for lord in ents.get("lords") or []:
             cqi = str(lord["cqi"])
             _post_json("%s/api/actions/refresh" % API,
@@ -471,7 +410,6 @@ def run_campaign_loop(bus, run_dir, turns=3):
                       flush=True)
             else:
                 print("  lord %s stance: no available non-active pick" % cqi, flush=True)
-            # recruit stays the proven UI path (no data-side pool/command exists)
             try:
                 res = drive_menu(bus, run_dir, "recruit", opener=_open_recruit)
                 ok = bool(res.get("executed"))
@@ -487,7 +425,6 @@ def run_campaign_loop(bus, run_dir, turns=3):
             nav.close_popups(bus)
             nav.deselect(bus)
 
-        # ---- SETTLEMENT phase --------------------------------------------------------
         for region in ents.get("regions") or []:
             _post_json("%s/api/actions/refresh" % API,
                        {"entity_kind": "settlement", "entity_id": region, "run": run_id})
@@ -514,7 +451,6 @@ def run_campaign_loop(bus, run_dir, turns=3):
                 print("  %s edict advice: %s (execution not implemented)" %
                       (region.split("region_")[-1], epick["key"]), flush=True)
 
-        # ---- CAMPAIGN phase ----------------------------------------------------------
         if turn1._is_researching(bus) is not True:
             try:
                 res = drive_menu(bus, run_dir, "research", opener=_open_research)
@@ -530,15 +466,11 @@ def run_campaign_loop(bus, run_dir, turns=3):
 
         report({"turn": turn, "acted": acted, "failures": failures, "ts": time.time()})
 
-        # ---- END TURN ----------------------------------------------------------------
         if tix == turns - 1:
             print("== loop complete (turn %s; %d turns from %s) ==" % (turn, turns, turn0),
                   flush=True)
             break
         print("  ending turn %s ..." % turn, flush=True)
-        # end-turn NOTIFICATIONS block the button (tooltip: "Resolve or skip...") -> suppress all
-        # (verified live; idempotent). The button itself IGNORES SimulateLClick (like the events
-        # checkmark) -> the bus end_turn reply supplies the live rect, then a HARDWARE click.
         bus.send("eval", "local q=cco('CcoCampaignPendingActionNotificationQueue','');"
                          "if q then pcall(function() q:Call('SetAllNotificationsSuppressed(true)') end) end "
                          "return 'ok'", timeout=10)
@@ -555,7 +487,7 @@ def run_campaign_loop(bus, run_dir, turns=3):
         while time.time() < deadline:
             time.sleep(3.0)
             roots = nav.visible_roots(bus)
-            if "popup_pre_battle" in roots:               # defensive battle during AI turns
+            if "popup_pre_battle" in roots:
                 print("  defensive battle -> forced autoresolve", flush=True)
                 _log_advice("pre_battle", run_id)
                 _force_autoresolve(bus)
@@ -575,11 +507,7 @@ def run_campaign_loop(bus, run_dir, turns=3):
 
 
 if __name__ == "__main__":
-    # `python advisor_driver.py run [run_dir]`         -- the LIVE advisor-driven turn (needs the
-    #   game + recorder + advisor watch + UI service up; THE TASK's exact sequence, battles first).
-    # `python advisor_driver.py loop [N] [run_dir]`    -- the advisor GAME LOOP: lords -> settlements
-    #   -> campaign -> end turn, for N turns (default 3).
-    # `python advisor_driver.py [menu_type] [run_dir]` -- smoke: print the service's current pick.
+    # usage: advisor_driver.py run [run_dir] | loop [N] [run_dir] | [menu_type] [run_dir]
     if len(sys.argv) > 1 and sys.argv[1] == "loop":
         from bus import Bus
         n_turns = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2].isdigit() else 3
@@ -594,7 +522,7 @@ if __name__ == "__main__":
         n_ok = sum(1 for r in out if r.get("executed"))
         print("RESULT: %d/%d executed" % (n_ok, len(out)))
         if n_ok < len(out):
-            sys.exit(1)                                  # loud: any unexecuted menu fails the run
+            sys.exit(1)
     else:
         mtype = sys.argv[1] if len(sys.argv) > 1 else "research"
         run = sys.argv[2] if len(sys.argv) > 2 else freshest_run()

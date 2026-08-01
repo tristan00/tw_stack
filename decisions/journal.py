@@ -1,28 +1,10 @@
-r"""journal.py -- the ADVISOR/LAUNCHER side of the recorder contract. Pure file IO + read-only
-sqlite. It imports no bus, no launcher and no game code, and that is the point.
-
-THE HARD BOUNDARY
-    Only the RECORDER reads the game. The advisor asks for data and gets DB records back; it builds
-    its features from those records. If the advisor could open a bus, the recorder would be
-    pointless and training data would stop matching what the model saw at decision time.
-
-Who calls what:
-    ADVISOR   request_snapshot(run)          -> recorder reads the game NOW, persists the decision
-                                                point, returns (decision_id, records)   [stream 2]
-    ADVISOR   log_pick(run, did, pick, ...)  -> the action it chose                      [stream 3]
-    LAUNCHER  log_verification(run, did, r)  -> did the action actually happen           [stream 4]
-    ADVISOR   request_target(run)            -> recorder reads + persists the reward row [stream 1]
-
-Requests go to <run>/decisions_requests.jsonl, replies come back on
-<run>/decisions_responses.jsonl, and the recorder's `decisions` stream is the only process that
-touches decisions.sqlite. A crash therefore never corrupts the DB, and the request log is itself a
-replayable raw record.
-"""
+"""The advisor/launcher side of the recorder contract: file IO plus read-only sqlite."""
 from __future__ import annotations
 
 import json
 import os
 import sqlite3
+import threading
 import time
 
 REQUESTS = "decisions_requests.jsonl"
@@ -33,12 +15,7 @@ CURRENT_POINTER = "CURRENT_RUN"
 
 
 def current_run_dir(runs_root=RUNS_ROOT, timeout=0.0):
-    """The run dir the recorder is servicing RIGHT NOW, from the pointer the manager publishes.
-
-    Never cache this across a campaign change: the recorder opens a fresh run dir on every campaign
-    swap, and a stale path means posting requests into a directory nobody is reading (which fails as
-    a request timeout, indistinguishable at a glance from a dead game).
-    """
+    """The run dir the recorder is servicing now. Do not cache it -- a campaign swap moves it."""
     path = os.path.join(runs_root, CURRENT_POINTER)
     deadline = time.time() + max(0.0, timeout)
     while True:
@@ -54,11 +31,15 @@ def current_run_dir(runs_root=RUNS_ROOT, timeout=0.0):
         time.sleep(0.5)
 
 
-# ------------------------------------------------------------------------------- plumbing
+_io_lock = threading.Lock()        # guards every append and _new_id
+
+
 def _append(run_dir, name, row):
     row.setdefault("ts", time.time())
-    with open(os.path.join(run_dir, name), "a", encoding="utf-8") as f:
-        f.write(json.dumps(row, default=str) + "\n")
+    line = json.dumps(row, default=str) + "\n"
+    with _io_lock:
+        with open(os.path.join(run_dir, name), "a", encoding="utf-8") as f:
+            f.write(line)
 
 
 def _read_rows(path, offset=0):
@@ -85,7 +66,7 @@ def read_requests(run_dir, offset=0):
 
 
 def respond(run_dir, req_id, **payload):
-    """Recorder -> advisor reply for one request, stamped with the dir it is actually servicing."""
+    """Recorder -> advisor reply for one request."""
     _append(run_dir, RESPONSES, dict(payload, req_id=req_id,
                                      served_by=str(run_dir).replace("\\", "/")))
 
@@ -94,13 +75,14 @@ _req_seq = [0]
 
 
 def _new_id(kind):
-    _req_seq[0] += 1
-    return "%s-%d-%d" % (kind, int(time.time() * 1000), _req_seq[0])
+    with _io_lock:
+        _req_seq[0] += 1
+        seq = _req_seq[0]
+    return "%s-%d-%d" % (kind, int(time.time() * 1000), seq)
 
 
 def _await(run_dir, req_id, timeout, poll=0.25):
-    """Block until the recorder answers `req_id`. Loud on timeout -- a silent stall here would look
-    exactly like "the faction has no options", which is the one thing we must never confuse."""
+    """Block until the recorder answers `req_id`; raises on timeout."""
     path = os.path.join(run_dir, RESPONSES)
     offset, deadline = 0, time.time() + timeout
     while time.time() < deadline:
@@ -111,9 +93,6 @@ def _await(run_dir, req_id, timeout, poll=0.25):
                     raise RuntimeError("recorder failed request %s: %s" % (req_id, r["error"]))
                 return r
         time.sleep(poll)
-    # A bare timeout is the WRONG story to tell here: by far the most common cause is that the
-    # recorder rotated to a new run dir on a campaign swap and this caller is still posting into the
-    # abandoned one. Say which dir is live so the failure names its own fix.
     hint = ""
     try:
         live = current_run_dir()
@@ -126,68 +105,73 @@ def _await(run_dir, req_id, timeout, poll=0.25):
     raise RuntimeError("recorder never answered request %s within %ss%s" % (req_id, timeout, hint))
 
 
-# ------------------------------------------------------------- STREAM 2: ask the recorder to look
 def request_snapshot(run_dir, active=None, timeout=180.0):
-    """Ask the recorder to read the game RIGHT NOW and persist one faction-wide decision point.
-
-    Returns (decision_id, records) where records is what the advisor featurizes:
-        {campaign, world, entities: [{context_kind, context_id, state, offers}]}
-    read back out of the DB -- so the advisor is provably featurizing the stored record, not a
-    live game read.
-    """
+    """(decision_id, records) -- the recorder reads the game now and persists a decision point."""
     rid = _new_id("snapshot")
     t_request = time.time()
     _append(run_dir, REQUESTS, {"kind": "snapshot", "req_id": rid, "active": active})
     reply = _await(run_dir, rid, timeout)
     did = reply.get("decision_id")
     rec = read_decision(run_dir, did)
-    # phase stamps the advisor cannot get any other way: how long the RECORDER spent reading the
-    # game (collect_ms) vs how long the whole round trip took (the queue wait is the difference).
     rec["_t_request"] = t_request
     rec["_t_received"] = time.time()
     rec["_collect_ms"] = reply.get("collect_ms")
     return did, rec
 
 
+def log_interrupt(run_dir, payload):
+    """An interrupt-screen decision (pre-battle / battle results / occupation / dilemma)."""
+    # the envelope `kind` must be "interrupt"; the screen type moves to `screen`
+    body = dict(payload)
+    body["screen"] = body.pop("kind", None)
+    body["kind"] = "interrupt"
+    _append(run_dir, REQUESTS, body)
+
+
 def request_target(run_dir, timeout=120.0):
-    """STREAM 1: ask the recorder to read + persist this turn's reward row. Returns the row."""
+    """Ask the recorder to read + persist this turn's reward row. Returns the row."""
     rid = _new_id("target")
     _append(run_dir, REQUESTS, {"kind": "target", "req_id": rid})
     return _await(run_dir, rid, timeout).get("row")
 
 
+def _retry_once(fn, what):
+    """Run `fn`; on a timeout (not a recorder-reported error) try exactly once more."""
+    try:
+        return fn()
+    except RuntimeError as e:
+        if "never answered" not in str(e):
+            raise
+        sys.stderr.write("journal: %s timed out, retrying once -- %s\n" % (what, str(e)[:120]))
+        return fn()
+
+
 def request_turn(run_dir, timeout=60.0):
-    """The current turn number, straight from the recorder (the advisor has no other way to know)."""
+    """The current turn number, from the recorder."""
     rid = _new_id("turn")
     _append(run_dir, REQUESTS, {"kind": "turn", "req_id": rid})
     return _await(run_dir, rid, timeout).get("turn")
 
 
 def request_hash(run_dir, timeout=45.0):
-    """The liveness digest (see collect.state_hash) -- the watchdog's only input. Raises if the
-    recorder cannot answer, which the watchdog counts as "blocked", same as an unchanging hash."""
+    """(hash, roots) -- the liveness digest; raises if the recorder cannot answer."""
     rid = _new_id("hash")
     _append(run_dir, REQUESTS, {"kind": "hash", "req_id": rid})
     r = _await(run_dir, rid, timeout)
     return r.get("hash"), r.get("roots") or []
 
 
-# ------------------------------------------------------------------- STREAMS 3 + 4: what happened
 def log_pick(run_dir, decision_id, pick, scores=None, timings=None):
-    """STREAM 3 (ADVISOR): the offer it chose out of the decision point, plus the scores it gave
-    every offer, so the ranking that produced the choice is stored next to the choice.
-    `timings` carries the millisecond phase breakdown for this action (see loop.py)."""
+    """The offer the advisor chose, plus the score it gave every offer."""
     _append(run_dir, REQUESTS, {"kind": "pick", "decision_id": decision_id,
                                 "pick": pick, "scores": scores, "timings": timings})
 
 
 def log_verification(run_dir, decision_id, result):
-    """STREAM 4 (LAUNCHER): the ActionRecord proving whether the action actually happened
-    (executed / confirmed / counted + signal + before/after evidence)."""
+    """The launcher's ActionRecord: executed / confirmed / counted + before/after evidence."""
     _append(run_dir, REQUESTS, {"kind": "verification", "decision_id": decision_id, "result": result})
 
 
-# --------------------------------------------------------------------- read-only DB access
 def _con(run_dir):
     path = os.path.join(run_dir, DB_NAME)
     if not os.path.exists(path):
@@ -225,8 +209,7 @@ def read_decision(run_dir, decision_id):
 
 
 def labelled_decisions(run_dir):
-    """(decisions, target_series) for this run -- every CONFIRMED decision point with its label,
-    plus the per-turn reward inputs. The trainer's only input (see store.labelled_decisions)."""
+    """(decisions, target_series) for this run."""
     import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from store import DecisionStore                                    # noqa: E402

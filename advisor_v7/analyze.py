@@ -1,22 +1,3 @@
-r"""analyze.py -- is the data any good? Read-only, never touches the game.
-
-    python advisor_v7/analyze.py [run_dir]
-
-Three questions the training data lives or dies on:
-
-  OFFER HONESTY   When we mark an action `available` and the policy picks it, does it actually
-                  happen? An offer that is available-but-refused is a LIE in the feature row: the
-                  model learns "this was possible here" when it was not. This is the single most
-                  important data-quality number, and it is per action type because the gates differ.
-
-  LABEL BALANCE   How many decision points carry a usable label, how many action types ever
-                  succeed at all, and whether any type is so rare or so broken that it contributes
-                  nothing but noise.
-
-  TIME            Where wall-clock goes, and specifically how much of it is spent CONFIRMING
-                  FAILURES -- a failed confirm burns its whole timeout, a success returns on the
-                  first poll, so failures cost several times what successes do.
-"""
 from __future__ import annotations
 
 import json
@@ -59,8 +40,7 @@ def offer_honesty(con):
 
 
 def offered_vs_taken(con):
-    """How often each action type is OFFERED as available at all, vs how often it is picked.
-    A type that is offered constantly but never lands is dead weight in every feature row."""
+    """Per action type: {offered, available, picked}."""
     out = {}
     for at, n, av in con.execute(
             "SELECT action_type, COUNT(*), SUM(available) FROM action_offers GROUP BY action_type"):
@@ -85,7 +65,7 @@ def time_split(con):
         collect += (t.get("collect_ms") or 0) / 1000.0
         if refusal == "awaiting_execution":
             continue
-        (ok_v if counted else fail_v).__class__       # noqa -- keep the branch explicit below
+        (ok_v if counted else fail_v).__class__       # noqa
         if counted:
             ok_v += (lat or 0) / 1000.0
         else:

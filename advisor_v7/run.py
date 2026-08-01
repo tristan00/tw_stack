@@ -32,7 +32,7 @@ def main():
     if len(sys.argv) < 2:
         print(__doc__.strip())
         return 1
-    import journal                                          # noqa: E402  (recorder request API)
+    import journal                                          # noqa: E402
     arg = sys.argv[1]
     turns = int(sys.argv[2]) if len(sys.argv) > 2 else 3
     if arg not in ("auto", "-"):
@@ -45,12 +45,9 @@ def main():
     from bus import Bus
     from executor import Executor
     ex = Executor(Bus())
-    # The advisor owns the whole flow: it gets itself a campaign rather than waiting for a human.
     state = ex.ensure_campaign(fresh="--fresh" in sys.argv)
     print("campaign: %s" % json.dumps(state)[:200], flush=True)
-    # ⚠ RE-RESOLVE AFTER the campaign settles. Starting a campaign makes the recorder open a FRESH
-    # run dir, so the path from before the restart is already dead -- that is exactly how the first
-    # autonomous restart failed (every request timed out against the abandoned directory).
+    # a campaign start rotates the run dir -- re-resolve it
     if not state.get("already_in_campaign"):
         live = journal.current_run_dir(timeout=120.0)
         if live != run_dir:
@@ -61,7 +58,7 @@ def main():
     pol = P.Policy(ranker)
     print("advisor v7: model=%s  policy=%s  turns=%d  run=%s"
           % ("trained (%d rows)" % (ranker.meta or {}).get("rows", 0) if ranker.ready
-             else "COLD (random policy)", "eps=%.2f" % pol.epsilon, turns, run_dir), flush=True)
+             else "COLD (random policy)", turns, run_dir), flush=True)
 
     status = 0
     try:

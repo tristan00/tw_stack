@@ -60,6 +60,10 @@ $focus = Force-Foreground $h
 # Scan codes (Set 1).
 $scan = @{ ESCAPE=0x01; RETURN=0x1C; ENTER=0x1C; SPACE=0x39; TAB=0x0F;
            UP=0x48; DOWN=0x50; LEFT=0x4B; RIGHT=0x4D;
+           # K is the game's toggle_ui shortcut (text/default_keys.xml, category "universal").
+           # Present so a HUD hidden by that toggle can be toggled back -- nothing in the harness
+           # sends it as input, and it is never used during normal play.
+           K=0x25;
            '1'=0x02; '2'=0x03; '3'=0x04; '4'=0x05; '5'=0x06;
            '6'=0x07; '7'=0x08; '8'=0x09; '9'=0x0A; '0'=0x0B }
 

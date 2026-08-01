@@ -288,11 +288,93 @@ function handlers.tree(seq, rest)
         found = (rootuic ~= nil), nodes = nodes, turn = turn() })
 end
 
+-- Names of every visible root, cheap, for before/after comparison around an input.
+local function root_names()
+  local r, out = root(), {}
+  if not r then return out end
+  local n = try(function() return r:ChildCount() end) or 0
+  for i = 0, n - 1 do
+    local c = try(function() return UIComponent(r:Find(i)) end)
+    if c and try(function() return c:Visible() end) then
+      out[#out + 1] = try(function() return c:Id() end)
+    end
+  end
+  return out
+end
+
+-- ‼ `clicked` ONLY EVER MEANT "SimulateLClick DID NOT THROW". It never meant the component reacted,
+-- and it is returned as true for components that ignore the call completely -- which is how a click
+-- that did nothing has repeatedly been read as evidence that it worked. The fix is not a better
+-- flag, it is REPORTING THE OBSERVABLE FACTS either side of the input so the caller can judge:
+-- what was actually targeted (id/state/visibility/geometry), and what changed (component state,
+-- visibility, and the visible root set). A click that changes none of those did nothing, whatever
+-- SimulateLClick returned.
 function handlers.click(seq, rest)
   local uic = resolve(rest)
-  local clicked = false
-  if uic then clicked = try(function() uic:SimulateLClick(); return true end) == true end
-  log({ seq = seq, cmd = "click", path = rest, found = (uic ~= nil), clicked = clicked, turn = turn() })
+  local info = { seq = seq, cmd = "click", path = rest, found = (uic ~= nil), turn = turn() }
+  if uic then
+    local x, y = xy(uic)
+    info.id = or_null(try(function() return uic:Id() end))
+    info.state_before = or_null(try(function() return uic:CurrentState() end))
+    info.visible_before = or_null(try(function() return uic:Visible() end))
+    -- VisibleFromRoot is the one that matters: a component whose ancestor is detached from the UI
+    -- root reports Visible()==true while being undisplayable, and clicks on it are silent no-ops.
+    info.visible_from_root = or_null(try(function() return uic:VisibleFromRoot() end))
+    info.x, info.y = or_null(x), or_null(y)
+    info.w = or_null(try(function() return uic:Width() end))
+    info.h = or_null(try(function() return uic:Height() end))
+    info.roots_before = root_names()
+    info.clicked = try(function() uic:SimulateLClick(); return true end) == true
+    info.state_after = or_null(try(function() return uic:CurrentState() end))
+    info.visible_after = or_null(try(function() return uic:Visible() end))
+    info.roots_after = root_names()
+    info.changed = (info.state_before ~= info.state_after)
+                or (info.visible_before ~= info.visible_after)
+                or (#info.roots_before ~= #info.roots_after)
+  else
+    info.clicked = false
+  end
+  log(info)
+end
+
+-- ‼ A CONTEXT COMMAND REPORTED NOTHING AT ALL. Callers ran it through `eval` and returned the
+-- literal string "sent", so a command that was malformed, referred to a missing context, or was
+-- simply ignored looked identical to one that worked -- and that is precisely what was being used
+-- to judge whether the UI's own commands can replace a hardware click.
+-- This dispatches it and reports the pcall result plus the root set either side, so "dispatched"
+-- and "had an effect" stay separate facts.
+-- ‼ THE HUD IS HIDDEN, NOT DESTROYED, AND ONLY THE MOD CAN UNHIDE IT.
+-- Measured on a wedged campaign: `hud_campaign` was still a child of the UI root with 24 children
+-- of its own and Visible()==false, while cm:is_any_cutscene_running(), cm:is_cinematic_ui_enabled()
+-- were both false -- so it is not a cutscene and none of the campaign-script recoveries
+-- (skip_all_campaign_cutscenes / steal_user_input(false) / enable_ui(true)) touch it. It is a plain
+-- UI-visibility problem.
+-- It cannot be fixed from `eval`: those chunks compile into a sandbox where `core` and
+-- `find_uicomponent` are nil, so the component is unreachable there. Hence a handler.
+function handlers.show(seq, rest)
+  local uic = resolve(rest)
+  local before, after = nil, nil
+  local ok = false
+  local fronted = false
+  if uic then
+    before = try(function() return uic:Visible() end)
+    ok = try(function() uic:SetVisible(true); return true end) == true
+    -- Visible is not the same as reachable: a shown component can still sit behind another, so
+    -- bring it forward too. Guarded -- if the build has no such method this is simply skipped.
+    fronted = try(function() uic:RegisterTopMost(); return true end) == true
+    after = try(function() return uic:Visible() end)
+  end
+  log({ seq = seq, cmd = "show", path = rest, found = (uic ~= nil),
+        visible_before = or_null(before), set = ok, topmost = fronted,
+        visible_after = or_null(after), roots_after = root_names(), turn = turn() })
+end
+
+function handlers.ccmd(seq, rest)
+  local before = root_names()
+  local ok, err = pcall(function() common.call_context_command(rest) end)
+  log({ seq = seq, cmd = "ccmd", expr = rest, dispatched = (ok == true),
+        error = or_null(ok and nil or tostring(err)),
+        roots_before = before, roots_after = root_names(), turn = turn() })
 end
 
 function handlers.move(seq, rest)
@@ -473,6 +555,16 @@ function handlers.chars(seq)
         local region_owner = try(function()
           local r = c:region(); if r and not r:is_null_interface() then return r:owning_faction():name() end
         end)
+        -- WHICH region/province this character stands in. Positions alone cannot answer "how many
+        -- lords are in THIS province", because nothing maps an (x,y) to a province -- so the
+        -- province-level force counts were impossible to build without it. Null-guarded: a
+        -- character at sea or in transit has a NULL region interface, which is truthy in Lua.
+        local region_key = try(function()
+          local r = c:region(); if r and not r:is_null_interface() then return r:name() end
+        end)
+        local province_key = try(function()
+          local r = c:region(); if r and not r:is_null_interface() then return r:province_name() end
+        end)
         out[#out + 1] = {
           cqi = or_null(try(function() return c:command_queue_index() end)),
           subtype = or_null(try(function() return c:character_subtype_key() end)),
@@ -483,7 +575,12 @@ function handlers.chars(seq)
           y = or_null(try(function() return c:logical_position_y() end)),
           ap_pct = or_null(try(function() return c:action_points_remaining_percent() end)),
           stance = or_null(try(function() return c:military_force():active_stance() end)),
+          -- STRENGTH. Without this nothing in the feature row distinguishes attacking 1v10 from
+          -- 10v1, so the model cannot learn that an attack is suicide. nil for a hero (no force).
+          units = or_null(try(function() return c:military_force():unit_list():num_items() end)),
           region_owner = or_null(region_owner),
+          region = or_null(region_key),
+          province = or_null(province_key),
           in_own_territory = or_null(region_owner ~= nil and myname ~= nil and region_owner == myname),
         }
       end
@@ -506,6 +603,13 @@ function handlers.setts(seq)
         out[#out + 1] = {
           region = or_null(try(function() return r:name() end)),
           capital = or_null(try(function() return r:is_province_capital() end)),
+          -- OUR OWN garrison strength. The hostiles channel has carried enemy garrison size from
+          -- the start, so the agent could see how well defended every enemy settlement was and
+          -- nothing at all about its own -- it could not tell an empty capital from a full one, and
+          -- so could never learn when leaving home undefended is what loses the campaign.
+          -- Same accessor as the hostile side: unit_count() is on the GARRISON RESIDENCE, not on
+          -- its army(), which is a NULL interface for an ordinary garrison.
+          units = or_null(try(function() return r:garrison_residence():unit_count() end)),
           x = or_null(s and try(function() return s:logical_position_x() end)),
           y = or_null(s and try(function() return s:logical_position_y() end)),
         }
@@ -520,6 +624,7 @@ end
 function handlers.hostiles(seq)
   local f = human_faction()
   local out = {}
+  local myname = f and try(function() return f:name() end)
   local lx = f and try(function() return f:faction_leader():logical_position_x() end)
   local ly = f and try(function() return f:faction_leader():logical_position_y() end)
   local function dist(x, y)
@@ -532,7 +637,12 @@ function handlers.hostiles(seq)
     for i = 0, nf - 1 do
       if #out >= 60 then break end
       local fac = try(function() return fl:item_at(i) end)
-      if fac and try(function() return f:at_war_with(fac) end) then
+      local at_war = fac and try(function() return f:at_war_with(fac) end)
+      local is_me = fac and myname and try(function() return fac:name() end) == myname
+      -- NEUTRALS TOO. A faction we are not at war with can walk an army up to our border and
+      -- declare later; excluding them meant the model never saw it coming. Same visibility gate.
+      local neutral = fac and not at_war and not is_me
+      if fac and (at_war or neutral) then
         local fname = try(function() return fac:name() end)
         local cl = try(function() return fac:character_list() end)
         local nc = cl and try(function() return cl:num_items() end) or 0
@@ -540,14 +650,40 @@ function handlers.hostiles(seq)
           if #out >= 60 then break end
           local c = try(function() return cl:item_at(j) end)
           if c and try(function() return c:has_military_force() end) then
-            local x = try(function() return c:logical_position_x() end)
-            local y = try(function() return c:logical_position_y() end)
-            out[#out + 1] = { kind = "army", faction = or_null(fname),
-              cqi = or_null(try(function() return c:command_queue_index() end)),
-              x = or_null(x), y = or_null(y), dist = or_null(dist(x, y)) }
+            -- ⚠ VISIBILITY GATE -- PASS THE FACTION KEY, NOT THE INTERFACE.
+            -- is_visible_to_faction(<interface>) silently returns FALSE for every character. That
+            -- is why this gate was tried before, appeared to null every enemy, and was reverted --
+            -- the gate was never actually wrong, the argument type was. Verified live: with the KEY
+            -- STRING exactly two hostiles returned true, matching the two the player could see on
+            -- screen, while the interface form returned false for all 60+.
+            -- An army we cannot see contributes NOTHING: not a count, not a position. Emitting a
+            -- position for an unscouted stack is the same cheat as emitting its size.
+            local vis = try(function() return c:is_visible_to_faction(myname) end)
+            if vis == true then
+              local x = try(function() return c:logical_position_x() end)
+              local y = try(function() return c:logical_position_y() end)
+              out[#out + 1] = { kind = (at_war and "army" or "neutral_army"), faction = or_null(fname),
+                cqi = or_null(try(function() return c:command_queue_index() end)),
+                visible = true,
+                -- Troop count of a VISIBLE enemy stack is legitimate: the campaign banner's
+                -- strength bar height IS the unit count (measured live -- a 13-unit army rendered
+                -- a bar of h=13 against a frame of h=20, one pixel per unit of a full stack), so
+                -- this is a number the player reads straight off the map.
+                units = or_null(try(function() return c:military_force():unit_list():num_items() end)),
+                stance = or_null(try(function() return c:military_force():active_stance() end)),
+                -- province of a VISIBLE hostile/neutral, so province-level force counts can be
+                -- built (how many of theirs vs ours are standing in the same province)
+                province = or_null(try(function()
+                  local r = c:region()
+                  if r and not r:is_null_interface() then return r:province_name() end end)),
+                x = or_null(x), y = or_null(y), dist = or_null(dist(x, y)) }
+            end
           end
         end
-        local rl = try(function() return fac:region_list() end)
+        -- Settlements: HOSTILE ONLY. Neutral armies matter (they move, and they can declare war),
+        -- but enumerating every neutral faction's settlements would flood the 60-entry budget with
+        -- towns on the far side of the world and starve the entries that actually matter.
+        local rl = at_war and try(function() return fac:region_list() end) or nil
         local nr = rl and try(function() return rl:num_items() end) or 0
         for j = 0, nr - 1 do
           if #out >= 60 then break end
@@ -558,6 +694,13 @@ function handlers.hostiles(seq)
             local y = try(function() return s:logical_position_y() end)
             out[#out + 1] = { kind = "settlement", faction = or_null(fname),
               region = or_null(try(function() return r:name() end)),
+              -- garrison strength: the defender count an attack_settlement is actually up against.
+              -- ⚠ unit_count() lives on the GARRISON RESIDENCE, not on its army. army() returns a
+              -- NULL interface for an ordinary garrison (WH3's garrison proper is the armed
+              -- citizenry), and calling any method on a null interface errors -- which is why
+              -- garrison_residence():army():unit_list() silently yielded nil for every settlement.
+              -- Garrison size is information the game shows the player, so no visibility gate here.
+              units = or_null(try(function() return r:garrison_residence():unit_count() end)),
               x = or_null(x), y = or_null(y), dist = or_null(dist(x, y)) }
           end
         end
@@ -723,10 +866,87 @@ local function max_seq_in_file()
   return m
 end
 
+-- ⚠ DEFEAT MUST BE RECORDED FROM INSIDE THE GAME, WHILE THE TICK IS STILL ALIVE.
+-- When our last settlement falls the engine raises the Defeat modal, and a modal PAUSES the script
+-- tick -- so the mod stops polling, every bus eval times out, and the advisor's own check
+-- (campaign_state -> settlements <= 0) can never run because it needs a working bus. Measured: 8
+-- campaigns ended this way and all 8 were filed as harness failures ("stuck"), which is the exact
+-- opposite of the truth. Survival is part of the reward, so a lost campaign and a broken harness
+-- must never share a label. The listener fires on the engine event, BEFORE the modal, which is the
+-- only moment the fact is still observable.
+local function arm_defeat_listener()
+  if not (core and core.add_listener) then
+    log({ cmd = "defeat_listener", armed = false, reason = "core:add_listener unavailable" })
+    return
+  end
+  local ok = pcall(function()
+    core:add_listener("twcontrol_faction_destroyed", "FactionDestroyed", true,
+      function(context)
+        local fn = try(function() return context:faction():name() end)
+        local me = try(function() return human_faction():name() end)
+        log({ cmd = "faction_destroyed", faction = fn, is_us = (fn ~= nil and fn == me),
+              turn = turn() })
+      end, true)
+  end)
+  -- Belt and braces: our own region count at every turn start. If the listener never fires (event
+  -- name differs by patch), the last turn_start row still shows the count going to zero.
+  pcall(function()
+    core:add_listener("twcontrol_turn_start", "FactionTurnStart", true,
+      function(context)
+        local fn = try(function() return context:faction():name() end)
+        local me = try(function() return human_faction():name() end)
+        if fn ~= nil and fn == me then
+          local n = try(function() return human_faction():region_list():num_items() end)
+          log({ cmd = "turn_start", turn = turn(), regions = or_null(n) })
+          if n == 0 then log({ cmd = "faction_destroyed", faction = me, is_us = true, turn = turn() }) end
+        end
+      end, true)
+  end)
+  log({ cmd = "defeat_listener", armed = ok })
+end
+
+-- EVENT/DILEMMA RECORDER: log every dilemma and incident the ENGINE issues, at issue time, with
+-- its record key -- independent of any UI walk. A dilemma the interrupt handler cannot parse is
+-- otherwise unidentifiable (its choice buttons are cloned templates carrying no key), and there
+-- are ~900 dilemmas, so identifying broken ones by screenshot does not scale. Accessors are the
+-- ones CA's own shipped scripts use on these events (context:dilemma(), context:choice(),
+-- context:incident()); each is try()-wrapped so a patch renaming one logs NULL loudly instead of
+-- killing the listener.
+local function arm_event_recorder()
+  if not (core and core.add_listener) then
+    log({ cmd = "event_recorder", armed = false, reason = "core:add_listener unavailable" })
+    return
+  end
+  local ok = pcall(function()
+    core:add_listener("twcontrol_dilemma_issued", "DilemmaIssuedEvent", true,
+      function(context)
+        log({ cmd = "dilemma_issued", turn = turn(),
+              dilemma = or_null(try(function() return context:dilemma() end)),
+              faction = or_null(try(function() return context:faction():name() end)) })
+      end, true)
+    core:add_listener("twcontrol_dilemma_choice", "DilemmaChoiceMadeEvent", true,
+      function(context)
+        log({ cmd = "dilemma_choice_made", turn = turn(),
+              dilemma = or_null(try(function() return context:dilemma() end)),
+              choice = or_null(try(function() return context:choice() end)),
+              faction = or_null(try(function() return context:faction():name() end)) })
+      end, true)
+    core:add_listener("twcontrol_incident", "IncidentOccuredEvent", true,
+      function(context)
+        log({ cmd = "incident_occured", turn = turn(),
+              incident = or_null(try(function() return context:incident() end)),
+              faction = or_null(try(function() return context:faction():name() end)) })
+      end, true)
+  end)
+  log({ cmd = "event_recorder", armed = ok })
+end
+
 local started = false
 local function start()
   if started then return end
   started = true
+  pcall(arm_defeat_listener)
+  pcall(arm_event_recorder)
   -- Skip the scripted campaign intro cinematics (story panel + narrated cindyscene +
   -- camera pan) to cut ~20s off new-campaign startup. Documented global lever; also try
   -- to skip any cutscene already running. Cosmetic only (not a gameplay cheat).

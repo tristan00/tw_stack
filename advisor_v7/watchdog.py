@@ -1,34 +1,10 @@
-r"""watchdog.py -- the stuck detector. Runs on its own thread so it keeps checking while the main
-loop is blocked inside a long action, a battle, or a hung bus call.
-
-WHAT COUNTS AS STUCK
-The recorder hands back a digest (collect.state_hash) of things that only move when the game
-ACTUALLY PROGRESSES -- turn, treasury, income, every character's position/AP/stance, and the set of
-visible UI roots. Nothing that ticks on its own is in it, so a frozen game cannot look alive.
-
-Two failure shapes, one verdict:
-    IDENTICAL   the digest has not changed for STUCK_SECONDS -> the game is sitting on something we
-                do not handle (an unhandled popup, a modal waiting for a click, a finished battle)
-    BLOCKED     the recorder cannot answer at all for STUCK_SECONDS -> the bus is dead, or a modal
-                has paused the game tick so the mod never runs
-
-Both mean the run cannot make progress on its own, so both fire on_stuck(reason, detail). The
-caller's job (loop.py) is: tell the LAUNCHER to screenshot the screen as evidence, then end this run
-so a fresh one can start. The watchdog itself neither screenshots nor kills -- it only decides.
-
-⚠ the timer is reset by `beat()` too: the loop calls it after every CONFIRMED action, because a
-confirmed action is proof of progress even if the digest happens to land on the same value.
-"""
 from __future__ import annotations
 
 import sys
 import threading
 import time
 
-# 10 minutes: deliberately generous while we are still learning which situations strand a run --
-# a long AI inter-turn with several battles can legitimately look quiet for a while, and a false
-# abandon destroys the evidence we are trying to collect. Tighten once the failure modes are known.
-STUCK_SECONDS = 600.0        # unchanged/unanswered this long -> stuck
+STUCK_SECONDS = 75.0         # no progress this long -> stuck
 POLL_SECONDS = 15.0          # how often the digest is requested
 
 
@@ -52,7 +28,6 @@ class Watchdog:
         self.checks = 0
         self.errors = 0
 
-    # ------------------------------------------------------------------ control
     def start(self):
         self._last_change = time.time()
         self._thread = threading.Thread(target=self._run, name="v7-watchdog", daemon=True)
@@ -65,7 +40,7 @@ class Watchdog:
             self._thread.join(timeout=self.poll_seconds + 5.0)
 
     def beat(self, why="action"):
-        """Progress happened for a reason the digest may not show (a confirmed action). Reset."""
+        """Reset the idle timer."""
         with self._lock:
             self._last_change = time.time()
         return why
@@ -82,30 +57,42 @@ class Watchdog:
     def last_roots(self):
         return list(self._last_roots)
 
-    # ------------------------------------------------------------------ the thread
     def _run(self):
+        last_error = None
         while not self._stop.is_set():
             reason = detail = None
-            try:
-                h, roots = self._request()
-                self.checks += 1
-                with self._lock:
-                    if h != self._last_hash:
-                        self._last_hash, self._last_roots = h, roots
-                        self._last_change = time.time()
-                    idle = time.time() - self._last_change
-                if idle >= self.stuck_seconds:
-                    reason = "identical_state"
-                    detail = {"idle_s": round(idle, 1), "hash": h, "roots": roots}
-            except Exception as e:
-                self.errors += 1
-                with self._lock:
-                    idle = time.time() - self._last_change
-                self._log("digest request failed (%.0fs idle): %s" % (idle, repr(e)[:120]))
-                if idle >= self.stuck_seconds:
-                    reason = "blocked"
-                    detail = {"idle_s": round(idle, 1), "error": repr(e)[:200],
-                              "roots": self._last_roots}
+            # decide on the clock, before issuing a request that may block
+            idle_now = self.idle_seconds()
+            if idle_now >= self.stuck_seconds and (self.checks or self.errors):
+                reason = "blocked" if last_error is not None else "identical_state"
+                detail = {"idle_s": round(idle_now, 1), "roots": self._last_roots}
+                if last_error is not None:
+                    detail["error"] = repr(last_error)[:200]
+                else:
+                    detail["hash"] = self._last_hash
+            else:
+                try:
+                    h, roots = self._request()
+                    self.checks += 1
+                    last_error = None
+                    with self._lock:
+                        if h != self._last_hash:
+                            self._last_hash, self._last_roots = h, roots
+                            self._last_change = time.time()
+                        idle = time.time() - self._last_change
+                    if idle >= self.stuck_seconds:
+                        reason = "identical_state"
+                        detail = {"idle_s": round(idle, 1), "hash": h, "roots": roots}
+                except Exception as e:
+                    self.errors += 1
+                    last_error = e
+                    with self._lock:
+                        idle = time.time() - self._last_change
+                    self._log("digest request failed (%.0fs idle): %s" % (idle, repr(e)[:120]))
+                    if idle >= self.stuck_seconds:
+                        reason = "blocked"
+                        detail = {"idle_s": round(idle, 1), "error": repr(e)[:200],
+                                  "roots": self._last_roots}
             if reason and not self._fired:
                 self._fired = True
                 self._log("STUCK (%s) after %.0fs -- firing handler" % (reason, detail["idle_s"]))
@@ -113,5 +100,7 @@ class Watchdog:
                     self._on_stuck(reason, detail)
                 except Exception as e:
                     self._log("on_stuck handler raised: %s" % repr(e)[:160])
-                return                        # one verdict per run; the caller tears the run down
-            self._stop.wait(self.poll_seconds)
+                return                        # one verdict per run
+            # never sleep past the deadline
+            self._stop.wait(max(1.0, min(self.poll_seconds,
+                                         self.stuck_seconds - self.idle_seconds())))

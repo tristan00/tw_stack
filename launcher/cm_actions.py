@@ -1,31 +1,3 @@
-r"""cm_actions.py -- v7 executors on the cm (campaign SCRIPT API) layer.
-
-These are the actions the CCO/UI-command layer genuinely does NOT expose (verified by full
-enumeration of the shipped CCO reference: 515 contexts / 6347 functions). CA documents the
-commands used here as "equivalent to the player or AI issuing the same order", so they are
-player-equivalent, NOT god-mode. God-mode families (cm:force_*, create_force*, grant_*,
-spawn_*, teleport_*, Dev*) are deliberately NOT used.
-
-LIVE-VERIFIED 2026-07-30 (WH3 v8.1.1), each with a post-assert:
-  attack army       cm:attack(attacker, target, lay_siege, ignore_shroud) -> pre-battle opened,
-                    target dead after autoresolve.
-  attack settlement cm:attack_region(attacker, region_key)  <-- EXACTLY 2 ARGS.
-                    ⚠ THE BUG THAT COST US HOURS: the 3-arg form (attacker, region, bool) is the
-                    WH2 signature; in WH3 it silently no-ops -- returns ok, does nothing at all.
-                    With 2 args: lord moved, AP 100->25.9, is_besieging=true, pre-battle opened,
-                    autoresolve -> Occupy -> region captured.
-  garrison          cm:join_garrison(attacker, 'settlement:<region_key>') -> in_settlement true.
-                    ⚠ the settlement key is the settlement's OWN key() ("settlement:<region_key>"),
-                    NOT the bare region key (bare region key silently no-ops).
-  leave garrison    cm:leave_garrison(attacker, x, y) [LOGICAL coords] -> in_settlement false.
-
-REACHABILITY GATE (important): use the campaign_manager WRAPPER
-`cm:character_can_reach_settlement(char, settlement)` -- CA wrote it because the raw model
-predicate returns FALSE POSITIVES when the character has no action points.
-
-Also proven dead here: `bus move` / cm:move_to CANNOT enter a settlement (CA docs say a different
-order type is required) -- that is why garrison uses join_garrison.
-"""
 from __future__ import annotations
 
 import sys
@@ -34,7 +6,7 @@ import time
 sys.path.insert(0, r"D:\tw_stack\bus")
 sys.path.insert(0, r"D:\tw_stack\launcher")
 
-from cco_actions import _ev, register           # noqa: E402  (shared engine + eval helper)
+from cco_actions import _ev, register           # noqa: E402
 
 _LOOKUP = "character_cqi:%s"
 
@@ -44,7 +16,7 @@ def _roots(bus):
     try:
         return nav.visible_roots(bus)
     except Exception:
-        return None                              # bus blocked (often a modal popup) -- caller decides
+        return None
 
 
 def _prebattle(bus):
@@ -59,15 +31,16 @@ def _char_scalar(bus, cqi, expr):
                     "then return tostring(%s) end return 'no-char'" % (cqi, expr), timeout=8.0)
 
 
-# ------------------------------------------------------------------ attack an enemy ARMY
 def _attack_army_snapshot(bus, ctx, pick):
     cqi = ctx["entity_id"]
     tgt = (pick.get("params") or {}).get("target_cqi")
     if tgt is None:
         return None
     return {"ap": _char_scalar(bus, cqi, "c:action_points_remaining_percent()"),
+            "besieging": _char_scalar(bus, cqi, "c:is_besieging()"),
             "acted": _char_scalar(bus, cqi, "c:performed_action_this_turn()"),
-            "target_alive": _ev(bus, "return tostring(cm:get_character_by_cqi(%s) ~= nil)" % tgt),
+            "target_alive": _ev(bus, "local t=cm:get_character_by_cqi(%s) "
+                                     "return tostring(t ~= nil and not t:is_null_interface())" % tgt),
             "can_reach": _ev(bus, "local a=cm:get_character_by_cqi(%s); local t=cm:get_character_by_cqi(%s); "
                                   "local ok,v=pcall(function() return cm:character_can_reach_character(a,t) end); "
                                   "return tostring(ok and v)" % (cqi, tgt), timeout=10.0)}
@@ -77,7 +50,7 @@ def _attack_army_gate(bus, ctx, pick, before):
     if before.get("acted") == "true":
         return False, "already_acted_this_turn"
     if before.get("can_reach") != "true":
-        return False, "cannot_reach_target"       # CA wrapper; also covers 0-AP false positives
+        return False, "cannot_reach_target"
     return True, None
 
 
@@ -89,26 +62,26 @@ def _attack_army_execute(bus, ctx, pick, before):
 
 
 def _attack_army_confirm(bus, ctx, pick, before):
+    """(landed, evidence) from the pre-battle popup or the acted-this-turn flag."""
     pb = _prebattle(bus)
-    # a blocked bus here means a modal battle popup == the order landed
-    return (pb is True or pb == "blocked"), {"pre_battle": pb}
+    acted = _char_scalar(bus, ctx["entity_id"], "c:performed_action_this_turn()")
+    landed = (pb is True) or (acted == "true" and before.get("acted") != "true")
+    return landed, {"pre_battle": pb, "acted": acted, "acted_before": before.get("acted")}
 
 
 register("attack_army", {
     "layer": "cm", "signal": "pre_battle_popup",
     "snapshot": _attack_army_snapshot, "gates": [_attack_army_gate],
     "execute": _attack_army_execute, "confirm": _attack_army_confirm,
-    "timeout_s": 20.0, "poll_s": 2.0, "retryable": False, "max_per_entity_turn": 1,
+    "timeout_s": 20.0, "poll_s": 2.0, "retryable": False,
 })
 
 
-# ------------------------------------------------------------- attack an enemy SETTLEMENT
 def _attack_sett_snapshot(bus, ctx, pick):
     cqi, region = ctx["entity_id"], pick["key"]
     return {"ap": _char_scalar(bus, cqi, "c:action_points_remaining_percent()"),
             "acted": _char_scalar(bus, cqi, "c:performed_action_this_turn()"),
             "besieging": _char_scalar(bus, cqi, "c:is_besieging()"),
-            # CA WRAPPER, not the raw model call (raw false-positives at 0 AP)
             "can_reach": _ev(bus, "local c=cm:get_character_by_cqi(%s); local s=cm:get_region('%s'):settlement(); "
                                   "local ok,v=pcall(function() return cm:character_can_reach_settlement(c,s) end); "
                                   "return tostring(ok and v)" % (cqi, region), timeout=10.0)}
@@ -123,29 +96,32 @@ def _attack_sett_gate(bus, ctx, pick, before):
 
 
 def _attack_sett_execute(bus, ctx, pick, before):
-    # EXACTLY TWO ARGUMENTS -- a third (WH2-era) argument makes this silently do nothing.
+    # exactly two args -- do not add a third
     return _ev(bus, "local ok,e=pcall(function() cm:attack_region('%s','%s') end); "
                     "return 'ok='..tostring(ok)" % (_LOOKUP % ctx["entity_id"], pick["key"]),
                timeout=20.0) == "ok=true"
 
 
 def _attack_sett_confirm(bus, ctx, pick, before):
+    """(landed, evidence) from the pre-battle popup, a new siege, or the acted-this-turn flag."""
     pb = _prebattle(bus)
-    if pb is True or pb == "blocked":
-        return True, {"pre_battle": pb}
     bes = _char_scalar(bus, ctx["entity_id"], "c:is_besieging()")
-    return (bes == "true" and before.get("besieging") != "true"), {"pre_battle": pb, "besieging": bes}
+    acted = _char_scalar(bus, ctx["entity_id"], "c:performed_action_this_turn()")
+    landed = ((pb is True)
+              or (bes == "true" and before.get("besieging") != "true")
+              or (acted == "true" and before.get("acted") != "true"))
+    return landed, {"pre_battle": pb, "besieging": bes, "besieging_before": before.get("besieging"),
+                    "acted": acted, "acted_before": before.get("acted")}
 
 
 register("attack_settlement", {
     "layer": "cm", "signal": "pre_battle_or_is_besieging",
     "snapshot": _attack_sett_snapshot, "gates": [_attack_sett_gate],
     "execute": _attack_sett_execute, "confirm": _attack_sett_confirm,
-    "timeout_s": 20.0, "poll_s": 2.0, "retryable": False, "max_per_entity_turn": 1,
+    "timeout_s": 20.0, "poll_s": 2.0, "retryable": False,
 })
 
 
-# ------------------------------------------------------------------------------- GARRISON
 def _garrison_snapshot(bus, ctx, pick):
     return {"in_settlement": _char_scalar(bus, ctx["entity_id"], "c:in_settlement()"),
             "acted": _char_scalar(bus, ctx["entity_id"], "c:performed_action_this_turn()")}
@@ -158,7 +134,7 @@ def _garrison_gate(bus, ctx, pick, before):
 
 
 def _garrison_execute(bus, ctx, pick, before):
-    # settlement key form is the settlement's own key(): "settlement:<region_key>"
+    # key form: settlement:<region_key>
     key = pick["key"] if str(pick["key"]).startswith("settlement:") else "settlement:%s" % pick["key"]
     return _ev(bus, "local ok,e=pcall(function() cm:join_garrison('%s','%s') end); "
                     "return 'ok='..tostring(ok)" % (_LOOKUP % ctx["entity_id"], key), timeout=20.0) == "ok=true"
@@ -173,27 +149,8 @@ register("garrison", {
     "layer": "cm", "signal": "in_settlement_true",
     "snapshot": _garrison_snapshot, "gates": [_garrison_gate],
     "execute": _garrison_execute, "confirm": _garrison_confirm,
-    "timeout_s": 10.0, "poll_s": 1.5, "max_per_entity_turn": 1,
+    "timeout_s": 10.0, "poll_s": 1.5,
 })
-
-
-# ------------------------------------------------------- EMBED HERO: REJECTED (god-mode)
-# cm:embed_agent_in_force(agent, force) works and is click-free, but it is CHEATING and we do not
-# use it. Its own doc says "the agent will teleport into the force, disregarding normal
-# restrictions", and a live test confirmed exactly that: hero cqi 57 jumped (218,764) -> (212,762)
-# and embedded with ACTION POINTS UNCHANGED at 77.05% -- free movement across distance, which no
-# player can do. Gating it was not salvageable either: the obvious predicate
-# `character:can_embed_in_military_force()` DOES NOT EXIST (nil method), so there is no game-side
-# verdict to gate on.
-# Same verdict, same reason, for the rest of the create/spawn family:
-#   cm:create_agent           -> live test: treasury 5000 -> 5000, prince pool 6 -> 6. A hero
-#                                appears for free and consumes no recruitment slot. Not recruitment.
-#   cm:create_force_with_general / create_force_with_existing_general / spawn_agent_at_* /
-#   spawn_unique_agent* / spawn_character_to_pool  -> create something from nothing.
-# A full enumeration of every cm: function matching create|recruit|army|force|appoint|hire (65 of
-# them) found NO player-equivalent way to recruit a lord or a hero. appoint_character_to_force only
-# appoints an EXISTING character. So the click-free route, if it exists, is cco or an engine-side
-# click -- not this layer.
 
 
 def _leave_execute(bus, ctx, pick, before):
@@ -213,5 +170,108 @@ register("leave_garrison", {
     "snapshot": _garrison_snapshot,
     "gates": [lambda bus, ctx, pick, before: (before.get("in_settlement") == "true", "not_in_settlement")],
     "execute": _leave_execute, "confirm": _leave_confirm,
-    "timeout_s": 10.0, "poll_s": 1.5, "max_per_entity_turn": 1,
+    "timeout_s": 10.0, "poll_s": 1.5,
+})
+
+
+_LUA_MOVE = (
+    "local c=cm:get_character_by_cqi(%(cqi)s) "
+    "if not c or c:is_null_interface() then return 'no-char' end "
+    "if (c:action_points_remaining_percent() or 0)<=0 then return 'no-ap' end "
+    "local ok,vx,vy=pcall(function() return "
+    "cm:find_valid_spawn_location_for_character_from_position(c:faction():name(),%(x)d,%(y)d,true) end) "
+    "if not ok or not vx or vx<0 then return 'invalid-dest' end "
+    "if not c:can_reach_position(vx,vy) then return 'unreachable-this-turn' end "
+    "local l=cm:char_lookup_str(%(cqi)s) "
+    "local ok2,e=pcall(function() cm:enable_movement_for_character(l) cm:move_to(l,vx,vy) end) "
+    "if not ok2 then return 'order-failed:'..tostring(e) end "
+    "return 'ordered '..vx..','..vy")
+
+
+def _move_snapshot(bus, ctx, pick):
+    cqi = ctx["entity_id"]
+    return {"x": _char_scalar(bus, cqi, "c:logical_position_x()"),
+            "y": _char_scalar(bus, cqi, "c:logical_position_y()"),
+            "ap": _char_scalar(bus, cqi, "c:action_points_remaining_percent()"),
+            "besieging": _char_scalar(bus, cqi, "c:is_besieging()"),
+            "acted": _char_scalar(bus, cqi, "c:performed_action_this_turn()")}
+
+
+def _move_gate(bus, ctx, pick, before):
+    if before.get("acted") == "true":
+        return False, "already_acted_this_turn"
+    try:
+        if float(before.get("ap") or 0) <= 0.0:
+            return False, "no_action_points"
+    except (TypeError, ValueError):
+        pass
+    return True, None
+
+
+def _move_execute(bus, ctx, pick, before):
+    """Snap the sampled coordinate to a tile the pathfinder accepts, then order the move."""
+    p = pick.get("params") or {}
+    x, y = p.get("x"), p.get("y")
+    if x is None or y is None:
+        sys.stderr.write("cm_actions: move pick carries no destination -- %r\n" % (pick.get("key"),))
+        return False
+    q = (_LUA_MOVE % {"cqi": ctx["entity_id"], "x": int(x), "y": int(y)})
+    r = str(_ev(bus, q, timeout=25.0) or "")
+    if not r.startswith("ordered"):
+        sys.stderr.write("cm_actions: move not ordered (%s) for cqi %s -> %s\n"
+                         % (r, ctx["entity_id"], pick.get("key")))
+        return False
+    sys.stderr.write("cm_actions: move ordered cqi=%s from=%s,%s asked=%s,%s snapped=%s\n"
+                     % (ctx["entity_id"], before.get("x"), before.get("y"), int(x), int(y),
+                        r[len("ordered"):].strip()))
+    return True
+
+
+def _move_confirm(bus, ctx, pick, before):
+    """(moved, position) -- any change in logical position counts as a move."""
+    cqi = ctx["entity_id"]
+    x = _char_scalar(bus, cqi, "c:logical_position_x()")
+    y = _char_scalar(bus, cqi, "c:logical_position_y()")
+    after = {"x": x, "y": y}
+    if x is None or y is None or x == "no-char":
+        return False, dict(after, unreadable=True)
+    moved = (x != before.get("x")) or (y != before.get("y"))
+    if moved:
+        after["settled"] = _await_standstill(bus, cqi, after)
+    return moved, after
+
+
+_SETTLE_POLLS = 6
+_SETTLE_PAUSE = 0.8
+
+
+def _await_standstill(bus, cqi, after):
+    """Poll until the character's logical position is unchanged twice running. True if it settled."""
+    last = (after.get("x"), after.get("y"))
+    stable = 0
+    for _ in range(_SETTLE_POLLS):
+        time.sleep(_SETTLE_PAUSE)
+        x = _char_scalar(bus, cqi, "c:logical_position_x()")
+        y = _char_scalar(bus, cqi, "c:logical_position_y()")
+        if x is None or y is None or x == "no-char":
+            return False
+        if (x, y) == last:
+            stable += 1
+            if stable >= 2:
+                after["x"], after["y"] = x, y
+                return True
+        else:
+            stable = 0
+            last = (x, y)
+    after["x"], after["y"] = last
+    sys.stderr.write("cm_actions: cqi=%s still moving after %.1fs -- next order may land mid-path\n"
+                     % (cqi, _SETTLE_POLLS * _SETTLE_PAUSE))
+    return False
+
+
+register("move", {
+    "layer": "cm", "signal": "position_changed",
+    "snapshot": _move_snapshot, "gates": [_move_gate],
+    "execute": _move_execute, "confirm": _move_confirm,
+    "timeout_s": 6.0, "poll_s": 1.0, "retryable": False,
 })
