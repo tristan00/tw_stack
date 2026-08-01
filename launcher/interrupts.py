@@ -660,7 +660,8 @@ def choose_dilemma(bus, open_roots):
         if not found:
             ctrls = _clickable_controls(bus, root)
             actionable = {i: p for i, p in ctrls.items()
-                          if i not in SCROLL_CHROME_IDS and i not in DISPLAY_CONTROLS}
+                          if str(i).startswith("button_")
+                          and i not in SCROLL_CHROME_IDS and i not in DISPLAY_CONTROLS}
             if not actionable:
                 continue
             ack = sorted(i for i in actionable
