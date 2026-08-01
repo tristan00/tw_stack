@@ -13,7 +13,8 @@ from errors import TWError                          # noqa: E402
 
 GAME_DIR = r"D:\SteamLibrary\steamapps\common\Total War WARHAMMER III"
 EXE = os.path.join(GAME_DIR, "Warhammer3.exe")
-PACK_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist", "tw.pack")
+PACK_SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "bus", "dist", "tw.pack")
 PACK_DST = os.path.join(GAME_DIR, "data", "tw.pack")
 ROSTER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "startable_factions.json")
 
@@ -47,11 +48,14 @@ class BusLauncher:
         self.last_startable = []
 
     def ensure_pack(self):
-        if os.path.isfile(PACK_DST):
-            _log("mod pack present (untouched): %s" % PACK_DST)
-            return
         if not os.path.isfile(PACK_SRC):
             raise TWError("mod pack missing: %s" % PACK_SRC)
+        if os.path.isfile(PACK_DST):
+            fresh = (os.path.getsize(PACK_DST) == os.path.getsize(PACK_SRC)
+                     and os.path.getmtime(PACK_DST) >= os.path.getmtime(PACK_SRC))
+            if fresh:
+                _log("mod pack current: %s" % PACK_DST)
+                return
         shutil.copy2(PACK_SRC, PACK_DST)
         _log("installed mod pack -> %s" % PACK_DST)
 
