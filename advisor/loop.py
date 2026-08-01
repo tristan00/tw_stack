@@ -73,7 +73,7 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
     try:
         for t in range(turns):
             if stuck["fired"]:
-                if executor.defeated_probe() is True or executor.defeated_row_seen():
+                if executor.defeated_row_seen() or executor.defeated_probe() is True:
                     raise CampaignLost("watchdog fired but the faction is DEAD -- defeat, "
                                        "not a stall (%s)" % stuck["reason"])
                 raise GameStuck("%s: %s" % (stuck["reason"], stuck["detail"]))
@@ -91,7 +91,7 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
                                 "(turn %s, %d actions, %d confirmed)"
                                 % (row["turn"], row["actions"], row["confirmed"]))
             if row["ended_by"] == "stuck":
-                if executor.defeated_probe() is True or executor.defeated_row_seen():
+                if executor.defeated_row_seen() or executor.defeated_probe() is True:
                     raise CampaignLost("watchdog fired but the faction is DEAD -- defeat, "
                                        "not a stall (%s)" % stuck["reason"])
                 raise GameStuck("%s: %s" % (stuck["reason"], stuck["detail"]))
