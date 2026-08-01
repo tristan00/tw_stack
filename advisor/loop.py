@@ -253,6 +253,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log):
             active = _active_from(record, pol)
             continue
 
+        pre_off = executor.bus.out_offset()
         result = executor.execute(pick)
         journal.log_verification(run_dir, decision_id, result)
         actions += 1
@@ -275,9 +276,12 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log):
             ended_by = "end_turn_failed"
             active = _active_from(record, pol)
             continue
-        # let a battle screen appear and be driven before the next order goes out
+        # let a battle screen appear and be driven before the next order goes out; the mod's
+        # panel/battle rows end the wait the moment the screen exists (2.5s is the cap)
         if str(pick.get("action_type", "")).startswith("attack"):
-            time.sleep(2.5)
+            executor.bus.wait_row(("panel", "battle_completed", "dilemma_issued"), timeout=2.5,
+                                  offset=pre_off,
+                                  pred=lambda r: r.get("cmd") != "panel" or bool(r.get("opened")))
             pre = executor.resolve_interrupts()
             if pre:
                 log("   post-attack interrupts: %s" % ", ".join(str(s) for s in pre))

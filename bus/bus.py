@@ -217,6 +217,45 @@ class Bus:
         except OSError:
             return 0  # intentional: OUT_PATH not yet created -> size 0 (expected pre-mod-start; not logged)
 
+    def out_offset(self) -> int:
+        """Current byte offset of the mod's output stream, for wait_row."""
+        return self._out_size()
+
+    def wait_row(self, kinds, timeout: float, offset: int | None = None,
+                 poll: float = 0.25, pred=None):
+        """Block until the mod appends a row with cmd in `kinds` (and pred(row), if given).
+
+        Pure file tailing -- no bus round-trips, so the poll can be tight. Returns
+        (row, new_offset); (None, last_offset) on timeout. Waits driven by this replace
+        blind sleeps: the mod pushes turn_start/battle/panel rows the moment they happen.
+        """
+        kinds = frozenset(kinds)
+        off = self._out_size() if offset is None else offset
+        deadline = time.time() + timeout
+        while True:
+            try:
+                size = os.path.getsize(self.out_path)
+            except OSError:
+                size = 0
+            if size > off:
+                with open(self.out_path, "rb") as f:
+                    f.seek(off)
+                    data = f.read()
+                off = size
+                for line in data.decode("utf-8", "replace").splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        continue
+                    if row.get("cmd") in kinds and (pred is None or pred(row)):
+                        return row, off
+            if time.time() >= deadline:
+                return None, off
+            time.sleep(min(poll, max(0.02, deadline - time.time())))
+
     def _scan_result(self, offset: int, seq: int, channel: str | None) -> dict | None:
         """Scan the appended tail of the result file for a matching result line.
 

@@ -35,6 +35,10 @@ class Executor:
                "entity_id": str(pick.get("context_id"))}
         run = {"action_type": pick.get("action_type"), "key": pick.get("key"),
                "params": pick.get("params") or {}, "policy": pick.get("policy")}
+        if run["action_type"] == "end_turn":
+            # settle_between_turns tails the mod's rows from before the click, so the
+            # turn_start row can never race past the wait
+            self._end_turn_offset = self.bus.out_offset()
         trace.launcher("execute_start", action_type=run["action_type"], key=run["key"],
                        context_kind=pick.get("context_kind"), context_id=str(pick.get("context_id")),
                        params=run["params"], policy=run["policy"])
@@ -85,24 +89,47 @@ class Executor:
             return {"turn": None, "steps": steps, "waited_s": round(time.time() - t0, 1),
                     "aborted": True}
 
+        off = getattr(self, "_end_turn_offset", None)
+        self._end_turn_offset = None
+        if off is None:
+            off = self.bus.out_offset()
+
+        def _row_wanted(r):
+            if r.get("cmd") == "faction_destroyed":
+                return bool(r.get("is_us"))
+            return turn_before is None or (r.get("turn") or 0) > turn_before
+
+        rounds = 0
         while time.time() - t0 < timeout:
+            if _aborted():
+                return _bail()
+            # primary wake: the mod pushes turn_start (with region count) the moment our
+            # turn begins -- pure file tail, no bus round-trips
+            row, off = self.bus.wait_row(("turn_start", "faction_destroyed"),
+                                         timeout=poll, offset=off, pred=_row_wanted)
+            if row is not None:
+                if row.get("cmd") == "faction_destroyed" or (row.get("regions") or 1) == 0:
+                    sys.stderr.write("executor: settle -- the faction is DEAD (row=%s)\n"
+                                     % row.get("cmd"))
+                    return {"turn": None, "steps": steps + ["defeated"],
+                            "waited_s": round(time.time() - t0, 1), "defeated": True}
+                return {"turn": row.get("turn"), "steps": steps,
+                        "waited_s": round(time.time() - t0, 1)}
             if _aborted():
                 return _bail()
             s = self.resolve_interrupts()
             if s:
                 steps.extend(s)
-            if _aborted():
-                return _bail()
-            t = self.turn_number()
-            if t is not None and (turn_before is None or t > turn_before):
-                return {"turn": t, "steps": steps, "waited_s": round(time.time() - t0, 1)}
-            if interrupts.defeated_probe(self.bus) is True:
-                sys.stderr.write("executor: settle -- the faction is DEAD; this turn will never advance\n")
-                return {"turn": None, "steps": steps + ["defeated"],
-                        "waited_s": round(time.time() - t0, 1), "defeated": True}
-            if _aborted():
-                return _bail()
-            time.sleep(poll)
+            rounds += 1
+            if rounds % 8 == 0:
+                # belt and braces every ~8 rounds: engine reads, in case a row was missed
+                t = self.turn_number()
+                if t is not None and (turn_before is None or t > turn_before):
+                    return {"turn": t, "steps": steps, "waited_s": round(time.time() - t0, 1)}
+                if interrupts.defeated_probe(self.bus) is True:
+                    sys.stderr.write("executor: settle -- the faction is DEAD (probe)\n")
+                    return {"turn": None, "steps": steps + ["defeated"],
+                            "waited_s": round(time.time() - t0, 1), "defeated": True}
         sys.stderr.write("executor: turn did not advance within %ss (steps=%s)\n" % (timeout, steps))
         return {"turn": None, "steps": steps, "waited_s": round(time.time() - t0, 1)}
 
