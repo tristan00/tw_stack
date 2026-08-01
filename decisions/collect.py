@@ -634,13 +634,8 @@ def lord_offers(bus, cqi, state, world, stationed=None):
                                               "movement_stance" if marching else
                                               "recruiting" if recruiting else "cannot_reach"),
                              target_faction=s.get("faction"), x=s.get("x"), y=s.get("y")))
-    for s in rsetts:
-        ok = bool(reach_s.get(s["region"])) and not acted and not marching and not recruiting
-        offers.append(_offer("colonize", s["region"], ok,
-                             None if ok else ("already_acted_this_turn" if acted else
-                                              "movement_stance" if marching else
-                                              "recruiting" if recruiting else "cannot_reach"),
-                             x=s.get("x"), y=s.get("y")))
+    # colonize is NOT offered: no executor is registered for it anywhere, so every pick came
+    # back unknown_action_type (15/15 in one batch). Re-add the offer with the executor, not before.
     garrisoned = state.get("garrisoned")
     occ = stationed or {}
     for s in osetts:
