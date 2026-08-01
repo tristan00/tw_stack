@@ -20,12 +20,16 @@ EPSILON = 0.3
 BETA = 0.40                      # explore weight
 
 
-def _row(screen, option, n_options, campaign, world=None):
-    """One scoreable row: campaign+world blocks, the screen, the option and the option count."""
+def _row(screen, option, n_options, campaign, world=None, panel=None):
+    """One scoreable row: campaign+world blocks, the screen, the option, the option count, and
+    the pre-battle panel's own forecast (predicted result and casualties)."""
     row = F.campaign_block(campaign or {}, world or {})
     row["isc_screen"] = str(screen)
     row["isc_option"] = str(option)
     row["isc_n_options"] = float(n_options or 0)
+    p = panel or {}
+    row["isc_fc_result"] = str((p.get("result") or {}).get("state") or "none")
+    row["isc_fc_casualties"] = str((p.get("casualties") or {}).get("state") or "none")
     return row
 
 
@@ -53,7 +57,7 @@ def gather(runs_root=M.RUNS_ROOT):
                     continue
                 rows.append(_row(r.get("screen"), r.get("chosen"),
                                  len(r.get("options") or {}), r.get("campaign"),
-                                 r.get("world")))
+                                 r.get("world"), r.get("panel")))
                 y.append(lab)
                 groups.append(r.get("campaign_id"))
         finally:
