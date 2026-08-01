@@ -1,15 +1,6 @@
-r"""run.py -- the v7 driver: wire the three roles together and play.
+r"""The driver: wires recorder, advisor and launcher together and plays. Exits 2 when stuck.
 
     python advisor/run.py <run_dir> [turns]
-
-  RECORDER  already running inside the manager (stream `decisions`). It owns the bus for READING
-            and is asked for data over <run_dir>/decisions_requests.jsonl.
-  ADVISOR   policy.Policy + model.Ranker, featurizing DB records. Holds no bus.
-  LAUNCHER  executor.Executor, which owns a bus for EXECUTION only.
-
-If the watchdog declares the run stuck, the loop screenshots and raises GameStuck; this exits with
-status 2 so the supervising process can kill the game and start a fresh run. It deliberately does
-not try to "rescue" a frozen campaign -- an unverified rescue is worse than a clean restart.
 """
 from __future__ import annotations
 

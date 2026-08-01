@@ -1,21 +1,6 @@
 r"""cco_queries.py -- pure-data ACTION-SPACE reads over the bus eval sandbox's cco() layer.
 
-The game computes and serves its own action spaces through CCO expression queries (the complete
-API reference ships inside data.pack at documentation\ui\documentation.html). These chains were
-live-proven 2026-07-29 and are the recorder's data-side alternative to UI scraping: exact,
-availability-aware, immune to the tree 500-cap / visible-only traps.
-
-HARD RULES (from live verification -- violating the first one HANGS THE ENGINE):
-  * NEVER pass a Lua cco wrapper as a Call() ARGUMENT. Arguments go INLINE in the expression
-    string (list indexing: 'PossibleUpgradeWithoutConversionsList[3]' / '.At(3)').
-  * Every per-entry Call goes through the pcall safe-getter: a Call can return ZERO values
-    (breaks tostring) and returns nil for wrong ids AND wrong property names alike.
-  * A nil is NEVER evidence of absence -- every query here validates its chain and returns a
-    loud error string on breakage, so an empty action set is always distinguishable from a
-    broken query.
-
-Id formats (validated): settlement = 'settlement:<region_key>'; character = bare cqi string;
-military force is reached by CHAIN from the character (its direct id format is unknown).
+Ids: settlement = 'settlement:<region_key>'; character = bare cqi string.
 """
 from __future__ import annotations
 
@@ -23,7 +8,7 @@ import sys
 
 _T = 15.0
 
-# Field/record/section separators for the Lua->python transport (keys are [%w_]+ so these are safe).
+# Lua->python transport separators: safe only because every key is [%w_]+.
 _FS, _RS, _SS = "\x1f", "\x1e", "\x1d"
 
 # pcall safe-getter prelude: g(ctx, prop) -> value or nil, never throws, never zero-values.
@@ -33,7 +18,7 @@ _G = ("local function g(c,p) local ok,v=pcall(function() return c:Call(p) end);"
 
 
 class CcoQueryError(RuntimeError):
-    """A chain broke (bus miss, nil context, unparseable reply). Loud by design."""
+    """A chain broke (bus miss, nil context, unparseable reply)."""
 
 
 def _ev(bus, lua, timeout=_T):
@@ -53,12 +38,8 @@ def _b(v):
     return True if v == "true" else False if v == "false" else None
 
 
-# --------------------------------------------------------------------------------- entities
 def list_entities(bus):
-    """Player lords (generals with a military force) + owned regions, via plain cm evals.
-
-    Returns {"lords": [{"cqi": int, "name": str, "is_leader": bool}], "regions": [str, ...]}.
-    """
+    """Player lords + owned regions: {"lords": [{"cqi", "name", "is_leader"}], "regions": [str, ...]}."""
     lua = (
         "local f=cm:get_local_faction(true); if not f then return 'NO-FACTION' end "
         "local out={} local cl=f:character_list() "
@@ -85,15 +66,8 @@ def list_entities(bus):
     return {"lords": lords, "regions": regions}
 
 
-# --------------------------------------------------------------------------------- settlement
 def settlement_actions(bus, region):
-    """The settlement's full buildable action space + the province edict space, ONE eval.
-
-    Returns {"region", "slots": [{"index", "activate_level", "has_building", "building",
-    "is_building_new", "possibles": [{"key", "req_met"}]}], "edicts": {"can_set", "installed",
-    "options": [key, ...]}}.  Empty possibles on a slot mid-construction is REAL (the game
-    empties the list); a broken chain raises instead.
-    """
+    """The settlement's buildable action space + province edict space in ONE eval: {"region", "slots", "edicts"}."""
     lua = (_G +
         "local s=cco('CcoCampaignSettlement','settlement:%s');"
         "if not s then return 'NO-CTX' end "
@@ -154,13 +128,8 @@ def settlement_actions(bus, region):
     return {"region": region, "slots": slots, "edicts": edicts}
 
 
-# --------------------------------------------------------------------------------- lord
 def lord_actions(bus, char_cqi):
-    """The lord's stance action space + force/movement snapshot, ONE eval.
-
-    Returns {"cqi", "stances": [{"key", "active", "can_activate", "can_afford"}],
-    "unit_count", "pending_recruits", "action_point_pct"}.
-    """
+    """The lord's stance action space + force snapshot in ONE eval: {"cqi", "stances", "unit_count", "pending_recruits", "action_point_pct"}."""
     lua = (_G +
         "local ch=cco('CcoCampaignCharacter','%s');"
         "if not ch then return 'NO-CTX' end "
@@ -183,7 +152,6 @@ def lord_actions(bus, char_cqi):
            "pending_recruits": None, "action_point_pct": None}
     s = str(raw)
     if s.startswith("NO-FORCE"):
-        # a lord momentarily without a force (garrison transition) -- report, don't fabricate
         parts = s.split(_FS)
         out["action_point_pct"] = None if len(parts) < 2 or parts[1] == "nil" else float(parts[1])
         out["no_force"] = True
@@ -203,7 +171,6 @@ def lord_actions(bus, char_cqi):
 
 
 if __name__ == "__main__":
-    # live smoke: enumerate entities, dump one settlement + one lord action space.
     sys.path.insert(0, r"D:\tw_stack\bus")
     from bus import Bus
     b = Bus()

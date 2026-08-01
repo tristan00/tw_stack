@@ -1,24 +1,6 @@
-r"""pack_multi.py -- build ONE pack containing SEVERAL mod scripts.
+r"""pack_multi.py -- build ONE PFH5 Movie pack containing SEVERAL mod scripts.
 
-    python tw\pack_multi.py build     # mod/twstate.lua + mod/twcontrol.lua -> dist/tw.pack
-    python tw\pack_multi.py install
-    python tw\pack_multi.py uninstall
-    python tw\pack_multi.py status
-
-WHY THIS EXISTS
-  The project rule is ALL GAME-FILE CHANGES IN ONE PACK -- a previous agent left a disruptive mod
-  installed and it cost a run. But we now need TWO scripts live at once:
-      twstate.lua   -- passive per-turn state dump (the build order's source of truth)
-      twcontrol.lua -- the command bus (so a script can DRIVE the campaign)
-  pack.py packs exactly one lua. Rather than install two packs (breaking the rule) or paste the
-  two scripts together (making both unreadable and coupling their failure modes), this writes a
-  single PFH5 archive with two entries. Same rule, no compromise.
-
-PFH5 layout (verified against the working single-file packer, pack.py):
-    'PFH5' + u32 bitmask + u32 dep_count + u32 dep_size + u32 file_count + u32 index_size + u32 ts
-    then, per file:  u32 uncompressed_size, u8 compressed_flag, NUL-terminated backslash path
-    then the raw bytes of every file, in the same order as the index.
-A "Movie"-type pack (bitmask 4) loads just by sitting in data\ -- no mod manager, no Workshop.
+    python tw\pack_multi.py build|install|uninstall|status [--game DIR]
 """
 from __future__ import annotations
 
@@ -34,10 +16,7 @@ MOVIE = 4
 sys.path.insert(0, str(HERE)); import config
 DEFAULT_GAME = config.GAME_DIR
 
-# Every script that must be live at once, as (name, source, environment). The environment picks the
-# script\<env>\mod\ path the game auto-loads it from. twcontrol ships to BOTH campaign AND frontend so
-# the command bus is available in the menu/lord-select screens too (deterministic, screenshot-free
-# launch); it is environment-aware (uses the real-time timer when cm is absent).
+# (name, source, environment) -- env picks the script\<env>\mod\ path the game auto-loads from.
 SCRIPTS = [
     ("twstate", HERE / "mod" / "twstate.lua", "campaign"),
     ("twcontrol", HERE / "mod" / "twcontrol.lua", "campaign"),
@@ -47,24 +26,12 @@ PACK = HERE / "dist" / "tw.pack"
 
 
 def game_dir(explicit: str | None = None) -> Path:
-    """Resolve the game directory: explicit arg, then GAME_DIR env, then config.
-
-    Args:
-        explicit: A directory path given on the command line, or None.
-
-    Returns:
-        The chosen game directory as a Path.
-    """
+    """Resolve the game directory: explicit arg, then GAME_DIR env, then config."""
     return Path(explicit or os.environ.get("GAME_DIR") or DEFAULT_GAME)
 
 
 def build() -> Path:
-    """Write the PFH5 Movie pack containing every script in SCRIPTS.
-
-    Returns:
-        The path of the written pack (dist/tw.pack). Exits the process if a
-        source script is missing.
-    """
+    """Write the PFH5 Movie pack containing every script in SCRIPTS; returns its path."""
     entries = []
     for name, path, env in SCRIPTS:
         if not path.exists():
@@ -85,15 +52,7 @@ def build() -> Path:
 
 
 def is_ours(path: Path) -> bool:
-    """Only ever delete a pack we could have written: our exact internal paths inside.
-
-    Args:
-        path: The installed pack file to inspect.
-
-    Returns:
-        True if the file contains every one of our internal script paths;
-        False otherwise, or if the file cannot be read.
-    """
+    """True if the pack at `path` contains every one of our internal script paths."""
     try:
         blob = path.read_bytes()
     except OSError as e:
@@ -103,14 +62,7 @@ def is_ours(path: Path) -> bool:
 
 
 def cmd_build(a: argparse.Namespace) -> None:
-    """Build the pack and print its size and contents.
-
-    Args:
-        a: Parsed CLI args (unused here beyond the shared handler signature).
-
-    Returns:
-        None.
-    """
+    """Build the pack and print its size and contents."""
     p = build()
     print("built %s (%d bytes)" % (p, p.stat().st_size))
     for n, s, env in SCRIPTS:
@@ -118,17 +70,7 @@ def cmd_build(a: argparse.Namespace) -> None:
 
 
 def cmd_install(a: argparse.Namespace) -> None:
-    """Build the pack and copy it into the game's data\\ directory.
-
-    Refuses to overwrite a pack that is not ours; exits if the destination is
-    locked (game running).
-
-    Args:
-        a: Parsed CLI args; a.game optionally overrides the game directory.
-
-    Returns:
-        None.
-    """
+    """Build the pack and copy it into the game's data\\ directory."""
     p = build()
     dst = game_dir(a.game) / "data" / p.name
     if dst.exists() and not is_ours(dst):
@@ -144,14 +86,7 @@ def cmd_install(a: argparse.Namespace) -> None:
 
 
 def cmd_uninstall(a: argparse.Namespace) -> None:
-    """Remove the installed pack from the game's data\\ directory, if it is ours.
-
-    Args:
-        a: Parsed CLI args; a.game optionally overrides the game directory.
-
-    Returns:
-        None.
-    """
+    """Remove the installed pack from the game's data\\ directory, if it is ours."""
     dst = game_dir(a.game) / "data" / PACK.name
     if not dst.exists():
         print("not installed")
@@ -163,14 +98,7 @@ def cmd_uninstall(a: argparse.Namespace) -> None:
 
 
 def cmd_status(a: argparse.Namespace) -> None:
-    """Print whether the pack is built, installed, and whether sources exist.
-
-    Args:
-        a: Parsed CLI args; a.game optionally overrides the game directory.
-
-    Returns:
-        None.
-    """
+    """Print whether the pack is built, installed, and whether sources exist."""
     dst = game_dir(a.game) / "data" / PACK.name
     print("built:     %s" % (PACK if PACK.exists() else "(no)"))
     print("installed: %s" % (dst if dst.exists() else "(no)"))
@@ -179,11 +107,7 @@ def cmd_status(a: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    """Parse the CLI (build|install|uninstall|status [--game DIR]) and dispatch.
-
-    Returns:
-        None.
-    """
+    """Parse the CLI (build|install|uninstall|status [--game DIR]) and dispatch."""
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["build", "install", "uninstall", "status"])
     ap.add_argument("--game")

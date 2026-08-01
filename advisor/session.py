@@ -49,9 +49,7 @@ def _tail_jsonl(path, n):
 
 
 def _ending_evidence(rd, entry, ex):
-    """The case file for adjudicating a campaign ending without having watched the game:
-    the state trajectory, the recent battles, the terminal signal, and a plausibility
-    verdict (advisory only -- it labels nothing, it argues)."""
+    """State trajectory, recent battles, terminal signal and an advisory plausibility verdict."""
     import sqlite3
     out = {}
     try:
@@ -85,8 +83,6 @@ def _ending_evidence(rd, entry, ex):
     reasons = []
     if out.get("defeat_row"):
         reasons.append("engine death row in this campaign's window")
-    # most campaigns live their whole life on 1 settlement -- only CHANGE is evidence,
-    # never the absolute level
     peak = max((t.get("settlements") or 0) for t in traj) if traj else 0
     lastn = last.get("settlements") or 0
     if traj and lastn == 0:
@@ -146,7 +142,6 @@ def _postmortem(runs_root, entry, ex, log):
     rd = entry.get("run_dir")
     if rd:
         rec["turn_tail"] = _tail_jsonl(os.path.join(rd, "loop_report.jsonl"), 6)
-        # run_campaigns sets these only on the success path
         if rec.get("turns_played") is None:
             turn_rows = [r for r in _tail_jsonl(os.path.join(rd, "loop_report.jsonl"), 500)
                          if r.get("kind") == "turn"]
@@ -177,10 +172,7 @@ def _postmortem(runs_root, entry, ex, log):
 
 def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                   log=print, runs_root=RUNS_ROOT, retrain=False, seed=None):
-    """Play `n` campaigns of up to `turns` turns each. Returns the session report.
-
-    retrain=True refits the model from everything collected so far before each campaign.
-    """
+    """Play `n` campaigns of up to `turns` turns each. Returns the session report."""
     from bus import Bus
     from executor import Executor
 
@@ -202,7 +194,6 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
         log("CAMPAIGN %d/%d  (up to %d turns, faction=%s)" % (i + 1, n, turns, this_plan))
         log("=" * 78)
         entry = {"index": i + 1, "started": time.time(), "plan": this_plan}
-        # kill before retraining, not after
         if hard_restart_next:
             log("previous campaign ended %s -- killing the game now, before retraining"
                 % prev_outcome)
@@ -231,13 +222,13 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
             else:
                 state = ex.ensure_campaign(plan=this_plan, campaign=campaign, fresh=True)
             entry["start_state"] = state
-            run_dir = journal.current_run_dir(timeout=180.0)   # the recorder rotated; follow it
+            run_dir = journal.current_run_dir(timeout=180.0)
             entry["run_dir"] = run_dir
             ex.shots_dir = os.path.join(run_dir, "shots")
             log("run dir: %s" % run_dir)
 
-            ranker = M.Ranker()                               # re-read from disk: picks up a retrain
-            pol = P.Policy(ranker)                            # fresh caps/blacklists per campaign
+            ranker = M.Ranker()
+            pol = P.Policy(ranker)
             entry["policy"] = ("trained(%d rows)" % (ranker.meta or {}).get("rows", 0)
                                if ranker.ready else "cold_random")
             log("policy: %s" % entry["policy"])
@@ -252,7 +243,7 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
         except L.GameStuck as e:
             entry.update(outcome="stuck", error=str(e)[:300])
             log("!! campaign %d abandoned (stuck): %s" % (i + 1, str(e)[:200]))
-        except Exception as e:                                # never let one campaign kill the run
+        except Exception as e:
             entry.update(outcome="error", error=repr(e)[:300])
             log("!! campaign %d failed: %s" % (i + 1, repr(e)[:200]))
             try:

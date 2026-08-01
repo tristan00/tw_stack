@@ -1,25 +1,5 @@
-r"""Build the offline game-data reference the advisor needs, straight from the game's own packs
-(no RPFM, no external tool, no game/bus). Reads db.pack + local_en.pack (PFH5, zstd-compressed),
-decodes the localisation AND the numeric DB tables, and writes reference.sqlite:
-
-  loc              record-key -> in-game name/description        (labels leg)
-  buildings        building level -> cost/time/upkeep/food/dev + chain + level
-  building_chains  chain -> superchain/category/sort  (chain graph)
-  tech             tech -> research points/cost-per-round/tier/parents/food + building unlock + flags
-  units            unit -> recruit/upkeep/create-time/food cost + caste/category/class/tier
-  skills           skill -> unlocked-at-rank + influence cost
-  rituals          ritual -> cast/cooldown time + slave/influence cost + category
-  captive_options  post-battle captive record_key -> option name + outcome
-  captive_binding  (captor culture/subculture/faction, kill/enslave/release) -> record_key
-
-Numeric features are decoded from the RPFM-DB binary layout, driven by the vendored schema
-`schema_db.json` (a trimmed slice of Frodo45127/rpfm-schemas `schema_wh3.ron`, RON v5) so the
-build is fully reproducible offline. The pack-DECLARED table version is used per table (e.g.
-building_levels is v2 here, not the schema's latest); a version with no schema block is skipped
-and logged. Every table is gated on a per-file CLEAN-EOF check.
-
-Proven 2026-07-28:  marble_1 = 1000 gold / 1 turn;  tech_hef_0_00 = 200 research pts, tier 1;
-                    hef spearmen = 500 recruit / 125 upkeep, inf_melee.
+r"""Decode db.pack + local_en.pack into reference.sqlite (loc, buildings, tech, units, skills,
+rituals, captive options/binding), driven by the vendored schema_db.json.
 
     python build_reference.py      # builds ./reference.sqlite + prints verified joins
 """
@@ -37,14 +17,10 @@ HAS_INDEX_WITH_TIMESTAMPS = 0x40
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCHEMA_JSON = os.path.join(HERE, "schema_db.json")
 
-# RPFM-DB header markers (little-endian sentinels)
 GUID_MARKER = b"\xfd\xfe\xfc\xff"
 VERSION_MARKER = b"\xfc\xfd\xfe\xff"
 
 
-# --------------------------------------------------------------------------- #
-#  PFH5 pack reader (validated: 28-byte header = 6 u32 + u32 timestamp)
-# --------------------------------------------------------------------------- #
 def parse_pack(path):
     """PFH5 reader -> ([(name, offset, size, compressed)], raw_bytes)."""
     d = open(path, "rb").read()
@@ -78,9 +54,6 @@ def read_file(files, d, name):
     return None
 
 
-# --------------------------------------------------------------------------- #
-#  Localisation (.loc) decode -- record key -> localised string
-# --------------------------------------------------------------------------- #
 def decode_loc(b):
     """BOM(2) + 'LOC'(3) + pad(1) + u32 ver + u32 count + entries[u16 klen, utf16 key, u16 vlen, utf16 val, u8]."""
     assert b[0:2] == b"\xff\xfe" and b[2:5] == b"LOC"
@@ -97,9 +70,6 @@ def decode_loc(b):
     return out
 
 
-# --------------------------------------------------------------------------- #
-#  RPFM-DB binary row decoder (schema-driven)
-# --------------------------------------------------------------------------- #
 class _Reader:
     """Little-endian cursor over a decoded DB table body."""
 
@@ -165,9 +135,7 @@ def _read_field(r, ft):
 
 
 def parse_db_header(b):
-    """RPFM-DB header: [GUID_MARKER u16len utf16 guid]?  [VERSION_MARKER u32 version]?
-    1-byte flag ("mysterious byte"),  u32 row_count.  Version defaults to 0 when the
-    marker is absent.  Returns (guid, version, row_count, body_offset)."""
+    """RPFM-DB header ([GUID]? [VERSION]? flag byte, u32 row_count) -> (guid, version, rows, offset)."""
     p = 0
     guid = None
     if b[0:4] == GUID_MARKER:
@@ -190,11 +158,7 @@ def load_db_schema(path=SCHEMA_JSON):
 
 
 def decode_db_table(files, d, table, schema):
-    """Decode every db/<table>/* file at its PACK-DECLARED version.  Robust: version guard
-    (skip+log versions absent from schema) and a per-file CLEAN-EOF gate (skip+log the whole
-    table if any file's decode does not consume it exactly).  Returns (rows, meta): rows is
-    every decoded row (dicts, in pack order, files concatenated -- callers key/override on the
-    real primary key), meta describes the outcome for reporting."""
+    """Decode every db/<table>/* file at its pack-declared version -> (rows, meta)."""
     entries = [(n, off, sz, c) for (n, off, sz, c) in files
                if n.replace("\\", "/").startswith("db/%s/" % table)]
     meta = {"files": len(entries), "rows": 0, "version": None, "ok": False, "reason": ""}
@@ -220,7 +184,7 @@ def decode_db_table(files, d, table, schema):
         try:
             for _ in range(row_count):
                 out.append({nm: _read_field(r, ft) for nm, ft in fields})
-        except Exception as e:  # decode ran off the rails
+        except Exception as e:
             meta["reason"] = "decode fail at row %d: %s" % (len(out) - start, e)
             return [], meta
         if r.p != len(b):
@@ -233,24 +197,10 @@ def decode_db_table(files, d, table, schema):
     return out, meta
 
 
-# --------------------------------------------------------------------------- #
-#  Post-battle captive options -- the (captor subculture/culture/faction, button
-#  outcome) -> record_key -> on-screen name binding, decoded straight from the DB.
-# --------------------------------------------------------------------------- #
-# The 3 UI captive buttons (button_captive_option_{kill,enslave,release}) carry NO
-# text; the real, faction-reskinned name ("Execute Captives", "Devour Captives", ...)
-# lives in loc campaign_post_battle_captive_options_onscreen_name_<record_key>. WHICH
-# record_key a captor sees is NOT a column on the options table -- it is decided by the
-# game's campaign_group criteria engine: each option KEY is a campaign_group whose
-# members carry an ORIGINATOR (= the captor) culture/subculture/faction criterion. So the
-# binding = (option group -> transitive members -> their ORIGINATOR entity criteria).
 _CAPTIVE_BUTTON = {"kill": "kill", "release": "release", "enslave": "enslave",
                    "enslave_slaves_only": "enslave", "enslave_replenishment_only": "enslave"}
 _CAPTIVE_ROLE = re.compile(r"^[A-Z][A-Z_]*$")
-# Fixed column layout of the criteria junctions (role is always col2; cultures/factions
-# store (value, member, role), subcultures stores (member, value, role)). Rows whose col2
-# is not an UPPER-CASE role token are skipped (guards against a future schema reorder --
-# the binding just goes empty, never wrong).
+# criteria-junction column layout: (entity_type, value_index, member_index); role is always col2
 _CAPTIVE_CRIT = {"campaign_group_member_criteria_cultures_tables": ("culture", 0, 1),
                  "campaign_group_member_criteria_factions_tables": ("faction", 0, 1),
                  "campaign_group_member_criteria_subcultures_tables": ("subculture", 1, 0)}
@@ -258,15 +208,9 @@ _CAPTIVE_CRIT = {"campaign_group_member_criteria_cultures_tables": ("culture", 0
 
 def _captive_reference(cur, files, d, schema, report):
     """Build `captive_options` (record_key -> option name) and `captive_binding`
-    ((entity_type, entity_key, button) -> the winning record_key) so the advisor can name
-    ALL THREE post-battle captive buttons for ANY captor -- deterministically, no hover,
-    no on-screen scrape. Winner per (entity, button): outcome matches the button exactly
-    first, then an unconditional option over a captive-race-conditional one, then a stable
-    id tie-break. Faction bindings override culture (LL specials), culture over subculture."""
+    ((entity_type, entity_key, button) -> record_key)."""
     def loc(rk):
-        """On-screen captive-option name for a record key, following a {{tr:<full_loc_key>}}
-        redirect to WHATEVER loc family it points at (a sibling captive record, or another
-        family entirely e.g. effect_bundles_localised_title_... -> 'Inscribed Time')."""
+        """On-screen captive-option name for a record key, following {{tr:<loc_key>}} redirects."""
         row = cur.execute("SELECT text FROM loc WHERE key=?",
                           ("campaign_post_battle_captive_options_onscreen_name_%s" % rk,)).fetchone()
         v = row[0] if row else None
@@ -314,9 +258,8 @@ def _captive_reference(cur, files, d, schema, report):
             member_crit.setdefault(vals[mi], []).append((typ, vals[vi], vals[2]))
 
     def originators(g, maxdepth=6):
-        """Transitive ORIGINATOR (captor) entity criteria reachable from an option group,
-        with a `conditional` flag (the criteria-bearing member also carries a non-ORIGINATOR
-        role, e.g. a TARGET captive-race restriction)."""
+        """Transitive ORIGINATOR (captor) entity criteria reachable from an option group, each with
+        a `conditional` flag (its member also carries a non-ORIGINATOR role)."""
         seen, res, stack = set(), [], [(g, 0)]
         while stack:
             node, dep = stack.pop()
@@ -360,14 +303,8 @@ def _captive_reference(cur, files, d, schema, report):
     report["_written"]["captive_binding"] = len(best)
 
 
-# --------------------------------------------------------------------------- #
-#  Feature-table assembly  (source rows -> advisor-facing reference tables)
-# --------------------------------------------------------------------------- #
 def decode_db_tables(con, files, d, schema, report):
-    """Decode the advisor-relevant db tables and write feature/graph tables into `con`
-    (ALONGSIDE loc -- never dropping it).  `report` (dict) is filled with per-table outcomes.
-    Junction / effect-magnitude tables are intentionally NOT decoded here (the recorder
-    captures actual modified effects)."""
+    """Decode the advisor-relevant db tables into `con`, filling `report` with per-table outcomes."""
     cur = con.cursor()
 
     def src(table):
@@ -375,7 +312,6 @@ def decode_db_tables(con, files, d, schema, report):
         report[table] = meta
         return rows, meta
 
-    # -- building_chains (chain graph) --------------------------------------- #
     chains, _ = src("building_chains_tables")
     cur.execute("DROP TABLE IF EXISTS building_chains")
     cur.execute("CREATE TABLE building_chains (key TEXT PRIMARY KEY, superchain TEXT, "
@@ -387,7 +323,6 @@ def decode_db_tables(con, files, d, schema, report):
     report["_written"] = report.get("_written", {})
     report["_written"]["building_chains"] = len(chains)
 
-    # -- buildings (building_levels) ----------------------------------------- #
     blevels, _ = src("building_levels_tables")
     cur.execute("DROP TABLE IF EXISTS buildings")
     cur.execute("CREATE TABLE buildings (key TEXT PRIMARY KEY, building_chain TEXT, level INTEGER, "
@@ -400,10 +335,9 @@ def decode_db_tables(con, files, d, schema, report):
             r.get("food_cost"), r.get("development_point_cost"), r.get("building_instance_key")))
     report["_written"]["buildings"] = len(blevels)
 
-    # -- tech (technology_nodes  +  technologies unlock/flags) --------------- #
     nodes, nmeta = src("technology_nodes_tables")
     techs, tmeta = src("technologies_tables")
-    tech_by_key = {t["key"]: t for t in techs}  # key -> building_level + category flags
+    tech_by_key = {t["key"]: t for t in techs}
     cur.execute("DROP TABLE IF EXISTS tech")
     cur.execute("CREATE TABLE tech (key TEXT PRIMARY KEY, technology_key TEXT, node_set TEXT, "
                 "tier INTEGER, research_points_required INTEGER, cost_per_round INTEGER, "
@@ -420,7 +354,6 @@ def decode_db_tables(con, files, d, schema, report):
             int(bool(t.get("is_civil"))), int(bool(t.get("is_engineering"))),
             int(bool(t.get("is_military"))), int(bool(t.get("is_hidden")))))
         written.add(r["key"])
-    # techs that have no node (no cost data) -- still record the unlock link + flags
     node_tks = {r.get("technology_key") for r in nodes} | written
     for tk, t in tech_by_key.items():
         if tk in node_tks:
@@ -431,7 +364,6 @@ def decode_db_tables(con, files, d, schema, report):
             int(bool(t.get("is_military"))), int(bool(t.get("is_hidden")))))
     report["_written"]["tech"] = cur.execute("SELECT COUNT(*) FROM tech").fetchone()[0]
 
-    # -- units (main_units  JOIN  land_units) -------------------------------- #
     mains, mmeta = src("main_units_tables")
     lands, lmeta = src("land_units_tables")
     land_by_key = {r["key"]: r for r in lands}
@@ -450,7 +382,6 @@ def decode_db_tables(con, files, d, schema, report):
             r.get("num_men"), int(bool(r.get("is_naval"))), r.get("ui_unit_group_land")))
     report["_written"]["units"] = len(mains)
 
-    # -- skills (character_skills) ------------------------------------------- #
     skills, smeta = src("character_skills_tables")
     if smeta["ok"]:
         cur.execute("DROP TABLE IF EXISTS skills")
@@ -462,7 +393,6 @@ def decode_db_tables(con, files, d, schema, report):
                 int(bool(r.get("is_background_skill"))), r.get("background_weighting")))
         report["_written"]["skills"] = len(skills)
 
-    # -- rituals (rituals) --------------------------------------------------- #
     rituals, rmeta = src("rituals_tables")
     if rmeta["ok"]:
         cur.execute("DROP TABLE IF EXISTS rituals")
@@ -476,22 +406,17 @@ def decode_db_tables(con, files, d, schema, report):
                 r.get("required_resources"), r.get("expended_resources")))
         report["_written"]["rituals"] = len(rituals)
 
-    # -- post-battle captive options (subculture/culture/faction -> 3 button names) -------- #
     _captive_reference(cur, files, d, schema, report)
 
     con.commit()
 
 
-# --------------------------------------------------------------------------- #
-#  Top-level build
-# --------------------------------------------------------------------------- #
 def build():
     out = r"D:\twdata\reference\reference.sqlite"
     os.makedirs(os.path.dirname(out), exist_ok=True)
     con = sqlite3.connect(out)
     cur = con.cursor()
 
-    # ---- localisation leg (record key -> name/description) ----
     lfiles, ld = parse_pack(GAME + "/local_en.pack")
     cur.execute("DROP TABLE IF EXISTS loc")
     cur.execute("CREATE TABLE loc (key TEXT PRIMARY KEY, text TEXT)")
@@ -507,7 +432,6 @@ def build():
     con.commit()
     print(f"loc: {n} entries from {sum(1 for f in lfiles if f[0].endswith('.loc'))} .loc files")
 
-    # ---- numeric-feature leg (schema-driven db decode) ----
     schema = load_db_schema()
     dfiles, dd = parse_pack(GAME + "/db.pack")
     report = {}
@@ -556,7 +480,6 @@ def _verify(cur):
         cnt = one(f"SELECT COUNT(*) FROM {tbl}")[0]
         print(f"  {tbl}: {cnt} rows; sample={row}")
 
-    # captive options: the 3 buttons for a couple of captors, named from the DB only
     for label, etype, ekey in (("High Elves", "culture", "wh2_main_hef_high_elves"),
                                ("Slaanesh/Masque", "faction", "wh3_dlc27_sla_masque_of_slaanesh"),
                                ("Slaanesh (culture)", "culture", "wh3_main_sla_slaanesh")):

@@ -20,7 +20,6 @@ import diplomacy as D                                         # noqa: E402
 OUT_DIR = r"D:\twdata\diplo_capture"
 POLL = 0.25
 
-# pipe-joined treaty scalars for one faction
 _LUA_TREATIES = (
     "local me=cm:get_faction(cm:get_local_faction_name(true)) "
     "if not me or me:is_null_interface() then return 'nofaction' end "
@@ -82,7 +81,6 @@ def snapshot(bus):
            if k.startswith("faction_row_entry_") and "select" in str(v.get("state") or "")]
     rec["selected_faction"] = sel[0] if sel else None
 
-    # dedup signature
     sig = ("open", tuple(sorted(rec["offered_terms"].items())), chance,
            rec["button_send_state"], rec["selected_faction"], len(nodes))
     return rec, sig

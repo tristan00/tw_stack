@@ -110,7 +110,7 @@ def _select_army(bus, cqi):
     y = _ev(bus, "cm:get_character_by_cqi(%d):display_position_y()" % cqi)
     if x is None or y is None:
         return False
-    for click_y in (720, 640, 480, 300, 200):       # banner heights, highest-hit-rate first
+    for click_y in (720, 640, 480, 300, 200):       # candidate banner heights
         for _ in range(3):
             if not nav.open_views(bus):
                 break

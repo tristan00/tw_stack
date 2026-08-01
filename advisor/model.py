@@ -16,10 +16,8 @@ from store import DecisionStore, IncompatibleStore        # noqa: E402
 
 MODEL_DIR = r"D:\twdata\models\global"
 LOCAL_MODEL_DIR = r"D:\twdata\models\local"
-# local reward weight: one SD of local impact is worth W_LOCAL SDs of global.
-# inference-time dial -- changing it needs no refit.
+# local reward weight: one SD of local impact is worth W_LOCAL SDs of global
 W_LOCAL = 0.25
-# per-entity local reward: character level / summed main-settlement level
 LOCAL_KINDS = ("lord", "hero", "province")
 RUNS_ROOT = "D:/twdata/runs/human"
 BETA = 0.10                 # explore weight
@@ -47,9 +45,7 @@ def _growth(turns, turn, part):
 
 
 def target_ranges(series):
-    """Per part: the growth delta of every labelled (campaign, turn), sorted. Growth, not
-    level: an absolute target makes turn-3 and turn-30 decisions train against different
-    label regimes and rewards sitting on wealth; deltas are stationary across stage."""
+    """Per part: the growth delta of every labelled (campaign, turn), sorted."""
     deltas = {p: [] for p in VALUE_PARTS}
     for turns in series.values():
         for t in sorted(turns):
@@ -89,8 +85,7 @@ def target(series, campaign, turn, ranges):
 
 
 def local_ranges(eseries):
-    """Per context_kind: the growth delta of every labelled (entity, turn), sorted. Kinds are
-    NOT pooled -- a lord level and a settlement level have different scales."""
+    """Per context_kind: the growth delta of every labelled (entity, turn), sorted, kinds not pooled."""
     deltas = {}
     for ents in eseries.values():
         for (kind, _cid), turns in ents.items():
@@ -233,14 +228,7 @@ def _sd(xs):
 
 
 def _ranks(vals):
-    """Fractional rank of each value in [0,1], ties sharing the average rank.
-
-    Ranked WITHIN the offer set being scored, not against the training distribution. Training rows
-    are only the actions the policy chose, so they are biased toward good ones -- ranking live
-    offers against them pushed the majority below anything ever picked and collapsed them to 0.
-    Ranking within the decision is uniform by construction and is what the score is used for:
-    choosing among these offers, now.
-    """
+    """Fractional rank of each value in [0,1], ties sharing the average rank."""
     n = len(vals)
     if n == 0:
         return []
@@ -253,7 +241,7 @@ def _ranks(vals):
         j = i
         while j + 1 < n and vals[order[j + 1]] == vals[order[i]]:
             j += 1
-        share = (i + j) / 2.0 / (n - 1)             # average rank across the tie group
+        share = (i + j) / 2.0 / (n - 1)
         for k in range(i, j + 1):
             out[order[k]] = share
         i = j + 1
@@ -261,11 +249,7 @@ def _ranks(vals):
 
 
 def _train_local(data, num, cat, snum, scat, sd_global):
-    """Second E1/E2 pair fitted on the LOCAL label, over the rows that have one.
-
-    Returns a status dict. Never raises: no local rows simply means no local model, and the
-    ranker then scores on global alone.
-    """
+    """Second E1/E2 pair fitted on the LOCAL label, over the rows that have one."""
     from catboost import CatBoostRegressor, Pool
     idx = [i for i, v in enumerate(data["y_local"]) if v is not None]
     if len(idx) < MIN_ROWS:
@@ -344,7 +328,6 @@ class Ranker:
             sys.stderr.write("model: load failed -> %s\n" % repr(e)[:160])
             self.ready = False
             return
-        # local pair is OPTIONAL: absent means score on global alone
         self.lmeta = None
         self.l1 = self.l2 = None
         lmeta_path = os.path.join(LOCAL_MODEL_DIR, "meta.json")
@@ -355,7 +338,6 @@ class Ranker:
                 self.l1 = _C(); self.l1.load_model(os.path.join(LOCAL_MODEL_DIR, "e1.cbm"))
                 self.l2 = _C(); self.l2.load_model(os.path.join(LOCAL_MODEL_DIR, "e2.cbm"))
         except Exception as e:
-            # a missing or broken LOCAL pair must not disable the global ranker
             sys.stderr.write("model: local pair not loaded -> %s\n" % repr(e)[:160])
             self.lmeta = self.l1 = self.l2 = None
 
@@ -375,7 +357,6 @@ class Ranker:
         X = F.matrix(rows, m["num"], m["cat"])
         f1 = list(self.e1.predict(Pool(X, cat_features=list(
             range(len(m["num"]), len(m["num"]) + len(m["cat"]))))))
-        # E2 is per entity, not per offer
         seen, srows, order = {}, [], []
         for e, _o, _r in triples:
             k = (e["context_kind"], str(e["context_id"]))
@@ -390,8 +371,6 @@ class Ranker:
         if self.iso is not None:
             Xa, _ = _encode(rows, m["num"], m["cat"], self.iso["cat_maps"])
             nov = [-float(s) for s in self.iso["iso"].score_samples(Xa)]
-        # LOCAL impacts, when the second pair is loaded. An entity kind with no local label gets
-        # None and is scored on global alone -- no penalty for lacking a local component.
         li = None
         lmeta = getattr(self, "lmeta", None) or {}
         lkinds = set(lmeta.get("kinds") or ())
@@ -405,18 +384,10 @@ class Ranker:
             lg = list(self.l2.predict(Pool(Xls, cat_features=list(
                 range(len(lm["state_num"]), len(lm["state_num"]) + len(lm["state_cat"]))))))
             li = [lf1[j] - lg[order[j]] for j in range(len(rows))]
-        # PERCENTILE BLEND. Each impact is ranked WITHIN this decision's offers and centred, giving
-        # a uniform [-0.5, +0.5]; the two halves are then added. Uniform by construction, so no
-        # distributional assumption and nothing to clamp against.
         impacts = [f1[i] - g[order[i]] for i in range(len(rows))]
-        # Gate on the kinds the local pair was ACTUALLY trained on, read from its own meta -- not
-        # the LOCAL_KINDS constant, which can drift out of step with a trained artefact. A
-        # campaign-context offer has no local meaning and must not be ranked on one.
         local_imp = [li[i] if (li is not None and triples[i][0]["context_kind"] in lkinds) else None
                      for i in range(len(rows))]
         pg_rank = _ranks(impacts)
-        # local ranks are taken among the covered rows ONLY, so an uncovered offer neither gets a
-        # rank nor shifts anyone else's
         lidx = [i for i, v in enumerate(local_imp) if v is not None]
         pl_rank = [None] * len(rows)
         for pos, val in zip(lidx, _ranks([local_imp[i] for i in lidx])):
@@ -429,8 +400,6 @@ class Ranker:
             pctg = pg_rank[i]
             pctl = pl_rank[i]
             if pctl is not None:
-                # divide by the weight actually applied, so an offer WITHOUT a local component is
-                # not shrunk toward the middle relative to one that has it
                 exploit = ((pctg - 0.5) + w * (pctl - 0.5)) / (1.0 + w) + 0.5
             else:
                 exploit = pctg
@@ -441,7 +410,6 @@ class Ranker:
                         "params": o.get("params") or {},
                         "impact": round(impact, 5),
                         "impact_local": (round(lo_imp, 5) if lo_imp is not None else None),
-                        # the two halves of exploit, so the UI can show the split
                         "pct_global": round(pctg, 4),
                         "pct_local": (round(pctl, 4) if pctl is not None else None),
                         "w_local": w,

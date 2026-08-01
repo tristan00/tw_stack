@@ -1,6 +1,6 @@
-"""twapi.errors -- the public package exception (moved text-identically from api.py, R1)."""
+"""twapi.errors -- the public package exception."""
 
 
 class TWError(Exception):
-    """Public package exception (contract §5). No args beyond Exception's."""
+    """Public package exception."""
     pass

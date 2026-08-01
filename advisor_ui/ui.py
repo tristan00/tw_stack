@@ -150,7 +150,7 @@ def run_history(con, runs_root=RUNS_ROOT):
                        "last_income": (reward[1] if reward else None),
                        "last_settlements": (reward[2] if reward else None),
                        "last_power_rank": (reward[3] if reward else None)}
-                if camp in seen:                      # two dirs, same campaign -> keep the richer
+                if camp in seen:
                     if row["decisions"] > seen[camp]["decisions"]:
                         seen[camp] = row
                 else:
@@ -381,7 +381,7 @@ def starts_summary(runs_root=RUNS_ROOT):
                        "lord_level": best[2], "vassals": best[3]}
                 prev = camps.get(camp)
                 if prev is None or row["decisions"] > prev["decisions"]:
-                    camps[camp] = row      # two dirs, same campaign -> keep the richer
+                    camps[camp] = row
         except sqlite3.Error:
             pass
         finally:
@@ -433,8 +433,6 @@ def faction_action_stats(runs_root=RUNS_ROOT):
                     fac = None
                 if not fac:
                     continue
-                # TRUE cost = gap to the next decision (the latency fields hide the waits
-                # between actions); falls back to latency for a campaign's last decision
                 true_s = (lat or 0) / 1000.0
                 if i + 1 < len(rows) and rows[i + 1][0] == camp and rows[i + 1][1] and ts:
                     gap = rows[i + 1][1] - ts
@@ -492,7 +490,7 @@ def _matrix_tables(data, title):
 
 
 def render_endings(runs_root=RUNS_ROOT, limit=20):
-    """Campaign endings with their plausibility verdicts -- adjudicate without watching."""
+    """Campaign endings with their plausibility verdicts."""
     path = os.path.join(runs_root, "postmortems.jsonl")
     rows = []
     try:
@@ -605,7 +603,6 @@ def render_index(con, run_dir):
             mark, cls = "OK", "ok"
         else:
             mark, cls = "FAIL", "bad"
-        # exploit is a blend of two percentiles -- show both halves, not just the result
         pl = r.get("pct_local")
         pl_cell = _num(pl) if pl is not None else "<span class=dim>n/a</span>"
         seq.append("<tr><td><a href='/d/%d'>#%d</a></td><td>%s</td><td>%s</td>"
@@ -786,7 +783,6 @@ def render_decision(con, did):
         cls = "take" if o["taken"] else ""
         avail = "<span class=ok>yes</span>" if o["available"] else "<span class=dim>no</span>"
         fmt = lambda v: ("%.4f" % v) if isinstance(v, float) else ("" if v is None else str(v))
-        # exploit is the blend of the two percentiles; show both so it can be read, not guessed
         pl = o.get("pct_local")
         pl_cell = fmt(pl) if pl is not None else "<span class=dim>n/a</span>"
         rows.append("<tr class='%s'><td>%s</td><td>%s:%s</td><td>%s</td><td>%s</td><td>%s</td>"
@@ -866,7 +862,7 @@ def _meta(path):
 
 
 def render_infra(run_dir):
-    """Service status, model training state, and run activity -- the operational view."""
+    """Service status, model training state, and run activity."""
     import time
     procs, wh3 = _ps()
     running = {}
@@ -897,7 +893,6 @@ def render_infra(run_dir):
     svc = ("<h2>services</h2><div class=scroll><table>"
            "<tr><th>service<th>state<th>pid<th>started</tr>%s</table></div>" % "".join(rows))
 
-    # ---- models
     g = _meta(r"D:\twdata\models\global\meta.json")
     l = _meta(r"D:\twdata\models\local\meta.json")
     ga, gt = _age(r"D:\twdata\models\global\meta.json")
@@ -924,7 +919,6 @@ def render_infra(run_dir):
               "<tr><th>model<th>rows<th>trained at<th>age<th>config</tr>%s</table></div>"
               % "".join(mrows))
 
-    # ---- activity: the files that prove the loop is alive
     watch = [("session log", (open(CURRENT_LOG).read().strip()
                               if os.path.isfile(CURRENT_LOG) else ""), 90, 420)]
     arows = []
@@ -945,7 +939,6 @@ def render_infra(run_dir):
     activity = ("<h2>activity</h2><div class=scroll><table>"
                 "<tr><th>stream<th>last write<th></tr>%s</table></div>" % "".join(arows))
 
-    # ---- last lines of the session log
     tail = ""
     if os.path.isfile(CURRENT_LOG):
         lp = open(CURRENT_LOG).read().strip()
@@ -1073,4 +1066,4 @@ if __name__ == "__main__":
     explicit = len(sys.argv) > 1 and not sys.argv[1].isdigit()
     rd = sys.argv[1] if explicit else newest_run()
     pt = int(next((a for a in sys.argv[1:] if a.isdigit()), 8777))
-    serve(rd, pt, follow=not explicit)      # no dir given -> follow the live run
+    serve(rd, pt, follow=not explicit)

@@ -121,7 +121,6 @@ def request_snapshot(run_dir, active=None, timeout=180.0):
 
 def log_interrupt(run_dir, payload):
     """An interrupt-screen decision (pre-battle / battle results / occupation / dilemma)."""
-    # the envelope `kind` must be "interrupt"; the screen type moves to `screen`
     body = dict(payload)
     body["screen"] = body.pop("kind", None)
     body["kind"] = "interrupt"

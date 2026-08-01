@@ -4,15 +4,14 @@ import sys
 import threading
 import time
 
-STUCK_SECONDS = 75.0         # no progress this long -> stuck
-POLL_SECONDS = 15.0          # how often the digest is requested
+STUCK_SECONDS = 75.0
+POLL_SECONDS = 15.0
 
 
 class Watchdog:
     def __init__(self, request_hash, on_stuck, stuck_seconds=STUCK_SECONDS,
                  poll_seconds=POLL_SECONDS, log=None):
-        """request_hash() -> (hash, roots), raising if the game cannot answer.
-        on_stuck(reason, detail) is called ONCE, from this thread."""
+        """request_hash() -> (hash, roots); on_stuck(reason, detail) is called ONCE, from this thread."""
         self._request = request_hash
         self._on_stuck = on_stuck
         self.stuck_seconds = stuck_seconds
@@ -101,6 +100,5 @@ class Watchdog:
                 except Exception as e:
                     self._log("on_stuck handler raised: %s" % repr(e)[:160])
                 return                        # one verdict per run
-            # never sleep past the deadline
             self._stop.wait(max(1.0, min(self.poll_seconds,
                                          self.stuck_seconds - self.idle_seconds())))

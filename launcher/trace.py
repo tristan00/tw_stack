@@ -9,7 +9,6 @@ import time
 
 _LOCK = threading.Lock()
 _STATE = {"path": None, "run_dir": None, "seq": 0}
-# used until set_run_dir names a run
 _FALLBACK = r"D:\twdata\logs\launcher\trace_prerun.jsonl"
 
 

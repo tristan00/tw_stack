@@ -35,7 +35,7 @@ P_LEADER_NAME = ("campaign_select_new|right_holder|tab_lord|lord_details_panel|"
 P_FACTION_NAME = ("campaign_select_new|right_holder|tab_lord|lord_details_panel|"
                   "name_and_icon_holder|name_clip|name_holder|label_faction_name")
 P_START = "campaign_select_new|button_start_parent|button_start_campaign"
-P_CONTINUE = "custom_loading_screen|bottom_parent|button_continue"   # loading-screen dismiss
+P_CONTINUE = "custom_loading_screen|bottom_parent|button_continue"
 
 
 def _log(msg):
@@ -78,7 +78,7 @@ class BusLauncher:
                     f.seek(start)
                     data = f.read()
             except OSError:
-                data = b""  # not readable yet -> retry next poll
+                data = b""
             for line in data.decode("utf-8", "replace").splitlines():
                 line = line.strip()
                 if not line:
@@ -156,7 +156,6 @@ class BusLauncher:
             if p == container:
                 continue
             cid = nd.get("id") or ""
-            # direct children only
             if p.count("|") != container.count("|") + 1:
                 continue
             if all(s in cid for s in substrings):
@@ -192,8 +191,6 @@ class BusLauncher:
             except TWError:
                 pass
             roots = self._roots_safe()
-            # scripted intro cinematics ignore skip_all_campaign_cutscenes; the spacebar
-            # bar marks them and hardware ESC is the skip that works
             if any(k.get("id") in ("campaign_space_bar_options", "black_fade")
                    and k.get("visible") for k in roots):
                 import subprocess
@@ -235,7 +232,6 @@ class BusLauncher:
         faction = str(faction or "").strip()
         if not faction:
             raise TWError("start_campaign needs a faction key (see startable_factions())")
-        # do not add a roots ack-poll here
         lua = ("local ok,e=pcall(function() cco('CcoFrontendRoot',''):Call("
                "'StartCampaign(\"%s\", \"%s\", \"SP_NORMAL\")') end) "
                "return 'ok='..tostring(ok)..' err='..tostring(e)" % (ckey, faction))

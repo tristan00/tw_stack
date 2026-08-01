@@ -25,7 +25,7 @@ def run(ctx):
     last_uuid = [None]
 
     def campaign_changed(snap_camp):
-        """Record a campaign change; one directory holds many campaigns, so the run dir never rotates."""
+        """Record a campaign change; always returns False -- the run dir never rotates."""
         u = (snap_camp or {}).get("campaign_uuid")
         if not u or u == last_uuid[0]:
             return False
@@ -33,13 +33,13 @@ def run(ctx):
             ctx.emit({"kind": "decisions_status", "status": "campaign_changed",
                       "from": last_uuid[0], "to": u, "same_dir": True})
         last_uuid[0] = u
-        return False                   # never swaps
+        return False
     counts = {"snapshot": 0, "target": 0, "turn": 0, "hash": 0, "pick": 0,
               "verification": 0, "error": 0}
     while ctx.is_running():
         try:
             out_dir = ctx.out_dir
-            if out_dir != cur_dir:                       # first run or R3 campaign swap
+            if out_dir != cur_dir:
                 if store is not None:
                     store.close()
                 store = DecisionStore(out_dir)
@@ -54,7 +54,7 @@ def run(ctx):
                         t0 = time.time()
                         snap = collect.snapshot(bus, active=row.get("active"))
                         if campaign_changed(snap.get("campaign")):
-                            seq = 0                      # decision_seq restarts with the campaign
+                            seq = 0
                         did = store.write_decision(snap, decision_seq=seq)
                         seq += 1
                         counts["snapshot"] += 1
@@ -69,7 +69,6 @@ def run(ctx):
                     elif kind == "target":
                         r = collect.target_row(bus)
                         wrote = store.write_target_row(r)
-                        # per-entity LOCAL reward inputs, same cadence as the global row
                         ents = collect.entity_target_rows(bus)
                         store.write_entity_target_rows(
                             store.campaign_key(r.get("campaign_id"), r.get("campaign_uuid")),
@@ -89,7 +88,6 @@ def run(ctx):
                         counts["hash"] += 1
                         journal.respond(out_dir, rid, hash=h["hash"], roots=h["roots"])
                     elif kind == "interrupt":
-                        # fire-and-forget: nothing waits on a reply
                         cs = collect.campaign_state(bus)
                         store.write_interrupt(dict(row, campaign=cs))
                         counts["interrupt"] = counts.get("interrupt", 0) + 1
@@ -119,14 +117,13 @@ def run(ctx):
                                   "refusal": res.get("refusal")})
                     else:
                         raise ValueError("unknown request kind %r" % kind)
-                except Exception as e:                    # one bad request never kills the stream
+                except Exception as e:
                     counts["error"] += 1
                     ctx.on_error("decisions-%s" % kind, e)
-                    # keep the tail as well as the head
                     _m = repr(e)
                     ctx.emit({"kind": "decisions_error", "req_kind": kind,
                               "err": _m if len(_m) <= 700 else _m[:200] + " ...<<cut>>... " + _m[-500:]})
-                    if rid:                               # unblock the waiting advisor
+                    if rid:
                         journal.respond(out_dir, rid, error=(lambda _m: _m if len(_m) <= 700 else
                                                  _m[:200] + " ...<<cut>>... " + _m[-500:])(repr(e)))
         except Exception as e:

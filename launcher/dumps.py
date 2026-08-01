@@ -59,10 +59,8 @@ def dump_tree(bus, root, depth=40, nodes=16000):
 
 
 def dump_screen(bus, log_path=None, save_dir=None, deep=True, depth=40, nodes=16000, log_tail=400):
-    """Capture roots, every visible panel's tree, the entity streams and the game state.
-
-    Returns the dict; with `save_dir`, also writes dump.json + tree_<panel>.json there.
-    An empty `filter_hits` means the capture was complete."""
+    """Capture roots, every visible panel's tree, the entity streams and the game state; with
+    `save_dir`, also writes dump.json + tree_<panel>.json there."""
     D = {
         "roots": [], "open_panels": [], "panels": {}, "entities": {}, "state": {},
         "log_tail": None, "filter_hits": [],

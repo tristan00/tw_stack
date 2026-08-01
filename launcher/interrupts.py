@@ -65,10 +65,7 @@ DISPLAY_CONTROLS = frozenset((
     "army_button", "button_info", "button_preview_map",
     "card_image_holder", "icon", "selected_frame",
     "button_finance",
-    # classified from stuck_unhandled_battle_results_1785541961.png: the Tomb Kings' 0/8 books
-    # HUD counter, clickable while the results popup is open -- opens a panel, resolves nothing
     "button_books_of_nagash",
-    # event-popup chrome (unhandled_screens.jsonl inventory): camera jump + message body
     "button_zoom",
     "button_txt",
 ))
@@ -103,9 +100,7 @@ def _campaign_hint():
 
 
 def _choose(screen, options, campaign=None):
-    """Pick one of `options` via the installed chooser. Callers pass only the legal set; a pick
-    outside it raises.
-    """
+    """Pick one of `options` via the installed chooser; a pick outside `options` raises."""
     opts = sorted(options)
     if not opts:
         return None
@@ -132,12 +127,7 @@ UNHANDLED_LOG = r"D:/twdata/runs/human/unhandled_screens.jsonl"
 
 
 def _report_unhandled(bus, screen, unknown, offered, root=None):
-    """Append an unhandled-option record (with screenshot) to UNHANDLED_LOG. Never raises.
-
-    The record must be enough to author the fix AFTER the screen is gone: the full tree of the
-    offending root(s) -- every node's id/path/text/context/state/bounds -- not just the unknown
-    ids. An id alone identifies nothing, and dilemma choices are cloned templates with no id.
-    """
+    """Append an unhandled-option record (with screenshot) to UNHANDLED_LOG. Never raises."""
     import json
     rec = {"ts": time.time(), "when": time.strftime("%Y-%m-%d %H:%M:%S"), "screen": screen,
            "unknown": list(unknown), "offered": list(offered), "root": root}
@@ -151,7 +141,6 @@ def _report_unhandled(bus, screen, unknown, offered, root=None):
         rec["trees"] = {rt: _tree(bus, rt) for rt in dump}
     except Exception as e:
         rec["trees_error"] = repr(e)[:120]
-    # the unknown ids' own nodes, pulled out of the dumps for quick reading
     try:
         want = {str(u) for u in unknown}
         rec["unknown_nodes"] = [dict(n, root=rt) for rt, ns in (rec.get("trees") or {}).items()
@@ -175,10 +164,7 @@ def _report_unhandled(bus, screen, unknown, offered, root=None):
 
 
 class UnhandledScreen(BaseException):
-    """An interrupt screen offered an option this code cannot pick or record.
-
-    BaseException so `except Exception` cannot catch it. Do not change the base class.
-    """
+    """An interrupt screen offered an option this code cannot pick or record."""
 ACCEPT_TOKENS = ("accept", "confirm", "button_ok", "button_yes")
 DECLINE_TOKENS = ("decline", "reject", "refuse", "cancel", "close", "no_deal")
 DIPLOMACY_NEVER_CLICK_PREFIXES = ("diplomatic_option",)
@@ -206,7 +192,7 @@ def _wait_root(bus, root, tries=30, pause=1.0):
     return False
 
 
-CLICK_LOG = []          # (ts, path, clicked)
+CLICK_LOG = []
 
 
 def _click(bus, path, settle=1.5):
@@ -220,7 +206,6 @@ def _click(bus, path, settle=1.5):
     ok = bool(r.get("clicked"))
     CLICK_LOG.append((time.time(), path, ok))
     sys.stderr.write("interrupts: CLICK %s -> clicked=%s\n" % (path, ok))
-    # settle is a CAP, not a sleep: return as soon as the click visibly landed
     deadline = time.time() + settle
     while time.time() < deadline:
         time.sleep(0.3)
@@ -320,11 +305,7 @@ DEFEAT_PROBE = (
 
 
 def defeated_probe(bus):
-    """Engine-side death check: True/False, or None when the probe itself failed (logged).
-
-    The Defeat screen exposes no defeat-named root (proven by stuck_blocked_1785556044.png),
-    so root-token matching cannot see it; the engine's own is_dead flag can.
-    """
+    """Engine-side death check: True/False, or None when the probe itself failed (logged)."""
     try:
         r = bus.send("eval", DEFEAT_PROBE, timeout=10.0) or {}
     except Exception as e:
@@ -364,11 +345,7 @@ def in_battle(bus):
 
 
 def resolve_prebattle(bus):
-    """Drive the open pre-battle panel forward. Returns the control used, or False.
-
-    The pick comes from PREBATTLE_CHOOSABLE minus PREBATTLE_NEVER, so nothing outside that
-    allowlist can be clicked.
-    """
+    """Drive the open pre-battle panel forward. Returns the control used, or False."""
     ctrls = _clickable_controls(bus, "popup_pre_battle")
     unknown = _unknown_controls(ctrls, KNOWN_PREBATTLE_CONTROLS)
     if unknown:
@@ -553,11 +530,7 @@ def resolve_battle(bus, max_rounds=4):
 
 
 def acknowledge_war_declared(bus, open_roots):
-    """Acknowledge a 'faction has declared war on you' notification. Returns the steps taken.
-
-    Acknowledge-only: the screen offers no choice, so clicking its accept-family control
-    concedes nothing. Gated on the marker text so nothing else can match.
-    """
+    """Acknowledge a 'faction has declared war on you' notification. Returns the steps taken."""
     steps = []
     for root in open_roots:
         if root in nav.BASE_ROOTS or root in DIPLOMACY_HUD_ROOTS or root in BENIGN_PANELS:
@@ -594,7 +567,7 @@ def answer_diplomacy(bus):
     """Answer an incoming proposal with one of its DECLINE controls. Returns the steps taken."""
     steps = []
     for root in diplomacy_roots(bus):
-        answers = {}                                 # id -> (path, "accept" | "decline")
+        answers = {}
         tree = _tree(bus, root)
         for n in tree:
             nid = str(n.get("id") or "")
@@ -631,7 +604,6 @@ def answer_diplomacy(bus):
         if not clicked or not gone:
             steps.append("diplomacy_stuck:%s" % root)
         _record_choice("diplomacy", root, detail, want,
-                       # the deal itself lives only in the tree: proposer, terms, amounts
                        extra={"answer": kind, "tree": tree},
                        executed=clicked, confirmed=gone,
                        refusal=None if gone else ("command_silently_refused" if clicked
@@ -649,10 +621,7 @@ def forget_stuck():
 
 
 def choose_dilemma(bus, open_roots):
-    """Answer a dilemma by clicking one of its choice records. Returns the steps taken.
-
-    Battle roots are skipped here; resolve_battle owns them.
-    """
+    """Answer a dilemma by clicking one of its choice records. Returns the steps taken."""
     steps = []
     for root in open_roots:
         if (root in nav.BASE_ROOTS or root in DIPLOMACY_HUD_ROOTS or root in BENIGN_PANELS
@@ -672,8 +641,6 @@ def choose_dilemma(bus, open_roots):
                          if any(t in i.lower() for t in ACCEPT_TOKENS)
                          or i in ("button_dismiss", "button_close"))
             if ack and len(ack) == len(actionable):
-                # marker but no choice records and accept-only controls: an event
-                # notification, not a dilemma -- acknowledge and record it as such
                 tree = _tree(bus, root)
                 opts = {i: {"context": None, "text": "acknowledge event"} for i in ack}
                 key = ack[0]
@@ -705,8 +672,6 @@ def choose_dilemma(bus, open_roots):
         if clicked:
             steps.append("dilemma:%s:%s" % (root, key))
         _record_choice("dilemma", root, detail["options"], key,
-                       # the screen as we SAW it, kept even when we believe we handled it -- a
-                       # misread dilemma recorded as handled is otherwise unprovable
                        extra={"root_context": detail.get("root_context"),
                               "tree": _tree(bus, root)},
                        executed=clicked, confirmed=gone,
@@ -724,8 +689,7 @@ def _record_choice(kind, root, options, chosen, extra=None,
                    executed=None, confirmed=None, refusal=None, latency_ms=None):
     """Buffer one interrupt-screen decision. `options` is {id: {"context":..., "text":...}}.
 
-    counted = executed AND confirmed. Pass confirmed only from a post-assert on game state, never
-    from a click reporting True; leave it None when not checked (stored as NULL).
+    `confirmed` comes only from a post-assert on game state, never from a click reporting True.
     """
     confirmed_b = None if confirmed is None else bool(confirmed)
     executed_b = None if executed is None else bool(executed)
@@ -801,11 +765,7 @@ def _is_dilemma(bus, root):
 
 
 def resolve(bus, max_rounds=6):
-    """Clear every interrupt currently on screen. Returns the steps taken ([] = clean screen).
-
-    Runs after every action: one `roots` call on a clean screen. A round that leaves the root set
-    unchanged stops the loop, and a root set already declared stuck is not re-walked.
-    """
+    """Clear every interrupt currently on screen. Returns the steps taken ([] = clean screen)."""
     steps = []
     for _ in range(max_rounds):
         before = tuple(roots(bus))
