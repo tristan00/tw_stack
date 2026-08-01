@@ -4,7 +4,7 @@ The advisor is the brain: it asks the recorder for data, decides, tells the laun
 and only counts an action that was **programmatically confirmed**. The recorder exists to serve
 that loop — so the loop is specified first, and the recorder's API falls out of it.
 
-## 1. Contexts and their action sets (the 16 implemented executors)
+## 1. Contexts and their action sets (the 18 implemented executors)
 
 | context | entity | actions available for prediction |
 |---|---|---|

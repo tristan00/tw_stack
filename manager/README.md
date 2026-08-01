@@ -2,7 +2,7 @@
 
 Ported from `record.py:main` + `write_meta`, decomposed. Owns the run directory, the single
 shared **T0 clock**, `meta.json`, the thread-safe writers, and the input→shots `shot_req`
-coupling. Runs each capture stream (`input` / `shots` / `logs` / — later — `ui`) as an
+coupling. Runs each capture stream (`input` / `shots` / `logs` / `ui-capture` / `actions` / `decisions`) as an
 independent daemon thread: record.py's proven "independent failsafe threads" design, so one
 stream dying never stops the others and the shared clock is trivially consistent.
 
@@ -30,7 +30,6 @@ python test_manager.py
 #   INTEGRATION: real input+shots+logs vs synthetic inputs -> populated run (events + shots/*.jpg + logs/*.tail)
 ```
 
-## Blocked (needs the live game — deferred)
-The integrated run against the **real** game (`main()` driving real streams while WH3 is up),
-and adding the bus-based `ui-capture` stream — both need the game/bus, so they wait for a
-non-recording window.
+## Live wiring
+`main()` runs all streams against the real game; the bus-based `ui-capture` and `actions`
+streams are wired in (opt-in via `--ui` / `--v6-actions`), `decisions` is on by default.
