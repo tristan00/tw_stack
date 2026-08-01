@@ -198,7 +198,9 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
             log("previous campaign ended %s -- killing the game now, before retraining"
                 % prev_outcome)
             ex.kill_game()
-        if retrain:
+        # once, at the start of the batch: every campaign in a batch is then played by the same
+        # model, so the batch measures one policy rather than a moving one
+        if retrain and i == 0:
             try:
                 t0 = time.time()
                 rep = M.train()
