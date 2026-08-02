@@ -66,6 +66,7 @@ DISPLAY_CONTROLS = frozenset((
     "card_image_holder", "icon", "selected_frame",
     "button_finance",
     "button_books_of_nagash",
+    "button_nakai_temples",
     "button_zoom",
     "button_txt",
 ))
