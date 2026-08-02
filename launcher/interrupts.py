@@ -634,6 +634,226 @@ def answer_diplomacy(bus):
     return steps
 
 
+PROPOSAL_ROOT = "diplomacy_dropdown"
+PROPOSAL_ANSWER_IDS = frozenset(("button_accept", "button_cancel"))
+# same-root subpanel controls that are dismiss/confirm furniture, not proposal answers:
+# war_declared ack + declare-war confirm, both cleared by nav.close_popups' button_ok* rule
+PROPOSAL_KNOWN_NONANSWERS = frozenset(("button_ok_war_declared", "button_ok_declare",
+                                       "button_cancel_declare"))
+
+_ANSWER_MEMO = {}                    # root -> {"want","policy","scores","tries","ts"}
+_ANSWER_TRIES = 2
+_ANSWER_TTL = 180.0
+
+
+def _sticky_choice(screen, root, options):
+    """The advisor's pick for `root`, chosen ONCE and held while the screen persists, so a retry
+    re-clicks the SAME answer instead of re-rolling a war decision. tries counts attempts."""
+    m = _ANSWER_MEMO.get(root)
+    if m and m.get("want") in options and time.time() - m.get("ts", 0) <= _ANSWER_TTL:
+        m["tries"] += 1
+        return m
+    m = {"want": _choose(screen, sorted(options), _campaign_hint()),
+         "policy": _LAST_POLICY[0], "scores": dict(_LAST_SCORES[0] or {}),
+         "tries": 1, "ts": time.time()}
+    _ANSWER_MEMO[root] = m
+    return m
+
+
+def _await_root_gone(bus, root, limit=6.0):
+    deadline = time.time() + limit
+    while time.time() < deadline:
+        if root not in roots(bus):
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def _drive_decision(bus, root, kind, opts, detail, extra):
+    """Click the held pick for a decision screen. Bounded retries (same pick), then give up to
+    the watchdog; exactly ONE record per screen appearance -- at resolution or at the final try."""
+    steps = []
+    m = _sticky_choice(kind, root, opts)
+    if m["tries"] > _ANSWER_TRIES:
+        steps.append("%s_gave_up:%s" % (kind, root))
+        return steps
+    want = m["want"]
+    t0 = time.time()
+    clicked = _click(bus, opts[want], settle=2.0)
+    gone = _await_root_gone(bus, root)
+    if clicked:
+        steps.append("%s_%s:%s" % (kind, detail[want]["answer"], want))
+    if not clicked or not gone:
+        steps.append("%s_stuck:%s" % (kind, root))
+    if gone or m["tries"] >= _ANSWER_TRIES:
+        _LAST_POLICY[0], _LAST_SCORES[0] = m["policy"], dict(m["scores"] or {})
+        _record_choice(kind, root, detail, want,
+                       extra=dict(extra, answer=detail[want]["answer"]),
+                       executed=clicked, confirmed=gone,
+                       refusal=None if gone else ("command_silently_refused" if clicked
+                                                  else "execute_failed"),
+                       latency_ms=int((time.time() - t0) * 1000))
+    if gone:
+        _ANSWER_MEMO.pop(root, None)
+    return steps
+
+
+def _first_text(nodes, node_id, path_token=None):
+    """Text of the first visible node with id `node_id` (optionally path-filtered), else None."""
+    for n in nodes:
+        if str(n.get("id") or "") != node_id or not n.get("visible"):
+            continue
+        if path_token and path_token not in str(n.get("path") or ""):
+            continue
+        t = str(n.get("text") or "").strip()
+        if t:
+            return t
+    return None
+
+
+def proposal_options(nodes):
+    """{answer_id: path} for an incoming diplomacy screen, {} when `nodes` is not one.
+
+    Three states exist in the 20260801 dump corpus (77 dumps): a PROPOSAL offers accept+cancel
+    both clickable (14/14 observed); a NOTICE (e.g. treaty termination) has button_accept only --
+    button_cancel absent from the tree entirely -- and accept is an acknowledgment (2/2 observed);
+    a decline that is present but unclickable was never observed and raises rather than guesses.
+    The incoming marker is button_accept visible+clickable; the 'Waiting on player...' labels are
+    visible=false in every dump. v1 policy (operator, 2026-08-01): accept/decline only --
+    button_counteroffer is NOT an option.
+    """
+    out, present, odd = {}, set(), set()
+    for n in nodes:
+        nid = str(n.get("id") or "")
+        if nid in PROPOSAL_ANSWER_IDS:
+            present.add(nid)
+            if (n.get("visible") and str(n.get("state")) in _CLICKABLE and nid not in out):
+                out[nid] = str(n.get("path") or "")
+            continue
+        if (nid.startswith("button_") and nid not in PROPOSAL_KNOWN_NONANSWERS
+                and nid != "button_counteroffer"
+                and n.get("visible") and str(n.get("state")) in _CLICKABLE
+                and (any(t in nid for t in ACCEPT_TOKENS)
+                     or any(t in nid for t in DECLINE_TOKENS))):
+            odd.add(nid)
+    if "button_accept" not in out:
+        return {}
+    if odd:
+        raise UnhandledScreen(
+            "incoming diplomacy screen carries UNKNOWN answer-family control(s) %s -- classify "
+            "each (answer -> PROPOSAL_ANSWER_IDS, furniture -> PROPOSAL_KNOWN_NONANSWERS) before "
+            "this screen can be answered. Guessing here is how deals get signed blind."
+            % sorted(odd))
+    if "button_cancel" in present and "button_cancel" not in out:
+        raise UnhandledScreen(
+            "incoming proposal has a decline control that is NOT clickable -- a proposal this "
+            "code cannot refuse must not be answered by it. clickable=%s" % sorted(out))
+    return out
+
+
+def answer_incoming_proposal(bus):
+    """Answer an incoming proposal on the diplomacy dropdown: the advisor picks accept or decline.
+
+    Replaces two wrong behaviours: answer_diplomacy never saw this root (DIPLOMACY_HUD_ROOTS),
+    and nav.close_popups treated button_accept as a dismiss -- i.e. blind-accepted the deal.
+    Caveat (accepted): if the OUTGOING walk strands its negotiation-response screen (close_panel
+    raised), that screen also shows accept/cancel and gets answered here as if incoming -- the
+    advisor deciding a stranded negotiation beats a stuck campaign.
+    """
+    if PROPOSAL_ROOT not in roots(bus):
+        return []
+    tree = _tree(bus, PROPOSAL_ROOT)
+    try:
+        opts = proposal_options(tree)
+    except UnhandledScreen:
+        _report_unhandled(bus, "diplomacy_proposal",
+                          sorted({str(n.get("id")) for n in tree
+                                  if n.get("visible") and str(n.get("state")) in _CLICKABLE
+                                  and str(n.get("id") or "").startswith("button_")}),
+                          sorted(PROPOSAL_ANSWER_IDS), root=PROPOSAL_ROOT)
+        raise
+    if not opts:
+        return []
+    kind = "diplomacy_proposal" if "button_cancel" in opts else "diplomacy_notice"
+    detail = _options_of(bus, PROPOSAL_ROOT, sorted(opts))
+    for k in detail:
+        detail[k] = dict(detail[k],
+                         answer=("decline" if k == "button_cancel"
+                                 else "accept" if kind == "diplomacy_proposal"
+                                 else "acknowledge"))
+    # no "chance" field: label_deal_success_chance is visible only on the outgoing negotiation
+    # screen; on incoming proposals the hidden node carries a stale placeholder (14/14 dumps)
+    extra = {"tree": tree,
+             "proposer": _first_text(tree, "faction_title", "faction_right_status_panel"),
+             "speech": _first_text(tree, "dy_text", "speech_bubble"),
+             "attitude": _first_text(tree, "dy_value")}
+    return _drive_decision(bus, PROPOSAL_ROOT, kind, opts, detail, extra)
+
+
+ALLY_ATTACKED_ROOT = "ally_attacked"
+ALLY_ATTACKED_DECISIONS = frozenset(("button_join_aggressor", "button_join_defender",
+                                     "decline_button"))
+# display furniture of the join-button assembly, measured in dump 1785619114999
+ALLY_ATTACKED_FURNITURE = frozenset(("button_txt", "button_flame", "button_parent",
+                                     "button_default_selection"))
+
+
+def ally_attacked_options(nodes):
+    """{decision_id: path} for a call-to-arms screen. Raises UnhandledScreen when the screen
+    does not offer both a join and a decline, or offers a join control outside the known set.
+
+    Grounded in dump 1785619114999 (offensive variant): button_join_aggressor visible+active,
+    decline_button visible+active, button_join_defender present but hidden. The defensive
+    variant has never been tree-dumped; deriving from visibility handles it the moment it is.
+    Ids like button_txt/button_flame/option1_text are display furniture of the join assembly.
+    """
+    out, unknown = {}, []
+    for n in nodes:
+        nid = str(n.get("id") or "")
+        if not n.get("visible") or str(n.get("state")) not in _CLICKABLE:
+            continue
+        if nid in ALLY_ATTACKED_DECISIONS:
+            out.setdefault(nid, str(n.get("path") or ""))
+        elif ((nid.startswith("button_") or "decline" in nid)
+                and nid not in ALLY_ATTACKED_FURNITURE):
+            unknown.append(nid)
+    if unknown:
+        raise UnhandledScreen(
+            "ally_attacked offers UNKNOWN decision control(s) %s -- add each to "
+            "ALLY_ATTACKED_DECISIONS so it can be both picked and recorded. visible known=%s"
+            % (sorted(unknown), sorted(out)))
+    if "decline_button" not in out or not any(k.startswith("button_join") for k in out):
+        raise UnhandledScreen(
+            "ally_attacked variant without a clickable join+decline pair (visible decisions=%s) "
+            "-- this code cannot answer it and will not dismiss a war decision" % sorted(out))
+    return out
+
+
+def answer_ally_attacked(bus):
+    """Answer a call-to-arms: the advisor picks join (whichever side is offered) or decline.
+
+    Both options are real decisions -- join enters a war; decline breaks the alliance and costs
+    reliability -- so the pick is recorded like every other interrupt decision.
+    """
+    steps = []
+    if ALLY_ATTACKED_ROOT not in roots(bus):
+        return steps
+    tree = _tree(bus, ALLY_ATTACKED_ROOT)
+    try:
+        opts = ally_attacked_options(tree)
+    except UnhandledScreen:
+        _report_unhandled(bus, "ally_attacked",
+                          [str(n.get("id")) for n in tree
+                           if n.get("visible") and str(n.get("state")) in _CLICKABLE],
+                          sorted(ALLY_ATTACKED_DECISIONS), root=ALLY_ATTACKED_ROOT)
+        raise
+    detail = _options_of(bus, ALLY_ATTACKED_ROOT, sorted(opts))
+    for k in detail:
+        detail[k] = dict(detail[k], answer=("decline" if k == "decline_button" else "join"))
+    extra = {"tree": tree, "variant": _first_text(tree, "dy_subtitle")}
+    return _drive_decision(bus, ALLY_ATTACKED_ROOT, "ally_attacked", opts, detail, extra)
+
+
 _stuck_sig = [None]
 
 
@@ -806,7 +1026,8 @@ def resolve(bus, max_rounds=6):
             if r not in nav.BASE_ROOTS and r not in BENIGN_PANELS:
                 nav.dump_screen(bus, r, "interrupt")
         kinds = pending(bus)
-        if not kinds:
+        if (not kinds and ALLY_ATTACKED_ROOT not in before
+                and PROPOSAL_ROOT not in before):
             _stuck_sig[0] = None
             break
         if "battle" in kinds:
@@ -814,6 +1035,20 @@ def resolve(bus, max_rounds=6):
             if tuple(roots(bus)) == before:
                 break
             continue
+        if ALLY_ATTACKED_ROOT in before:
+            s = answer_ally_attacked(bus)
+            if s:
+                steps.extend(s)
+                if tuple(roots(bus)) == before:
+                    break
+                continue
+        if PROPOSAL_ROOT in before:
+            s = answer_incoming_proposal(bus)
+            if s:
+                steps.extend(s)
+                if tuple(roots(bus)) == before:
+                    break
+                continue
         if "diplomacy" in kinds:
             steps.extend(answer_diplomacy(bus))
             if tuple(roots(bus)) == before:
