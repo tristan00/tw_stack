@@ -164,6 +164,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log):
     pol.new_turn()
     turn = journal.request_turn(run_dir)
     DS.TURN[0] = turn
+    _last_done_ts = [None]        # end of the previous action incl. its interrupt sweeps
     log("== TURN %s ==" % turn)
     opening = executor.resolve_interrupts()
     _drain_interrupts(run_dir, log)
@@ -224,6 +225,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log):
             continue
         else:
             no_hud = 0
+        t_housekeep0 = _last_done_ts[0]
         decision_id, record = journal.request_snapshot(run_dir, active=active)
         (record.setdefault("campaign", {}))["act_index"] = actions + 1
         last_record = record
@@ -241,6 +243,8 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log):
         t_scored = time.time()
         timing = {"t_request": record.get("_t_request"), "t_received": record.get("_t_received"),
                   "collect_ms": record.get("_collect_ms"),
+                  "housekeep_ms": (int((record.get("_t_request", 0) - t_housekeep0) * 1000)
+                                   if t_housekeep0 and record.get("_t_request") else None),
                   "roundtrip_ms": int((record.get("_t_received", t_scored0)
                                        - record.get("_t_request", t_scored0)) * 1000),
                   "score_ms": int((t_scored - t_scored0) * 1000),
@@ -262,6 +266,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log):
             log("   %-9s %-24s -> retired" % ("noop", pick["context_id"][:24]))
             wd.beat("noop_retired")
             active = _active_from(record, pol)
+            _last_done_ts[0] = time.time()
             continue
 
         pre_off = executor.bus.out_offset()
@@ -299,6 +304,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log):
             log("   interrupts: %s" % ", ".join(str(s) for s in steps))
             wd.beat("interrupts")
         active = _active_from(record, pol)
+        _last_done_ts[0] = time.time()
     else:
         ended_by = "action_cap"
         _force_end_turn(run_dir, executor, None, None, log)
