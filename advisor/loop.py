@@ -165,6 +165,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log):
     turn = journal.request_turn(run_dir)
     DS.TURN[0] = turn
     _last_done_ts = [None]        # end of the previous action incl. its interrupt sweeps
+    _hk_parts = [{}]              # named components of that gap, ms, for timing.housekeep_parts
     log("== TURN %s ==" % turn)
     opening = executor.resolve_interrupts()
     _drain_interrupts(run_dir, log)
@@ -245,6 +246,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log):
                   "collect_ms": record.get("_collect_ms"),
                   "housekeep_ms": (int((record.get("_t_request", 0) - t_housekeep0) * 1000)
                                    if t_housekeep0 and record.get("_t_request") else None),
+                  "housekeep_parts": dict(_hk_parts[0]) or None,
                   "roundtrip_ms": int((record.get("_t_received", t_scored0)
                                        - record.get("_t_request", t_scored0)) * 1000),
                   "score_ms": int((t_scored - t_scored0) * 1000),
@@ -261,8 +263,10 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log):
                       "policy": pick["policy"], "score": pick.get("score")})
 
         if pick["action_type"] == "noop":
+            _t = time.time()
             pol.retire(pick["context_kind"], pick["context_id"])
             journal.log_verification(run_dir, decision_id, _noop_record(pick))
+            _hk_parts[0] = {"verify_log": int((time.time() - _t) * 1000)}
             log("   %-9s %-24s -> retired" % ("noop", pick["context_id"][:24]))
             wd.beat("noop_retired")
             active = _active_from(record, pol)
@@ -271,7 +275,9 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log):
 
         pre_off = executor.bus.out_offset()
         result = executor.execute(pick)
+        _t = time.time()
         journal.log_verification(run_dir, decision_id, result)
+        _hk_parts[0] = {"verify_log": int((time.time() - _t) * 1000)}
         actions += 1
         ok = bool(result.get("counted"))
         confirmed += 1 if ok else 0
@@ -291,15 +297,21 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log):
             active = _active_from(record, pol)
             continue
         if str(pick.get("action_type", "")).startswith("attack"):
+            _t = time.time()
             executor.bus.wait_row(("panel", "battle_completed", "dilemma_issued"), timeout=2.5,
                                   offset=pre_off,
                                   pred=lambda r: r.get("cmd") != "panel" or bool(r.get("opened")))
             pre = executor.resolve_interrupts()
+            _hk_parts[0]["post_attack"] = int((time.time() - _t) * 1000)
             if pre:
                 log("   post-attack interrupts: %s" % ", ".join(str(s) for s in pre))
                 wd.beat("post_attack_interrupt")
+        _t = time.time()
         _drain_interrupts(run_dir, log)
+        _hk_parts[0]["drain"] = int((time.time() - _t) * 1000)
+        _t = time.time()
         steps = executor.resolve_interrupts()
+        _hk_parts[0]["resolve"] = int((time.time() - _t) * 1000)
         if steps:
             log("   interrupts: %s" % ", ".join(str(s) for s in steps))
             wd.beat("interrupts")
