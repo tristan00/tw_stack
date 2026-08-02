@@ -116,6 +116,8 @@ def request_snapshot(run_dir, active=None, timeout=180.0):
     rec["_t_request"] = t_request
     rec["_t_received"] = time.time()
     rec["_collect_ms"] = reply.get("collect_ms")
+    rec["_store_ms"] = reply.get("store_ms")
+    rec["_pickup_lag_ms"] = reply.get("pickup_lag_ms")
     return did, rec
 
 

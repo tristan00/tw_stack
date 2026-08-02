@@ -232,14 +232,25 @@ def ruins(bus):
     return out
 
 
-def world_state(bus):
+def _tstage(prof, name, fn, *a, **k):
+    """Accumulate `fn`'s wall ms under prof[name]; a plain call when prof is None."""
+    if prof is None:
+        return fn(*a, **k)
+    t = time.time()
+    try:
+        return fn(*a, **k)
+    finally:
+        prof[name] = prof.get(name, 0) + int((time.time() - t) * 1000)
+
+
+def world_state(bus, prof=None):
     """{armies, settlements, hostiles, ruins} -- raw positions for the whole visible map."""
-    rs = ruins(bus)
+    rs = _tstage(prof, "world_state/ruins", ruins, bus)
     ruin_keys = {r["region"] for r in rs}
-    hostiles = [h for h in _chan(bus, "hostiles", "hostiles")
+    hostiles = [h for h in _tstage(prof, "world_state/hostiles", _chan, bus, "hostiles", "hostiles")
                 if not (h.get("kind") == "settlement" and str(h.get("region")) in ruin_keys)]
-    return {"armies": _chan(bus, "chars", "chars"),
-            "settlements": _chan(bus, "setts", "setts"),
+    return {"armies": _tstage(prof, "world_state/chars", _chan, bus, "chars", "chars"),
+            "settlements": _tstage(prof, "world_state/setts", _chan, bus, "setts", "setts"),
             "hostiles": hostiles,
             "ruins": rs}
 
@@ -586,11 +597,12 @@ def settlement_forces(bus):
     return {"stationed": stationed, "citizenry": citizenry}
 
 
-def lord_offers(bus, cqi, state, world, stationed=None):
+def lord_offers(bus, cqi, state, world, stationed=None, prof=None):
     """Every lord-context offer, available or not (unavailable ones carry the game's gate reason)."""
     offers = []
     acted = state.get("acted")
-    raw = str(_ev(bus, _LUA_LORD_OFFERS % {"cqi": cqi}, timeout=25.0, allow_nil=True) or "")
+    raw = str(_tstage(prof, "lord_offers/ev", _ev, bus, _LUA_LORD_OFFERS % {"cqi": cqi},
+                      timeout=25.0, allow_nil=True) or "")
     st_raw, _, sk_raw = raw.partition("||")
     for row in st_raw.split(","):
         p = row.split("~")
@@ -601,7 +613,7 @@ def lord_offers(bus, cqi, state, world, stationed=None):
         gate = None if ok else ("active" if active else
                                 "cannot_activate" if not can_act else "cannot_afford")
         offers.append(_offer("stance", key, ok, gate, active=active))
-    for c in recruitable_units(bus, cqi):
+    for c in _tstage(prof, "lord_offers/recruitable", recruitable_units, bus, cqi):
         # can_recruit_unit is pool-blind, so both queues are offered for every recruitable unit
         # and an unavailable one fails loudly at execution rather than being guessed away here
         for queue in RECRUIT_QUEUES:
@@ -620,9 +632,10 @@ def lord_offers(bus, cqi, state, world, stationed=None):
     esetts = [h for h in world["hostiles"] if h.get("kind") == "settlement" and h.get("region")]
     osetts = [s for s in world["settlements"] if s.get("region")]
     rsetts = [s for s in (world.get("ruins") or []) if s.get("region")]
-    reach_c, reach_s = _reach(bus, cqi, [a["cqi"] for a in armies],
-                              [s["region"] for s in esetts] + [s["region"] for s in osetts]
-                              + [s["region"] for s in rsetts])
+    reach_c, reach_s = _tstage(prof, "lord_offers/reach", _reach, bus, cqi,
+                               [a["cqi"] for a in armies],
+                               [s["region"] for s in esetts] + [s["region"] for s in osetts]
+                               + [s["region"] for s in rsetts])
     marching = str(state.get("stance") or "") in MOVEMENT_STANCES
     recruiting = (state.get("pending_recruits") or 0) > 0
     for a in armies:
@@ -862,11 +875,12 @@ def current_research(bus, faction_cqi):
     return None if v in (None, "none", "nil") else str(v)
 
 
-def campaign_offers(bus, campaign):
+def campaign_offers(bus, campaign, prof=None):
     """Faction-wide offers: research, rites, diplomacy and end_turn."""
     offers = []
     fac = campaign["faction_cqi"]
-    raw = str(_ev(bus, _LUA_CAMPAIGN_OFFERS % {"fac": fac}, timeout=30.0, allow_nil=True) or "")
+    raw = str(_tstage(prof, "campaign_offers/ev", _ev, bus, _LUA_CAMPAIGN_OFFERS % {"fac": fac},
+                      timeout=30.0, allow_nil=True) or "")
     parts = raw.split("||")
     if len(parts) < 3:
         raise CollectError("campaign offers malformed: %r" % raw[:120])
@@ -892,7 +906,8 @@ def campaign_offers(bus, campaign):
             continue
         offers.append(_offer("rites", "rite_index_%d" % (i + 1), flag == "true",
                              None if flag == "true" else "cannot_perform", rite_index=i + 1))
-    offers.extend(diplomacy_offers(bus, campaign.get("turn")))
+    offers.extend(_tstage(prof, "campaign_offers/diplomacy", diplomacy_offers,
+                          bus, campaign.get("turn")))
     offers.append(_offer("end_turn", "end_turn", True))
     offers.append(_offer("noop", "noop", True))
     return offers
@@ -1056,7 +1071,7 @@ def snapshot(bus, active=None):
 
     camp = timed("campaign_state", campaign_state, bus)
     camp["resources"] = timed("faction_resources", faction_resources, bus)
-    world = timed("world_state", world_state, bus)
+    world = timed("world_state", world_state, bus, prof=prof)
     sf = timed("settlement_forces", settlement_forces, bus)
     stationed, citizenry = sf["stationed"], sf["citizenry"]
     lords = [str(c.get("cqi")) for c in world["armies"]
@@ -1071,9 +1086,13 @@ def snapshot(bus, active=None):
         want_camp = bool(active.get("campaign", True))
     ents = []
     for cqi in lords:
+        t_lord = time.time()
         st = timed("lord_state", lord_state, bus, cqi)
         ents.append({"context_kind": "lord", "context_id": str(cqi), "state": st,
-                     "offers": timed("lord_offers", lord_offers, bus, cqi, st, world, stationed)})
+                     "offers": timed("lord_offers", lord_offers, bus, cqi, st, world, stationed,
+                                     prof=prof)})
+        prof["lord_max_ms"] = max(prof.get("lord_max_ms", 0),
+                                  int((time.time() - t_lord) * 1000))
     for cqi in heroes:
         st = timed("hero_state", lord_state, bus, cqi)     # same character read; force fields nil
         ents.append({"context_kind": "hero", "context_id": str(cqi), "state": st,
@@ -1084,7 +1103,7 @@ def snapshot(bus, active=None):
                      "offers": timed("province_offers", province_offers, bus, reg, st, camp)})
     if want_camp:
         ents.append({"context_kind": "campaign", "context_id": camp["faction"], "state": dict(camp),
-                     "offers": timed("campaign_offers", campaign_offers, bus, camp)})
+                     "offers": timed("campaign_offers", campaign_offers, bus, camp, prof=prof)})
     prof["_entities"] = len(ents)
     prof["_lords"] = len(lords)
     prof["_heroes"] = len(heroes)

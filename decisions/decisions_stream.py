@@ -52,15 +52,20 @@ def run(ctx):
                 try:
                     if kind == "snapshot":
                         t0 = time.time()
+                        pickup_lag_ms = int((t0 - (row.get("ts") or t0)) * 1000)
                         snap = collect.snapshot(bus, active=row.get("active"))
+                        t1 = time.time()
                         if campaign_changed(snap.get("campaign")):
                             seq = 0
                         did = store.write_decision(snap, decision_seq=seq)
+                        t2 = time.time()
                         seq += 1
                         counts["snapshot"] += 1
                         n = sum(len(e["offers"]) for e in snap["entities"])
                         journal.respond(out_dir, rid, decision_id=did,
-                                        collect_ms=int((time.time() - t0) * 1000))
+                                        collect_ms=int((t1 - t0) * 1000),
+                                        store_ms=int((t2 - t1) * 1000),
+                                        pickup_lag_ms=pickup_lag_ms)
                         ctx.emit({"kind": "decisions_point", "decision_id": did,
                                   "entities": len(snap["entities"]), "offers": n,
                                   "turn": snap["campaign"].get("turn"),

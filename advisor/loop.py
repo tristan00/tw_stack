@@ -179,7 +179,9 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log):
         if stuck["fired"]:
             ended_by = "stuck"
             break
+        _t = time.time()
         alive = executor.campaign_ui_alive()
+        _hk_parts[0]["hud_check"] = _hk_parts[0].get("hud_check", 0) + int((time.time() - _t) * 1000)
         if alive is False:
             no_hud += 1
             roots = executor.visible_roots()
@@ -235,15 +237,19 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log):
             wd.beat("turn_advanced")
         t_scored0 = time.time()
         pick, ranked = pol.choose(record, actions_taken=actions)
+        t_scored = time.time()
         TR.advisor(pick, ranked_top=[{k: r.get(k) for k in
                                       ("context_kind", "context_id", "action_type", "key",
                                        "score", "exploit", "explore", "rank")}
                                      for r in (ranked or [])[:10]],
                    turn=turn, decision_id=decision_id, actions_taken=actions,
                    n_offers=len(ranked or []))
-        t_scored = time.time()
+        t_traced = time.time()
         timing = {"t_request": record.get("_t_request"), "t_received": record.get("_t_received"),
                   "collect_ms": record.get("_collect_ms"),
+                  "store_ms": record.get("_store_ms"),
+                  "pickup_lag_ms": record.get("_pickup_lag_ms"),
+                  "trace_ms": int((t_traced - t_scored) * 1000),
                   "housekeep_ms": (int((record.get("_t_request", 0) - t_housekeep0) * 1000)
                                    if t_housekeep0 and record.get("_t_request") else None),
                   "housekeep_parts": dict(_hk_parts[0]) or None,
@@ -257,7 +263,9 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log):
             ended_by = "no_eligible_actions"
             _force_end_turn(run_dir, executor, decision_id, ranked, log)
             break
+        _t = time.time()
         journal.log_pick(run_dir, decision_id, pick, P.scores_for_store(ranked), timings=timing)
+        _hk_parts[0] = {"pick_log": int((time.time() - _t) * 1000)}
         picks.append({"action": pick["action_type"], "key": pick["key"],
                       "context": "%s:%s" % (pick["context_kind"], pick["context_id"]),
                       "policy": pick["policy"], "score": pick.get("score")})
@@ -266,10 +274,12 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log):
             _t = time.time()
             pol.retire(pick["context_kind"], pick["context_id"])
             journal.log_verification(run_dir, decision_id, _noop_record(pick))
-            _hk_parts[0] = {"verify_log": int((time.time() - _t) * 1000)}
+            _hk_parts[0]["verify_log"] = int((time.time() - _t) * 1000)
             log("   %-9s %-24s -> retired" % ("noop", pick["context_id"][:24]))
             wd.beat("noop_retired")
+            _t = time.time()
             active = _active_from(record, pol)
+            _hk_parts[0]["active_from"] = int((time.time() - _t) * 1000)
             _last_done_ts[0] = time.time()
             continue
 
@@ -277,7 +287,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log):
         result = executor.execute(pick)
         _t = time.time()
         journal.log_verification(run_dir, decision_id, result)
-        _hk_parts[0] = {"verify_log": int((time.time() - _t) * 1000)}
+        _hk_parts[0]["verify_log"] = int((time.time() - _t) * 1000)
         actions += 1
         ok = bool(result.get("counted"))
         confirmed += 1 if ok else 0
@@ -315,7 +325,9 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log):
         if steps:
             log("   interrupts: %s" % ", ".join(str(s) for s in steps))
             wd.beat("interrupts")
+        _t = time.time()
         active = _active_from(record, pol)
+        _hk_parts[0]["active_from"] = int((time.time() - _t) * 1000)
         _last_done_ts[0] = time.time()
     else:
         ended_by = "action_cap"
