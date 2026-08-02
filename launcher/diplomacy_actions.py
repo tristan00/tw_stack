@@ -81,6 +81,17 @@ def _gate(bus, ctx, pick, before):
     return True, None
 
 
+def _emit_stream(key, terms, panel, before, ok):
+    """One diplomacy-analysis row per outgoing attempt (success or failure). Never raises."""
+    try:
+        import diplo_stream as DS
+        DS.track(key)
+        DS.emit("deal", channel="outgoing", faction=key, terms=terms, ok=ok,
+                panel=panel, treaty_before=(before or {}).get("treaty"))
+    except Exception as e:
+        sys.stderr.write("diplomacy_actions: diplo_stream emit -> %s\n" % repr(e)[:80])
+
+
 def _execute(bus, ctx, pick, before):
     key, terms = _target(pick), _terms(pick)
     try:
@@ -91,8 +102,15 @@ def _execute(bus, ctx, pick, before):
             pick.setdefault("params", {})["panel"] = panel
         sys.stderr.write("diplomacy_actions: %s -> %s (failed_at=%s)\n"
                          % (key, e, (panel or {}).get("failed_at")))
+        _emit_stream(key, terms, panel, before, ok=False)
         return False
+    except Exception:
+        # non-DiplomacyError escape (bus timeout mid-walk): the attempt still gets its
+        # analysis row before the loud failure propagates
+        _emit_stream(key, terms, None, before, ok=False)
+        raise
     pick.setdefault("params", {})["panel"] = out
+    _emit_stream(key, terms, out, before, ok=True)
     sys.stderr.write("diplomacy: %s %s -> staged=%s sent=%s chance=%s failed_at=%s\n"
                      % (key, terms, out.get("staged"), out.get("sent"),
                         out.get("success_chance"), out.get("failed_at")))

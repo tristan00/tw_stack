@@ -74,11 +74,15 @@ class Policy:
             self.blacklist.add((k[0], k[1], pick["action_type"], str(pick["key"])))
             self.failed_types.add(pick["action_type"])
 
-    def eligible(self, ranked):
-        """Available, not battle-UI, not blacklisted, not belonging to a retired entity."""
+    def eligible(self, ranked, actions_taken=0):
+        """Available, not battle-UI, not blacklisted, not belonging to a retired entity.
+        end_turn is not OFFERED before the 6th decision of a turn (operator, 2026-08-02);
+        a turn with nothing else eligible still ends via the loop's forced end-turn path."""
         out = []
         for r in ranked:
             if not r.get("available"):
+                continue
+            if r["action_type"] == "end_turn" and actions_taken < 5:
                 continue
             if str(r.get("key")) in FORBIDDEN_KEYS:
                 continue
@@ -116,7 +120,7 @@ class Policy:
             self._cold_scores(ranked, actions_taken)
         for i, r in enumerate(ranked):
             r["rank"] = i + 1
-        elig = self.eligible(ranked)
+        elig = self.eligible(ranked, actions_taken=actions_taken)
         if not elig:
             return None, ranked
         roll = self.rng.random() if hot else 1.0

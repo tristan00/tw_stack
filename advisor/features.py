@@ -44,6 +44,7 @@ def campaign_block(campaign, world):
     hostiles = w.get("hostiles") or []
     return dict(_resource_feats(campaign), **{"camp_faction": campaign.get("faction"),
             "camp_turn": _f(campaign.get("turn")),
+            "camp_act_index": _f(campaign.get("act_index")),
             "camp_income": _f(campaign.get("income")),
             "camp_settlements": _f(campaign.get("settlements")),
             "camp_treasury": _f(campaign.get("treasury")),

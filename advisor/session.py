@@ -20,25 +20,47 @@ import policy as P                                         # noqa: E402
 RUNS_ROOT = "D:/twdata/runs/human"
 
 
-BUS_TRIM_MB = 64
 MAX_LAUNCH_FAILURES = 3
+LOG_ARCHIVE = r"D:\twdata\archive\script_logs"
+ROTATE_MIN_AGE_S = 600
 
 
-def _trim_bus(log, limit_mb=BUS_TRIM_MB):
-    """Truncate the command-bus files when they pass limit_mb. Game must be dead. Never raises."""
-    import bus as _bus
-    out = []
-    for path in (_bus.CMD_PATH, _bus.OUT_PATH):
-        try:
-            mb = os.path.getsize(path) / (1024.0 * 1024.0)
-            if mb >= limit_mb:
-                open(path, "w", encoding="utf-8").close()
-                out.append("%s truncated at %.0fMB" % (os.path.basename(path), mb))
-            else:
-                out.append("%s %.0fMB" % (os.path.basename(path), mb))
-        except OSError as e:
-            out.append("%s unreadable (%s)" % (os.path.basename(path), repr(e)[:40]))
-    return ", ".join(out)
+def _rotate_logs(log):
+    """Archive-MOVE closed script logs (game dir + run-dir tails) once per campaign. Files
+    younger than ROTATE_MIN_AGE_S or still open (PermissionError) are skipped -- the active
+    log belongs to the live game/recorder. Never deletes, never raises."""
+    import glob
+    import shutil
+    from bus_launcher import GAME_DIR
+    # run-dir logs/*.tail are NEVER rotated: the campaign splitter maps campaigns onto them
+    # by byte offset and the manager recreates a moved tail empty -- moving them mid-run
+    # destroys campaign attribution for the whole night (review find, 2026-08-02).
+    # shots use a 1-day age guard: events.jsonl joins to recent shots by path.
+    dirs = [(os.path.join(GAME_DIR, "script_log_*.txt"), ROTATE_MIN_AGE_S)]
+    try:
+        rd = journal.current_run_dir(timeout=5.0)
+        dirs.append((os.path.join(rd, "shots", "*"), 86400))
+    except Exception as e:
+        log("   rotation: run-dir shots skipped (no CURRENT_RUN: %s)" % repr(e)[:60])
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    dst = os.path.join(LOG_ARCHIVE, stamp)
+    moved, moved_mb, skipped = 0, 0.0, 0
+    now = time.time()
+    for pattern, min_age in dirs:
+        for p in glob.glob(pattern):
+            try:
+                if now - os.path.getmtime(p) < min_age:
+                    skipped += 1
+                    continue
+                mb = os.path.getsize(p) / (1024.0 * 1024.0)
+                os.makedirs(dst, exist_ok=True)
+                shutil.move(p, os.path.join(dst, os.path.basename(p)))
+                moved += 1
+                moved_mb += mb
+            except OSError:
+                skipped += 1
+    return "moved %d files (%.0fMB) -> %s, skipped %d (fresh/locked)" % (
+        moved, moved_mb, dst if moved else LOG_ARCHIVE, skipped)
 
 
 def _pick_plan(plan, rng):
@@ -217,13 +239,11 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
         log("=" * 78)
         entry = {"index": i + 1, "started": time.time(), "plan": this_plan}
         if hard_restart_next:
-            log("previous campaign ended %s -- killing the game now, before retraining"
-                % prev_outcome)
+            log("previous campaign ended %s -- killing the game now" % prev_outcome)
             ex.kill_game()
-            # the bus reply file grew to 380MB over one overnight session and every campaign in
-            # that batch failed. Truncating is only safe with the game dead and no send in
-            # flight, which is exactly here.
-            log("   bus files: %s" % _trim_bus(log))
+        # bus files rotate inside BusLauncher.spawn() (game guaranteed dead there); script
+        # logs rotate here, once per campaign, locked/fresh files skipped
+        log("   log rotation: %s" % _rotate_logs(log))
         # once, at the start of the batch: every campaign in a batch is then played by the same
         # model, so the batch measures one policy rather than a moving one
         if retrain and i == 0:
@@ -280,7 +300,7 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                     log("!! %d consecutive launch failures -- the environment is broken, stopping "
                         "the batch instead of proving it %d more times"
                         % (launch_failures, n - (i + 1)))
-                    entries.append(entry)
+                    report["campaigns"].append(entry)
                     break
             else:
                 launch_failures = 0

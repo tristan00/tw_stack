@@ -256,7 +256,15 @@ class Bus:
     def _alloc_and_append(self, channel: str, payload: str) -> tuple[int, int]:
         """Allocate the next seq and append the command line under both locks; returns (seq, result-file size before the append)."""
         with self._seq_lock, self._proc_lock:
-            self._seq = max(self._seq, self._tail_seq()) + 1
+            t = self._tail_seq()
+            if t + 1000 < self._seq:
+                # the command file was rotated out from under a long-lived client: follow it
+                # down, or every client drags the file back to 5-digit seqs within seconds.
+                # Uniqueness holds because the tail is re-read under the cross-process lock.
+                sys.stderr.write("bus: seq reseeded %d -> %d (command file rotated)\n"
+                                 % (self._seq, t))
+                self._seq = t
+            self._seq = max(self._seq, t) + 1
             seq = self._seq
             offset = self._out_size()
             line = "%d %s %s\n" % (seq, channel, payload)

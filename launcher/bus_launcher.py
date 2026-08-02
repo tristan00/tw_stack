@@ -59,9 +59,49 @@ class BusLauncher:
         shutil.copy2(PACK_SRC, PACK_DST)
         _log("installed mod pack -> %s" % PACK_DST)
 
+    def _rotate_bus_files(self):
+        """Archive-move both bus files and recreate them empty, so every game instance boots on
+        condition-B state. A fresh mod instance booting on a grown commands.txt corrupts ~1 in 4
+        reply seqs (A/B-proven 2026-08-02: 22/100 evals answered under seq-minus-40000 on the
+        16.8MB file, 100/100 clean on empty files). RAISES rather than spawning on a grown file:
+        proceeding is the exact state that failed 26 straight campaigns. Serialized against live
+        bus clients via the bus's own cross-process lock; verified empty afterwards."""
+        import bus as _bus
+        if _bus._game_alive():
+            raise TWError("bus rotation refused: Warhammer3 is still running -- spawning a second "
+                          "instance over a live mod is forbidden")
+        dst = r"D:\twdata\archive\bus"
+        os.makedirs(dst, exist_ok=True)
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        last = None
+        for attempt in range(3):
+            moved = []
+            try:
+                with _bus._ProcLock(_bus.CMD_PATH + ".lock"):
+                    for p in (_bus.CMD_PATH, _bus.OUT_PATH):
+                        if os.path.exists(p) and os.path.getsize(p) > 0:
+                            shutil.move(p, os.path.join(
+                                dst, "%s_%s" % (stamp, os.path.basename(p))))
+                            moved.append(os.path.basename(p))
+                        open(p, "a", encoding="utf-8").close()
+                    bad = [p for p in (_bus.CMD_PATH, _bus.OUT_PATH)
+                           if not os.path.exists(p) or os.path.getsize(p) != 0]
+                if not bad:
+                    _log("bus files rotated -> %s (%s)"
+                         % (dst, ", ".join(moved) or "were already empty"))
+                    return
+                last = "non-empty after recreate: %s" % bad
+            except OSError as e:
+                last = repr(e)[:100]
+            _log("bus rotation attempt %d failed (%s) -- retrying" % (attempt + 1, last))
+            time.sleep(5.0)
+        raise TWError("bus rotation FAILED after 3 attempts (%s) -- refusing to boot the game "
+                      "on a grown command file (the A/B-proven corruption state)" % last)
+
     def spawn(self):
         if not os.path.isfile(EXE):
             raise TWError("WH3 exe not found: %s" % EXE)
+        self._rotate_bus_files()
         flags = 0
         for n in ("DETACHED_PROCESS", "CREATE_NEW_PROCESS_GROUP"):
             flags |= getattr(subprocess, n, 0)
