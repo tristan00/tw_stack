@@ -142,7 +142,14 @@ def gather(runs_root=RUNS_ROOT):
     full, state, ys, groups, confirmed = [], [], [], [], []
     ylocal = []
     skipped = 0
+    act_idx = {}
     for rec, taken, was_counted in decisions:
+        # decision index within the turn, 1-based, from decision_id order -- the live loop
+        # injects the same value at inference (campaign.act_index). Counted over labelled rows;
+        # the live counter counts every pick, so they diverge only across awaiting_execution gaps.
+        ik = (rec.get("campaign_id"), rec.get("turn"))
+        act_idx[ik] = act_idx.get(ik, 0) + 1
+        (rec.setdefault("campaign", {}))["act_index"] = act_idx[ik]
         y = target(series, rec.get("campaign_id"), rec.get("turn"), ranges)
         if y is None:
             skipped += 1

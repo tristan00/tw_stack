@@ -631,6 +631,17 @@ def answer_diplomacy(bus):
                        refusal=None if gone else ("command_silently_refused" if clicked
                                                   else "execute_failed"),
                        latency_ms=int((time.time() - t0) * 1000))
+        try:
+            import diplo_stream as DS
+            keys = DS.faction_keys_in(tree)
+            for k in keys:
+                DS.track(k)
+            DS.emit("deal", channel="diplomacy_hud", root=root, chosen=want, answer=kind,
+                    options=sorted(answers), executed=clicked, confirmed=gone,
+                    faction_keys=keys)
+        except Exception as e:
+            sys.stderr.write("interrupts: diplo_stream emit (diplomacy_hud) -> %s\n"
+                             % repr(e)[:80])
     return steps
 
 
@@ -669,6 +680,22 @@ def _await_root_gone(bus, root, limit=6.0):
     return False
 
 
+def _screen_facts(tree):
+    """Analysis extras parsed from a diplomacy screen tree, best-effort; the embedded tree
+    stays the truth. Ranks/reliability appear once per faction panel, so they are lists."""
+    facts = {"strength_ranks": [], "reliability": [], "settlements": None}
+    for n in tree or []:
+        t = str(n.get("text") or "").strip()
+        if t.startswith("Strength Rank:"):
+            facts["strength_ranks"].append(t.split(":", 1)[1].strip())
+        elif t.startswith("Reliability:"):
+            facts["reliability"].append(t.split(":", 1)[1].strip())
+        elif (str(n.get("id")) == "opponent_settlement_number"
+                and facts["settlements"] is None and t):
+            facts["settlements"] = t
+    return facts
+
+
 def _drive_decision(bus, root, kind, opts, detail, extra):
     """Click the held pick for a decision screen. Bounded retries (same pick), then give up to
     the watchdog; exactly ONE record per screen appearance -- at resolution or at the final try."""
@@ -693,6 +720,22 @@ def _drive_decision(bus, root, kind, opts, detail, extra):
                        refusal=None if gone else ("command_silently_refused" if clicked
                                                   else "execute_failed"),
                        latency_ms=int((time.time() - t0) * 1000))
+        try:
+            import diplo_stream as DS
+            tree = extra.get("tree") or []
+            keys = DS.faction_keys_in(tree)
+            for k in keys:
+                DS.track(k)
+            DS.emit("deal", channel=kind, chosen=want, answer=detail[want]["answer"],
+                    options=sorted(opts), executed=clicked, confirmed=gone,
+                    policy=_LAST_POLICY[0],
+                    proposer=extra.get("proposer"), speech=extra.get("speech"),
+                    attitude=extra.get("attitude"), variant=extra.get("variant"),
+                    facts=_screen_facts(tree), faction_keys=keys,
+                    pair=({k: DS.pair_relations(bus, k) for k in keys[:4]}
+                          if gone else None))
+        except Exception as e:
+            sys.stderr.write("interrupts: diplo_stream emit failed -> %s\n" % repr(e)[:90])
     if gone:
         _ANSWER_MEMO.pop(root, None)
     return steps

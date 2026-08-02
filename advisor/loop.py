@@ -37,6 +37,8 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
     """Play `turns` turns. Returns the per-turn report rows (also written to loop_report.jsonl)."""
     pol = pol or P.Policy()
     TR.set_run_dir(run_dir)
+    import diplo_stream as DS
+    DS.reset(run_dir)
     report_path = os.path.join(run_dir, "loop_report.jsonl")
     stuck = {"fired": False, "reason": None, "detail": None, "shot": None}
     try:
@@ -98,6 +100,12 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
     finally:
         wd.stop()
         _drain_interrupts(run_dir, log)
+        try:
+            DS.emit("campaign_end", turns_played=len(rows),
+                    ended_by=(rows[-1]["ended_by"] if rows else None),
+                    tracked=DS.tracked())
+        except Exception as e:
+            log("   diplo_stream campaign_end -> %s" % repr(e)[:80])
     return rows
 
 
@@ -152,8 +160,10 @@ def _drain_interrupts(run_dir, log):
 
 
 def _run_turn(run_dir, executor, pol, wd, stuck, log):
+    import diplo_stream as DS
     pol.new_turn()
     turn = journal.request_turn(run_dir)
+    DS.TURN[0] = turn
     log("== TURN %s ==" % turn)
     opening = executor.resolve_interrupts()
     _drain_interrupts(run_dir, log)
@@ -215,6 +225,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log):
         else:
             no_hud = 0
         decision_id, record = journal.request_snapshot(run_dir, active=active)
+        (record.setdefault("campaign", {}))["act_index"] = actions + 1
         last_record = record
         if turn is not None and turn != _last_beat_turn[0]:
             _last_beat_turn[0] = turn
@@ -312,6 +323,12 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log):
     elif settle["turn"] is None and not terminal:
         log("   !! turn never advanced after %.0fs -- the watchdog decides from here"
             % settle["waited_s"])
+    if (not terminal and not settle.get("defeated") and DS.tracked()
+            and settle.get("turn") is not None and not stuck.get("fired")):
+        try:
+            DS.checkpoint(executor.bus)
+        except Exception as e:
+            log("   diplo_stream checkpoint -> %s" % repr(e)[:80])
     camp = (last_record.get("campaign") or {})
     state = {"faction": camp.get("faction"), "settlements": camp.get("settlements"),
              "armies": camp.get("armies"), "treasury": camp.get("treasury"),
