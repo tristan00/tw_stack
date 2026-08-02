@@ -93,6 +93,8 @@ def train(runs_root=M.RUNS_ROOT):
     preds = list(m.predict(Pool(X, cat_features=cat_idx)))
     meta = {"num": num, "cat": cat, "rows": len(rows),
             "screens": sorted({r["isc_screen"] for r in rows}),
+            "screen_rows": {s: sum(1 for r in rows if r["isc_screen"] == s)
+                            for s in {r["isc_screen"] for r in rows}},
             "exp_lo": min(preds), "exp_hi": max(preds),
             "nov_lo": min(nov), "nov_hi": max(nov), "beta": BETA, "epsilon": EPSILON,
             "campaigns": sorted(set(data["groups"]))}
@@ -121,6 +123,12 @@ class InterruptRanker:
                 self._m.load_model(mp)
                 self.meta = json.load(open(meta))
                 self.ready = True
+                if "screen_rows" not in self.meta:
+                    sys.stderr.write(
+                        "interrupt_model: meta.json predates screen_rows -- per-screen record "
+                        "counts UNAVAILABLE. Screens in the fitted set %s keep the model; any "
+                        "other screen is cold_random until the next retrain.\n"
+                        % (self.meta.get("screens") or []))
             iso = os.path.join(model_dir, "iso.pkl")
             if self.ready and os.path.exists(iso):
                 with open(iso, "rb") as fh:
@@ -154,11 +162,25 @@ class InterruptRanker:
             return {}
 
     def choose(self, screen, options, campaign):
-        """(pick, policy, scores). Always picks: a uniform draw over `options` when nothing is
-        fitted; `scores` is {} then, else the per-option predictions that drove the pick."""
+        """(pick, policy, scores). Always picks. The advisor is the policy in every regime:
+        uniform random until THIS screen has MIN_ROWS recorded decisions (a fitted model can
+        score an unseen screen, which is generalization, not evidence), then model+epsilon."""
         opts = sorted(options)
         if not opts:
             return None, "none", {}
+        sr = self.meta.get("screen_rows")
+        if sr is not None:
+            seen = int(sr.get(str(screen), 0))
+            why = "%d/%d rows recorded for this screen" % (seen, MIN_ROWS)
+        else:
+            # meta predates per-screen counts (warned at load): the fitted set keeps the model,
+            # anything outside it is unevidenced and stays random
+            seen = MIN_ROWS if str(screen) in (self.meta.get("screens") or []) else 0
+            why = "screen not in the fitted set (meta predates screen_rows)"
+        if seen < MIN_ROWS:
+            pick = self.rng.choice(opts)
+            sys.stderr.write("interrupt_model: %s -> %r (cold_random, %s)\n" % (screen, pick, why))
+            return pick, "cold_random", {}
         s = self.score(screen, options, campaign)
         if not s:
             return self.rng.choice(opts), "cold_random", {}

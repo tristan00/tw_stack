@@ -34,6 +34,12 @@ _CLICKABLE_STATES = frozenset(("active", "default", "NewState", "selected", "hov
 # our own panels -- the only roots exempt from pre-dismiss dumping
 BENIGN_PANELS = frozenset(("units_panel", "settlement_panel", "recruitment_options"))
 
+# roots that can carry a DECISION: on diplomacy_dropdown the dismiss-id button_accept ACCEPTS
+# the treaty -- that one control belongs to the advisor (interrupts), never to a dismiss sweep.
+# The same root also hosts the war_declared ack and declare-war confirm subpanels (button_ok_*),
+# which stay dismissable here -- their only dismiss path is this sweep.
+DECISION_ROOTS = frozenset(("diplomacy_dropdown", "ally_attacked"))
+
 SCREEN_DUMP_DIR = r"D:/twdata/runs/human/screens"
 _DUMP_MEMO = {}
 
@@ -107,6 +113,8 @@ def close_popups(bus, max_rounds=8, settle=0.7):
             if root not in BASE_ROOTS and root not in BENIGN_PANELS:
                 dump_screen(bus, root, "predismiss")
             for btn in find_dismiss_buttons(bus, root):
+                if root in DECISION_ROOTS and btn.rsplit("|", 1)[-1] == "button_accept":
+                    continue
                 res = bus.send("click", btn, timeout=_FIND_T) or {}
                 if res.get("clicked"):
                     clicked_paths.append(btn)
@@ -272,6 +280,8 @@ def quit_views(bus, max_rounds=6):
             return True
         acted = False
         for root in views:
+            if root in DECISION_ROOTS:
+                continue
             tr = bus.send("tree", "%s 22 5000" % root, timeout=_TREE_T) or {}
             for n in (tr.get("nodes") or []):
                 idd = str(n.get("id") or "").lower()
