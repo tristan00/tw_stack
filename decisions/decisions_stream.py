@@ -14,7 +14,7 @@ import collect                                   # noqa: E402
 import journal                                   # noqa: E402
 from store import DecisionStore                  # noqa: E402
 
-POLL = 0.4
+POLL = 0.1
 
 
 def run(ctx):

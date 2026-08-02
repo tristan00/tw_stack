@@ -81,7 +81,7 @@ def _new_id(kind):
     return "%s-%d-%d" % (kind, int(time.time() * 1000), seq)
 
 
-def _await(run_dir, req_id, timeout, poll=0.25):
+def _await(run_dir, req_id, timeout, poll=0.05):
     """Block until the recorder answers `req_id`; raises on timeout."""
     path = os.path.join(run_dir, RESPONSES)
     offset, deadline = 0, time.time() + timeout
