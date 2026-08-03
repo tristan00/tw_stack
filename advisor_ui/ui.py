@@ -5,6 +5,7 @@ import glob
 import html
 import json
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -611,6 +612,104 @@ def render_timing(run_dir):
     return "".join(out)
 
 
+def _session_state():
+    """Parsed live-session facts from the current session log + process table."""
+    st = {"log": None, "campaign": None, "faction": None, "turn": None,
+          "outcomes": [], "session": None, "tail": [], "batch_timeouts": 0}
+    try:
+        # utf-8-sig: PowerShell launch commands write the pointer with a BOM
+        lp = open(CURRENT_LOG, encoding="utf-8-sig").read().strip()
+        if os.path.isfile(lp):
+            st["log"] = lp
+            lines = open(lp, encoding="utf-8", errors="replace").read().splitlines()
+            st["tail"] = lines[-22:]
+            st["batch_timeouts"] = sum(1 for ln in lines if "batch timeout" in ln)
+            for ln in reversed(lines):
+                if st["campaign"] is None and ln.startswith("CAMPAIGN "):
+                    m = re.match(r"CAMPAIGN (\d+/\d+)\s+\(up to (\d+) turns, faction=(\S+)\)", ln)
+                    if m:
+                        st["campaign"] = "%s x%s" % (m.group(1), m.group(2))
+                        st["faction"] = m.group(3).rstrip(")")
+                # a turn line only belongs to the current campaign if it comes AFTER the
+                # newest CAMPAIGN header; during the relaunch window (header printed, no
+                # turn yet) the previous campaign's turns must not be paired with it
+                if st["turn"] is None and st["campaign"] is None and ln.startswith("== TURN "):
+                    tv = ln.split("== TURN ", 1)[1].split(" ")[0]
+                    st["turn"] = tv[:-2] if tv.endswith(".0") else tv
+                if len(st["outcomes"]) < 3 and re.match(r"campaign \d+ -> ", ln):
+                    st["outcomes"].append(ln.strip())
+                if st["campaign"] and st["turn"] and len(st["outcomes"]) >= 3:
+                    break
+    except OSError:
+        pass
+    return st
+
+
+def render_live(run_dir):
+    """The mid-run view: is everything alive, what is it doing, what went wrong last."""
+    procs, wh3 = _ps()
+    st = _session_state()
+    sess = next((p for p in procs if "session.py" in p[2]), None)
+    mgr = next((p for p in procs if "manager.py" in p[2]), None)
+
+    def card(k, v, cls=""):
+        return ("<div class=card><div class=k>%s</div><div class='v %s'>%s</div></div>"
+                % (_esc(k), cls, v))
+    try:
+        wh3n = int(wh3)
+    except (TypeError, ValueError):
+        wh3n = -1
+    cards = "".join([
+        card("session", "<span class=ok>up</span> pid %s" % sess[0] if sess
+             else "<span class=bad>DOWN</span>"),
+        card("game", "<span class=ok>up</span>" if wh3n == 1 else
+             ("<span class=warn>down</span>" if wh3n == 0
+              else "<span class=bad>%s procs</span>" % wh3)),
+        card("recorder", "<span class=ok>up</span>" if mgr else "<span class=bad>DOWN</span>"),
+        card("campaign", _esc(st["campaign"] or "-")),
+        card("faction", _esc((st["faction"] or "-")[:24])),
+        card("turn", _esc(st["turn"] or "-")),
+    ])
+
+    alerts = []
+    try:
+        u = _tail_jsonl(os.path.join(RUNS_ROOT, "unhandled_screens.jsonl"), 1)
+        if u:
+            age_s = time.time() - (u[-1].get("ts") or 0)
+            cls = "bad" if age_s < 3600 else "dim"
+            alerts.append("<span class=%s>last unhandled screen: %s %s (%.1fh ago)</span>"
+                          % (cls, _esc(u[-1].get("screen")), _esc(u[-1].get("unknown")),
+                             age_s / 3600.0))
+    except Exception:
+        pass
+    if st["log"]:
+        try:
+            err = st["log"][:-4] + ".err"
+            tail_err = open(err, encoding="utf-8", errors="replace").read().splitlines()[-200:]
+            n_to = sum(1 for ln in tail_err if "bus timeout" in ln)
+            if n_to:
+                alerts.append("<span class=warn>%d bus-timeout lines in recent stderr "
+                              "(defeat screens produce these in pairs)</span>" % n_to)
+        except OSError:
+            pass
+    # batch timeouts happen in the recorder and reach the session RELAYED through
+    # journal ("recorder failed request ... bus batch timeout"), which lands in the
+    # session .log via log() -- they never appear in the session's stderr
+    if st["batch_timeouts"]:
+        alerts.append("<span class=bad>%d BATCH timeouts -- the wave path is "
+                      "losing replies</span>" % st["batch_timeouts"])
+    for o in st["outcomes"]:
+        cls = "ok" if "completed" in o else ("dim" if "defeated" in o else "warn")
+        alerts.append("<span class=%s>%s</span>" % (cls, _esc(o)))
+    alert_html = ("<h2>signals</h2><p class=muted>%s</p>"
+                  % (" &middot; ".join(alerts) or "nothing notable"))
+
+    tail = ("<h2>session log <span class=dim>%s</span></h2><pre class=scroll>%s</pre>"
+            % (_esc(os.path.basename(st["log"] or "none")),
+               _esc("\n".join(st["tail"]) or "no session log")))
+    return ("<div class=cards>%s</div>" % cards) + alert_html + tail
+
+
 def render_endings(runs_root=RUNS_ROOT, limit=20):
     """Campaign endings with their plausibility verdicts."""
     path = os.path.join(runs_root, "postmortems.jsonl")
@@ -740,11 +839,12 @@ def render_index(con, run_dir):
                       _esc(r["refusal"]), _esc(r["policy"])))
     seqtbl = ("<h2>sequence of picked decisions (newest first)</h2><div class=scroll><table>"
               "<tr><th>#<th>turn<th>offers<th>entity<th>action<th>key<th>result"
-              "<th title='score = exploit (value percentile); rank = value order'>score<th>exploit<th>&nbsp;&nbsp;global<th>&nbsp;&nbsp;local<th>explore"
+              "<th title='score = exploit (value percentile); rank = value order. Rows recorded before 50082a9 (2026-08-02 20:32) hold the retired 0.9*exploit+0.1*explore blend'>score<th>exploit<th>&nbsp;&nbsp;global<th>&nbsp;&nbsp;local<th>explore"
               "<th>refusal<th>policy</tr>"
               "%s</table></div>" % "".join(seq))
     head = ("<h1>advisor v7</h1><div class=dim>%s</div>" % _esc(run_dir)) + "<div class=cards>%s</div>" % cards
-    panels = [("overview", render_endings() + render_leaders(con) + render_history(con)),
+    panels = [("live", render_live(run_dir)),
+              ("overview", render_endings() + render_leaders(con) + render_history(con)),
               ("starts", render_starts()),
               ("action x faction", render_faction_matrix()),
               ("blocking menus", render_interrupts()),
@@ -940,9 +1040,16 @@ CURRENT_LOG = os.path.join(LOG_DIR, "CURRENT_SESSION_LOG.txt")
 SERVICES = (("session.py", "advisor session"), ("manager.py", "recorder"), ("ui.py", "UI"))
 
 
+_PS_CACHE = [0.0, ([], None)]
+
+
 def _ps():
-    """[(pid, started, cmdline)] for python processes, and the Warhammer3 count."""
+    """[(pid, started, cmdline)] for python processes, and the Warhammer3 count.
+    Cached ~5s: two panels call this per render, every 10s meta-refresh, and each
+    call is a PowerShell spawn (0.35s idle, 20s ceiling) on a single-threaded server."""
     import subprocess
+    if time.time() - _PS_CACHE[0] < 5:
+        return _PS_CACHE[1]
     cmd = ("Get-CimInstance Win32_Process -Filter \"Name like '%python%'\" | ForEach-Object "
            "{ '{0}|{1:yyyy-MM-dd HH:mm:ss}|{2}' -f $_.ProcessId,$_.CreationDate,$_.CommandLine }; "
            "'WH3|{0}' -f @(Get-Process -Name Warhammer3 -ErrorAction SilentlyContinue).Count")
@@ -958,7 +1065,8 @@ def _ps():
                 pid, started, cl = ln.split("|", 2)
                 procs.append((pid.strip(), started.strip(), cl.strip()))
     except Exception as e:
-        return [], "err: %s" % repr(e)[:60]
+        procs, wh3 = [], "err: %s" % repr(e)[:60]
+    _PS_CACHE[0], _PS_CACHE[1] = time.time(), (procs, wh3)
     return procs, wh3
 
 
@@ -1057,7 +1165,7 @@ def render_infra(run_dir):
               "<tr><th>model<th>rows<th>trained at<th>age<th>config</tr>%s</table></div>"
               % "".join(mrows))
 
-    watch = [("session log", (open(CURRENT_LOG).read().strip()
+    watch = [("session log", (open(CURRENT_LOG, encoding="utf-8-sig").read().strip()
                               if os.path.isfile(CURRENT_LOG) else ""), 90, 420)]
     arows = []
     for label, path, warn, bad in watch:
@@ -1081,7 +1189,7 @@ def render_infra(run_dir):
 
     tail = ""
     if os.path.isfile(CURRENT_LOG):
-        lp = open(CURRENT_LOG).read().strip()
+        lp = open(CURRENT_LOG, encoding="utf-8-sig").read().strip()
         if os.path.isfile(lp):
             try:
                 lines = open(lp, encoding="utf-8", errors="replace").read().splitlines()[-14:]

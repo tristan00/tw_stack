@@ -119,12 +119,17 @@ def _turn_trail(run_dir, executor, row, turn_index, log):
     rec = {"ts": time.time(), "turn": row.get("turn"), "turn_index": turn_index,
            "actions": row.get("actions"), "confirmed": row.get("confirmed"),
            "ended_by": row.get("ended_by")}
-    for name, fn in (("roots", executor.visible_roots), ("ui_state", executor.ui_state)):
-        try:
-            rec[name] = fn()
-        except Exception as e:
-            rec[name] = None
-            rec[name + "_error"] = repr(e)[:100]
+    if row.get("ended_by") == "defeated":
+        # the defeat modal pauses the script tick: both probes below burn their full
+        # timeouts (measured 20.1-20.8s across all recorded defeats, roots=[] every time)
+        rec.update(roots=None, ui_state=None, probes_skipped="defeat_modal_tick_paused")
+    else:
+        for name, fn in (("roots", executor.visible_roots), ("ui_state", executor.ui_state)):
+            try:
+                rec[name] = fn()
+            except Exception as e:
+                rec[name] = None
+                rec[name + "_error"] = repr(e)[:100]
     abnormal = row.get("ended_by") not in ("end_turn_chosen", "action_cap")
     if abnormal or turn_index == 1 or turn_index % SHOT_EVERY_TURNS == 0:
         try:

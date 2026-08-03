@@ -169,17 +169,16 @@ def _postmortem(runs_root, entry, ex, log):
     except Exception as e:
         rec["wh3_running"] = None
         rec["wh3_probe_error"] = repr(e)[:120]
-    # defeat/victory modals PAUSE the script tick: every bus probe below then burns its full
-    # timeout (measured: a constant 63.8s per defeat, 8/8). One 3s probe decides instead.
-    tick_alive = False
-    if rec["wh3_running"]:
-        try:
-            ex.bus.send("eval", "return 1", timeout=3.0)
-            tick_alive = True
-        except Exception:
-            tick_alive = False
-    rec["tick_alive"] = tick_alive
-    if tick_alive:
+    # the defeat modal pauses the script tick: the three probes below burned a measured
+    # constant 63.8s (8/8 defeats), so on defeat they are skipped outright. Every other
+    # outcome keeps the full probes: error-ending tick pauses are transient (measured
+    # 10-15s with resume; old code still collected roots on 61/63 error endings) and
+    # these fields are the stuck/error triage evidence -- a fixed 3s gate misread those
+    # pauses as a dead tick and dropped the evidence.
+    if entry.get("outcome") == "defeated" and rec["wh3_running"]:
+        rec.update(roots=None, ui_state=None, turn_at_death=None,
+                   probes_skipped="defeat_modal_tick_paused")
+    else:
         for name, fn in (("roots", lambda: ex.visible_roots()),
                          ("ui_state", lambda: ex.ui_state()),
                          ("turn_at_death", lambda: ex.turn_number())):
@@ -188,8 +187,6 @@ def _postmortem(runs_root, entry, ex, log):
             except Exception as e:
                 rec[name] = None
                 rec[name + "_error"] = repr(e)[:120]
-    else:
-        rec.update(roots=None, ui_state=None, turn_at_death=None, tick_dead_probes_skipped=True)
     try:
         rec["screenshot"] = ex.screenshot("end_%s_%s_%d"
                                           % (entry.get("index"), entry.get("outcome"),
