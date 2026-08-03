@@ -827,13 +827,21 @@ def _province_offers_assemble(region, state, campaign, combo, lord_pools):
         offers.append(_offer("edict", key, ok,
                              None if ok else ("province_not_complete" if not complete else "already_selected")))
     for sub, (n, can, traits, ranks) in (lord_pools or {}).items():
-        for i in range(n):
-            ok = bool(can[i]) if i < len(can) else False
-            tr = traits[i] if i < len(traits) else []
-            offers.append(_offer("recruit_lord", sub, ok, None if ok else "cannot_recruit_character",
-                                 candidate_index=i, traits=tr,
-                                 trait=(tr[0] if tr else None), n_traits=len(tr),
-                                 cand_rank=(ranks[i] if i < len(ranks) else None)))
+        if not n:
+            continue
+        # one offer per subtype: execution targets the panel TYPE id (split_lord_key) and
+        # cannot address a specific pool candidate, so same-subtype candidates collapse to
+        # one executable action. Per-candidate offers wrote duplicate (context,action,key)
+        # rows that multiplied UI joins and training labels. Representative candidate =
+        # first recruitable one; multiplicity stays visible via n_candidates.
+        oks = [bool(can[i]) if i < len(can) else False for i in range(n)]
+        i = oks.index(True) if any(oks) else 0
+        tr = traits[i] if i < len(traits) else []
+        offers.append(_offer("recruit_lord", sub, any(oks),
+                             None if any(oks) else "cannot_recruit_character",
+                             candidate_index=i, n_candidates=n, traits=tr,
+                             trait=(tr[0] if tr else None), n_traits=len(tr),
+                             cand_rank=(ranks[i] if i < len(ranks) else None)))
     offers.append(_offer("noop", "noop", True))
     return offers
 

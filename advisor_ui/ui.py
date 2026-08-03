@@ -68,9 +68,10 @@ def sequence(con, limit=300):
         " t.context_kind, t.context_id, t.action_type, t.action_key, t.counted, t.refusal, t.policy,"
         " o.score, o.exploit, o.explore, o.pct_global, o.pct_local, o.rank"
         " FROM decision_points d LEFT JOIN action_taken t ON t.decision_id=d.decision_id"
-        " LEFT JOIN action_offers o ON o.decision_id=t.decision_id"
-        "   AND o.context_kind=t.context_kind AND o.context_id=t.context_id"
-        "   AND o.action_type=t.action_type AND o.action_key=t.action_key"
+        " LEFT JOIN action_offers o ON o.rowid ="
+        "   (SELECT MIN(o2.rowid) FROM action_offers o2 WHERE o2.decision_id=t.decision_id"
+        "    AND o2.context_kind=t.context_kind AND o2.context_id=t.context_id"
+        "    AND o2.action_type=t.action_type AND o2.action_key=t.action_key)"
         " ORDER BY d.decision_id DESC LIMIT ?", (limit,))]
 
 
