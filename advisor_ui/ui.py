@@ -740,7 +740,7 @@ def render_index(con, run_dir):
                       _esc(r["refusal"]), _esc(r["policy"])))
     seqtbl = ("<h2>sequence of picked decisions (newest first)</h2><div class=scroll><table>"
               "<tr><th>#<th>turn<th>offers<th>entity<th>action<th>key<th>result"
-              "<th title='0.9*exploit+0.1*novelty -- row ordering only; selection uses exploit/explore/random'>sort<th>exploit<th>&nbsp;&nbsp;global<th>&nbsp;&nbsp;local<th>explore"
+              "<th title='score = exploit (value percentile); rank = value order'>score<th>exploit<th>&nbsp;&nbsp;global<th>&nbsp;&nbsp;local<th>explore"
               "<th>refusal<th>policy</tr>"
               "%s</table></div>" % "".join(seq))
     head = ("<h1>advisor v7</h1><div class=dim>%s</div>" % _esc(run_dir)) + "<div class=cards>%s</div>" % cards
@@ -1041,8 +1041,7 @@ def render_infra(run_dir):
         "<tr><td>pick policy<td class=dim>-<td class=dim>-<td class=dim>-<td>%s</tr>" % _esc(pol_cfg),
         "<tr><td>global (E1/E2)<td>%s<td>%s<td>%s<td>%s</tr>"
         % (_esc(g.get("rows", "-")), _esc(gt), _esc(ago(ga)),
-           _esc("w_local=%s; sort-blend beta=%s (display ordering only, never selects)"
-                % (g.get("w_local"), g.get("beta")))),
+           _esc("w_local=%s" % g.get("w_local"))),
         "<tr><td>local (E1/E2)<td>%s<td>%s<td>%s<td>%s</tr>"
         % (_esc(l.get("rows", "-")), _esc(lt), _esc(ago(la)),
            _esc("kinds=%s" % ",".join(l.get("kinds") or []) if l else "not trained")),

@@ -189,6 +189,10 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None):
         if stuck["fired"]:
             ended_by = "stuck"
             break
+        if executor.defeated_row_seen():
+            log("   faction_destroyed row seen mid-turn -- defeat, ending the turn now")
+            ended_by = "defeated"
+            break
         _t = time.time()
         alive = executor.campaign_ui_alive()
         _hk_parts[0]["hud_check"] = _hk_parts[0].get("hud_check", 0) + int((time.time() - _t) * 1000)
