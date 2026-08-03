@@ -20,7 +20,7 @@ def session_log():
     if len(sys.argv) > 1:
         return sys.argv[1]
     p = os.path.join(LOGS, "CURRENT_SESSION_LOG.txt")
-    return io.open(p, encoding="utf-8").read().strip()
+    return io.open(p, encoding="utf-8-sig").read().strip()
 
 
 ROW = re.compile(r"^\s{2,}(\w+)\s+(\S.*?)\s+(OK|FAIL)(?:\s+\((\w+)\))?\s*$")
