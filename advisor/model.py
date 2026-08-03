@@ -20,7 +20,6 @@ LOCAL_MODEL_DIR = r"D:\twdata\models\local"
 W_LOCAL = 0.25
 LOCAL_KINDS = ("lord", "hero", "province")
 RUNS_ROOT = "D:/twdata/runs/human"
-BETA = 0.10                 # explore weight
 VALUE_PARTS = ("income", "settlements", "power_rank", "allies", "vassals", "lord_level")
 TARGET_PARTS = ("settlements", "power_rank", "lord_level", "vassals")
 LOWER_IS_BETTER = ("power_rank",)
@@ -207,7 +206,7 @@ def train(runs_root=RUNS_ROOT):
             "exp_lo": min(impacts), "exp_hi": max(impacts), "sd_global": sd_global,
             "w_local": W_LOCAL,
             "nov_lo": min(nov), "nov_hi": max(nov), "rows": len(rows),
-            "campaigns": sorted(set(data["groups"])), "beta": BETA,
+            "campaigns": sorted(set(data["groups"])),
             "target": "growth(best_future-now: %s)" % ",".join(TARGET_PARTS)}
     # stage then os.replace: the four artefacts must land together or not at all
     stage = MODEL_DIR + ".staging"
@@ -348,7 +347,7 @@ class Ranker:
             sys.stderr.write("model: local pair not loaded -> %s\n" % repr(e)[:160])
             self.lmeta = self.l1 = self.l2 = None
 
-    def score(self, record, beta=BETA, w_local=None):
+    def score(self, record, w_local=None):
         """Every offer of a stored decision record, scored, sorted best-first."""
         triples = F.decision_rows(record)
         if not self.ready or not triples:
@@ -421,7 +420,9 @@ class Ranker:
                         "pct_local": (round(pctl, 4) if pctl is not None else None),
                         "w_local": w,
                         "exploit": round(exploit, 4), "explore": round(explore, 4),
-                        "score": round((1 - beta) * exploit + beta * explore, 4)})
+                        # score IS exploit: the 0.9/0.1 "combined" blend was a display artifact
+                        # (a1e8d8f) that never selected anything -- rank now means value rank
+                        "score": round(exploit, 4)})
         out.sort(key=lambda r: -(r["score"] if r["score"] is not None else -1))
         return out
 
