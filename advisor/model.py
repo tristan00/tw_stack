@@ -171,6 +171,10 @@ def gather(runs_root=RUNS_ROOT):
                                        rec.get("turn"), lranges))
             groups.append(rec.get("campaign_id"))
             confirmed.append(was_counted)
+            # one training row per labelled decision: historical data contains duplicate
+            # (context,action,key) offers (per-candidate recruit_lord rows pre-dedupe) and
+            # without the break each duplicate match multiplied the label
+            break
     return {"full": full, "state": state, "y": ys, "y_local": ylocal,
             "n_local": sum(1 for v in ylocal if v is not None), "groups": groups,
             "confirmed": confirmed, "n_confirmed": sum(1 for c in confirmed if c),
