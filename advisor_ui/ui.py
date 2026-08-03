@@ -261,13 +261,16 @@ def render_interrupts(runs_root=RUNS_ROOT):
         import interrupt_model as IM
         r = IM.InterruptRanker()
         if r.ready:
-            state = ("<b>model</b> &mdash; fitted on %s rows, screens: %s"
-                     % ((r.meta or {}).get("rows", "?"),
-                        ", ".join((r.meta or {}).get("screens") or []) or "&mdash;"))
+            sr = (r.meta or {}).get("screen_rows") or {}
+            per = ", ".join("%s %s(%s)" % (s, "hot" if sr.get(s, 0) >= IM.MIN_ROWS
+                                           else "cold", sr.get(s, "?"))
+                            for s in sorted((r.meta or {}).get("screens") or []))
+            state = ("<b>model</b> &mdash; fitted on %s rows; per-screen gate (hot &ge; %d rows): %s"
+                     % ((r.meta or {}).get("rows", "?"), IM.MIN_ROWS, per or "&mdash;"))
         else:
             state = ("<b>cold_random</b> &mdash; no interrupt model fitted yet (needs %d labelled "
-                     "rows; a decision is only labelled once its campaign plays on past it)"
-                     % IM.MIN_ROWS)
+                     "rows per screen; a decision is only labelled once its campaign plays on "
+                     "past it)" % IM.MIN_ROWS)
     except Exception as e:
         state = "unavailable: %s" % _esc(repr(e)[:120])
 
@@ -489,6 +492,123 @@ def _matrix_tables(data, title):
             % (_esc(title), head, "".join(rate_rows), _esc(title), head, "".join(time_rows)))
 
 
+def _tail_jsonl(path, n=400):
+    """Last n parsed rows of a jsonl; [] when absent. Read-only, error-tolerant."""
+    rows = []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for ln in fh.readlines()[-n:]:
+                try:
+                    rows.append(json.loads(ln))
+                except ValueError:
+                    pass
+    except OSError:
+        pass
+    return rows
+
+
+def render_diplomacy(run_dir):
+    """The diplomacy analysis stream: deals, answers, checkpoints (diplomacy.jsonl)."""
+    rows = _tail_jsonl(os.path.join(run_dir, "diplomacy.jsonl"), 600)
+    if not rows:
+        return ("<h2>diplomacy stream</h2><p class=muted>no diplomacy.jsonl rows in this run "
+                "yet &mdash; the stream fills as deals and checkpoints occur</p>")
+    kinds = {}
+    for r in rows:
+        k = r.get("kind")
+        k = "%s/%s" % (k, r.get("channel")) if k == "deal" else k
+        kinds[k] = kinds.get(k, 0) + 1
+    cards = "".join("<div class=card><div class=k>%s</div><div class=v>%s</div></div>"
+                    % (_esc(k), v) for k, v in sorted(kinds.items()))
+    deals = [r for r in rows if r.get("kind") == "deal"][-60:]
+    tr = []
+    for d in reversed(deals):
+        ch = d.get("channel")
+        if ch == "outgoing":
+            who = d.get("faction")
+            ans = "sent" if (d.get("panel") or {}).get("sent") else \
+                  "refused(%s)" % ((d.get("panel") or {}).get("failed_at"))
+            ok = bool((d.get("panel") or {}).get("sent"))
+        else:
+            who = d.get("proposer") or ",".join(d.get("faction_keys") or [])[:40]
+            ans = d.get("answer")
+            ok = bool(d.get("confirmed")) and ans in ("accept", "acknowledge", "join")
+        cls = "ok" if ok else ("warn" if ans == "decline" else "bad")
+        tr.append("<tr><td class=dim>%s</td><td>%s</td><td>%s</td><td class=%s>%s</td>"
+                  "<td>%s</td><td class=dim>%s</td></tr>"
+                  % (_esc(d.get("turn")), _esc(ch), _esc(str(who)[:38]), cls, _esc(ans),
+                     _esc(d.get("attitude") or "&mdash;"),
+                     _esc(",".join(d.get("terms") or []) if ch == "outgoing" else
+                          str(d.get("speech") or "")[:60])))
+    return ("<h2>diplomacy stream <span class=dim>(last %d rows of this run)</span></h2>"
+            "<div class=cards>%s</div>"
+            "<h2>recent deal events</h2><div class=scroll><table>"
+            "<tr><th>turn<th>channel<th>faction<th>answer<th>attitude<th>terms / speech</tr>"
+            "%s</table></div>"
+            % (len(rows), cards,
+               "".join(tr) or "<tr><td class=dim colspan=6>no deal rows yet</td></tr>"))
+
+
+def _med(vals):
+    v = sorted(x for x in vals if isinstance(x, (int, float)))
+    return v[len(v) // 2] if v else None
+
+
+def render_timing(run_dir):
+    """Decision-cycle timing: collect waves (recorder profile) + advisor-side pick timings."""
+    pts = [r for r in _tail_jsonl(os.path.join(run_dir, "decisions_stream.jsonl"), 800)
+           if r.get("kind") == "decisions_point"]
+    picks = [r for r in _tail_jsonl(os.path.join(run_dir, "decisions_requests.jsonl"), 800)
+             if r.get("kind") == "pick"]
+    out = []
+    if pts:
+        profs = [p.get("profile") or {} for p in pts]
+        rows = [("collect total", _med([p.get("ms") for p in pts]))]
+        for k, label in (("wave_a_ms", "wave A (world)"), ("wave_b_ms", "wave B (entities)"),
+                         ("wave_c_ms", "wave C (moves)"),
+                         ("campaign_offers/diplomacy", "diplomacy enum (turn-first spike)"),
+                         ("lord_pools_ms", "lord pools")):
+            rows.append((label, _med([pr.get(k) for pr in profs])))
+        out.append("<h2>collect (recorder), median ms over last %d snapshots</h2>"
+                   "<div class=scroll><table><tr><th>stage<th>median ms</tr>%s</table></div>"
+                   % (len(pts), "".join("<tr><td>%s</td><td class=num>%s</td></tr>"
+                                        % (_esc(a), _esc("%.0f" % b if b is not None else "-"))
+                                        for a, b in rows)))
+    tms = []
+    for p in picks:
+        t = p.get("timings")
+        if isinstance(t, str):
+            try:
+                import ast
+                t = ast.literal_eval(t)
+            except Exception:
+                t = None
+        if isinstance(t, dict):
+            tms.append(t)
+    if tms:
+        rows = []
+        for k, label in (("roundtrip_ms", "snapshot roundtrip"), ("collect_ms", "collect"),
+                         ("store_ms", "sqlite store"), ("pickup_lag_ms", "recorder pickup"),
+                         ("score_ms", "scoring"), ("trace_ms", "trace write"),
+                         ("housekeep_ms", "housekeeping")):
+            rows.append((label, _med([t.get(k) for t in tms])))
+        parts = {}
+        for t in tms:
+            for k, v in (t.get("housekeep_parts") or {}).items():
+                parts.setdefault(k, []).append(v)
+        prow = ", ".join("%s %sms" % (_esc(k), _esc("%.0f" % (_med(v) or 0)))
+                         for k, v in sorted(parts.items()))
+        out.append("<h2>advisor decision cycle, median ms over last %d picks</h2>"
+                   "<div class=scroll><table><tr><th>component<th>median ms</tr>%s</table></div>"
+                   "<p class=muted>housekeep parts (median): %s</p>"
+                   % (len(tms), "".join("<tr><td>%s</td><td class=num>%s</td></tr>"
+                                        % (_esc(a), _esc("%.0f" % b if b is not None else "-"))
+                                        for a, b in rows), prow or "&mdash;"))
+    if not out:
+        return "<h2>timing</h2><p class=muted>no timing rows in this run yet</p>"
+    return "".join(out)
+
+
 def render_endings(runs_root=RUNS_ROOT, limit=20):
     """Campaign endings with their plausibility verdicts."""
     path = os.path.join(runs_root, "postmortems.jsonl")
@@ -626,6 +746,8 @@ def render_index(con, run_dir):
               ("starts", render_starts()),
               ("action x faction", render_faction_matrix()),
               ("blocking menus", render_interrupts()),
+              ("diplomacy", render_diplomacy(run_dir)),
+              ("timing", render_timing(run_dir)),
               ("actions", per_type + seqtbl),
               ("timeline", render_timeline(con)),
               ("reward", reward),
@@ -915,6 +1037,13 @@ def render_infra(run_dir):
         % (_esc(l.get("rows", "-")), _esc(lt), _esc(ago(la)),
            _esc("kinds=%s" % ",".join(l.get("kinds") or []) if l else "not trained")),
     ]
+    im = _meta(r"D:\twdata\models\interrupt\meta.json")
+    ia, it = _age(r"D:\twdata\models\interrupt\meta.json")
+    sr = im.get("screen_rows") or {}
+    mrows.append("<tr><td>interrupt<td>%s<td>%s<td>%s<td>%s</tr>"
+                 % (_esc(im.get("rows", "-")), _esc(it), _esc(ago(ia)),
+                    _esc(" ".join("%s:%s" % (k, v) for k, v in sorted(sr.items()))
+                         or "screens=%s" % ",".join(im.get("screens") or []))))
     models = ("<h2>models</h2><div class=scroll><table>"
               "<tr><th>model<th>rows<th>trained at<th>age<th>config</tr>%s</table></div>"
               % "".join(mrows))
@@ -931,7 +1060,9 @@ def render_infra(run_dir):
                      % (_esc(label), _fresh(s, warn, bad), _esc(ago(s)), _esc(os.path.basename(path))))
     for fn, warn, bad in (("decisions_requests.jsonl", 120, 600),
                           ("decisions_responses.jsonl", 120, 600),
-                          ("trace.jsonl", 180, 900)):
+                          ("trace.jsonl", 180, 900),
+                          ("decisions_stream.jsonl", 180, 900),
+                          ("diplomacy.jsonl", 900, 7200)):
         p = os.path.join(run_dir, fn)
         s, t = _age(p)
         arows.append("<tr><td>%s<td class=%s>%s<td class=dim>%s</tr>"
@@ -980,7 +1111,7 @@ def _kill_session():
         return "kill failed: %s" % repr(e)[:120]
 
 
-def _start_session(retrain=True, campaigns=100, turns=40):
+def _start_session(retrain=True, campaigns=10, turns=40):
     """Spawn a detached session. Returns a status line."""
     import subprocess
     import time
