@@ -187,6 +187,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None):
     if opening:
         log("   opening interrupts: %s" % ", ".join(str(s) for s in opening))
     actions, confirmed, ended_by, picks = 0, 0, "action_cap", []
+    moves = 0                                       # executed move actions this turn
     active = None                                   # None = every entity is in play
     no_hud = 0
     last_record = {}
@@ -250,6 +251,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None):
         t_housekeep0 = _last_done_ts[0]
         decision_id, record = journal.request_snapshot(run_dir, active=active, diplo_epoch=diplo_epoch[0])
         (record.setdefault("campaign", {}))["act_index"] = actions + 1
+        record["campaign"]["move_index"] = moves + 1
         last_record = record
         if turn is not None and turn != _last_beat_turn[0]:
             _last_beat_turn[0] = turn
@@ -308,6 +310,8 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None):
         journal.log_verification(run_dir, decision_id, result)
         _hk_parts[0]["verify_log"] = int((time.time() - _t) * 1000)
         actions += 1
+        if pick["action_type"] == "move":
+            moves += 1
         ok = bool(result.get("counted"))
         confirmed += 1 if ok else 0
         pol.note_result(pick, ok)
