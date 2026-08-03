@@ -142,6 +142,7 @@ def gather(runs_root=RUNS_ROOT):
     ylocal = []
     skipped = 0
     act_idx = {}
+    mov_idx = {}
     for rec, taken, was_counted in decisions:
         # decision index within the turn, 1-based, from decision_id order -- the live loop
         # injects the same value at inference (campaign.act_index). Counted over labelled rows;
@@ -149,6 +150,11 @@ def gather(runs_root=RUNS_ROOT):
         ik = (rec.get("campaign_id"), rec.get("turn"))
         act_idx[ik] = act_idx.get(ik, 0) + 1
         (rec.setdefault("campaign", {}))["act_index"] = act_idx[ik]
+        # move index within the turn, 1-based: the decision that takes the turn's first
+        # move carries 1, the second 2. Counts taken moves, exactly like the live stamp.
+        rec["campaign"]["move_index"] = mov_idx.get(ik, 0) + 1
+        if taken and taken[2] == "move":
+            mov_idx[ik] = mov_idx.get(ik, 0) + 1
         y = target(series, rec.get("campaign_id"), rec.get("turn"), ranges)
         if y is None:
             skipped += 1
