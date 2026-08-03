@@ -107,9 +107,11 @@ def timeline(con):
         prev = r["ts"] or prev
         tm = json.loads(r["timings"]) if r.get("timings") else {}
         r["collect_ms"] = tm.get("collect_ms")
-        r["queue_ms"] = ((tm.get("roundtrip_ms") or 0) - (tm.get("collect_ms") or 0)
-                         if tm.get("roundtrip_ms") is not None else None)
+        r["queue_ms"] = (tm.get("pickup_lag_ms") if tm.get("pickup_lag_ms") is not None else
+                         ((tm.get("roundtrip_ms") or 0) - (tm.get("collect_ms") or 0)
+                          if tm.get("roundtrip_ms") is not None else None))
         r["score_ms"] = tm.get("score_ms")
+        r["housekeep_ms"] = tm.get("housekeep_ms")
         r["verify_ms"] = r.get("latency_ms")
         r["offers_n"] = tm.get("offers")
         r["total_ms"] = sum(v for v in (r["collect_ms"], r["queue_ms"], r["score_ms"],
@@ -315,13 +317,13 @@ def render_interrupts(runs_root=RUNS_ROOT):
             label = "%s=%s" % (_esc(k.replace("button_", "").replace("captive_option_", "")),
                                ("%.3f" % sc) if isinstance(sc, (int, float)) else "-")
             cells.append("<b>%s</b>" % label if k == pick else label)
-        state = ("<span class=ok>OK</span>" if counted
-                 else "<span class=bad>%s</span>" % _esc(ref or "fail"))
+        res = ("<span class=ok>OK</span>" if counted
+               else "<span class=bad>%s</span>" % _esc(ref or "fail"))
         rec_rows.append(
             "<tr><td class=dim>%s</td><td>%s</td><td class=dim>%s</td><td>%s</td>"
             "<td>%s</td><td class=dim>%s</td><td class=dim>%s</td></tr>"
             % (time.strftime("%H:%M:%S", time.localtime(ts or 0)), _esc(kind),
-               _esc((fac or "?")[:26]), state,
+               _esc((fac or "?")[:26]), res,
                ", ".join(cells) or "<span class=dim>-</span>",
                _esc(p or "-"), ("%.1fs" % (lat / 1000.0)) if lat else "-"))
     recent_tbl = ("<h2>recent interrupt decisions &mdash; predicted values per option "
@@ -738,7 +740,7 @@ def render_index(con, run_dir):
                       _esc(r["refusal"]), _esc(r["policy"])))
     seqtbl = ("<h2>sequence of picked decisions (newest first)</h2><div class=scroll><table>"
               "<tr><th>#<th>turn<th>offers<th>entity<th>action<th>key<th>result"
-              "<th>combined<th>exploit<th>&nbsp;&nbsp;global<th>&nbsp;&nbsp;local<th>explore"
+              "<th title='0.9*exploit+0.1*novelty -- row ordering only; selection uses exploit/explore/random'>sort<th>exploit<th>&nbsp;&nbsp;global<th>&nbsp;&nbsp;local<th>explore"
               "<th>refusal<th>policy</tr>"
               "%s</table></div>" % "".join(seq))
     head = ("<h1>advisor v7</h1><div class=dim>%s</div>" % _esc(run_dir)) + "<div class=cards>%s</div>" % cards
@@ -1029,10 +1031,18 @@ def render_infra(run_dir):
             return "%.0fm ago" % (s / 60.0)
         return "%.1fh ago" % (s / 3600.0)
 
+    try:
+        import policy as _P
+        pol_cfg = ("random %.0f%% / novelty-directed %.0f%% / exploit %.0f%% (policy.py, live)"
+                   % (100 * _P.EPSILON, 100 * _P.BETA, 100 * (1 - _P.EPSILON - _P.BETA)))
+    except Exception as e:
+        pol_cfg = "unreadable: %s" % repr(e)[:60]
     mrows = [
+        "<tr><td>pick policy<td class=dim>-<td class=dim>-<td class=dim>-<td>%s</tr>" % _esc(pol_cfg),
         "<tr><td>global (E1/E2)<td>%s<td>%s<td>%s<td>%s</tr>"
         % (_esc(g.get("rows", "-")), _esc(gt), _esc(ago(ga)),
-           _esc("beta=%s w_local=%s" % (g.get("beta"), g.get("w_local")))),
+           _esc("w_local=%s; sort-blend beta=%s (display ordering only, never selects)"
+                % (g.get("w_local"), g.get("beta")))),
         "<tr><td>local (E1/E2)<td>%s<td>%s<td>%s<td>%s</tr>"
         % (_esc(l.get("rows", "-")), _esc(lt), _esc(ago(la)),
            _esc("kinds=%s" % ",".join(l.get("kinds") or []) if l else "not trained")),
