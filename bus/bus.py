@@ -253,6 +253,77 @@ class Bus:
             time.sleep(self.poll_seconds)
         raise TWError("bus timeout: no result for seq %d cmd %s" % (seq, channel))
 
+    def send_batch(self, requests, timeout: float = DEFAULT_TIMEOUT) -> list:
+        """Append EVERY command in one write, then block until every reply arrived; returns the
+        parsed result dicts in request order. The mod executes all pending lines in a single
+        tick (twcontrol.lua process()), so N independent commands cost ~one round-trip floor
+        instead of N. Raises TWError naming the missing seqs on timeout -- no partial returns."""
+        if not requests:
+            return []
+        with self._seq_lock, self._proc_lock:
+            t = self._tail_seq()
+            if t + 1000 < self._seq:
+                sys.stderr.write("bus: seq reseeded %d -> %d (command file rotated)\n"
+                                 % (self._seq, t))
+                self._seq = t
+            self._seq = max(self._seq, t)
+            offset = self._out_size()
+            seqs = []
+            lines = []
+            for channel, payload in requests:
+                self._seq += 1
+                seqs.append(self._seq)
+                lines.append("%d %s %s\n" % (self._seq, channel, payload))
+            try:
+                with open(self.cmd_path, "a", encoding="utf-8") as f:
+                    # PER-LINE writes, deliberately: the mod's tail cursor advances to
+                    # EOF-at-read-time, so a single large buffered write can be read TORN
+                    # mid-line -- the exact mechanism class of the 2026-08-02 seq corruption.
+                    # Line-granular syscalls restore the serial path's write atomicity.
+                    for line in lines:
+                        f.write(line)
+                        f.flush()
+                    os.fsync(f.fileno())
+            except OSError as exc:
+                raise TWError("bus: cannot append batch to %s: %s" % (self.cmd_path, exc))
+        wanted = {s: requests[i][0] for i, s in enumerate(seqs)}
+        found: dict = {}
+        deadline = time.time() + timeout
+        next_alive = time.time() + 2.0
+        while time.time() < deadline:
+            for obj in self._scan_lines(offset):
+                s = obj.get("seq")
+                if s in wanted and s not in found and obj.get("cmd") == wanted[s]:
+                    found[s] = obj
+            if len(found) == len(wanted):
+                return [found[s] for s in seqs]
+            now = time.time()
+            if now >= next_alive:
+                if not _game_alive():
+                    raise TWError("bus: WH3 process gone while awaiting batch seqs %s"
+                                  % sorted(set(wanted) - set(found)))
+                next_alive = now + 2.0
+            time.sleep(self.poll_seconds)
+        raise TWError("bus batch timeout: %d/%d replies, missing seqs %s"
+                      % (len(found), len(wanted), sorted(set(wanted) - set(found))))
+
+    def _scan_lines(self, offset: int):
+        """Every parsed JSON line appended to out_path after `offset` (fresh read per call)."""
+        try:
+            with open(self.out_path, "rb") as f:
+                f.seek(offset)
+                data = f.read()
+        except OSError:
+            return
+        for line in data.decode("utf-8", "replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                yield json.loads(line)
+            except ValueError:
+                continue
+
     def _alloc_and_append(self, channel: str, payload: str) -> tuple[int, int]:
         """Allocate the next seq and append the command line under both locks; returns (seq, result-file size before the append)."""
         with self._seq_lock, self._proc_lock:
