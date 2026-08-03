@@ -131,7 +131,10 @@ def _turn_trail(run_dir, executor, row, turn_index, log):
                 rec[name] = None
                 rec[name + "_error"] = repr(e)[:100]
     abnormal = row.get("ended_by") not in ("end_turn_chosen", "action_cap")
-    if abnormal or turn_index == 1 or turn_index % SHOT_EVERY_TURNS == 0:
+    # defeated: _postmortem shoots the same modal seconds later (end_* shot); a second
+    # screenshot subprocess here only delays the exit
+    if (abnormal or turn_index == 1 or turn_index % SHOT_EVERY_TURNS == 0) \
+            and row.get("ended_by") != "defeated":
         try:
             rec["screenshot"] = executor.screenshot(
                 "t%s_%s_%d" % (row.get("turn"), row.get("ended_by"), int(time.time())))
