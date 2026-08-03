@@ -53,7 +53,8 @@ def run(ctx):
                     if kind == "snapshot":
                         t0 = time.time()
                         pickup_lag_ms = int((t0 - (row.get("ts") or t0)) * 1000)
-                        snap = collect.snapshot(bus, active=row.get("active"))
+                        snap = collect.snapshot(bus, active=row.get("active"),
+                                                diplo_epoch=row.get("diplo_epoch"))
                         t1 = time.time()
                         if campaign_changed(snap.get("campaign")):
                             seq = 0

@@ -14,11 +14,9 @@ MOVEMENT_STANCES = frozenset((
     "MILITARY_FORCE_ACTIVE_STANCE_TYPE_DOUBLE_TIME",
     "MILITARY_FORCE_ACTIVE_STANCE_TYPE_SET_CAMP_RAIDING",
 ))
-MOVE_SAMPLES = 4
-MOVE_CANDIDATES = 8
-MOVE_MIN_R = 3.0                 # tiles
-MOVE_MAX_R = 9.0                 # tiles
-_MOVE_ATTEMPTS = {}
+MOVE_SAMPLES = 8                  # doubled 2026-08-02 (operator), with candidates
+MOVE_CANDIDATES = 16              # in-Lua sampling tries cap = 3x this
+MOVE_MIN_R = 3.0                 # tiles -- minimum meaningful move
 
 _G = ("local function g(c,p) local ok,v=pcall(function() return c:Call(p) end);"
       "if ok and v~=nil then return v end return nil end "
@@ -115,11 +113,9 @@ _LUA_FACTION_RESOURCES = (
     "return table.concat(out,',')")
 
 
-def faction_resources(bus):
-    """{resource_key: value} for the player faction; {} when unreadable."""
-    raw = str(_ev(bus, _LUA_FACTION_RESOURCES, timeout=25.0, allow_nil=True) or "")
+def _parse_resources(raw):
     out = {}
-    for row in raw.split(","):
+    for row in str(raw or "").split(","):
         k, _, v = row.partition("~")
         if not k or not v:
             continue
@@ -127,6 +123,11 @@ def faction_resources(bus):
         if n is not None:
             out[k.strip()] = n
     return out
+
+
+def faction_resources(bus):
+    """{resource_key: value} for the player faction; {} when unreadable."""
+    return _parse_resources(_ev(bus, _LUA_FACTION_RESOURCES, timeout=25.0, allow_nil=True))
 
 
 _LUA_DIPLO = (
@@ -190,7 +191,11 @@ _LUA_CAMPAIGN = (_G + "local f=cm:get_local_faction(true) "
 
 
 def campaign_state(bus, with_uuid=True):
-    p = str(_ev(bus, _LUA_CAMPAIGN)).split("|")
+    return _parse_campaign(_ev(bus, _LUA_CAMPAIGN))
+
+
+def _parse_campaign(raw):
+    p = str(raw).split("|")
     if len(p) < 8:
         raise CollectError("campaign state malformed: %r" % p)
     uid = p[7]
@@ -221,15 +226,18 @@ _LUA_RUINS = (_G +
     "return table.concat(out,',')")
 
 
-def ruins(bus):
-    """Settlements that LOOK like ruins to the player: [{region, x, y}]."""
-    raw = str(_ev(bus, _LUA_RUINS, timeout=30.0, allow_nil=True) or "")
+def _parse_ruins(raw):
     out = []
-    for row in raw.split(","):
+    for row in str(raw or "").split(","):
         p = row.split("~")
         if len(p) == 3 and p[0]:
             out.append({"region": p[0], "x": _num(p[1]), "y": _num(p[2])})
     return out
+
+
+def ruins(bus):
+    """Settlements that LOOK like ruins to the player: [{region, x, y}]."""
+    return _parse_ruins(_ev(bus, _LUA_RUINS, timeout=30.0, allow_nil=True))
 
 
 def _tstage(prof, name, fn, *a, **k):
@@ -314,10 +322,15 @@ _LUA_RECRUITABLE = (_G +
 RECRUIT_QUEUES = ("local", "global")
 
 
+def _parse_recruitable(raw):
+    return [{"key": k, "state": "active"}
+            for k in str(raw or "").split(",") if k and k != "nil"]
+
+
 def recruitable_units(bus, cqi):
     """Units this force can recruit, WITHOUT opening units_panel."""
-    raw = str(_ev(bus, _LUA_RECRUITABLE % {"cqi": cqi}, timeout=30.0, allow_nil=True) or "")
-    return [{"key": k, "state": "active"} for k in raw.split(",") if k and k != "nil"]
+    return _parse_recruitable(_ev(bus, _LUA_RECRUITABLE % {"cqi": cqi},
+                                  timeout=30.0, allow_nil=True))
 
 
 def edict_options(bus, region):
@@ -351,11 +364,17 @@ _LUA_LORD = (_G +
     "..'|'..ts(ch and ch:logical_position_x())..'|'..ts(ch and ch:logical_position_y())"
     "..'|'..ts(ch and ch:character_subtype_key())"
     "..'|'..ts(ch and ch:is_faction_leader())"
-    "..'|'..table.concat(pend,',')")
+    "..'|'..table.concat(pend,',')"
+    # absolute AP budget, validated live 2026-08-02 (cqi 203: 2729/2729, garbage-control nil)
+    "..'|'..ts(g(c,'ActionPointsRemaining'))..'|'..ts(g(c,'ActionPointsPerTurn'))")
 
 
 def lord_state(bus, cqi):
-    p = str(_ev(bus, _LUA_LORD % {"cqi": cqi}, timeout=25.0)).split("|")
+    return _parse_lord(_ev(bus, _LUA_LORD % {"cqi": cqi}, timeout=25.0), cqi)
+
+
+def _parse_lord(raw, cqi):
+    p = str(raw).split("|")
     if len(p) < 15:
         raise CollectError("lord state malformed for %s: %r" % (cqi, p))
     return {"cqi": str(cqi), "rank": _num(p[0]), "skill_points": _num(p[1]), "units": _num(p[2]),
@@ -366,7 +385,9 @@ def lord_state(bus, cqi):
             "subtype": (p[12] if p[12] not in ("nil", "") else None),
             "is_leader": p[13] == "true",
             "pending_recruit_keys": [k for k in str(p[14]).split(",")
-                                     if k and k not in ("nil", "-")]}
+                                     if k and k not in ("nil", "-")],
+            "ap_remaining": _num(p[15]) if len(p) > 15 else None,
+            "ap_per_turn": _num(p[16]) if len(p) > 16 else None}
 
 
 _LUA_PROVINCE = (_G +
@@ -409,7 +430,11 @@ _LUA_PROVINCE = (_G +
 
 
 def province_state(bus, region):
-    raw = str(_ev(bus, _LUA_PROVINCE % {"reg": region}, timeout=25.0))
+    return _parse_province(_ev(bus, _LUA_PROVINCE % {"reg": region}, timeout=25.0), region)
+
+
+def _parse_province(raw, region):
+    raw = str(raw)
     if raw == "NO-SETT":
         return {"region": region, "settlement_present": False}
     p = raw.split("|")
@@ -486,71 +511,91 @@ def _offer(atype, key, available, gate=None, **params):
             "gate": gate, "params": params or {}}
 
 
+# The reach envelope is MEASURED per ray with the engine's own pathfinder before sampling --
+# no range constant. Live-measured 2026-08-02 (norsca cqi 203, full AP): envelope 40/28/40/28/
+# 15/28/28/40 tiles while the old guessed ring capped at 9; the 80-probe sweep costs ~0ms engine
+# time inside one eval. The reply's first field records the measured rays so every offer carries
+# the envelope it was drawn from. Sampling stays UNIFORM (operator, 2026-08-02): uniform ray,
+# +/-22.5deg jitter, uniform radius in [minr, ray reach] -- same density shape as the old ring.
 _LUA_MOVE_CANDIDATES = (
     "local c=cm:get_character_by_cqi(%(cqi)s) "
     "if not c or c:is_null_interface() then return '' end "
     "local fn=c:faction():name() "
-    "local seen,out={},{} "
-    "for _,p in ipairs({%(pts)s}) do "
-    "  local ok,vx,vy=pcall(function() return "
-    "    cm:find_valid_spawn_location_for_character_from_position(fn,p[1],p[2],true) end) "
-    "  if ok and vx and vy and vx>=0 and vy>=0 then "
-    "    local k=vx..','..vy "
-    "    if not seen[k] then "
-    "      local ok2,reach=pcall(function() return c:can_reach_position(vx,vy) end) "
-    "      if ok2 and reach then seen[k]=true out[#out+1]=k end "
+    "local cx,cy=c:logical_position_x(),c:logical_position_y() "
+    "local rays={} "
+    "for d=0,7 do local a=d*0.785398 local best=0 "
+    "  for _,r in ipairs({3,5,7,9,12,15,20,28,40,55}) do "
+    "    local px=math.floor(cx+r*math.cos(a)+0.5) local py=math.floor(cy+r*math.sin(a)+0.5) "
+    "    local ok,v=pcall(function() return c:can_reach_position(px,py) end) "
+    "    if ok and v then best=r end "
+    "  end "
+    "  rays[d+1]=best "
+    "end "
+    "local seen,out={},{} local tries=0 "
+    "while #out<%(n)s and tries<%(n)s*3 do tries=tries+1 "
+    "  local d=math.random(0,7) local R=rays[d+1] "
+    "  if R>=%(minr)s then "
+    "    local a=d*0.785398+(math.random()-0.5)*0.785398 "
+    "    local r=%(minr)s+math.random()*(R-%(minr)s) "
+    "    local sx=math.floor(cx+r*math.cos(a)+0.5) local sy=math.floor(cy+r*math.sin(a)+0.5) "
+    "    local ok,vx,vy=pcall(function() return "
+    "      cm:find_valid_spawn_location_for_character_from_position(fn,sx,sy,true) end) "
+    "    if ok and vx and vy and vx>=0 and vy>=0 then "
+    "      local k=vx..','..vy "
+    "      if not seen[k] then "
+    "        local ok2,reach=pcall(function() return c:can_reach_position(vx,vy) end) "
+    "        if ok2 and reach then seen[k]=true out[#out+1]=k end "
+    "      end "
     "    end "
     "  end "
     "end "
-    "return table.concat(out,'|')")
+    "return table.concat(rays,',')..'||'..table.concat(out,'|')")
 
 
-def _move_offers(bus, cqi, state, acted):
-    """Sampled move destinations for a character, filtered by the pathfinder."""
-    x, y = state.get("x"), state.get("y")
-    if x is None or y is None:
-        return []
-    sig = "%s:%s:%s" % (cqi, x, y)
-    _MOVE_ATTEMPTS[sig] = _MOVE_ATTEMPTS.get(sig, 0) + 1
-    rng = random.Random("%s#%d" % (sig, _MOVE_ATTEMPTS[sig]))
-    # sample inside what this character can still travel: a fixed 3-9 ring proposed moves a
-    # spent lord cannot make (the pathfinder then rejected them, wasting the sample)
-    ap = state.get("ap_pct")
-    ap = 1.0 if ap is None else (float(ap) / 100.0 if float(ap) > 1.0 else float(ap))
-    ap = max(0.0, min(1.0, ap))
-    reach_max = max(MOVE_MIN_R, MOVE_MAX_R * ap)
-    pts = []
-    for _ in range(MOVE_CANDIDATES):
-        a = rng.uniform(0.0, 2.0 * math.pi)
-        r = rng.uniform(min(MOVE_MIN_R, reach_max), reach_max)
-        pts.append("{%d,%d}" % (round(float(x) + r * math.cos(a)),
-                                round(float(y) + r * math.sin(a))))
-    raw = _ev(bus, _LUA_MOVE_CANDIDATES % {"cqi": cqi, "pts": ",".join(pts)},
-              timeout=25.0, allow_nil=True)
+def _move_lua(cqi, state):
+    """The move-candidate eval for a character, or None when it has no position."""
+    if state.get("x") is None or state.get("y") is None:
+        return None
+    return _LUA_MOVE_CANDIDATES % {"cqi": cqi, "minr": int(MOVE_MIN_R), "n": MOVE_CANDIDATES}
+
+
+def _parse_moves(raw, acted):
+    raw = str(raw or "")
+    rays_part, _, tiles_part = raw.partition("||")
+    rays = [int(float(r)) for r in rays_part.split(",") if r.strip().lstrip("-").isdigit()]
+    reach_max = max(rays) if rays else None
     out = []
-    tiles = [t for t in str(raw or "").split("|") if t][:MOVE_SAMPLES]
+    tiles = [t for t in tiles_part.split("|") if t][:MOVE_SAMPLES]
     for i, tile in enumerate(tiles):
         mx, my = tile.split(",")
         out.append(_offer("move", "xy:%s,%s" % (mx, my), not acted,
                           "already_acted_this_turn" if acted else None,
-                          x=int(mx), y=int(my), sample_index=i))
+                          x=int(mx), y=int(my), sample_index=i,
+                          reach_rays=rays or None, reach_max=reach_max))
     return out
 
 
-def _reach(bus, cqi, target_cqis, regions):
-    """({cqi: bool}, {region: bool}) -- both reachability sweeps in one round-trip."""
-    if not target_cqis and not regions:
-        return {}, {}
-    raw = _ev(bus, "local a=cm:get_character_by_cqi(%s) local o={} "
-                   "for t in string.gmatch('%s','[^,]+') do local c=cm:get_character_by_cqi(tonumber(t)) "
-                   "local ok,v=pcall(function() return cm:character_can_reach_character(a,c) end) "
-                   "o[#o+1]='C'..t..'='..tostring(ok and v) end "
-                   "for t in string.gmatch('%s','[^,]+') do local r=cm:get_region(t) "
-                   "local s=r and r:settlement() "
-                   "local ok,v=pcall(function() return cm:character_can_reach_settlement(a,s) end) "
-                   "o[#o+1]='R'..t..'='..tostring(ok and v) end return table.concat(o,',')"
-              % (cqi, ",".join(str(t) for t in target_cqis), ",".join(regions)), timeout=40.0,
-              allow_nil=True)
+def _move_offers(bus, cqi, state, acted):
+    """Sampled move destinations for a character, filtered by the pathfinder."""
+    lua = _move_lua(cqi, state)
+    if lua is None:
+        return []
+    return _parse_moves(_ev(bus, lua, timeout=25.0, allow_nil=True), acted)
+
+
+def _reach_lua(cqi, target_cqis, regions):
+    return ("local a=cm:get_character_by_cqi(%s) local o={} "
+            "for t in string.gmatch('%s','[^,]+') do local c=cm:get_character_by_cqi(tonumber(t)) "
+            "local ok,v=pcall(function() return cm:character_can_reach_character(a,c) end) "
+            "o[#o+1]='C'..t..'='..tostring(ok and v) end "
+            "for t in string.gmatch('%s','[^,]+') do local r=cm:get_region(t) "
+            "local s=r and r:settlement() "
+            "local ok,v=pcall(function() return cm:character_can_reach_settlement(a,s) end) "
+            "o[#o+1]='R'..t..'='..tostring(ok and v) end return table.concat(o,',')"
+            % (cqi, ",".join(str(t) for t in target_cqis), ",".join(regions)))
+
+
+def _parse_reach(raw):
     chars, setts = {}, {}
     for part in str(raw or "").split(","):
         if "=" not in part:
@@ -558,6 +603,14 @@ def _reach(bus, cqi, target_cqis, regions):
         k, v = part.rsplit("=", 1)
         (chars if k.startswith("C") else setts)[k[1:]] = (v == "true")
     return chars, setts
+
+
+def _reach(bus, cqi, target_cqis, regions):
+    """({cqi: bool}, {region: bool}) -- both reachability sweeps in one round-trip."""
+    if not target_cqis and not regions:
+        return {}, {}
+    return _parse_reach(_ev(bus, _reach_lua(cqi, target_cqis, regions), timeout=40.0,
+                            allow_nil=True))
 
 
 _LUA_LORD_OFFERS = (_G +
@@ -582,11 +635,9 @@ _LUA_STATIONED = (_G +
     "return table.concat(out,',')")
 
 
-def settlement_forces(bus):
-    """{"stationed": {region: cqi|None}, "citizenry": {cqi}} for our regions, in one bus call."""
-    raw = str(_ev(bus, _LUA_STATIONED, timeout=25.0, allow_nil=True) or "")
+def _parse_stationed(raw):
     stationed, citizenry = {}, set()
-    for row in raw.split(","):
+    for row in str(raw or "").split(","):
         parts = row.split("~")
         if len(parts) != 3:
             continue
@@ -597,12 +648,40 @@ def settlement_forces(bus):
     return {"stationed": stationed, "citizenry": citizenry}
 
 
+def settlement_forces(bus):
+    """{"stationed": {region: cqi|None}, "citizenry": {cqi}} for our regions, in one bus call."""
+    return _parse_stationed(_ev(bus, _LUA_STATIONED, timeout=25.0, allow_nil=True))
+
+
+def _lord_targets(world):
+    """(armies, enemy setts, own setts, ruin setts) -- the reach/attack target lists."""
+    armies = [h for h in world["hostiles"] if h.get("kind") == "army" and h.get("cqi")]
+    esetts = [h for h in world["hostiles"] if h.get("kind") == "settlement" and h.get("region")]
+    osetts = [s for s in world["settlements"] if s.get("region")]
+    rsetts = [s for s in (world.get("ruins") or []) if s.get("region")]
+    return armies, esetts, osetts, rsetts
+
+
 def lord_offers(bus, cqi, state, world, stationed=None, prof=None):
     """Every lord-context offer, available or not (unavailable ones carry the game's gate reason)."""
+    ev_raw = _tstage(prof, "lord_offers/ev", _ev, bus, _LUA_LORD_OFFERS % {"cqi": cqi},
+                     timeout=25.0, allow_nil=True)
+    recruit_rows = _tstage(prof, "lord_offers/recruitable", recruitable_units, bus, cqi)
+    armies, esetts, osetts, rsetts = _lord_targets(world)
+    reach_c, reach_s = _tstage(prof, "lord_offers/reach", _reach, bus, cqi,
+                               [a["cqi"] for a in armies],
+                               [s["region"] for s in esetts] + [s["region"] for s in osetts]
+                               + [s["region"] for s in rsetts])
+    moves = _move_offers(bus, cqi, state, state.get("acted"))
+    return _lord_offers_assemble(cqi, state, world, stationed, ev_raw, recruit_rows,
+                                 reach_c, reach_s, moves)
+
+
+def _lord_offers_assemble(cqi, state, world, stationed, ev_raw, recruit_rows,
+                          reach_c, reach_s, moves):
     offers = []
     acted = state.get("acted")
-    raw = str(_tstage(prof, "lord_offers/ev", _ev, bus, _LUA_LORD_OFFERS % {"cqi": cqi},
-                      timeout=25.0, allow_nil=True) or "")
+    raw = str(ev_raw or "")
     st_raw, _, sk_raw = raw.partition("||")
     for row in st_raw.split(","):
         p = row.split("~")
@@ -613,7 +692,7 @@ def lord_offers(bus, cqi, state, world, stationed=None, prof=None):
         gate = None if ok else ("active" if active else
                                 "cannot_activate" if not can_act else "cannot_afford")
         offers.append(_offer("stance", key, ok, gate, active=active))
-    for c in _tstage(prof, "lord_offers/recruitable", recruitable_units, bus, cqi):
+    for c in recruit_rows:
         # can_recruit_unit is pool-blind, so both queues are offered for every recruitable unit
         # and an unavailable one fails loudly at execution rather than being guessed away here
         for queue in RECRUIT_QUEUES:
@@ -628,14 +707,7 @@ def lord_offers(bus, cqi, state, world, stationed=None, prof=None):
         key, status = row.rsplit("~", 1)
         ok = (status == "active" and has_pts)
         offers.append(_offer("skills", key, ok, None if ok else ("no_points" if not has_pts else status)))
-    armies = [h for h in world["hostiles"] if h.get("kind") == "army" and h.get("cqi")]
-    esetts = [h for h in world["hostiles"] if h.get("kind") == "settlement" and h.get("region")]
-    osetts = [s for s in world["settlements"] if s.get("region")]
-    rsetts = [s for s in (world.get("ruins") or []) if s.get("region")]
-    reach_c, reach_s = _tstage(prof, "lord_offers/reach", _reach, bus, cqi,
-                               [a["cqi"] for a in armies],
-                               [s["region"] for s in esetts] + [s["region"] for s in osetts]
-                               + [s["region"] for s in rsetts])
+    armies, esetts, osetts, rsetts = _lord_targets(world)
     marching = str(state.get("stance") or "") in MOVEMENT_STANCES
     recruiting = (state.get("pending_recruits") or 0) > 0
     for a in armies:
@@ -665,7 +737,7 @@ def lord_offers(bus, cqi, state, world, stationed=None, prof=None):
                                 else "settlement_occupied" if taken else "cannot_reach")
         offers.append(_offer("garrison", "settlement:%s" % s["region"], ok, gate,
                              x=s.get("x"), y=s.get("y")))
-    offers.extend(_move_offers(bus, cqi, state, acted))
+    offers.extend(moves or [])
     offers.append(_offer("noop", "noop", True))
     return offers
 
@@ -679,9 +751,14 @@ _LUA_HERO_OFFERS = (_G +
 
 def hero_offers(bus, cqi, state, world):
     """A hero's offers: skills and moves only -- agent actions and embed are not offered."""
+    ev_raw = _ev(bus, _LUA_HERO_OFFERS % {"cqi": cqi}, timeout=25.0, allow_nil=True)
+    moves = _move_offers(bus, cqi, state, bool(state.get("acted")))
+    return _hero_offers_assemble(cqi, state, ev_raw, moves)
+
+
+def _hero_offers_assemble(cqi, state, ev_raw, moves):
     offers = []
-    raw = str(_ev(bus, _LUA_HERO_OFFERS % {"cqi": cqi}, timeout=25.0, allow_nil=True) or "")
-    parts = raw.split("||")
+    parts = str(ev_raw or "").split("||")
     sk_raw = parts[2] if len(parts) > 2 else ""
     has_pts = (state.get("skill_points") or 0) >= 1
     for row in sk_raw.split(","):
@@ -691,31 +768,39 @@ def hero_offers(bus, cqi, state, world):
         ok = (status == "active" and has_pts)
         offers.append(_offer("skills", key, ok,
                              None if ok else ("no_points" if not has_pts else status)))
-    offers.extend(_move_offers(bus, cqi, state, bool(state.get("acted"))))
+    offers.extend(moves or [])
     offers.append(_offer("noop", "noop", True))
     return offers
 
 
+_LUA_PROVINCE_OFFERS = (_G +
+    "local s=cco('CcoCampaignSettlement','settlement:%s') local slots=g(s,'BuildingSlotList') "
+    "local o={} "
+    "if type(slots)=='table' then for i=1,#slots do local sl=slots[i] "
+    "if g(sl,'IsActive')==true and not g(sl,'ConstructionItemContext') then "
+    "local empty=(g(sl,'IsEmpty')==true) "
+    "local canup=(g(sl,'CanUpgrade')==true) "
+    "local p=g(sl,'PossibleUpgradeWithoutConversionsList') "
+    "if type(p)=='table' then for j=0,#p-1 do "
+    "o[#o+1]=ts(g(sl,'Index'))..'~'..ts(g(sl,'PossibleUpgradeWithoutConversionsList['..j..'].Key'))"
+    "..'~'..ts(g(sl,'PossibleUpgradeWithoutConversionsList['..j..'].IsActiveForBuildingBrowser(this)'))"
+    "..'~'..ts(empty)..'~'..ts(canup) end end end end end "
+    "local ed={} local m=g(s,'FactionProvinceManagerContext') "
+    "if m then local il=g(m,'InitiativeList') "
+    "if type(il)=='table' then for i=1,#il do ed[#ed+1]=ts(g(il[i],'Key')) end end end "
+    "return 'false||'..table.concat(o,',')..'||'..table.concat(ed,',')")
+
+
 def province_offers(bus, region, state, campaign):
     """Every province-context offer (buildings across free slots, edicts, lord recruitment)."""
+    combo = _ev(bus, _LUA_PROVINCE_OFFERS % region, timeout=30.0, allow_nil=True)
+    pools = _lord_pools(bus, campaign["faction_cqi"], _lord_subtypes(bus, campaign["faction"]))
+    return _province_offers_assemble(region, state, campaign, combo, pools)
+
+
+def _province_offers_assemble(region, state, campaign, combo, lord_pools):
     offers = []
-    combo = str(_ev(bus, _G +
-              "local s=cco('CcoCampaignSettlement','settlement:%s') local slots=g(s,'BuildingSlotList') "
-              "local o={} "
-              "if type(slots)=='table' then for i=1,#slots do local sl=slots[i] "
-              "if g(sl,'IsActive')==true and not g(sl,'ConstructionItemContext') then "
-              "local empty=(g(sl,'IsEmpty')==true) "
-              "local canup=(g(sl,'CanUpgrade')==true) "
-              "local p=g(sl,'PossibleUpgradeWithoutConversionsList') "
-              "if type(p)=='table' then for j=0,#p-1 do "
-              "o[#o+1]=ts(g(sl,'Index'))..'~'..ts(g(sl,'PossibleUpgradeWithoutConversionsList['..j..'].Key'))"
-              "..'~'..ts(g(sl,'PossibleUpgradeWithoutConversionsList['..j..'].IsActiveForBuildingBrowser(this)'))"
-              "..'~'..ts(empty)..'~'..ts(canup) end end end end end "
-              "local ed={} local m=g(s,'FactionProvinceManagerContext') "
-              "if m then local il=g(m,'InitiativeList') "
-              "if type(il)=='table' then for i=1,#il do ed[#ed+1]=ts(g(il[i],'Key')) end end end "
-              "return 'false||'..table.concat(o,',')..'||'..table.concat(ed,',')"
-              % region, timeout=30.0, allow_nil=True) or "")
+    combo = str(combo or "")
     cparts = combo.split("||")
     if len(cparts) < 3:
         raise CollectError("province offers malformed for %s: %r" % (region, combo[:120]))
@@ -741,8 +826,7 @@ def province_offers(bus, region, state, campaign):
         ok = complete and key != sel
         offers.append(_offer("edict", key, ok,
                              None if ok else ("province_not_complete" if not complete else "already_selected")))
-    for sub, (n, can, traits, ranks) in _lord_pools(bus, campaign["faction_cqi"],
-                                                    _lord_subtypes(bus, campaign["faction"])).items():
+    for sub, (n, can, traits, ranks) in (lord_pools or {}).items():
         for i in range(n):
             ok = bool(can[i]) if i < len(can) else False
             tr = traits[i] if i < len(traits) else []
@@ -877,10 +961,16 @@ def current_research(bus, faction_cqi):
 
 def campaign_offers(bus, campaign, prof=None):
     """Faction-wide offers: research, rites, diplomacy and end_turn."""
-    offers = []
     fac = campaign["faction_cqi"]
-    raw = str(_tstage(prof, "campaign_offers/ev", _ev, bus, _LUA_CAMPAIGN_OFFERS % {"fac": fac},
-                      timeout=30.0, allow_nil=True) or "")
+    raw = _tstage(prof, "campaign_offers/ev", _ev, bus, _LUA_CAMPAIGN_OFFERS % {"fac": fac},
+                  timeout=30.0, allow_nil=True)
+    dip = _tstage(prof, "campaign_offers/diplomacy", diplomacy_offers, bus, campaign.get("turn"))
+    return _campaign_offers_assemble(raw, dip)
+
+
+def _campaign_offers_assemble(raw, diplo_offers):
+    offers = []
+    raw = str(raw or "")
     parts = raw.split("||")
     if len(parts) < 3:
         raise CollectError("campaign offers malformed: %r" % raw[:120])
@@ -906,8 +996,7 @@ def campaign_offers(bus, campaign, prof=None):
             continue
         offers.append(_offer("rites", "rite_index_%d" % (i + 1), flag == "true",
                              None if flag == "true" else "cannot_perform", rite_index=i + 1))
-    offers.extend(_tstage(prof, "campaign_offers/diplomacy", diplomacy_offers,
-                          bus, campaign.get("turn")))
+    offers.extend(diplo_offers or [])
     offers.append(_offer("end_turn", "end_turn", True))
     offers.append(_offer("noop", "noop", True))
     return offers
@@ -966,9 +1055,12 @@ def _roots(bus):
     return [k.get("id") for k in (r.get("kids") or [])] or list(r.get("roots") or [])
 
 
-def dealable_factions(bus, turn=None):
-    """Factions with a row in the diplomacy panel; cached per turn. The panel must end up closed."""
-    if turn is not None and _DEALABLE_CACHE["turn"] == turn and _DEALABLE_CACHE["factions"] is not None:
+def dealable_factions(bus, turn=None, epoch=None):
+    """Factions with a row in the diplomacy panel; cached per (turn, diplo epoch) -- the walk
+    re-runs at turn start and after every diplomatic event (operator cadence, 2026-08-02).
+    The panel must end up closed."""
+    ckey = (turn, epoch)
+    if turn is not None and _DEALABLE_CACHE["turn"] == ckey and _DEALABLE_CACHE["factions"] is not None:
         return list(_DEALABLE_CACHE["factions"])
     opened = False
     if DIPLO_PANEL_ROOT not in _roots(bus):
@@ -981,7 +1073,7 @@ def dealable_factions(bus, turn=None):
         if not opened:
             sys.stderr.write("collect: diplomacy panel would not open -- deal-able set unread, so "
                              "the offer builder falls back to the cm proxy, which under-reports\n")
-            _DEALABLE_CACHE.update(turn=turn, factions=[])
+            _DEALABLE_CACHE.update(turn=ckey, factions=[])
             return []
     facs, seen = [], set()
     nodes = (_bus(bus, "tree", "%s 6 6000" % DIPLO_PANEL_ROOT) or {}).get("nodes") or []
@@ -1005,16 +1097,21 @@ def dealable_factions(bus, turn=None):
         if DIPLO_PANEL_ROOT in _roots(bus):
             sys.stderr.write("collect: ⚠ DIPLOMACY PANEL STILL OPEN after reading it -- it will "
                              "block every later action this turn until something clears it\n")
-    _DEALABLE_CACHE.update(turn=turn, factions=list(facs))
+    _DEALABLE_CACHE.update(turn=ckey, factions=list(facs))
     sys.stderr.write("collect: %d deal-able faction(s) read from the panel\n" % len(facs))
     return facs
 
 
-def diplomacy_offers(bus, turn=None):
+def diplomacy_offers(bus, turn=None, epoch=None):
     """Target-faction x term-combination offers."""
-    panel = dealable_factions(bus, turn)
-    raw = _ev(bus, _LUA_DIPLO_TARGETS, timeout=30.0, allow_nil=True)
-    if raw is None:
+    return _diplo_offers_build(bus, turn, epoch,
+                               _ev(bus, _LUA_DIPLO_TARGETS, timeout=30.0, allow_nil=True))
+
+
+def _diplo_offers_build(bus, turn, epoch, raw):
+    """Offers from a pre-fetched targets payload; the panel walk stays cached per (turn, epoch)."""
+    panel = dealable_factions(bus, turn, epoch)
+    if raw is None or str(raw) in ("nil", "None"):
         sys.stderr.write("collect: DIPLOMACY TARGET READ FAILED -- no diplomacy will be offered this "
                          "snapshot. This is a broken read, NOT an empty world.\n")
         return []
@@ -1058,21 +1155,45 @@ def diplomacy_offers(bus, turn=None):
     return offers
 
 
-def snapshot(bus, active=None):
-    """{ts, campaign, world, entities:[{context_kind, context_id, state, offers}], profile}."""
+def _bres(reply, what, allow_nil=False):
+    """A batched eval reply under _ev's exact laws: lua errors raise loudly, nil raises unless
+    the serial path allowed it. Bypassing this was a silent-training-data defect (review find)."""
+    r = reply or {}
+    if r.get("error"):
+        _e = str(r["error"])
+        raise CollectError("lua error (%s): ...%s" % (what, _e[-240:]) if len(_e) > 240 else
+                           "lua error (%s): %s" % (what, _e))
+    v = r.get("result")
+    if v is None and not allow_nil:
+        raise CollectError("eval returned nil: %s" % what)
+    return v
+
+
+def snapshot(bus, active=None, diplo_epoch=None):
+    """{ts, campaign, world, entities:[{context_kind, context_id, state, offers}], profile}.
+
+    THREE batched bus round-trips (the mod executes every pending command in one tick), so the
+    reads are taken at decision time as before but land within the same 1-3 game ticks instead
+    of being smeared across ~13 serial round-trip floors. Wave A: dependency-free world reads.
+    Wave B: per-entity states+offers (needs A's entity lists). Wave C: move candidates (needs
+    B's positions/AP). The diplomacy PANEL walk stays cached per (turn, diplo_epoch)."""
     prof = {}
-
-    def timed(name, fn, *a, **k):
-        t = time.time()
-        try:
-            return fn(*a, **k)
-        finally:
-            prof[name] = prof.get(name, 0) + int((time.time() - t) * 1000)
-
-    camp = timed("campaign_state", campaign_state, bus)
-    camp["resources"] = timed("faction_resources", faction_resources, bus)
-    world = timed("world_state", world_state, bus, prof=prof)
-    sf = timed("settlement_forces", settlement_forces, bus)
+    t0 = time.time()
+    ra = bus.send_batch([("eval", _LUA_CAMPAIGN), ("eval", _LUA_FACTION_RESOURCES),
+                         ("eval", _LUA_RUINS), ("chars", ""), ("setts", ""), ("hostiles", ""),
+                         ("eval", _LUA_STATIONED), ("eval", _LUA_DIPLO_TARGETS)], timeout=40.0)
+    prof["wave_a_ms"] = int((time.time() - t0) * 1000)
+    camp = _parse_campaign(_bres(ra[0], "campaign_state"))
+    camp["resources"] = _parse_resources(_bres(ra[1], "faction_resources", allow_nil=True))
+    rs = _parse_ruins(_bres(ra[2], "ruins", allow_nil=True))
+    ruin_keys = {r["region"] for r in rs}
+    world = {"armies": ra[3].get("chars") or [],
+             "settlements": ra[4].get("setts") or [],
+             "hostiles": [h for h in (ra[5].get("hostiles") or [])
+                          if not (h.get("kind") == "settlement"
+                                  and str(h.get("region")) in ruin_keys)],
+             "ruins": rs}
+    sf = _parse_stationed(_bres(ra[6], "settlement_forces", allow_nil=True))
     stationed, citizenry = sf["stationed"], sf["citizenry"]
     lords = [str(c.get("cqi")) for c in world["armies"]
              if c.get("has_army") and str(c.get("cqi")) not in citizenry]
@@ -1084,30 +1205,97 @@ def snapshot(bus, active=None):
         heroes = [c for c in heroes if c in set(str(x) for x in (active.get("heroes") or []))]
         regions = [r for r in regions if r in set(active.get("regions") or [])]
         want_camp = bool(active.get("campaign", True))
+    dip = []
+    if want_camp:
+        t0 = time.time()
+        dip = _diplo_offers_build(bus, camp.get("turn"), diplo_epoch, _bres(ra[7], "diplo_targets", allow_nil=True))
+        prof["campaign_offers/diplomacy"] = int((time.time() - t0) * 1000)
+
+    armies_t, esetts_t, osetts_t, rsetts_t = _lord_targets(world)
+    reach_cqis = [a["cqi"] for a in armies_t]
+    reach_regions = ([s["region"] for s in esetts_t] + [s["region"] for s in osetts_t]
+                     + [s["region"] for s in rsetts_t])
+    wave_b = []
+    for cqi in lords:
+        wave_b += [("eval", _LUA_LORD % {"cqi": cqi}),
+                   ("eval", _LUA_LORD_OFFERS % {"cqi": cqi}),
+                   ("eval", _LUA_RECRUITABLE % {"cqi": cqi}),
+                   ("eval", _reach_lua(cqi, reach_cqis, reach_regions))]
+    for cqi in heroes:
+        wave_b += [("eval", _LUA_LORD % {"cqi": cqi}),
+                   ("eval", _LUA_HERO_OFFERS % {"cqi": cqi})]
+    for reg in regions:
+        wave_b += [("eval", _LUA_PROVINCE % {"reg": reg}),
+                   ("eval", _LUA_PROVINCE_OFFERS % reg)]
+    if want_camp:
+        wave_b.append(("eval", _LUA_CAMPAIGN_OFFERS % {"fac": camp["faction_cqi"]}))
+    t0 = time.time()
+    rb = []
+    # chunked so one tick never executes an unbounded command list (engine stall + the 45s
+    # watchdog-hash budget both bound the acceptable single-tick stall)
+    for j in range(0, len(wave_b), 14):
+        rb += bus.send_batch(wave_b[j:j + 14], timeout=40.0)
+    prof["wave_b_ms"] = int((time.time() - t0) * 1000)
+    i = 0
+    lord_data, hero_data, prov_data = {}, {}, {}
+    for cqi in lords:
+        lord_data[cqi] = (_parse_lord(_bres(rb[i], "lord_state:%s" % cqi), cqi),
+                          _bres(rb[i + 1], "lord_offers:%s" % cqi, allow_nil=True),
+                          _parse_recruitable(_bres(rb[i + 2], "recruitable:%s" % cqi, allow_nil=True)),
+                          _parse_reach(_bres(rb[i + 3], "reach:%s" % cqi, allow_nil=True)))
+        i += 4
+    for cqi in heroes:
+        hero_data[cqi] = (_parse_lord(_bres(rb[i], "hero_state:%s" % cqi), cqi),
+                          _bres(rb[i + 1], "hero_offers:%s" % cqi, allow_nil=True))
+        i += 2
+    for reg in regions:
+        prov_data[reg] = (_parse_province(_bres(rb[i], "province_state:%s" % reg), reg),
+                          _bres(rb[i + 1], "province_offers:%s" % reg, allow_nil=True))
+        i += 2
+    camp_offers_raw = _bres(rb[i], "campaign_offers", allow_nil=True) if want_camp else None
+
+    wave_c, move_cqis = [], []
+    for cqi in lords + heroes:
+        st = (lord_data.get(cqi) or hero_data.get(cqi))[0]
+        lua = _move_lua(cqi, st)
+        if lua is not None:
+            wave_c.append(("eval", lua))
+            move_cqis.append(cqi)
+    t0 = time.time()
+    rc = bus.send_batch(wave_c, timeout=40.0) if wave_c else []
+    prof["wave_c_ms"] = int((time.time() - t0) * 1000)
+    moves = {}
+    for j, cqi in enumerate(move_cqis):
+        st = (lord_data.get(cqi) or hero_data.get(cqi))[0]
+        moves[cqi] = _parse_moves(_bres(rc[j], "moves:%s" % cqi, allow_nil=True), bool(st.get("acted")))
+
     ents = []
     for cqi in lords:
-        t_lord = time.time()
-        st = timed("lord_state", lord_state, bus, cqi)
+        st, ev, rec, (rch_c, rch_s) = lord_data[cqi]
         ents.append({"context_kind": "lord", "context_id": str(cqi), "state": st,
-                     "offers": timed("lord_offers", lord_offers, bus, cqi, st, world, stationed,
-                                     prof=prof)})
-        prof["lord_max_ms"] = max(prof.get("lord_max_ms", 0),
-                                  int((time.time() - t_lord) * 1000))
+                     "offers": _lord_offers_assemble(cqi, st, world, stationed, ev, rec,
+                                                     rch_c, rch_s, moves.get(cqi))})
     for cqi in heroes:
-        st = timed("hero_state", lord_state, bus, cqi)     # same character read; force fields nil
+        st, ev = hero_data[cqi]
         ents.append({"context_kind": "hero", "context_id": str(cqi), "state": st,
-                     "offers": timed("hero_offers", hero_offers, bus, cqi, st, world)})
+                     "offers": _hero_offers_assemble(cqi, st, ev, moves.get(cqi))})
+    t0 = time.time()
+    pools = (_lord_pools(bus, camp["faction_cqi"], _lord_subtypes(bus, camp["faction"]))
+             if regions else {})
+    prof["lord_pools_ms"] = int((time.time() - t0) * 1000)
     for reg in regions:
-        st = timed("province_state", province_state, bus, reg)
+        st, combo = prov_data[reg]
         ents.append({"context_kind": "province", "context_id": reg, "state": st,
-                     "offers": timed("province_offers", province_offers, bus, reg, st, camp)})
+                     "offers": _province_offers_assemble(reg, st, camp, combo, pools)})
     if want_camp:
         ents.append({"context_kind": "campaign", "context_id": camp["faction"], "state": dict(camp),
-                     "offers": timed("campaign_offers", campaign_offers, bus, camp, prof=prof)})
+                     "offers": _campaign_offers_assemble(camp_offers_raw, dip)})
     prof["_entities"] = len(ents)
     prof["_lords"] = len(lords)
     prof["_heroes"] = len(heroes)
     prof["_regions"] = len(regions)
+    prof["_wave_b_cmds"] = len(wave_b)
+    prof["_wave_c_cmds"] = len(wave_c)
     return {"ts": time.time(), "campaign": camp, "world": world,
             "entities": ents, "profile": prof}
 

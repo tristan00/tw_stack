@@ -14,8 +14,8 @@ FORBIDDEN_KEYS = frozenset({"button_attack", "button_spectate"})
 MAX_ACTIONS_PER_TURN = 10
 MAX_ACTIONS_PER_ENTITY = 6
 
-EPSILON = 0.2                      # P(uniform random pick)
-BETA = 0.1                         # P(argmax novelty); the remainder is argmax exploit
+EPSILON = 0.25                     # P(uniform random pick)          (operator, 2026-08-02)
+BETA = 0.25                        # P(argmax novelty); the remainder is argmax exploit
 
 SUBSAMPLE_CAPS = {"diplomacy": 12}
 # per (context_kind, context_id, action_type), per turn

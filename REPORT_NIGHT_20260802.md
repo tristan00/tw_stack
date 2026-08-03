@@ -107,11 +107,32 @@ medians 56.8s of which ~51.5s is AI turns + inter-turn interrupts — the irredu
 | housekeep + unattributed | ~240ms | — | 5.1% |
 | store / trace / gates | ~0 | — | <1% |
 
-**Collect internals:** 8 of 13 calls are trivial reads pinned at the **~100ms floor** (87–96% of
-samples in 90–115ms) — the floor is structural: mod poll 0.1s (`twcontrol.lua:23`) + client read
-poll 0.05s. `lord_offers` adds ~580ms per lord (recruitable enumeration dominates). The
-**diplomacy enumeration runs exactly once per turn** on the turn's first decision — 78/78 turns,
-median 2,904ms, flat vs turn number — and sums to 25.2% of all collect time.
+**Collect internals — full sub-stage table** (527 snapshots; med/p90 ms; floor% = share of
+samples inside the 90–115ms bus-call floor; the floor is structural: mod poll 0.1s
+`twcontrol.lua:23` + client read poll 0.05s `bus.py:31`, hard min 50ms observed):
+
+| stage | med | p90 | at floor | notes |
+|---|---|---|---|---|
+| campaign_offers/diplomacy | 115 | 2,890 | 68% | **full enum once per turn, 78/78 on the turn's FIRST decision: med 2,904 / max 3,041ms; sum 277.8s = 25.2% of ALL collect; flat vs turn# and lord count** |
+| lord_offers (total) | 708 | 1,163 | 0% | **~580ms per lord, serial-additive** (608ms @1 lord → 1,160 @2); slowest single lord 809/p90 860ms |
+| lord_offers/recruitable | 404 | 603 | 4% | dominant lord sub-stage, 11.2% of collect |
+| world_state (4 calls) | 405 | 406 | — | fixed 4 × floor: ruins 101 (87%), hostiles 101 (94%), chars 101 (84%), setts 101 (95%) |
+| province_offers | 202 | 203 | 0% | 2 calls |
+| hero_offers | 202 | 405 | 0% | |
+| lord_offers/ev | 101 | 202 | 72% | stances+skills eval |
+| lord_offers/reach | 101 | 202 | 48% | |
+| lord_state / hero_state | 101 | 202 | 72–77% | |
+| campaign_offers/ev | 101 | 101 | 95% | tech+rites eval |
+| settlement_forces | 101 | 101 | 96% | |
+| faction_resources | 101 | 101 | 89% | |
+| province_state | 101 | 101 | 95% | |
+| campaign_state | 69 | 101 | 38% | the only sub-floor stage |
+| store write (sqlite) | 1 | — | — | innocent |
+
+Shape of the reduction: 13 serial calls/collect (med; p90 17), leaf-sum/collect = 0.962 (fully
+serial). 8+ stages are pure floor — batching them into one eval collapses ~800ms of floors to
+~100ms; the two *content*-heavy stages are the diplomacy enum (once per turn) and per-lord
+recruitable. `campaign_offers` as a phase = 330.5s total, 84.1% of which is the diplomacy enum.
 
 **Poll fix verified:** pickup lag median 53ms vs the ~372–396ms pre-fix proxy across three prior
 runs — ~0.3s saved per decision, ~140s over the run. Execute medians unmoved (as expected).

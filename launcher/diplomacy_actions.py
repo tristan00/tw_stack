@@ -134,9 +134,19 @@ def _confirm(bus, ctx, pick, before):
     return bool(changed), {"changed": changed, "before": b, "after": after}
 
 
+def _doomed_unsent(bus, ctx, pick, before, after):
+    """A deal the walk never SENT can never change treaty state -- one confirm probe, then stop.
+    Measured before this hook: 20.0s burned to exhaustion on 229/229 refused walks."""
+    panel = (pick.get("params") or {}).get("panel") or {}
+    if not panel.get("sent"):
+        return "deal_never_sent(failed_at=%s)" % panel.get("failed_at")
+    return None
+
+
 register("diplomacy", {
     "layer": "click", "signal": "treaty_changed",
     "snapshot": _snapshot, "gates": [_gate], "execute": _execute, "confirm": _confirm,
+    "doomed": _doomed_unsent,
     "timeout_s": 20.0, "poll_s": 2.0,
     "retryable": False,
 })

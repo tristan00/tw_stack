@@ -105,11 +105,12 @@ def _await(run_dir, req_id, timeout, poll=0.05):
     raise RuntimeError("recorder never answered request %s within %ss%s" % (req_id, timeout, hint))
 
 
-def request_snapshot(run_dir, active=None, timeout=180.0):
+def request_snapshot(run_dir, active=None, timeout=180.0, diplo_epoch=None):
     """(decision_id, records) -- the recorder reads the game now and persists a decision point."""
     rid = _new_id("snapshot")
     t_request = time.time()
-    _append(run_dir, REQUESTS, {"kind": "snapshot", "req_id": rid, "active": active})
+    _append(run_dir, REQUESTS, {"kind": "snapshot", "req_id": rid, "active": active,
+                                "diplo_epoch": diplo_epoch})
     reply = _await(run_dir, rid, timeout)
     did = reply.get("decision_id")
     rec = read_decision(run_dir, did)
