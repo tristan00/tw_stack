@@ -13,8 +13,8 @@ RECORDER_VERSION = "v7"
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "campaigns"))
 try:
-    from splitter import CampaignTracker           # noqa: E402
-except Exception as e:                             # noqa: BLE001
+    from splitter import CampaignTracker
+except Exception as e:
     CampaignTracker = None
     sys.stderr.write("manager: CampaignTracker import failed (campaign-swap disabled) -> %s\n"
                      % repr(e)[:80])
@@ -214,7 +214,6 @@ class Recording:
             self._events({"t": round(time.time() - self.t0, 3), "kind": "campaign_swap_out",
                           "to": new_dir, "campaign_index": self.campaign_index})
 
-            # old writers stay open so an emit racing the swap still lands in the old dir
             new_writers = {name: _writer(new_dir, name) for name in self._writers}
             self._all_writers.extend(new_writers.values())
 
@@ -249,7 +248,7 @@ class Recording:
     def stop(self, join_timeout=3.0):
         """Flip the shared run flag, write the terminal 'stop' row, join the streams, close writers."""
         self._stop.set()
-        time.sleep(0.8)                          # let in-flight polls drain
+        time.sleep(0.8)
         self._events({"t": round(time.time() - self.t0, 3), "kind": "stop"})
         for th in self._threads:
             th.join(timeout=join_timeout)

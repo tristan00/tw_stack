@@ -8,10 +8,8 @@ import sys
 
 _T = 15.0
 
-# Lua->python transport separators: safe only because every key is [%w_]+.
 _FS, _RS, _SS = "\x1f", "\x1e", "\x1d"
 
-# pcall safe-getter prelude: g(ctx, prop) -> value or nil, never throws, never zero-values.
 _G = ("local function g(c,p) local ok,v=pcall(function() return c:Call(p) end);"
       "if ok and v~=nil then return v end return nil end "
       "local function ts(v) return tostring(v) end ")

@@ -16,7 +16,6 @@ MOVIE = 4
 sys.path.insert(0, str(HERE)); import config
 DEFAULT_GAME = config.GAME_DIR
 
-# (name, source, environment) -- env picks the script\<env>\mod\ path the game auto-loads from.
 SCRIPTS = [
     ("twstate", HERE / "mod" / "twstate.lua", "campaign"),
     ("twcontrol", HERE / "mod" / "twcontrol.lua", "campaign"),

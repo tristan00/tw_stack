@@ -7,11 +7,11 @@ import time
 
 sys.path.insert(0, r"D:\tw_stack\bus")
 sys.path.insert(0, r"D:\tw_stack\launcher")
-import nav  # noqa: E402
+import nav
 
 _PS = r"D:\tw_stack\launcher\ps\input.ps1"
-_SETTLE = 1.8      # seconds, camera settle before a click
-_ACT = 1.4         # seconds, UI settle after an order
+_SETTLE = 1.8
+_ACT = 1.4
 
 SCREEN_W, SCREEN_H = 2560, 1440
 CX, CY = SCREEN_W // 2, SCREEN_H // 2
@@ -27,7 +27,8 @@ def mouse(action: str, x: int = CX, y: int = CY, d=None) -> str:
     for v in (x, y, d):
         if v is not None:
             cmd.append(str(v))
-    return (subprocess.run(cmd, capture_output=True, text=True, timeout=30).stdout or "").strip()
+    return (subprocess.run(cmd, capture_output=True, text=True, timeout=30,
+                           creationflags=subprocess.CREATE_NO_WINDOW).stdout or "").strip()
 
 
 def _ev(bus, expr):
@@ -84,7 +85,7 @@ def select_char(bus, cqi, tries=2) -> bool:
         if not focus_char_tight(bus, cqi):
             return False
         time.sleep(_SETTLE)
-        mouse("move", CX, CY)          # foreground the game first
+        mouse("move", CX, CY)
         time.sleep(0.2)
         mouse("click", CX, CY)
         time.sleep(1.0)

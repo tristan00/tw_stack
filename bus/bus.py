@@ -11,19 +11,18 @@ import time
 
 try:
     import msvcrt
-except ImportError:  # pragma: no cover
+except ImportError:
     msvcrt = None
 
 from errors import TWError
 
 try:
     import bus_stats as _bus_stats
-except Exception as _stats_exc:  # pragma: no cover
+except Exception as _stats_exc:
     _bus_stats = None
     sys.stderr.write("bus: bus_stats instrumentation unavailable (running uninstrumented) -> %s\n"
                      % repr(_stats_exc)[:80])
 
-# These absolute paths must match the ones hard-coded in mod/twcontrol.lua.
 CMD_PATH = "D:/totalwar_runner/data/commands.txt"
 OUT_PATH = "D:/totalwar_runner/data/twcontrol.jsonl"
 POLL_SECONDS = 1.0
@@ -31,7 +30,6 @@ POLL_SECONDS = 1.0
 READ_POLL_SECONDS = 0.05
 DEFAULT_TIMEOUT = 30
 
-# Mirrors the mod's Lua line pattern `^%s*(%d+)%s+(%S+)%s*(.*)$` -- the two must stay in sync.
 _CMD_RE = re.compile(r"^\s*(\d+)\s+(\S+)\s*(.*)$")
 
 
@@ -42,6 +40,7 @@ def _game_alive() -> bool:
         out = subprocess.run(
             ["tasklist", "/FI", "IMAGENAME eq Warhammer3.exe", "/NH"],
             capture_output=True, text=True, timeout=4,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         return "warhammer3.exe" in (out.stdout or "").lower()
     except Exception as e:
@@ -217,7 +216,6 @@ class Bus:
         try:
             reply = self._send_impl(channel, payload, timeout)
         except TWError as exc:
-            # The "bus timeout" prefix must stay in sync with the timeout raise in _send_impl.
             outcome = "timeout" if str(exc).startswith("bus timeout") else "error"
             _bus_stats.record(channel, _key, outcome, (time.perf_counter() - _t0) * 1000.0)
             _bus_stats.note_outcome(channel, _key, outcome)
@@ -276,10 +274,6 @@ class Bus:
                 lines.append("%d %s %s\n" % (self._seq, channel, payload))
             try:
                 with open(self.cmd_path, "a", encoding="utf-8") as f:
-                    # PER-LINE writes, deliberately: the mod's tail cursor advances to
-                    # EOF-at-read-time, so a single large buffered write can be read TORN
-                    # mid-line -- the exact mechanism class of the 2026-08-02 seq corruption.
-                    # Line-granular syscalls restore the serial path's write atomicity.
                     for line in lines:
                         f.write(line)
                         f.flush()
@@ -329,9 +323,6 @@ class Bus:
         with self._seq_lock, self._proc_lock:
             t = self._tail_seq()
             if t + 1000 < self._seq:
-                # the command file was rotated out from under a long-lived client: follow it
-                # down, or every client drags the file back to 5-digit seqs within seconds.
-                # Uniqueness holds because the tail is re-read under the cross-process lock.
                 sys.stderr.write("bus: seq reseeded %d -> %d (command file rotated)\n"
                                  % (self._seq, t))
                 self._seq = t

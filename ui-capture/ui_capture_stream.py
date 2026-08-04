@@ -11,8 +11,8 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "bus"))
 sys.path.insert(0, _HERE)
 
-import ui_component_recorder as uic     # noqa: E402
-from bus import Bus                      # noqa: E402
+import ui_component_recorder as uic
+from bus import Bus
 
 
 def run(ctx, bus=None):

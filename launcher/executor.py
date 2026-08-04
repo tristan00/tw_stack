@@ -8,13 +8,13 @@ import time
 sys.path.insert(0, r"D:\tw_stack\bus")
 sys.path.insert(0, r"D:\tw_stack\launcher")
 
-import cco_actions as CCO                                   # noqa: E402
-import cm_actions                                           # noqa: E402  registers cm executors
-import click_actions                                        # noqa: E402  registers click executors
-import diplomacy_actions                                    # noqa: E402  registers `diplomacy`
-import interrupts                                           # noqa: E402
-import nav                                                  # noqa: E402
-import trace                                                # noqa: E402
+import cco_actions as CCO
+import cm_actions
+import click_actions
+import diplomacy_actions
+import interrupts
+import nav
+import trace
 
 PS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ps")
 
@@ -35,7 +35,6 @@ class Executor:
         run = {"action_type": pick.get("action_type"), "key": pick.get("key"),
                "params": pick.get("params") or {}, "policy": pick.get("policy")}
         if run["action_type"] == "end_turn":
-            # offset captured before the click so the turn_start row cannot race past the wait
             self._end_turn_offset = self.bus.out_offset()
         trace.launcher("execute_start", action_type=run["action_type"], key=run["key"],
                        context_kind=pick.get("context_kind"), context_id=str(pick.get("context_id")),
@@ -75,8 +74,6 @@ class Executor:
         off = getattr(self, "_campaign_offset", None)
         if off is None:
             return False
-        # bounded: the reply file grows hundreds of MB in a session, and this runs on every
-        # stuck check -- read at most the last MB of the campaign's own region
         try:
             size = os.path.getsize(self.bus.out_path)
             start = max(off, size - 1_000_000)
@@ -234,7 +231,7 @@ class Executor:
         p = str(raw).split("|")
         if len(p) < 3:
             return None
-        f = lambda v: True if v == "true" else (False if v == "false" else None)   # noqa: E731
+        f = lambda v: True if v == "true" else (False if v == "false" else None)
         return {"cutscene": f(p[0]), "cinematic_ui": f(p[1]), "ui_hiding": f(p[2])}
 
     def force_ui_restore(self):
@@ -269,7 +266,8 @@ class Executor:
             subprocess.run(["powershell", "-NoProfile", "-Command",
                             "Get-Process -Name Warhammer3 -ErrorAction SilentlyContinue "
                             "| Stop-Process -Force"],
-                           capture_output=True, text=True, timeout=60)
+                           capture_output=True, text=True, timeout=60,
+                           creationflags=subprocess.CREATE_NO_WINDOW)
         except Exception as e:
             sys.stderr.write("executor: kill_game -> %s\n" % repr(e)[:120])
 
@@ -313,7 +311,8 @@ class Executor:
             os.makedirs(self.shots_dir, exist_ok=True)
             subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
                             "-File", os.path.join(PS_DIR, "capture.ps1"), path],
-                           capture_output=True, text=True, timeout=45)
+                           capture_output=True, text=True, timeout=45,
+                           creationflags=subprocess.CREATE_NO_WINDOW)
         except Exception as e:
             sys.stderr.write("executor: screenshot failed -> %s\n" % repr(e)[:120])
             return None

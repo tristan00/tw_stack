@@ -10,9 +10,9 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 sys.path.insert(0, r"D:\tw_stack\bus")
 
-import collect                                   # noqa: E402
-import journal                                   # noqa: E402
-from store import DecisionStore                  # noqa: E402
+import collect
+import journal
+from store import DecisionStore
 
 POLL = 0.1
 

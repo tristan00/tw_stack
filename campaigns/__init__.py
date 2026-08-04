@@ -14,7 +14,7 @@ Public API (see splitter.py):
 """
 from __future__ import annotations
 
-from .splitter import (  # noqa: F401
+from .splitter import (
     CampaignTracker,
     detect_campaigns,
     segment_blocks,

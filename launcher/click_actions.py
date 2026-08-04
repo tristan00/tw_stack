@@ -7,7 +7,7 @@ import time
 sys.path.insert(0, r"D:\tw_stack\bus")
 sys.path.insert(0, r"D:\tw_stack\launcher")
 
-from cco_actions import _G, _ev, register       # noqa: E402
+from cco_actions import _G, _ev, register
 
 EDICT_STACK = "hud_campaign|BL_parent|stack_incentives"
 RECRUIT_BTN = ("hud_campaign|hud_center_docker|hud_center|small_bar|button_subpanel_parent|"
@@ -372,8 +372,6 @@ def _recruit_gate(bus, ctx, pick, before):
         if not pools:
             return False, "queue_%s_not_offered_here" % queue
         if not any((v or {}).get("free") for v in pools.values()):
-            # POLICY, not a game rule: the game queues past a full pool quite happily. Refusing
-            # keeps the advisor from sinking a turn's capital into one queue.
             return False, "%s_recruitment_slots_full" % queue
     return True, None
 
@@ -400,8 +398,6 @@ def _recruit_execute_inner(bus, ctx, pick, before):
     unit, want_q = split_key(pick)
     same_key = [c for c in cards if c["key"] == unit]
     if want_q:
-        # a pool name may be indexed (local1, local2); an unindexed request must resolve to
-        # exactly one of them or it is ambiguous, never a guess
         pools = [c for c in same_key if str(c.get("queue") or "").lower() == want_q]
         if not pools:
             pools = [c for c in same_key
@@ -522,8 +518,6 @@ def lord_candidates(bus):
         return []
     rows = [n for n in (t.get("nodes") or [])
             if str(n.get("id") or "").startswith("general_candidate") and n.get("visible")
-            # state, not position: an id-click selects a row scrolled out of the viewport and
-            # the list scrolls itself to it (measured), while an inactive row ignores the click
             and str(n.get("state")) in ("active", "selected")]
     rows.sort(key=lambda n: (n.get("y") or 0, n.get("x") or 0))
     return [str(n.get("id")) for n in rows]
@@ -547,7 +541,8 @@ def _lord_execute(bus, ctx, pick, before):
 def _lord_execute_inner(bus, ctx, pick, before):
     ok, why = prepare(bus, "settlement", ctx["entity_id"], expect_root="settlement_panel")
     if not ok:
-        sys.stderr.write("click_actions: recruit_lord refused, not a known state -> %s" % why + chr(10))
+        sys.stderr.write("click_actions: %s refused, not a known state -> %s"
+                         % (pick.get("action_type") or "recruit", why) + chr(10))
         return False
     r = _roots(bus)
     if not (r and "character_panel" in r):
@@ -558,11 +553,17 @@ def _lord_execute_inner(bus, ctx, pick, before):
 
     lord_list = [k for k in _find(bus, LORD_TYPE_LIST)[1] if not k.startswith("button_template")]
     agent_list = [k for k in _find(bus, AGENT_TYPE_LIST)[1] if not k.startswith("button_template")]
-    btn, lore_hint = split_lord_key(bus, want, lord_list)
-    type_path, commit_id = LORD_TYPE_LIST, "button_raise"
-    if btn is None:
-        btn, lore_hint = split_lord_key(bus, want, agent_list)
+    params = pick.get("params") or {}
+    agent_type = params.get("agent_type") if pick.get("action_type") == "recruit_hero" else None
+    if agent_type and agent_type in agent_list:
+        btn, lore_hint = agent_type, None
         type_path, commit_id = AGENT_TYPE_LIST, "button_confirm"
+    else:
+        btn, lore_hint = split_lord_key(bus, want, lord_list)
+        type_path, commit_id = LORD_TYPE_LIST, "button_raise"
+        if btn is None:
+            btn, lore_hint = split_lord_key(bus, want, agent_list)
+            type_path, commit_id = AGENT_TYPE_LIST, "button_confirm"
     if btn is None:
         sys.stderr.write("click_actions: %r is neither a lord type %s nor a hero type %s"
                          % (want, lord_list, agent_list) + chr(10))
@@ -614,6 +615,13 @@ def _lord_confirm(bus, ctx, pick, before):
 
 
 register("recruit_lord", {
+    "layer": "click", "signal": "new_character_cqi_and_treasury_drop",
+    "snapshot": _lord_snapshot,
+    "execute": _lord_execute, "confirm": _lord_confirm,
+    "timeout_s": 6.0, "poll_s": 2.0, "spends_gold": True,
+})
+
+register("recruit_hero", {
     "layer": "click", "signal": "new_character_cqi_and_treasury_drop",
     "snapshot": _lord_snapshot,
     "execute": _lord_execute, "confirm": _lord_confirm,

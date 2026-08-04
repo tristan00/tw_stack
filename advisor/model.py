@@ -11,107 +11,39 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.join(r"D:\tw_stack", "decisions"))
 
-import features as F                                       # noqa: E402
-from store import DecisionStore, IncompatibleStore        # noqa: E402
+import features as F
+from base_model import (RUNS_ROOT, TARGET_PARTS, SHORT_HORIZON, SHORT_WEIGHT,
+                        decision_deltas, future_best,
+                        isolation_forest, regressor, _encode, _mm, _mm0, _pct, _ranks, _sd)
+from store import DecisionStore, IncompatibleStore
 
 MODEL_DIR = r"D:\twdata\models\global"
 LOCAL_MODEL_DIR = r"D:\twdata\models\local"
-# local reward weight: one SD of local impact is worth W_LOCAL SDs of global
 W_LOCAL = 0.25
 LOCAL_KINDS = ("lord", "hero", "province")
-RUNS_ROOT = "D:/twdata/runs/human"
-VALUE_PARTS = ("income", "settlements", "power_rank", "allies", "vassals", "lord_level")
-TARGET_PARTS = ("settlements", "power_rank", "lord_level", "vassals")
-LOWER_IS_BETTER = ("power_rank",)
 MIN_ROWS = 40
 
 
-def _mm0(v, lo, hi):
-    """min-max to [0,1]; a degenerate range gives 0.0."""
-    return max(0.0, min(1.0, (v - lo) / (hi - lo))) if hi > lo else 0.0
-
-
-def _growth(turns, turn, part):
-    """Improvement of `part` after `turn`: best future value minus now, sign-flipped for
-    LOWER_IS_BETTER parts so every delta is higher-is-better. None if unlabelable."""
-    now = turns.get(turn, {}).get(part)
-    if now is None:
-        return None
-    vals = [turns[t].get(part) for t in turns if t > turn and turns[t].get(part) is not None]
-    if not vals:
-        return None
-    return (now - min(vals)) if part in LOWER_IS_BETTER else (max(vals) - now)
-
-
-def target_ranges(series):
-    """Per part: the growth delta of every labelled (campaign, turn), sorted."""
-    deltas = {p: [] for p in VALUE_PARTS}
-    for turns in series.values():
-        for t in sorted(turns):
-            for p in VALUE_PARTS:
-                d = _growth(turns, t, p)
-                if d is not None:
-                    deltas[p].append(d)
-    return {"dist": {p: sorted(deltas[p]) for p in VALUE_PARTS}}
-
-
-def _pct(v, sample, lower_is_better=False):
-    """Mid-rank percentile of `v` within `sample`, in [0,1], always "higher is better"."""
-    n = len(sample)
-    if n == 0:
-        return 0.5
-    below = sum(1 for x in sample if x < v)
-    equal = sum(1 for x in sample if x == v)
-    pct = (below + 0.5 * equal) / n
-    return (1.0 - pct) if lower_is_better else pct
-
-
-def target(series, campaign, turn, ranges):
-    """Mean percentile of each TARGET_PART's GROWTH after `turn`; None if unlabelled."""
-    turns = series.get(campaign) or {}
-    turn = int(turn or 0)
-    if turn not in turns:
-        return None
-    if not any(t > turn for t in turns):
-        return None
-    parts = []
-    for p in TARGET_PARTS:
-        d = _growth(turns, turn, p)
-        if d is None:
-            continue
-        parts.append(_pct(d, ranges["dist"].get(p) or []))
-    return (sum(parts) / len(parts)) if parts else None
-
-
-def local_ranges(eseries):
-    """Per context_kind: the growth delta of every labelled (entity, turn), sorted, kinds not pooled."""
-    deltas = {}
-    for ents in eseries.values():
-        for (kind, _cid), turns in ents.items():
-            for t in sorted(turns):
-                now = turns.get(t)
-                if now is None:
-                    continue
-                vals = [v for ft, v in turns.items() if ft > t and v is not None]
-                if vals:
-                    deltas.setdefault(kind, []).append(max(vals) - now)
-    return {k: sorted(v) for k, v in deltas.items()}
-
-
-def local_target(eseries, campaign, kind, cid, turn, lranges):
-    """Percentile of this entity's GROWTH (future max minus now), within its own kind."""
-    ents = eseries.get(campaign) or {}
-    turns = ents.get((kind, str(cid)))
+def _local_delta(eseries, rec, taken):
+    """The taken entity's growth from its last known pre-decision value: lord/hero read the
+    decision snapshot's own rank; province has no snapshot value, so the last recorded row
+    BEFORE this turn is the last known point (first-turn province rows stay unlabelled)."""
+    kind, cid = taken[0], str(taken[1])
+    turns = (eseries.get(rec.get("campaign_id")) or {}).get((kind, cid))
     if not turns:
         return None
-    turn = int(turn or 0)
-    now = turns.get(turn)
-    if now is None:
+    turn = int(rec.get("turn") or 0)
+    if kind in ("lord", "hero"):
+        st = next((e.get("state") or {} for e in rec.get("entities") or []
+                   if e.get("context_kind") == kind and str(e.get("context_id")) == cid), {})
+        base = F._f(st.get("rank"))
+    else:
+        prior = [t for t in turns if t < turn and turns[t] is not None]
+        base = turns[max(prior)] if prior else None
+    if base is None:
         return None
-    vals = [turns[t] for t in turns if t > turn and turns[t] is not None]
-    if not vals:
-        return None
-    return _pct(max(vals) - now, lranges.get(kind) or [])
+    vals = [turns[t] for t in turns if t >= turn and turns[t] is not None]
+    return (max(vals) - base) if vals else None
 
 
 def gather(runs_root=RUNS_ROOT):
@@ -136,29 +68,51 @@ def gather(runs_root=RUNS_ROOT):
                     eseries.setdefault(camp, {}).setdefault(k, {}).update(tv)
         finally:
             s.close()
-    ranges = target_ranges(series)
-    lranges = local_ranges(eseries)
     full, state, ys, groups, confirmed = [], [], [], [], []
     ylocal = []
     skipped = 0
     act_idx = {}
     mov_idx = {}
+    hist = {}
+    counts = {}
+    deltas, ldeltas = [], []
+    dist = {p: [] for p in TARGET_PARTS}
+    ldist = {}
     for rec, taken, was_counted in decisions:
-        # decision index within the turn, 1-based, from decision_id order -- the live loop
-        # injects the same value at inference (campaign.act_index). Counted over labelled rows;
-        # the live counter counts every pick, so they diverge only across awaiting_execution gaps.
         ik = (rec.get("campaign_id"), rec.get("turn"))
         act_idx[ik] = act_idx.get(ik, 0) + 1
         (rec.setdefault("campaign", {}))["act_index"] = act_idx[ik]
-        # move index within the turn, 1-based: the decision that takes the turn's first
-        # move carries 1, the second 2. Counts taken moves, exactly like the live stamp.
         rec["campaign"]["move_index"] = mov_idx.get(ik, 0) + 1
         if taken and taken[2] == "move":
             mov_idx[ik] = mov_idx.get(ik, 0) + 1
-        y = target(series, rec.get("campaign_id"), rec.get("turn"), ranges)
-        if y is None:
+        h = hist.setdefault(rec.get("campaign_id"), [])
+        cnt = counts.setdefault(rec.get("campaign_id"), {})
+        F.stamp_prev_actions(rec["campaign"], h)
+        F.stamp_action_counts(rec["campaign"], cnt)
+        if taken and taken[2] != "noop":
+            h.append(taken[2])
+            del h[:-F.PREV_ACTIONS]
+            F.bump_action_counts(cnt, taken[2])
+        turns = series.get(rec.get("campaign_id")) or {}
+        d = decision_deltas(rec.get("campaign"), turns, rec.get("turn"))
+        deltas.append(d)
+        for p, v in d.items():
+            if v is not None:
+                dist[p].append(v)
+        ld = _local_delta(eseries, rec, taken) if (taken and taken[0] in LOCAL_KINDS) else None
+        ldeltas.append(ld)
+        if ld is not None:
+            ldist.setdefault(taken[0], []).append(ld)
+    for p in dist:
+        dist[p].sort()
+    for k in ldist:
+        ldist[k].sort()
+    for (rec, taken, was_counted), d, ld in zip(decisions, deltas, ldeltas):
+        parts = [_pct(d[p], dist[p]) for p in TARGET_PARTS if d[p] is not None]
+        if not parts:
             skipped += 1
             continue
+        y = sum(parts) / len(parts)
         for ent, offer, row in F.decision_rows(rec):
             if (ent["context_kind"], str(ent["context_id"]),
                     offer["action_type"], str(offer["key"])) != taken:
@@ -166,14 +120,9 @@ def gather(runs_root=RUNS_ROOT):
             full.append(row)
             state.append(F.state_row(rec, ent))
             ys.append(y)
-            ylocal.append(local_target(eseries, rec.get("campaign_id"),
-                                       ent["context_kind"], ent["context_id"],
-                                       rec.get("turn"), lranges))
+            ylocal.append(_pct(ld, ldist.get(taken[0]) or []) if ld is not None else None)
             groups.append(rec.get("campaign_id"))
             confirmed.append(was_counted)
-            # one training row per labelled decision: historical data contains duplicate
-            # (context,action,key) offers (per-candidate recruit_lord rows pre-dedupe) and
-            # without the break each duplicate match multiplied the label
             break
     return {"full": full, "state": state, "y": ys, "y_local": ylocal,
             "n_local": sum(1 for v in ylocal if v is not None), "groups": groups,
@@ -184,8 +133,7 @@ def gather(runs_root=RUNS_ROOT):
 
 
 def train(runs_root=RUNS_ROOT):
-    from catboost import CatBoostRegressor, Pool
-    from sklearn.ensemble import IsolationForest
+    from catboost import Pool
     data = gather(runs_root)
     rows, srows, y = data["full"], data["state"], data["y"]
     if len(rows) < MIN_ROWS:
@@ -194,17 +142,15 @@ def train(runs_root=RUNS_ROOT):
     num, cat = F.split_columns(rows)
     X = F.matrix(rows, num, cat)
     cat_idx = list(range(len(num), len(num) + len(cat)))
-    e1 = CatBoostRegressor(iterations=300, depth=4, learning_rate=0.05, loss_function="RMSE",
-                           verbose=0, train_dir=r"D:\twdata\tmp\catboost")
+    e1 = regressor()
     e1.fit(Pool(X, y, cat_features=cat_idx))
     snum, scat = F.split_columns(srows)
     Xs = F.matrix(srows, snum, scat)
     scat_idx = list(range(len(snum), len(snum) + len(scat)))
-    e2 = CatBoostRegressor(iterations=300, depth=4, learning_rate=0.05, loss_function="RMSE",
-                          verbose=0, train_dir=r"D:\twdata\tmp\catboost")
+    e2 = regressor()
     e2.fit(Pool(Xs, y, cat_features=scat_idx))
     Xa, cat_maps = _encode(rows, num, cat)
-    iso = IsolationForest(n_estimators=200, random_state=0, n_jobs=-1)
+    iso = isolation_forest()
     iso.fit(Xa)
     nov = [-s for s in iso.score_samples(Xa)]
     preds = list(e1.predict(Pool(X, cat_features=cat_idx)))
@@ -217,8 +163,11 @@ def train(runs_root=RUNS_ROOT):
             "w_local": W_LOCAL,
             "nov_lo": min(nov), "nov_hi": max(nov), "rows": len(rows),
             "campaigns": sorted(set(data["groups"])),
-            "target": "growth(best_future-now: %s)" % ",".join(TARGET_PARTS)}
-    # stage then os.replace: the four artefacts must land together or not at all
+            "short_horizon": SHORT_HORIZON, "short_weight": SHORT_WEIGHT,
+            "target": ("blend(%.2f*near/turns_to_max@<=%d + %.2f*far/turns_to_max) "
+                       "- decision_snapshot: %s"
+                       % (SHORT_WEIGHT, SHORT_HORIZON, 1.0 - SHORT_WEIGHT,
+                          ",".join(TARGET_PARTS)))}
     stage = MODEL_DIR + ".staging"
     shutil.rmtree(stage, ignore_errors=True)
     os.makedirs(stage)
@@ -235,38 +184,9 @@ def train(runs_root=RUNS_ROOT):
             "local": local, **_counts(data)}
 
 
-def _sd(xs):
-    n = len(xs)
-    if n < 2:
-        return 0.0
-    m = sum(xs) / n
-    return (sum((x - m) ** 2 for x in xs) / (n - 1)) ** 0.5
-
-
-def _ranks(vals):
-    """Fractional rank of each value in [0,1], ties sharing the average rank."""
-    n = len(vals)
-    if n == 0:
-        return []
-    if n == 1:
-        return [0.5]
-    order = sorted(range(n), key=lambda i: vals[i])
-    out = [0.0] * n
-    i = 0
-    while i < n:
-        j = i
-        while j + 1 < n and vals[order[j + 1]] == vals[order[i]]:
-            j += 1
-        share = (i + j) / 2.0 / (n - 1)
-        for k in range(i, j + 1):
-            out[order[k]] = share
-        i = j + 1
-    return out
-
-
 def _train_local(data, num, cat, snum, scat, sd_global):
     """Second E1/E2 pair fitted on the LOCAL label, over the rows that have one."""
-    from catboost import CatBoostRegressor, Pool
+    from catboost import Pool
     idx = [i for i, v in enumerate(data["y_local"]) if v is not None]
     if len(idx) < MIN_ROWS:
         return {"trained": False, "rows": len(idx), "need": MIN_ROWS}
@@ -277,11 +197,9 @@ def _train_local(data, num, cat, snum, scat, sd_global):
     cat_idx = list(range(len(num), len(num) + len(cat)))
     Xs = F.matrix(srows, snum, scat)
     scat_idx = list(range(len(snum), len(snum) + len(scat)))
-    e1 = CatBoostRegressor(iterations=300, depth=4, learning_rate=0.05, loss_function="RMSE",
-                           verbose=0, train_dir=r"D:\twdata\tmp\catboost")
+    e1 = regressor()
     e1.fit(Pool(X, yl, cat_features=cat_idx))
-    e2 = CatBoostRegressor(iterations=300, depth=4, learning_rate=0.05, loss_function="RMSE",
-                           verbose=0, train_dir=r"D:\twdata\tmp\catboost")
+    e2 = regressor()
     e2.fit(Pool(Xs, yl, cat_features=scat_idx))
     li = [a - b for a, b in zip(e1.predict(Pool(X, cat_features=cat_idx)),
                                 e2.predict(Pool(Xs, cat_features=scat_idx)))]
@@ -305,21 +223,6 @@ def _train_local(data, num, cat, snum, scat, sd_global):
 
 def _counts(data):
     return {k: data[k] for k in ("n_decisions", "skipped_unlabelled", "runs", "campaigns")}
-
-
-def _encode(rows, num, cat, cat_maps=None):
-    """Numeric matrix for IsolationForest; categoricals ordinal-encoded, unseen -> a fresh index."""
-    if cat_maps is None:
-        cat_maps = {c: {v: i for i, v in enumerate(sorted({str(r.get(c, "?")) for r in rows}))}
-                    for c in cat}
-    X = []
-    for r in rows:
-        v = [(F._f(r.get(c)) or 0.0) for c in num]
-        for c in cat:
-            mp = cat_maps[c]
-            v.append(mp.get(str(r.get(c, "?")), len(mp)))
-        X.append(v)
-    return X, cat_maps
 
 
 class Ranker:
@@ -361,7 +264,6 @@ class Ranker:
         """Every offer of a stored decision record, scored, sorted best-first."""
         triples = F.decision_rows(record)
         if not self.ready or not triples:
-            # imports no catboost/sklearn: this path must work without them installed
             return [{"context_kind": e["context_kind"], "context_id": e["context_id"],
                      "action_type": o["action_type"], "key": o["key"],
                      "available": o["available"], "gate": o["gate"], "params": o.get("params") or {},
@@ -430,15 +332,9 @@ class Ranker:
                         "pct_local": (round(pctl, 4) if pctl is not None else None),
                         "w_local": w,
                         "exploit": round(exploit, 4), "explore": round(explore, 4),
-                        # score IS exploit: the 0.9/0.1 "combined" blend was a display artifact
-                        # (a1e8d8f) that never selected anything -- rank now means value rank
                         "score": round(exploit, 4)})
         out.sort(key=lambda r: -(r["score"] if r["score"] is not None else -1))
         return out
-
-
-def _mm(v, lo, hi):
-    return max(0.0, min(1.0, (v - lo) / (hi - lo))) if hi > lo else 0.5
 
 
 if __name__ == "__main__":

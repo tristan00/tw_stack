@@ -15,8 +15,8 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "bus"))
 sys.path.insert(0, _HERE)
 
-import cco_queries as CQ                 # noqa: E402
-from bus import Bus                      # noqa: E402
+import cco_queries as CQ
+from bus import Bus
 
 POLL = 2.0
 BUS_BACKOFF = 10.0
@@ -129,7 +129,6 @@ def run(ctx, bus=None):
                 req_off = 0
             turn, faction = _current_turn(out_dir)
             if turn is None:
-                # mid-turn attach: no TWSTATE dump in the tail yet, so ask the game directly.
                 turn = int(CQ._ev(bus, "return cm:model():turn_number()"))
             if turn is not None and turn != swept_turn:
                 t0 = time.time()
@@ -137,7 +136,6 @@ def run(ctx, bus=None):
                 ctx.emit({"kind": "actions_sweep", "turn": turn, "faction": faction,
                           "ok": n_ok, "err": n_err, "secs": round(time.time() - t0, 2)})
                 swept_turn = turn
-            # on-demand refresh requests (appended by the server's refresh endpoint)
             rp = os.path.join(out_dir, REQ_FILE)
             if os.path.exists(rp):
                 with open(rp, encoding="utf-8", errors="replace") as f:

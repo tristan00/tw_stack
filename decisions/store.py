@@ -74,7 +74,6 @@ CREATE INDEX IF NOT EXISTS ix_taken_dp ON action_taken(decision_id);
 
 
 class DecisionStore:
-    # columns added after a DB may already exist; CREATE TABLE IF NOT EXISTS does not add them
     _MIGRATIONS = (("decision_points", "campaign", "TEXT"),
                    ("decision_points", "world", "TEXT"),
                    ("decision_points", "timings", "TEXT"),
@@ -311,6 +310,36 @@ class DecisionStore:
              json.dumps(row.get("panel") or {}, default=str) if row.get("panel") else None))
         self.con.commit()
 
+    def campaign_snapshots(self):
+        """Every decision point's campaign AND world dicts in decision order:
+        [(campaign_id, ts, campaign, world)]. The interrupt trainer takes the last one before a
+        screen's ts as both its baseline and its feature state -- the screen's own stored
+        campaign/world were read at drain time, after the screen resolved."""
+        out = []
+        for camp, ts, cjson, wjson in self.con.execute(
+                "SELECT campaign_id, ts, campaign, world FROM decision_points"
+                " ORDER BY decision_id"):
+            try:
+                c = json.loads(cjson) if cjson else {}
+            except Exception:
+                c = {}
+            try:
+                w = json.loads(wjson) if wjson else {}
+            except Exception:
+                w = {}
+            out.append((camp, ts or 0.0, c, w))
+        return out
+
+    def action_sequence(self):
+        """Every executed (non-noop, non-awaiting) taken action in decision order:
+        [(campaign_id, ts, action_type)]. The interrupt trainer interleaves these by ts."""
+        return self.con.execute(
+            "SELECT dp.campaign_id, at.ts, at.action_type FROM action_taken at"
+            " JOIN decision_points dp ON dp.decision_id = at.decision_id"
+            " WHERE at.action_type != 'noop'"
+            " AND (at.refusal IS NULL OR at.refusal != 'awaiting_execution')"
+            " ORDER BY at.decision_id").fetchall()
+
     def interrupt_rows(self):
         """Every recorded interrupt-screen decision."""
         out = []
@@ -343,7 +372,6 @@ class DecisionStore:
                 " FROM target_rows"):
             out.setdefault(camp, {})[int(turn)] = {
                 "income": inc or 0.0, "settlements": setl or 0.0,
-                # inverted: lower rank is stronger
                 "power_rank": (-rank if rank is not None else -50.0),
                 "allies": allies or 0.0, "vassals": vass or 0.0,
                 "lord_level": lvl or 0.0}

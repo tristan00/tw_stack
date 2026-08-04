@@ -14,13 +14,10 @@ import re
 import sys
 import time
 
-TURN = [None]                 # the loop stamps the current campaign turn here
+TURN = [None]
 _STATE = {"run_dir": None, "tracked": set(), "warned": False}
 
-# faction keys as they appear in cco context ids -- machine ids, not display names
 _FACTION_KEY_RE = re.compile(r"\b(wh\d?(?:_dlc\d+|_main|_pro\d+|_twa\d+|_cp\d+)_[a-z0-9_]+)\b")
-# same key shape, different record families: units/buildings/tech/skills/regions share the
-# prefix pattern and would fill TRACK_CAP with ids cm:get_faction nils on
 _NON_FACTION_TOKENS = ("_region_", "_inf_", "_cav_", "_mon_", "_art_", "_veh_", "_bld_",
                        "_building_", "_tech_", "_skill_", "_trait_", "_ancillary_",
                        "_banner_", "_edict_", "_rite_", "_unit_")

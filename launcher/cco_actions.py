@@ -174,10 +174,7 @@ def execute_confirmed(bus, ctx, pick):
         if confirmed or time.time() >= deadline:
             break
         if not rec.get("executed"):
-            # the world still gets asked once -- a command can land despite a failed click --
-            # but a click that never happened does not earn the whole polling budget
             break
-        # a confirm that CANNOT come true must not spend the rest of the budget proving it
         if doomed is not None:
             try:
                 why = doomed(bus, ctx, pick, before, after)
@@ -312,7 +309,7 @@ def _building_snapshot(bus, ctx, pick):
     cost = (pick.get("params") or {}).get("cost")
     if cost is None:
         cost = _build_cost(pick["key"])
-        pick.setdefault("params", {})["cost"] = cost      # feeds the treasury-floor gate
+        pick.setdefault("params", {})["cost"] = cost
     return {"treasury": t, "slot_is_building_new": is_new == "true", "cost": cost}
 
 
@@ -623,6 +620,405 @@ register("rites", {
 })
 
 
+_LUA_SLOT_OP = (_G +
+    "local s=cco('CcoCampaignSettlement','settlement:%(region)s') "
+    "if not s then return 'NO-CTX' end local slots=g(s,'BuildingSlotList') "
+    "if type(slots)~='table' then return 'NO-SLOTLIST' end "
+    "for i,x in ipairs(slots) do if g(x,'Index')==%(slot)d then "
+    "  if g(x,'%(guard)s')~=true then return 'REFUSED-'..ts(g(x,'%(guard)s')) end "
+    "  pcall(function() x:Call('%(cmd)s') end) return 'called' end end return 'NO-SLOT'")
+
+_LUA_SLOT_FLAGS = (_G +
+    "local s=cco('CcoCampaignSettlement','settlement:%(region)s') "
+    "if not s then return 'NO-CTX' end local slots=g(s,'BuildingSlotList') "
+    "if type(slots)~='table' then return 'NO-SLOTLIST' end "
+    "for i,x in ipairs(slots) do if g(x,'Index')==%(slot)d then "
+    "  local ci=g(x,'ConstructionItemContext') "
+    "  return ts(g(x,'IsDamaged'))..'~'..ts(g(x,'IsRepairing'))..'~'..ts(ci~=nil)"
+    "..'~'..ts(g(x,'IsEmpty')) end end return 'NO-SLOT'")
+
+
+def _slot_flags(bus, region, slot):
+    raw = _ev(bus, _LUA_SLOT_FLAGS % {"region": region, "slot": int(slot)}, timeout=8.0)
+    p = str(raw or "").split("~")
+    if len(p) != 4:
+        return None
+    return {"damaged": p[0] == "true", "repairing": p[1] == "true",
+            "queued": p[2] == "true", "empty": p[3] == "true"}
+
+
+def _slot_snapshot(bus, ctx, pick):
+    p = pick.get("params") or {}
+    region, slot = p.get("region"), p.get("slot_index")
+    if region is None or slot is None:
+        return None
+    f = _slot_flags(bus, region, slot)
+    if f is None:
+        return None
+    f.update(region=region, slot=slot, treasury=_treasury(bus))
+    return f
+
+
+def _slot_exec(cmd, guard):
+    def run(bus, ctx, pick, before):
+        res = _ev(bus, _LUA_SLOT_OP % {"region": before["region"], "slot": int(before["slot"]),
+                                       "cmd": cmd, "guard": guard}, timeout=8.0)
+        if res != "called":
+            sys.stderr.write("cco_actions: %s slot %s/%s -> %s\n"
+                             % (cmd, before["region"], before["slot"], res))
+        return res == "called"
+    return run
+
+
+def _slot_confirm(field, want):
+    """Confirm on the engine's own flag flipping to `want`."""
+    def run(bus, ctx, pick, before):
+        now = _slot_flags(bus, before["region"], before["slot"])
+        after = dict(now or {}, treasury=_treasury(bus))
+        if now is None:
+            return False, after
+        return (now.get(field) is want and before.get(field) is not want), after
+    return run
+
+
+register("building_repair", {
+    "layer": "cco", "signal": "is_repairing_flip",
+    "snapshot": _slot_snapshot,
+    "execute": _slot_exec("Repair", "CanRepair"),
+    "confirm": _slot_confirm("repairing", True),
+    "timeout_s": 6.0, "poll_s": 1.0, "spends_gold": True,
+})
+
+register("building_cancel", {
+    "layer": "cco", "signal": "construction_item_cleared",
+    "snapshot": _slot_snapshot,
+    "execute": _slot_exec("CancelConstruction", "CanBeCancelled"),
+    "confirm": _slot_confirm("queued", False),
+    "timeout_s": 6.0, "poll_s": 1.0,
+})
+
+register("building_dismantle", {
+    "layer": "cco", "signal": "slot_empty_flip",
+    "snapshot": _slot_snapshot,
+    "execute": _slot_exec("Dismantle", "CanDismantle"),
+    "confirm": _slot_confirm("empty", True),
+    "timeout_s": 6.0, "poll_s": 1.0,
+})
+
+
+_MARKER_ANCHORS = ("icon_harmony", "mission_icon", "status_bar", "dy_mp_player_name")
+
+_HERO_PANEL = "agent_options"
+_HERO_NAME_NODE = "dy_method_name"
+
+_LUA_HERO_SETT_STATE = (_G +
+    "local c=cm:get_character_by_cqi(%(cqi)s) if not c then return 'NO-CHAR' end "
+    "local s=cco('CcoCampaignSettlement','settlement:%(tgt)s') "
+    "return ts(c:performed_action_this_turn())..'~'..ts(c:logical_position_x())"
+    "..'~'..ts(c:logical_position_y())..'~'..ts(g(s,'IsAbandoned'))..'~'..ts(g(s,'IsShrouded'))")
+
+_LUA_HERO_CHAR_STATE = (_G +
+    "local c=cm:get_character_by_cqi(%(cqi)s) if not c then return 'NO-CHAR' end "
+    "local t=cm:get_character_by_cqi(%(tgt)s) "
+    "return ts(c:performed_action_this_turn())..'~'..ts(c:logical_position_x())"
+    "..'~'..ts(c:logical_position_y())..'~'..ts(t~=nil)..'~'..ts(t and t:is_null_interface()==false)")
+
+_LUA_SETT_DISPLAY = ("local r=cm:get_region('%(tgt)s') if not r then return 'NO-REGION' end "
+                     "local s=r:settlement() if not s then return 'NO-SETT' end "
+                     "return tostring(s:display_position_x())..'~'..tostring(s:display_position_y())")
+
+_LUA_CHAR_DISPLAY = ("local c=cm:get_character_by_cqi(%(tgt)s) if not c then return 'NO-CHAR' end "
+                     "return tostring(c:display_position_x())..'~'..tostring(c:display_position_y())")
+
+_LUA_CAM = ("local a,b,c,d,e = cm:get_camera_position() "
+            "return tostring(a)..'~'..tostring(b)..'~'..tostring(c)..'~'..tostring(d)..'~'..tostring(e)")
+
+
+
+def _collect_mod():
+    """The recorder's collect module -- the single source of the target catalogue and reach check."""
+    sys.path.insert(0, r"D:\tw_stack\decisions")
+    import collect as _C
+    return _C
+
+
+def _hero_action_method_name(action):
+    """Localised method label for a catalogue hero action, via the reference DB."""
+    spec = _collect_mod().HERO_ACTIONS.get(action)
+    if not spec:
+        return None
+    sys.path.insert(0, r"D:\tw_stack\advisor\reference")
+    import features_db as _DB
+    for key in _DB.agent_action_keys(spec["loc_suffix"]):
+        name = _DB.agent_action_label(key)
+        if name:
+            return name
+    return None
+
+
+def _parse_hero_state(raw):
+    p = str(raw or "").split("~")
+    if len(p) < 5:
+        return None
+    return {"acted": p[0] == "true", "x": _numf(p[1]), "y": _numf(p[2]),
+            "is_abandoned": p[3], "is_shrouded": p[4]}
+
+
+def _numf(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _hero_target(pick):
+    """(kind, id) of the offer's target: ('character', cqi) or ('settlement', region)."""
+    p = pick.get("params") or {}
+    if p.get("target_kind") == "character" and p.get("target_cqi") is not None:
+        return "character", str(p["target_cqi"])
+    if p.get("region"):
+        return "settlement", str(p["region"])
+    return None, None
+
+
+def _hero_action_snapshot(bus, ctx, pick):
+    kind, tid = _hero_target(pick)
+    if tid is None:
+        return None
+    lua = _LUA_HERO_CHAR_STATE if kind == "character" else _LUA_HERO_SETT_STATE
+    st = _parse_hero_state(_ev(bus, lua % {"cqi": ctx["entity_id"], "tgt": tid}, timeout=8.0))
+    if st is None:
+        return None
+    st["target_kind"], st["target_id"] = kind, tid
+    st["region"] = tid if kind == "settlement" else None
+    st["stream_off"] = bus._out_size()
+    return st
+
+
+def _hero_action_gate_target(bus, ctx, pick, before):
+    """Target still valid. Only the ruins-seeking action demands the looks-like-ruins predicate."""
+    if before.get("target_kind") == "character":
+        if before.get("is_abandoned") != "true":
+            return False, "target_character_gone"
+        return True, None
+    if before.get("is_shrouded") != "false":
+        return False, "target_shrouded_%s" % before.get("is_shrouded")
+    if (pick.get("params") or {}).get("action") == "scout_ruins":
+        if before.get("is_abandoned") != "true":
+            return False, "target_not_ruins_%s" % before.get("is_abandoned")
+    return True, None
+
+
+def _hero_action_gate_reach(bus, ctx, pick, before):
+    """Movement range via the recorder's own AP-aware reach sweep -- no second implementation."""
+    is_char = before.get("target_kind") == "character"
+    tid = before["target_id"]
+    reach_c, reach_s = _collect_mod()._reach(
+        bus, ctx["entity_id"], [tid] if is_char else [], [] if is_char else [tid])
+    if not (reach_c if is_char else reach_s).get(str(tid)):
+        return False, "cannot_reach"
+    return True, None
+
+
+def _target_already_on_screen(bus, kind, tid):
+    """True when the target already has an overlay marker -- no camera move needed.
+
+    Moving the camera is not free: set_camera_position onto an inaccessible point has been
+    observed to break the campaign HUD (ui_hiding=true, hud_campaign gone), so it is only worth
+    doing when the target genuinely is not visible."""
+    want = ("CcoCampaignCharacter:%s" % tid if kind == "character"
+            else "label_settlement:%s" % tid)
+    tr = bus.send("tree", "3d_ui_parent 12 6000", timeout=8.0) or {}
+    for n in (tr.get("nodes") or []):
+        hit = str(n.get("context")) if kind == "character" else str(n.get("id"))
+        if hit == want and n.get("x") is not None:
+            return True
+    return False
+
+
+def _centre_camera_on_target(bus, kind, tid):
+    """Bring the target on screen, preserving the current zoom/bearing/height.
+
+    The camera x,y is NOT the ground point that lands at screen centre, so this only guarantees
+    the target is visible; the click point comes from the target's own overlay rect."""
+    lua = _LUA_CHAR_DISPLAY if kind == "character" else _LUA_SETT_DISPLAY
+    disp = str(_ev(bus, lua % {"tgt": tid}, timeout=6.0) or "")
+    cam = str(_ev(bus, _LUA_CAM, timeout=6.0) or "")
+    if "~" not in disp or cam.count("~") < 4:
+        sys.stderr.write("cco_actions: no display position for %s %s (%r)\n" % (kind, tid, disp))
+        return False
+    tx, ty = [_numf(v) for v in disp.split("~")[:2]]
+    d, b, h = [_numf(v) for v in cam.split("~")[2:5]]
+    if None in (tx, ty, d, b, h):
+        return False
+    _ev(bus, "cm:set_camera_position(%f, %f, %f, %f, %f) return 'called'" % (tx, ty, d, b, h),
+        timeout=15.0)
+    now = str(_ev(bus, _LUA_CAM, timeout=6.0) or "")
+    if now.count("~") < 4:
+        return False
+    cx, cy = [_numf(v) for v in now.split("~")[:2]]
+    if cx is None or cy is None or abs(cx - tx) > 0.75 or abs(cy - ty) > 0.75:
+        sys.stderr.write("cco_actions: camera did not reach %s %s (asked %.2f,%.2f got %s,%s)\n"
+                         % (kind, tid, tx, ty, cx, cy))
+        return False
+    return True
+
+
+def _hero_target_point(bus, kind, tid):
+    """Screen pixel to right-click for this target, read from the UI. None when unresolvable.
+
+    The banner is taken from the overlay, never estimated. A 20-level zoom sweep over a hero and
+    two lords showed the vertical offset is not a usable function: it follows K/cam_dist with a
+    per-character K (-4159 vs -5583 for two lords, ~2 icon heights apart when pooled), and below
+    d~7 the engine clamps camera height and the offset reverses entirely. The overlay rect is
+    exact at every zoom and distinguishes hero banners (few nodes) from lord banners (the full
+    army strip) for free. Reading it costs ~2ms over the bus round-trip.
+
+    No zoom is ever changed here; when the marker is absent this refuses rather than adjusting
+    the camera."""
+    import nav
+    if kind == "character":
+        tr = bus.send("tree", "3d_ui_parent 12 6000", timeout=8.0) or {}
+        want = "CcoCampaignCharacter:%s" % tid
+        hits = [n for n in (tr.get("nodes") or [])
+                if str(n.get("context")) == want
+                and n.get("x") is not None and n.get("y") is not None]
+        if not hits:
+            sys.stderr.write("cco_actions: character %s has no overlay marker -- refusing\n" % tid)
+            return None
+        byid = {}
+        for n in hits:
+            byid.setdefault(str(n.get("id")), []).append(n)
+        node = None
+        for want in _MARKER_ANCHORS:
+            if want in byid:
+                node = byid[want][0]
+                break
+        if node is None:
+            node = byid[sorted(byid)[0]][0]
+        return nav.ui_to_screen(float(node["x"]) + (node.get("w") or 0) / 2.0,
+                                float(node["y"]) + (node.get("h") or 0) / 2.0)
+    tr = bus.send("tree", "3d_ui_parent 12 6000", timeout=8.0) or {}
+    nodes = tr.get("nodes") or []
+    want = "label_settlement:%s" % tid
+    hits = [n for n in nodes if str(n.get("id")) == want
+            and n.get("x") is not None and n.get("y") is not None]
+    if hits:
+        n = hits[0]
+        return nav.ui_to_screen(float(n["x"]) + (n.get("w") or 0) / 2.0,
+                                float(n["y"]) + (n.get("h") or 0) / 2.0)
+    sys.stderr.write("cco_actions: settlement %s has no on-screen label (%d overlay nodes)\n"
+                     % (tid, len(nodes)))
+    return None
+
+
+def _hero_action_button(bus, name, attribute=None):
+    """Resolve the method button by its displayed name -- never by index.
+
+    Labels are not unique (increase_mobility and enhance_mobility are both 'Increase Mobility'),
+    so when a name matches more than one row the approach attribute breaks the tie; an ambiguity
+    that survives that is refused loudly rather than guessed."""
+    tr = bus.send("tree", "%s 25 8000" % _HERO_PANEL, timeout=8.0) or {}
+    nodes = tr.get("nodes") or []
+    hits = []
+    for n in nodes:
+        if n.get("id") == _HERO_NAME_NODE and str(n.get("text")).strip() == name:
+            hits.append(str(n.get("path")).rsplit("|" + _HERO_NAME_NODE, 1)[0])
+    if len(hits) > 1 and attribute:
+        narrowed = []
+        for btn in hits:
+            tip = next((str(m.get("tooltip") or "") for m in nodes
+                        if m.get("id") == "icon_method" and str(m.get("path")).startswith(btn)), "")
+            if str(attribute).lower() in tip.lower():
+                narrowed.append(btn)
+        if narrowed:
+            hits = narrowed
+    if len(hits) == 1:
+        return hits[0]
+    if len(hits) > 1:
+        sys.stderr.write("cco_actions: hero_action %r ambiguous (%d rows, attribute=%s) -- refusing\n"
+                         % (name, len(hits), attribute))
+        return None
+    seen = [str(n.get("text")) for n in nodes if n.get("id") == _HERO_NAME_NODE]
+    sys.stderr.write("cco_actions: hero_action %r not offered; panel shows %s\n" % (name, seen))
+    return None
+
+
+def _hero_action_execute(bus, ctx, pick, before):
+    import click_actions
+    import nav
+    action = (pick.get("params") or {}).get("action")
+    kind, tid = before["target_kind"], before["target_id"]
+    where = "hero=%s action=%s target=%s:%s" % (ctx.get("entity_id"), action, kind, tid)
+
+    def fail(step, detail=""):
+        sys.stderr.write("cco_actions: hero_action FAILED at %s -- %s%s\n"
+                         % (step, where, (" -- " + detail) if detail else ""))
+        return False
+
+    name = _hero_action_method_name(action)
+    if not name:
+        return fail("method_name", "no method name maps to action %r" % action)
+    ok, why = click_actions.prepare(bus, "lord", ctx["entity_id"], expect_root="units_panel")
+    if not ok:
+        return fail("prepare", str(why))
+    if not _centre_camera_on_target(bus, kind, tid):
+        return fail("centre_camera", "shrouded=%s abandoned=%s x=%s y=%s"
+                    % (before.get("is_shrouded"), before.get("is_abandoned"),
+                       before.get("x"), before.get("y")))
+    nav.close_popups(bus)
+    pt = _hero_target_point(bus, kind, tid)
+    if pt is None:
+        return fail("target_point", "no screen point for the target after centring")
+    off = bus._out_size()
+    nav.mouse("rclick", *pt)
+    row, _ = bus.wait_row(("panel",), timeout=6.0, offset=off,
+                          pred=lambda r: bool(r.get("opened")) and r.get("name") == _HERO_PANEL)
+    if row is None:
+        return fail("open_panel", "right-click at %s did not open %s" % (pt, _HERO_PANEL))
+    btn = _hero_action_button(bus, name, (pick.get("params") or {}).get("attribute"))
+    if btn is None:
+        return fail("find_button", "no button for method %r attribute %r in %s"
+                    % (name, (pick.get("params") or {}).get("attribute"), _HERO_PANEL))
+    r = bus.send("click", btn, timeout=8.0) or {}
+    if not r.get("changed"):
+        return fail("click", "clicked %s but state did not change (found=%s clicked=%s)"
+                    % (btn, r.get("found"), r.get("clicked")))
+    return True
+
+
+def _hero_action_confirm(bus, ctx, pick, before):
+    """The engine's own agent-action event is the signal; state deltas ride along as evidence.
+
+    wait_row blocks until the row lands, so this returns the moment the engine reports the
+    action -- no sleep granularity, and no state read at all on the miss path."""
+    row, _ = bus.wait_row(("agent_action",), timeout=0.75, offset=before["stream_off"],
+                          poll=0.05,
+                          pred=lambda r: str(r.get("cqi")) == str(ctx["entity_id"]))
+    if row is None:
+        return False, {}
+    lua = (_LUA_HERO_CHAR_STATE if before.get("target_kind") == "character"
+           else _LUA_HERO_SETT_STATE)
+    st = _parse_hero_state(_ev(bus, lua % {"cqi": ctx["entity_id"], "tgt": before["target_id"]},
+                               timeout=20.0))
+    after = dict(st or {})
+    after["event"] = row
+    after["success"] = row.get("success")
+    if st:
+        after["moved"] = st.get("x") != before.get("x") or st.get("y") != before.get("y")
+        after["acted_flip"] = bool(not before.get("acted") and st.get("acted"))
+    return True, after
+
+
+register("hero_action", {
+    "layer": "click", "signal": "agent_action_event",
+    "snapshot": _hero_action_snapshot,
+    "gates": [_hero_action_gate_target, _hero_action_gate_reach],
+    "execute": _hero_action_execute, "confirm": _hero_action_confirm,
+    "timeout_s": 8.0, "poll_s": 0.05,
+})
+
+
 def _endturn_snapshot(bus, ctx, pick):
     t = _ev(bus, "return cm:model():turn_number()", timeout=8.0)
     return None if t is None else {"turn": t}
@@ -690,7 +1086,7 @@ def _endturn_confirm(bus, ctx, pick, before):
 register("end_turn", {
     "layer": "cco", "signal": "turn_number_increment",
     "snapshot": _endturn_snapshot, "execute": _endturn_execute, "confirm": _endturn_confirm,
-    "timeout_s": 45.0, "poll_s": 3.0, "retryable": False,      # must stay under the 120s watchdog
+    "timeout_s": 45.0, "poll_s": 3.0, "retryable": False,
 })
 
 

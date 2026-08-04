@@ -47,11 +47,10 @@ def run(ctx, grab=None, foreground=None, shot_every: float = SHOT_EVERY,
             clicked = ctx.shot_req.wait(0.1)
             if clicked:
                 ctx.shot_req.clear()
-                time.sleep(0.18)               # let the UI respond before grabbing what the click opened
+                time.sleep(0.18)
             if not clicked and (time.time() - last) < shot_every:
                 continue
             n += 1
-            # dir read FRESH each frame so frames follow a mid-run campaign swap of ctx.out_dir.
             d = os.path.join(ctx.out_dir, "shots")
             os.makedirs(d, exist_ok=True)
             p = os.path.join(d, "%05d.jpg" % n)

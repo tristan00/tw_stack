@@ -135,7 +135,7 @@ if __name__ == "__main__":
     import sys
     sys.path.insert(0, r"D:\tw_stack\bus")
     sys.path.insert(0, r"D:\tw_stack\launcher")
-    from bus import Bus                                   # noqa: E402
+    from bus import Bus
     out = sys.argv[1] if len(sys.argv) > 1 else None
     d = dump_screen(Bus(), save_dir=out)
     print("open_panels:", d["open_panels"])

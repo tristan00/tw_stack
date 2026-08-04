@@ -1,13 +1,13 @@
-# Synthetic input into the Warhammer3 window.
-# Mouse: mouse_event + SetCursorPos (absolute screen pixels) -- focus-INDEPENDENT, works
-#   regardless of which window is focused.
-# Keyboard: SendInput with KEYEVENTF_SCANCODE -- goes to the FOCUSED window, so we must
-#   force the game window to the foreground FIRST. Plain SetForegroundWindow is unreliable
-#   under Windows' foreground-lock, so we AttachThreadInput to the target's UI thread and
-#   then SetForegroundWindow/BringWindowToTop/SetFocus (the standard defeat-the-lock dance).
-#   input.ps1 key ... prints "focus=True/False" so callers can tell if focus was won.
-#   powershell -File input.ps1 click|rclick|dclick|move X Y
-#   powershell -File input.ps1 key ESCAPE|RETURN|SPACE|TAB|UP|DOWN|LEFT|RIGHT
+
+
+
+
+
+
+
+
+
+
 param([string]$Action, [string]$X, [string]$Y, [string]$D)
 
 Add-Type @"
@@ -30,7 +30,7 @@ public class G {
 }
 "@
 
-# Robustly resolve the game's main window (by process + title), preferring one with a title.
+
 $proc = Get-Process Warhammer3 -ErrorAction SilentlyContinue |
         Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -match 'WARHAMMER' } |
         Select-Object -First 1
@@ -39,7 +39,7 @@ if (-not $proc) {
           Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
 }
 
-# Force the target window to the foreground so keystrokes land in it. Returns whether we won.
+
 function Force-Foreground($h) {
   if (-not $h -or $h -eq [IntPtr]::Zero) { return $false }
   if ([G]::IsIconic($h)) { [G]::ShowWindow($h, 9) | Out-Null; Start-Sleep -Milliseconds 200 }
@@ -57,12 +57,12 @@ function Force-Foreground($h) {
 $h = if ($proc) { $proc.MainWindowHandle } else { [IntPtr]::Zero }
 $focus = Force-Foreground $h
 
-# Scan codes (Set 1).
+
 $scan = @{ ESCAPE=0x01; RETURN=0x1C; ENTER=0x1C; SPACE=0x39; TAB=0x0F;
            UP=0x48; DOWN=0x50; LEFT=0x4B; RIGHT=0x4D;
-           # K is the game's toggle_ui shortcut (text/default_keys.xml, category "universal").
-           # Present so a HUD hidden by that toggle can be toggled back -- nothing in the harness
-           # sends it as input, and it is never used during normal play.
+
+
+
            K=0x25;
            '1'=0x02; '2'=0x03; '3'=0x04; '4'=0x05; '5'=0x06;
            '6'=0x07; '7'=0x08; '8'=0x09; '9'=0x0A; '0'=0x0B }
@@ -89,8 +89,8 @@ switch ($Action) {
   "click"  { Click $LD $LU }
   "rclick" { Click $RD $RU }
   "dclick" { Click $LD $LU; Start-Sleep -Milliseconds 120; [G]::mouse_event($LD,0,0,0,[IntPtr]::Zero); Start-Sleep -Milliseconds 80; [G]::mouse_event($LU,0,0,0,[IntPtr]::Zero) }
-  # drag X Y "X2,Y2": left-button DOWN at (X,Y), stepped cursor move (so drag-aware UIs
-  # register the motion), left-button UP at (X2,Y2). Added for the C2 unit_exchange panel.
+
+
   "drag"   { $t = "$D" -split ','
              $tx = [int]$t[0]; $ty = [int]$t[1]
              [G]::SetCursorPos($ix,$iy) | Out-Null; Start-Sleep -Milliseconds 250
@@ -102,8 +102,8 @@ switch ($Action) {
              }
              Start-Sleep -Milliseconds 220
              [G]::mouse_event($LU,0,0,0,[IntPtr]::Zero) }
-  # wheel X Y <notches>: +ve scrolls UP, -ve scrolls DOWN (one notch = 120).
-  # dwData is declared uint, so a negative delta needs an unchecked 2's-complement cast.
+
+
   "wheel"  { [G]::SetCursorPos($ix,$iy) | Out-Null; Start-Sleep -Milliseconds 150
              $n = if ($D) { [int]$D } else { -1 }
              $delta = $n * 120

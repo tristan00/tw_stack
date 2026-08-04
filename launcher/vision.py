@@ -14,7 +14,7 @@ CAPTURE = os.path.join(PS_DIR, "capture.ps1")
 _STATS_RE = re.compile(r"stats=\(luma=([\d.]+)\s+sat=([\d.]+)\s+busy=([\d.]+)\)")
 _BANDS_RE = re.compile(r"bands=\(top=([\d.]+)\s+mid=([\d.]+)\s+bot=([\d.]+)\)")
 
-MOVE_EPS = 0.15                 # per-frame-stat tolerance, not equality
+MOVE_EPS = 0.15
 
 FRAME_LUMA_MIN = 10.0
 FRAME_SAT_MIN = 9.0
@@ -36,7 +36,8 @@ def frame(path=None, timeout=40):
     try:
         r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
                             "-File", CAPTURE, png],
-                           capture_output=True, text=True, timeout=timeout)
+                           capture_output=True, text=True, timeout=timeout,
+                           creationflags=subprocess.CREATE_NO_WINDOW)
     except Exception as e:
         sys.stderr.write("vision: capture failed -> %s\n" % repr(e)[:120])
         return None

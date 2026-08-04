@@ -11,11 +11,10 @@ import time
 try:
     import config as _config
     _REPO = _config.REPO
-except Exception as e:                  # pragma: no cover
+except Exception as e:
     _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     sys.stderr.write("screen: config import failed, using fallback repo path -> %s\n" % repr(e)[:80])
 
-# capture.ps1 stdout: "client=(X,Y WxH)", "stats=(luma sat busy)", "bands=(top mid bot)"
 _CLIENT_RE = re.compile(r"client=\((-?\d+),(-?\d+)\s+(\d+)x(\d+)\)")
 
 _STATS_RE = re.compile(r"stats=\(luma=([\d.]+)\s+sat=([\d.]+)\s+busy=([\d.]+)\)")
@@ -35,7 +34,6 @@ class ScreenBridge:
     PS_DIR = os.path.join(_REPO, "ps")
     SHOTS_DIR = r"D:\twdata\logs\launcher\launch_shots"
 
-    # fallback only -- clicks map through the live client rect
     SCREEN_W = 2560
     SCREEN_H = 1440
 
@@ -58,8 +56,9 @@ class ScreenBridge:
         cmd += [str(a) for a in args]
         try:
             return subprocess.run(cmd, capture_output=True, text=True,
-                                  timeout=kw.get("timeout", 60))
-        except Exception as exc:                     # noqa: BLE001
+                                  timeout=kw.get("timeout", 60),
+                                  creationflags=subprocess.CREATE_NO_WINDOW)
+        except Exception as exc:
             self._log("ps %s failed: %s" % (script, exc))
             return None
 

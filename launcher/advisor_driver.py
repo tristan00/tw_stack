@@ -90,7 +90,6 @@ def drive_menu(bus, run_dir, menu_type, opener=None, verifier=None, find_verb=No
         time.sleep(1.5)
     if not pick:
         return {"menu": menu_type, "note": "no advice from /api/advise within %ss" % timeout}
-    # exactly one execution path per pick, no chaining
     if find_verb is not None:
         executed = bool(find_verb(bus, pick.get("key")))
     elif menu_type == "skills" or (pick.get("x") is not None and pick.get("y") is not None):
@@ -507,7 +506,6 @@ def run_campaign_loop(bus, run_dir, turns=3):
 
 
 if __name__ == "__main__":
-    # usage: advisor_driver.py run [run_dir] | loop [N] [run_dir] | [menu_type] [run_dir]
     if len(sys.argv) > 1 and sys.argv[1] == "loop":
         from bus import Bus
         n_turns = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2].isdigit() else 3

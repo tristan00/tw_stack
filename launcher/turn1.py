@@ -4,8 +4,8 @@ import time
 
 sys.path.insert(0, r"D:\tw_stack\bus")
 sys.path.insert(0, r"D:\tw_stack\launcher")
-from bus import Bus  # noqa: E402
-import nav  # noqa: E402
+from bus import Bus
+import nav
 
 MONOLITHS = "wh3_main_combi_region_the_monoliths"
 
@@ -110,7 +110,7 @@ def _select_army(bus, cqi):
     y = _ev(bus, "cm:get_character_by_cqi(%d):display_position_y()" % cqi)
     if x is None or y is None:
         return False
-    for click_y in (720, 640, 480, 300, 200):       # candidate banner heights
+    for click_y in (720, 640, 480, 300, 200):
         for _ in range(3):
             if not nav.open_views(bus):
                 break
@@ -450,7 +450,7 @@ def _step_build(bus):
     return any_ok, " | ".join(out)
 
 
-STEPS = {          # order matters: run as listed
+STEPS = {
     "attack_xyion": _step_attack_xyion,
     "attack_shrine": lambda bus: attack_settlement(bus, "wh3_main_combi_region_shrine_of_ladrielle"),
     "build": _step_build,

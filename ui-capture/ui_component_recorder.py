@@ -12,17 +12,15 @@ import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bus"))
-from bus import Bus                 # noqa: E402
-from errors import TWError          # noqa: E402
+from bus import Bus
+from errors import TWError
 
-# States meaning "shown but NOT clickable"; a panel may instead set clickable_states as an allowlist.
 _DISABLED_STATES = {"inactive", "locked", "disabled", "greyed", "grayed", "hidden",
                     "unavailable", "dummy"}
 
 MAX_DEPTH = 10
 MAX_FINDS = 600
 
-# Recruit pool-group container prefix -> source label; first hit wins.
 _RECRUIT_SOURCE_PREFIX = (
     ("local",     "local"),
     ("global",    "global"),
@@ -64,7 +62,6 @@ PANELS = {
                  "sortable_list_factions|list_clip|list_box"),
         "open_path": "hud_campaign|radar_things|dropdown_parent|dropdown_factions",
         "open_by": "height",
-        # the _sc_ negative lookahead excludes subculture HEADER rows, which are grouping not options.
         "option_re": r"^faction_row_entry_(?!.*_sc_).+",
         "state_at": None,
     },
@@ -332,10 +329,8 @@ WATCH_POLL = 0.35
 BACKOFF_INTERVAL = 10.0
 REEMIT_COOLDOWN = 3.0
 
-# Panels that fire NO PanelOpenedCampaign: captured by the watch loop's poll, excluded from the event scan.
 POLL_PANELS = ("construction", "army_stances")
 
-# PanelOpenedCampaign `component` -> the panel(s) to capture. POLL_PANELS must NOT be listed here.
 COMPONENT_PANELS = {
     "settlement_captured": ("occupation",),
     "popup_battle_results": ("post_battle_captives",),
@@ -356,16 +351,15 @@ COMPONENT_PANELS = {
     "intrigue_panel": ("intrigue",),
 }
 _PANEL_OPEN_RE = re.compile(r'"event":"PanelOpenedCampaign"[^}]*?"component":"([^"]*)"')
-# `"component":"..."` appears only on TWSTATE event lines, so this never fires on a mere hover trace.
 _TECH_TAB_RE = re.compile(r'"component":"(CcoTechnologyUiTabRecord[^"]*)"')
 POLL_INTERVAL = 1.5
 _FIND_TIMEOUT = 6.0
 
 _APPDATA_LOGS = os.path.expandvars(r"%APPDATA%/The Creative Assembly/Warhammer3/logs")
 try:
-    import config as _config                     # noqa: E402
+    import config as _config
     _GAME_DIR = _config.GAME_DIR
-except Exception as e:                           # pragma: no cover
+except Exception as e:
     _GAME_DIR = r"D:\SteamLibrary\steamapps\common\Total War WARHAMMER III"
     sys.stderr.write("ui-capture: config import failed, using hardcoded game dir -> %s\n" % repr(e)[:80])
 
@@ -378,7 +372,6 @@ def _extract_key(component_id: str) -> str:
     for pre in ("faction_row_entry_", "row_entry_", "character_row_"):
         if s.startswith(pre):
             return s[len(pre):]
-    # Must precede the numeric-tail rule below so CcoCampaignAncillary137 still falls through to it.
     m = re.match(r"^Cco[A-Za-z]+\d+(wh\d?_.+)$", s)
     if m:
         return m.group(1)
@@ -492,7 +485,6 @@ def enumerate_options(bus: Bus, cfg: dict, max_depth: int = MAX_DEPTH,
         finds += 1
         if resp is None:
             return None
-        # An invisible flagged container is a ghost twin whose child ids collide with the live set's.
         if skip_invis is not None and skip_invis.search(path.rsplit("|", 1)[-1]) \
                 and (resp.get("result") or {}).get("visible") is False:
             continue
@@ -549,7 +541,6 @@ def _collect_cards(bus: Bus, list_path: str, source: str, opt, state_at, allow,
         for cid in _child_ids(resp):
             cpath = path + "|" + cid
             if opt.search(cid):
-                # de-dup by (source, id): the same unit id appears in both the global and local pools.
                 if (source, cid) in seen:
                     continue
                 seen.add((source, cid))
@@ -587,8 +578,6 @@ def enumerate_sourced_options(bus: Bus, cfg: dict, max_finds: int = MAX_FINDS) -
             budget[0] -= 1
             if gresp is None:
                 return None
-            # Cards sit at a fixed depth below each group container; jump straight there rather
-            # than blind-recursing every positional wrapper (dozens of ~1s finds).
             suffix = src.get("group_suffix", "unit_list|listview|list_clip|list_box")
             for g in _child_ids(gresp):
                 if "template" in g.lower():
@@ -625,7 +614,6 @@ def enumerate_positional(bus: Bus, cfg: dict) -> list | None:
         if sr is None:
             return None
         res = sr.get("result") or {}
-        # A real card resolves its state sub-node with a rect; a template / non-card child does not.
         if not res.get("found") or res.get("x") is None:
             continue
         card = {"id": cid, "state": res.get("state"), "visible": res.get("visible"),
@@ -971,7 +959,7 @@ def _tech_tab_switched(chunk: str) -> bool:
 def watch(bus: Bus, emit, panels: dict | None = None, is_running=lambda: True) -> None:
     """Tail the newest script_log for PanelOpenedCampaign and emit each opened panel's options, plus a low-rate poll of POLL_PANELS."""
     panels = panels or PANELS
-    bus_ok = None                                          # None = no status emitted yet
+    bus_ok = None
     logpath, fh, off = None, None, 0
     last_emit = {}
     prev_open = {name: False for name in panels}
@@ -994,8 +982,6 @@ def watch(bus: Bus, emit, panels: dict | None = None, is_running=lambda: True) -
             bus_ok = False
 
     def _emit_scan(rows, checked_names):
-        # checked_names bounds the flag reset to the panels this scan inspected, so the event scan
-        # and the poll never clobber each other's open flags.
         open_names = {r["panel"] for r in rows}
         now = time.time()
         for r in rows:
@@ -1008,7 +994,6 @@ def watch(bus: Bus, emit, panels: dict | None = None, is_running=lambda: True) -
             prev_open[name] = name in open_names
 
     def _recapture_technology():
-        # Emit the now-active tech tab's tree if its option set differs from the last emit; True if emitted.
         if "technology" not in panels:
             return False
         try:
@@ -1101,7 +1086,6 @@ def watch(bus: Bus, emit, panels: dict | None = None, is_running=lambda: True) -
                         last_tech["keys"] = frozenset(o.get("key") for o in r["options"])
 
             if _tech_tab_switched(chunk_text):
-                # A tree rebuild can lag the tab click, so schedule one retry when nothing new came back.
                 if not _recapture_technology():
                     last_tech["retry_at"] = time.time() + 0.8
 
