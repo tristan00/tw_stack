@@ -52,6 +52,7 @@ ADVANCE_PREFERENCE = (
 
 RESULTS_DECLINED = frozenset((
     "button_call_up_the_trolls",
+    "button_hef_intrigue_at_the_court",
 ))
 KNOWN_RESULTS_CONTROLS = CAPTIVE_OPTIONS | frozenset(ADVANCE_PREFERENCE) | RESULTS_DECLINED
 PREBATTLE_DECLINED = FORBIDDEN_CLICK_IDS | PREBATTLE_NEVER | frozenset(PREBATTLE_CHOOSABLE) | frozenset((
@@ -82,25 +83,35 @@ def _unknown_controls(ctrls, known):
 
 _CHOOSER = [None]
 _CAMPAIGN = [None]
+_WORLD = [None]
 _LAST_POLICY = [None]
 _LAST_SCORES = [None]
 
 
 def set_chooser(fn):
-    """Install the chooser: fn(screen, options, campaign) -> (option, policy). Required."""
+    """Install the chooser: fn(screen, options, campaign, panel, world) -> (option, policy,
+    scores). `panel` is the screen's own forecast where it has one (pre-battle), else None;
+    `campaign`/`world` are the last decision snapshot, via set_snapshot. Required."""
     _CHOOSER[0] = fn
 
 
-def set_campaign(campaign):
-    """The campaign state passed to the chooser."""
+def set_snapshot(campaign, world=None):
+    """The last decision snapshot, passed to the chooser as the screen's state. Both halves
+    matter: the interrupt trainer features off this same pre-screen snapshot, so a chooser
+    handed only the campaign scores against a half-empty state row."""
     _CAMPAIGN[0] = campaign
+    _WORLD[0] = world
 
 
 def _campaign_hint():
     return _CAMPAIGN[0]
 
 
-def _choose(screen, options, campaign=None):
+def _world_hint():
+    return _WORLD[0]
+
+
+def _choose(screen, options, campaign=None, panel=None):
     """Pick one of `options` via the installed chooser; a pick outside `options` raises."""
     opts = sorted(options)
     if not opts:
@@ -111,7 +122,7 @@ def _choose(screen, options, campaign=None):
             "no interrupt chooser installed -- the advisor owns this decision and must call "
             "interrupts.set_chooser() before driving any screen. Refusing to invent a policy in "
             "the launcher (screen=%s, offered=%s)" % (screen, opts))
-    got, policy, scores = fn(screen, opts, campaign)
+    got, policy, scores = fn(screen, opts, campaign, panel, _world_hint())
     if got not in options:
         raise RuntimeError(
             "chooser returned %r which is NOT among the legal options %s for %s. Taking it anyway "
@@ -119,9 +130,20 @@ def _choose(screen, options, campaign=None):
     _LAST_POLICY[0] = policy
     _LAST_SCORES[0] = dict(scores or {})
     sys.stderr.write("interrupts: SCREEN %s offered=%s -> %r (%s) scores=%s\n"
-                     % (screen, opts, got, policy,
-                        {k: round(v, 4) for k, v in sorted((scores or {}).items())}))
+                     % (screen, opts, got, policy, _fmt_scores(scores)))
     return got
+
+
+def _fmt_scores(scores):
+    out = {}
+    for k, v in sorted((scores or {}).items()):
+        if isinstance(v, dict):
+            out[k] = {kk: round(vv, 3) for kk, vv in v.items() if isinstance(vv, (int, float))}
+        elif isinstance(v, (int, float)):
+            out[k] = round(v, 4)
+        else:
+            out[k] = v
+    return out
 
 
 UNHANDLED_LOG = r"D:/twdata/runs/human/unhandled_screens.jsonl"
@@ -227,7 +249,8 @@ def evidence(bus, why, shots_dir=None):
         os.makedirs(shots_dir, exist_ok=True)
         subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
                         os.path.join(os.path.dirname(os.path.abspath(__file__)), "ps", "capture.ps1"),
-                        path], capture_output=True, text=True, timeout=45)
+                        path], capture_output=True, text=True, timeout=45,
+                       creationflags=subprocess.CREATE_NO_WINDOW)
         rep["screenshot"] = path if os.path.exists(path) else None
     except Exception as e:
         rep["screenshot_error"] = repr(e)[:120]
@@ -370,15 +393,20 @@ def resolve_prebattle(bus):
             "only if they resolve the battle WITHOUT entering it, otherwise to FORBIDDEN_CLICK_IDS. "
             "clickable=%s" % (unknown, sorted(ctrls)))
     legal = [i for i in PREBATTLE_CHOOSABLE if i in ctrls and i not in PREBATTLE_NEVER]
-    target = _choose("pre_battle", legal, _campaign_hint()) if legal else None
-    if target is None:
+    if not legal:
         sys.stderr.write("interrupts: pre-battle offers no usable control -- clickable=%s\n"
                          % ",".join(sorted(ctrls)[:10]))
         return False
-    opts = _options_of(bus, "popup_pre_battle", legal)
     forecast = prebattle_forecast(bus)
-    # the real control set, not our belief about it: a control can be present and clickable and
-    # still be unable to end the screen (button_surround on a DEFENSIVE battle, measured)
+    m = _sticky_choice("pre_battle", "popup_pre_battle", legal, forecast)
+    if m["tries"] > _ANSWER_TRIES:
+        sys.stderr.write("interrupts: pre_battle held pick %r already failed %d tries -- "
+                         "leaving the screen to the watchdog\n" % (m["want"], _ANSWER_TRIES))
+        return False
+    target = m["want"]
+    _LAST_POLICY[0], _LAST_SCORES[0] = m["policy"], dict(m["scores"] or {})
+    final_try = m["tries"] >= _ANSWER_TRIES
+    opts = _options_of(bus, "popup_pre_battle", legal)
     tree = _tree(bus, "popup_pre_battle", 30, 40000)
     offered_all = sorted({str(n.get("id")) for n in tree
                           if str(n.get("id") or "").startswith("button_") and n.get("visible")})
@@ -386,14 +414,18 @@ def resolve_prebattle(bus):
     off = bus.out_offset()
     clicked = _click(bus, ctrls[target], settle=1.5)
     if not clicked:
-        _record_choice("pre_battle", "popup_pre_battle", opts, target,
-                       extra={"panel": forecast, "tree": tree, "controls": offered_all},
-                       executed=False, confirmed=False, refusal="execute_failed",
-                       latency_ms=int((time.time() - t0) * 1000))
+        if final_try:
+            _record_choice("pre_battle", "popup_pre_battle", opts, target,
+                           extra={"panel": forecast, "tree": tree, "controls": offered_all},
+                           executed=False, confirmed=False, refusal="execute_failed",
+                           latency_ms=int((time.time() - t0) * 1000))
         return False
     if target in ("button_continue_siege", "button_surround", "button_retreat",
                   "button_sally_forth", "button_maintain_blockade", "button_demand_surrender"):
         name = target[len("button_"):]
+        bus.wait_row(("panel",), timeout=4.0, offset=off,
+                     pred=lambda r: r.get("opened") is False
+                     and "pre_battle" in str(r.get("name") or ""))
         ok = "popup_pre_battle" not in roots(bus)
         if not ok:
             sys.stderr.write("interrupts: %s clicked but the pre-battle is still open\n" % name)
@@ -405,11 +437,14 @@ def resolve_prebattle(bus):
         still_up = "popup_pre_battle" in roots(bus)
         sys.stderr.write("interrupts: %s did NOT resolve the battle (pre_battle still open=%s)\n"
                          % (target, still_up))
-    _record_choice("pre_battle", "popup_pre_battle", opts, target,
-                   extra={"panel": forecast, "tree": tree, "controls": offered_all},
-                   executed=clicked, confirmed=bool(ok),
-                   refusal=None if ok else "command_silently_refused",
-                   latency_ms=int((time.time() - t0) * 1000))
+    if ok:
+        _ANSWER_MEMO.pop("popup_pre_battle", None)
+    if ok or final_try:
+        _record_choice("pre_battle", "popup_pre_battle", opts, target,
+                       extra={"panel": forecast, "tree": tree, "controls": offered_all},
+                       executed=clicked, confirmed=bool(ok),
+                       refusal=None if ok else "command_silently_refused",
+                       latency_ms=int((time.time() - t0) * 1000))
     return outcome
 
 
@@ -648,24 +683,27 @@ def answer_diplomacy(bus):
 
 PROPOSAL_ROOT = "diplomacy_dropdown"
 PROPOSAL_ANSWER_IDS = frozenset(("button_accept", "button_cancel"))
-# same-root subpanel controls that are dismiss/confirm furniture, not proposal answers:
-# war_declared ack + declare-war confirm, both cleared by nav.close_popups' button_ok* rule
 PROPOSAL_KNOWN_NONANSWERS = frozenset(("button_ok_war_declared", "button_ok_declare",
                                        "button_cancel_declare"))
 
-_ANSWER_MEMO = {}                    # root -> {"want","policy","scores","tries","ts"}
+_ANSWER_MEMO = {}
 _ANSWER_TRIES = 2
 _ANSWER_TTL = 180.0
 
 
-def _sticky_choice(screen, root, options):
+def reset_answers():
+    """New campaign: no held answer from a previous campaign may survive."""
+    _ANSWER_MEMO.clear()
+
+
+def _sticky_choice(screen, root, options, panel=None):
     """The advisor's pick for `root`, chosen ONCE and held while the screen persists, so a retry
     re-clicks the SAME answer instead of re-rolling a war decision. tries counts attempts."""
     m = _ANSWER_MEMO.get(root)
     if m and m.get("want") in options and time.time() - m.get("ts", 0) <= _ANSWER_TTL:
         m["tries"] += 1
         return m
-    m = {"want": _choose(screen, sorted(options), _campaign_hint()),
+    m = {"want": _choose(screen, sorted(options), _campaign_hint(), panel),
          "policy": _LAST_POLICY[0], "scores": dict(_LAST_SCORES[0] or {}),
          "tries": 1, "ts": time.time()}
     _ANSWER_MEMO[root] = m
@@ -825,8 +863,6 @@ def answer_incoming_proposal(bus):
                          answer=("decline" if k == "button_cancel"
                                  else "accept" if kind == "diplomacy_proposal"
                                  else "acknowledge"))
-    # no "chance" field: label_deal_success_chance is visible only on the outgoing negotiation
-    # screen; on incoming proposals the hidden node carries a stale placeholder (14/14 dumps)
     extra = {"tree": tree,
              "proposer": _first_text(tree, "faction_title", "faction_right_status_panel"),
              "speech": _first_text(tree, "dy_text", "speech_bubble"),
@@ -837,7 +873,6 @@ def answer_incoming_proposal(bus):
 ALLY_ATTACKED_ROOT = "ally_attacked"
 ALLY_ATTACKED_DECISIONS = frozenset(("button_join_aggressor", "button_join_defender",
                                      "decline_button"))
-# display furniture of the join-button assembly, measured in dump 1785619114999
 ALLY_ATTACKED_FURNITURE = frozenset(("button_txt", "button_flame", "button_parent",
                                      "button_default_selection"))
 
@@ -982,7 +1017,9 @@ def _record_choice(kind, root, options, chosen, extra=None,
     counted = None if confirmed_b is None else bool(executed_b and confirmed_b)
     scores = _LAST_SCORES[0] or {}
     if scores:
-        options = {k: dict(v or {}, score=scores.get(k)) for k, v in options.items()}
+        options = {k: (dict(v or {}, **scores[k]) if isinstance(scores.get(k), dict)
+                       else dict(v or {}, score=scores.get(k)))
+                   for k, v in options.items()}
     _INTERRUPT_LOG.append(dict(extra or {}, kind=kind, root=root, options=options,
                                chosen=chosen,
                                chosen_context=(options.get(chosen) or {}).get("context"),

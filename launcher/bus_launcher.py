@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import os
@@ -8,8 +8,8 @@ import sys
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bus"))
-from bus import Bus, OUT_PATH                       # noqa: E402
-from errors import TWError                          # noqa: E402
+from bus import Bus, OUT_PATH
+from errors import TWError
 
 GAME_DIR = r"D:\SteamLibrary\steamapps\common\Total War WARHAMMER III"
 EXE = os.path.join(GAME_DIR, "Warhammer3.exe")
@@ -237,7 +237,8 @@ class BusLauncher:
                 r = subprocess.run(
                     ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
                      os.path.join(os.path.dirname(os.path.abspath(__file__)), "ps", "input.ps1"),
-                     "key", "ESCAPE"], capture_output=True, text=True, timeout=30)
+                     "key", "ESCAPE"], capture_output=True, text=True, timeout=30,
+                    creationflags=subprocess.CREATE_NO_WINDOW)
                 _log("cinematic on screen -> hardware ESC (%s)" % (r.stdout or "").strip()[:60])
             for k in roots:
                 if k.get("id") == "hud_campaign" and k.get("visible"):
@@ -266,7 +267,7 @@ class BusLauncher:
             time.sleep(2.0)
         raise TWError("cm:quit() dispatched but the main menu never appeared within %ds" % timeout)
 
-    def start_campaign(self, faction, campaign="Immortal Empires", load_timeout=360):
+    def start_campaign(self, faction, campaign="Immortal Empires", load_timeout=150):
         """Main menu -> playable campaign. `faction` is a faction key."""
         ckey = self.CAMPAIGN_KEYS.get(campaign, campaign)
         faction = str(faction or "").strip()
@@ -287,12 +288,12 @@ class BusLauncher:
         _log("CAMPAIGN PLAYABLE: %s / %s" % (ckey, faction))
         return started
 
-    def restart_campaign(self, faction, campaign="Immortal Empires", load_timeout=360):
+    def restart_campaign(self, faction, campaign="Immortal Empires", load_timeout=150):
         """Quit the current campaign and start a fresh one."""
         self.quit_to_main_menu()
         return self.start_campaign(faction, campaign, load_timeout)
 
-    def launch(self, faction, campaign="Immortal Empires", boot_timeout=90, load_timeout=360):
+    def launch(self, faction, campaign="Immortal Empires", boot_timeout=90, load_timeout=150):
         if not str(faction or "").strip():
             raise TWError("launch() needs a faction key -- none given")
         self.ensure_pack()
@@ -313,7 +314,6 @@ class BusLauncher:
         if not os.path.exists(ROSTER_PATH):
             raise TWError("no startable-faction roster at %s -- regenerate it with "
                           "harvest_startable_factions() at campaign-select" % ROSTER_PATH)
-        # utf-8-sig: the roster file may carry a BOM
         with open(ROSTER_PATH, encoding="utf-8-sig") as fh:
             keys = (json.load(fh) or {}).get("factions") or []
         if not keys:

@@ -65,7 +65,7 @@ def time_split(con):
         collect += (t.get("collect_ms") or 0) / 1000.0
         if refusal == "awaiting_execution":
             continue
-        (ok_v if counted else fail_v).__class__       # noqa
+        (ok_v if counted else fail_v).__class__
         if counted:
             ok_v += (lat or 0) / 1000.0
         else:

@@ -11,11 +11,11 @@ sys.path.insert(0, r"D:\tw_stack\bus")
 sys.path.insert(0, r"D:\tw_stack\launcher")
 sys.path.insert(0, os.path.join(r"D:\tw_stack", "decisions"))
 
-import interrupt_model as IM                               # noqa: E402
-import journal                                             # noqa: E402
-import loop as L                                           # noqa: E402
-import model as M                                          # noqa: E402
-import policy as P                                         # noqa: E402
+import interrupt_model as IM
+import journal
+import loop as L
+import model as M
+import policy as P
 
 RUNS_ROOT = "D:/twdata/runs/human"
 
@@ -32,10 +32,6 @@ def _rotate_logs(log):
     import glob
     import shutil
     from bus_launcher import GAME_DIR
-    # run-dir logs/*.tail are NEVER rotated: the campaign splitter maps campaigns onto them
-    # by byte offset and the manager recreates a moved tail empty -- moving them mid-run
-    # destroys campaign attribution for the whole night (review find, 2026-08-02).
-    # shots use a 1-day age guard: events.jsonl joins to recent shots by path.
     dirs = [(os.path.join(GAME_DIR, "script_log_*.txt"), ROTATE_MIN_AGE_S)]
     try:
         rd = journal.current_run_dir(timeout=5.0)
@@ -169,12 +165,6 @@ def _postmortem(runs_root, entry, ex, log):
     except Exception as e:
         rec["wh3_running"] = None
         rec["wh3_probe_error"] = repr(e)[:120]
-    # the defeat modal pauses the script tick: the three probes below burned a measured
-    # constant 63.8s (8/8 defeats), so on defeat they are skipped outright. Every other
-    # outcome keeps the full probes: error-ending tick pauses are transient (measured
-    # 10-15s with resume; old code still collected roots on 61/63 error endings) and
-    # these fields are the stuck/error triage evidence -- a fixed 3s gate misread those
-    # pauses as a dead tick and dropped the evidence.
     if entry.get("outcome") == "defeated" and rec["wh3_running"]:
         rec.update(roots=None, ui_state=None, turn_at_death=None,
                    probes_skipped="defeat_modal_tick_paused")
@@ -224,9 +214,19 @@ def _postmortem(runs_root, entry, ex, log):
         log("   !! post-mortem NOT written: %s" % repr(e)[:160])
 
 
+NO_MODEL_DIR = r"D:\twdata\models\__cold_start__"
+
+
 def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
-                  log=print, runs_root=RUNS_ROOT, retrain=False, seed=None):
-    """Play `n` campaigns of up to `turns` turns each. Returns the session report."""
+                  log=print, runs_root=RUNS_ROOT, retrain=False, retrain_every=0, seed=None,
+                  cold=False):
+    """Play `n` campaigns of up to `turns` turns each; a (min, max) `turns` samples each
+    campaign's cap uniformly from that range. retrain_every=N retrains before campaign 1
+    and then before every Nth campaign. Returns the session report.
+
+    cold=True points the ranker at a directory that holds no model, so `ready` stays False and
+    policy.choose falls to cold_random for every pick -- the run generates data from an untrained
+    agent rather than from whatever happens to be fitted."""
     from bus import Bus
     from executor import Executor
 
@@ -245,19 +245,18 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
 
     for i in range(n):
         this_plan = _pick_plan(plan, rng)
+        this_turns = rng.randint(turns[0], turns[1]) if isinstance(turns, (tuple, list)) \
+            else int(turns)
         log("\n" + "=" * 78)
-        log("CAMPAIGN %d/%d  (up to %d turns, faction=%s)" % (i + 1, n, turns, this_plan))
+        log("CAMPAIGN %d/%d  (up to %d turns, faction=%s)" % (i + 1, n, this_turns, this_plan))
         log("=" * 78)
-        entry = {"index": i + 1, "started": time.time(), "plan": this_plan}
+        entry = {"index": i + 1, "started": time.time(), "plan": this_plan,
+                 "max_turns": this_turns}
         if hard_restart_next:
             log("previous campaign ended %s -- killing the game now" % prev_outcome)
             ex.kill_game()
-        # bus files rotate inside BusLauncher.spawn() (game guaranteed dead there); script
-        # logs rotate here, once per campaign, locked/fresh files skipped
         log("   log rotation: %s" % _rotate_logs(log))
-        # once, at the start of the batch: every campaign in a batch is then played by the same
-        # model, so the batch measures one policy rather than a moving one
-        if retrain and i == 0:
+        if (retrain and i == 0) or (retrain_every and i % retrain_every == 0):
             try:
                 t0 = time.time()
                 rep = M.train()
@@ -286,12 +285,13 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
             ex.shots_dir = os.path.join(run_dir, "shots")
             log("run dir: %s" % run_dir)
 
-            ranker = M.Ranker()
+            ranker = M.Ranker(NO_MODEL_DIR) if cold else M.Ranker()
             pol = P.Policy(ranker)
-            entry["policy"] = ("trained(%d rows)" % (ranker.meta or {}).get("rows", 0)
+            entry["policy"] = ("cold_random(forced)" if cold else
+                               "trained(%d rows)" % (ranker.meta or {}).get("rows", 0)
                                if ranker.ready else "cold_random")
             log("policy: %s" % entry["policy"])
-            rows = L.run_campaign(run_dir, ex, pol, turns=turns, log=log)
+            rows = L.run_campaign(run_dir, ex, pol, turns=this_turns, log=log, cold=cold)
             entry.update(outcome="completed", turns_played=len(rows),
                          actions=sum(r["actions"] for r in rows),
                          confirmed=sum(r["confirmed"] for r in rows),
@@ -362,12 +362,24 @@ def _write(path, report):
         sys.stderr.write("session: could not write the report -> %s\n" % repr(e)[:90])
 
 
+def _parse_turns(arg):
+    """'12' -> 12 fixed; '2-20' -> (2, 20), each campaign's cap sampled from the range."""
+    s = str(arg)
+    if "-" in s:
+        lo, hi = s.split("-", 1)
+        lo, hi = int(lo), int(hi)
+        if lo < 1 or hi < lo:
+            raise SystemExit("bad turns range %r -- want MIN-MAX with 1 <= MIN <= MAX" % s)
+        return (lo, hi)
+    return int(s)
+
+
 def main():
     n = int(sys.argv[1]) if len(sys.argv) > 1 else 3
-    turns = int(sys.argv[2]) if len(sys.argv) > 2 else 20
+    turns = _parse_turns(sys.argv[2]) if len(sys.argv) > 2 else 20
     if "--factions" not in sys.argv:
-        raise SystemExit("usage: session.py <campaigns> <turns> --factions all|<key,key,...> "
-                         "[--retrain]\n"
+        raise SystemExit("usage: session.py <campaigns> <turns|min-max> --factions "
+                         "all|<key,key,...> [--retrain]\n"
                          "  all         -- sample from EVERY playable start in the installed game,\n"
                          "                 read from launcher/startable_factions.json (harvested\n"
                          "                 from the game's own frontend: 104 factions, 24 cultures)\n"
@@ -381,7 +393,17 @@ def main():
         keys = [k.strip() for k in arg.split(",") if k.strip()]
     if not keys:
         raise SystemExit("--factions given but empty")
-    r = run_campaigns(n, turns, plan=keys, retrain="--retrain" in sys.argv)
+    every = 0
+    if "--retrain-every" in sys.argv:
+        every = int(sys.argv[sys.argv.index("--retrain-every") + 1])
+        if every < 0:
+            raise SystemExit("--retrain-every must be >= 0")
+    cold = "--cold" in sys.argv
+    if cold and ("--retrain" in sys.argv or every):
+        raise SystemExit("--cold cannot be combined with --retrain/--retrain-every: a cold run "
+                         "deliberately ignores the fitted model, so retraining it is wasted work")
+    r = run_campaigns(n, turns, plan=keys, retrain="--retrain" in sys.argv,
+                      retrain_every=every, cold=cold)
     return 0 if r["totals"]["completed"] else 2
 
 

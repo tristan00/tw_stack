@@ -22,7 +22,6 @@ def dump(table):
     b = B.read_file(files, d, name)
     print("\n== %s ==  raw_len=%d comp=%s" % (table, len(b), comp))
     print("head hex:", " ".join("%02x" % x for x in b[:44]))
-    # RPFM db layout: [FD FE FC FF u16len utf16 GUID]? [FC FD FE FF u32 ver] u32 rowcount
     p = 0
     if b[:4] == b"\xfd\xfe\xfc\xff":
         ln = struct.unpack_from("<H", b, 4)[0]

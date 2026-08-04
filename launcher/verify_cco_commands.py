@@ -9,8 +9,8 @@ import time
 
 sys.path.insert(0, r"D:\tw_stack\bus")
 sys.path.insert(0, r"D:\tw_stack\ui-capture")
-from bus import Bus                      # noqa: E402
-import cco_queries as CQ                 # noqa: E402
+from bus import Bus
+import cco_queries as CQ
 
 _G = ("local function g(c,p) local ok,v=pcall(function() return c:Call(p) end);"
       "if ok and v~=nil then return v end return nil end ")

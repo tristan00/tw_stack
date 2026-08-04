@@ -20,7 +20,7 @@ class FakeOS:
     def __init__(self):
         self.fg = ("editor - notes.py", 111)
         self.pos = (0, 0)
-        self.keys = set()                     # virtual-key codes currently 'pressed'
+        self.keys = set()
 
     def cursor(self):
         return self.pos
@@ -71,19 +71,19 @@ def main():
     th.start()
 
     step = 0.10
-    time.sleep(step)                          # initial focus(editor) + move(0,0)
+    time.sleep(step)
     os_state.pos = (10, 20)
-    time.sleep(step)                          # move(10,20)
-    os_state.keys = {0x41}                     # press 'A'
-    time.sleep(step)                          # key_down A
-    os_state.keys = set()                      # release 'A'
-    time.sleep(step)                          # key_up A
-    os_state.keys = {0x01}                     # press LEFT mouse
-    time.sleep(step)                          # mouse_down L -> shot_req.set()
+    time.sleep(step)
+    os_state.keys = {0x41}
+    time.sleep(step)
     os_state.keys = set()
-    time.sleep(step)                          # mouse_up L
+    time.sleep(step)
+    os_state.keys = {0x01}
+    time.sleep(step)
+    os_state.keys = set()
+    time.sleep(step)
     os_state.fg = ("Total War: WARHAMMER 3", 222)
-    time.sleep(step)                          # focus(game)
+    time.sleep(step)
     ctx.stop()
     th.join(timeout=2.0)
 
@@ -95,11 +95,9 @@ def main():
         if need not in kinds:
             fails.append("missing kind: %s" % need)
 
-    # the click must have raised shot_req (input -> shots coupling)
     if not ctx.shot_req.is_set():
         fails.append("mouse_down did not set shot_req")
 
-    # specific semantic checks
     keydowns = [r for r in rows if r["kind"] == "key_down"]
     if not any(r.get("key") == "A" for r in keydowns):
         fails.append("no key_down for 'A' (got %s)" % [r.get("key") for r in keydowns])
@@ -110,7 +108,6 @@ def main():
     if not (mdowns and mdowns[0].get("button") == "L" and "screen" in mdowns[0]):
         fails.append("mouse_down row malformed: %s" % (mdowns[:1]))
 
-    # clock monotonic non-decreasing
     ts = [r["t"] for r in rows]
     if any(ts[i] < ts[i - 1] for i in range(1, len(ts))):
         fails.append("t not monotonic non-decreasing")

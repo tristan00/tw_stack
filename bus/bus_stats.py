@@ -126,7 +126,7 @@ class StatsTracker:
         self.flush_every_n = max(1, int(flush_every_n))
         self.flush_every_s = float(flush_every_s)
         self._lock = threading.Lock()
-        self._pending: dict[tuple[str, str], list] = {}   # (channel,key) -> [calls,hits,emp,to,err,ms,last_ts]
+        self._pending: dict[tuple[str, str], list] = {}
         self._calls_since_flush = 0
         self._last_flush = time.time()
         if register_atexit:
@@ -227,9 +227,8 @@ class SuppressionGuard:
         self.stress_min_samples = max(1, int(stress_min_samples))
         self.stress_threshold = max(1, int(stress_threshold))
         self._lock = threading.Lock()
-        # (channel,key) -> [calls, hits, suppress_counter]  (calls/hits count only REAL round-trips)
         self._state: dict[tuple[str, str], list] = {}
-        self._recent = deque(maxlen=max(1, int(stress_window)))   # 1 == timeout, 0 == anything else
+        self._recent = deque(maxlen=max(1, int(stress_window)))
 
     def note(self, channel: str, key: str, outcome: str) -> None:
         """Record the outcome of a REAL (non-short-circuited) find/tree round-trip. Never raises."""

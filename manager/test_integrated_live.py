@@ -20,11 +20,11 @@ _STACK = os.path.dirname(_HERE)
 for _repo in ("input", "shots", "logs", "ui-capture", "bus"):
     sys.path.insert(0, os.path.join(_STACK, _repo))
 
-import manager                       # noqa: E402
-import input_stream                  # noqa: E402
-import shots_stream                  # noqa: E402
-import logs_stream                   # noqa: E402
-import ui_capture_stream             # noqa: E402
+import manager
+import input_stream
+import shots_stream
+import logs_stream
+import ui_capture_stream
 
 GAME_DIR = r"D:\SteamLibrary\steamapps\common\Total War WARHAMMER III"
 APPDATA = os.path.expandvars(r"%APPDATA%/The Creative Assembly/Warhammer3/logs")
@@ -48,7 +48,6 @@ def main():
     rec.stop()
     out = rec.out_dir
 
-    # ---- verify ----
     fails = []
 
     def load(name):
@@ -68,15 +67,12 @@ def main():
     ekinds = set(r.get("kind") for r in events)
     ui_rows = load("ui_components.jsonl")
 
-    # [1] input stream produced input rows
     if not ({"focus", "move"} & ekinds or {"key_down", "mouse_down"} & ekinds):
         fails.append("input: no input rows (kinds=%s)" % sorted(ekinds))
-    # [2] shots
     sdir = os.path.join(out, "shots")
     njpg = len([f for f in os.listdir(sdir) if f.endswith(".jpg")]) if os.path.isdir(sdir) else 0
     if njpg < 2 or "shot" not in ekinds:
         fails.append("shots: only %d jpgs / shot rows=%s" % (njpg, "shot" in ekinds))
-    # [3] logs carry real TWSTATE
     ldir = os.path.join(out, "logs")
     twstate = 0
     tails = []
@@ -93,13 +89,11 @@ def main():
         fails.append("logs: no log_open rows")
     if twstate == 0:
         fails.append("logs: NO TWSTATE captured (%d tail files) -- the semantic signal is missing" % len(tails))
-    # [4] ui-capture connected to the bus (and ideally scraped a panel)
     ui_status = [r.get("status") for r in ui_rows if r.get("kind") == "ui_status"]
     menu_opens = [r for r in ui_rows if r.get("kind") == "menu_open"]
     if "bus_available" not in ui_status:
         fails.append("ui-capture: never reported bus_available (status=%s)" % ui_status)
-    # meta + shared clock
-    meta = load("meta.json")  # single object file; load() will fail-safe to []
+    meta = load("meta.json")
     metaobj = json.load(open(os.path.join(out, "meta.json"))) if os.path.isfile(os.path.join(out, "meta.json")) else {}
     if metaobj.get("recorder_version") != "v5-decomp":
         fails.append("meta.recorder_version wrong: %s" % metaobj.get("recorder_version"))

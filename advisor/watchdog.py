@@ -60,7 +60,6 @@ class Watchdog:
         last_error = None
         while not self._stop.is_set():
             reason = detail = None
-            # decide on the clock, before issuing a request that may block
             idle_now = self.idle_seconds()
             if idle_now >= self.stuck_seconds and (self.checks or self.errors):
                 reason = "blocked" if last_error is not None else "identical_state"
@@ -99,6 +98,6 @@ class Watchdog:
                     self._on_stuck(reason, detail)
                 except Exception as e:
                     self._log("on_stuck handler raised: %s" % repr(e)[:160])
-                return                        # one verdict per run
+                return
             self._stop.wait(max(1.0, min(self.poll_seconds,
                                          self.stuck_seconds - self.idle_seconds())))

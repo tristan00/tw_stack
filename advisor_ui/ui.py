@@ -294,7 +294,7 @@ def render_interrupts(runs_root=RUNS_ROOT):
             pol = "policy" if "policy" in cols else "NULL"
             for ts, kind, oj, pick, counted, ref, lat, p, cj in c.execute(
                     "SELECT ts, kind, options_json, chosen, counted, refusal, latency_ms, %s,"
-                    " campaign_json FROM interrupt_decisions ORDER BY interrupt_id DESC LIMIT 40"
+                    " campaign_json FROM interrupt_decisions ORDER BY interrupt_id DESC LIMIT 120"
                     % pol):
                 try:
                     opts = json.loads(oj) if oj else {}
@@ -310,37 +310,58 @@ def render_interrupts(runs_root=RUNS_ROOT):
         finally:
             c.close()
     recent.sort(key=lambda r: -(r[0] or 0))
+    def _clean(opt):
+        s = str(opt)
+        for pre in ("CcoCdirEventsDilemmaChoiceDetailRecord", "button_", "captive_option_"):
+            s = s.replace(pre, "")
+        return s
+
+    def _short(opt, n=28):
+        s = _clean(opt)
+        return s if len(s) <= n else "…" + s[-(n - 1):]
+
+    def _shortfac(fac):
+        parts = str(fac or "?").split("_")
+        return "_".join(parts[2:]) if len(parts) > 3 else str(fac or "?")
+
     rec_rows = []
-    for ts, kind, opts, pick, counted, ref, lat, p, fac in recent[:40]:
-        cells = []
-        for k in sorted(opts, key=lambda k: -(opts[k] or {}).get("score") or 0
-                        if isinstance((opts[k] or {}).get("score"), float) else 0):
-            sc = (opts[k] or {}).get("score") if isinstance(opts[k], dict) else None
-            label = "%s=%s" % (_esc(k.replace("button_", "").replace("captive_option_", "")),
-                               ("%.3f" % sc) if isinstance(sc, (int, float)) else "-")
-            cells.append("<b>%s</b>" % label if k == pick else label)
+    shown = [r for r in recent if len(r[2] or {}) > 1]
+    for ts, kind, opts, pick, counted, ref, lat, p, fac in shown[:40]:
+        def _pred(k, field):
+            v = opts.get(k) if isinstance(opts.get(k), dict) else {}
+            x = v.get(field)
+            return x if isinstance(x, (int, float)) else None
+
+        def _lvl(k):
+            fmt = lambda x: ("%.2f" % x) if isinstance(x, (int, float)) else "-"
+            return "%s exploit=%s explore=%s" % (_short(k), fmt(_pred(k, "exploit")),
+                                                 fmt(_pred(k, "explore")))
+        ordered = sorted(opts, key=lambda k: -(_pred(k, "exploit")
+                                               if _pred(k, "exploit") is not None else -1e9))
+        tip = ", ".join(_lvl(k) for k in ordered)
         res = ("<span class=ok>OK</span>" if counted
-               else "<span class=bad>%s</span>" % _esc(ref or "fail"))
+               else "<span class=bad>%s</span>" % _esc((ref or "fail")[:22]))
+        pick_lbl = ("<b title='%s'>%s</b>" % (_esc(tip), _esc(_short(pick)))
+                    if pick else "<span class=dim>-</span>")
         rec_rows.append(
             "<tr><td class=dim>%s</td><td>%s</td><td class=dim>%s</td><td>%s</td>"
-            "<td>%s</td><td class=dim>%s</td><td class=dim>%s</td></tr>"
+            "<td>%s</td><td class=dim>%d</td><td class=dim>%s</td><td class=dim>%s</td></tr>"
             % (time.strftime("%H:%M:%S", time.localtime(ts or 0)), _esc(kind),
-               _esc((fac or "?")[:26]), res,
-               ", ".join(cells) or "<span class=dim>-</span>",
+               _esc(_shortfac(fac)[:24]), res, pick_lbl, len(opts),
                _esc(p or "-"), ("%.1fs" % (lat / 1000.0)) if lat else "-"))
-    recent_tbl = ("<h2>recent interrupt decisions &mdash; predicted values per option "
-                  "(chosen in bold)</h2><div class=scroll><table>"
-                  "<tr><th>time<th>screen<th>faction<th>result<th>options=score<th>policy"
-                  "<th>latency</tr>%s</table></div>"
-                  % ("".join(rec_rows) or "<tr><td class=dim colspan=7>none recorded</td></tr>"))
+    recent_tbl = ("<h2>recent interrupt decisions <span class=dim>(single-option acks omitted; "
+                  "hover chosen for all options and scores)</span></h2><div class=scroll><table>"
+                  "<tr><th>time<th>screen<th>faction<th>result<th>chosen<th>n opts"
+                  "<th>policy<th>latency</tr>%s</table></div>"
+                  % ("".join(rec_rows) or "<tr><td class=dim colspan=8>none recorded</td></tr>"))
 
     rows = []
     for (kind, opt), n in sorted(chosen.items(), key=lambda kv: (kv[0][0], -kv[1])):
         seen = offered.get((kind, opt), 0)
         rate = (100.0 * n / seen) if seen else None
-        rows.append("<tr><td>%s</td><td>%s</td><td class=num>%d</td><td class=num>%d</td>"
-                    "<td class=num>%s</td></tr>"
-                    % (_esc(kind), _esc(opt), n, seen,
+        rows.append("<tr><td>%s</td><td title='%s'>%s</td><td class=num>%d</td>"
+                    "<td class=num>%d</td><td class=num>%s</td></tr>"
+                    % (_esc(kind), _esc(_clean(opt)), _esc(_short(opt, 48)), n, seen,
                        "&mdash;" if rate is None else "%.0f%%" % rate))
     screens = " &middot; ".join("%s <b>%d</b>" % (_esc(k), v) for k, v in per_screen.items())
     head = ("<h2>blocking menus <span class=dim>(%d decisions)</span></h2>"
@@ -378,7 +399,6 @@ def starts_summary(runs_root=RUNS_ROOT):
                     " JOIN decision_points d ON d.decision_id=t.decision_id"
                     " WHERE d.campaign_id=? AND t.refusal IS NOT 'awaiting_execution'",
                     (camp,)).fetchone()
-                # power_rank is best at its minimum, hence MIN here and MAX for the rest
                 best = c.execute(
                     "SELECT MAX(settlements), MIN(power_rank), MAX(lord_level), MAX(vassals)"
                     " FROM target_rows WHERE campaign_id=?", (camp,)).fetchone() or (None,) * 4
@@ -618,7 +638,6 @@ def _session_state():
     st = {"log": None, "campaign": None, "faction": None, "turn": None,
           "outcomes": [], "session": None, "tail": [], "batch_timeouts": 0}
     try:
-        # utf-8-sig: PowerShell launch commands write the pointer with a BOM
         lp = open(CURRENT_LOG, encoding="utf-8-sig").read().strip()
         if os.path.isfile(lp):
             st["log"] = lp
@@ -631,9 +650,6 @@ def _session_state():
                     if m:
                         st["campaign"] = "%s x%s" % (m.group(1), m.group(2))
                         st["faction"] = m.group(3).rstrip(")")
-                # a turn line only belongs to the current campaign if it comes AFTER the
-                # newest CAMPAIGN header; during the relaunch window (header printed, no
-                # turn yet) the previous campaign's turns must not be paired with it
                 if st["turn"] is None and st["campaign"] is None and ln.startswith("== TURN "):
                     tv = ln.split("== TURN ", 1)[1].split(" ")[0]
                     st["turn"] = tv[:-2] if tv.endswith(".0") else tv
@@ -693,9 +709,6 @@ def render_live(run_dir):
                               "(defeat screens produce these in pairs)</span>" % n_to)
         except OSError:
             pass
-    # batch timeouts happen in the recorder and reach the session RELAYED through
-    # journal ("recorder failed request ... bus batch timeout"), which lands in the
-    # session .log via log() -- they never appear in the session's stderr
     if st["batch_timeouts"]:
         alerts.append("<span class=bad>%d BATCH timeouts -- the wave path is "
                       "losing replies</span>" % st["batch_timeouts"])
@@ -942,7 +955,7 @@ def render_timeline(con):
     _rows, per_turn = timeline(con)
     if not per_turn:
         return ""
-    scale = 1 / 40.0                                  # 1px per 40ms
+    scale = 1 / 40.0
     phases = (("collect_ms", "p1", "recorder reading the game"),
               ("queue_ms", "p2", "request round trip"),
               ("score_ms", "p3", "featurize + rank"),
@@ -1057,7 +1070,8 @@ def _ps():
     procs, wh3 = [], None
     try:
         r = subprocess.run(["powershell", "-NoProfile", "-Command", cmd],
-                           capture_output=True, text=True, timeout=20)
+                           capture_output=True, text=True, timeout=20,
+                           creationflags=subprocess.CREATE_NO_WINDOW)
         for ln in (r.stdout or "").splitlines():
             ln = ln.strip()
             if ln.startswith("WH3|"):
@@ -1142,7 +1156,8 @@ def render_infra(run_dir):
 
     try:
         import policy as _P
-        pol_cfg = ("random %.0f%% / novelty-directed %.0f%% / exploit %.0f%% (policy.py, live)"
+        pol_cfg = ("random %.0f%% / explore %.0f%% / exploit %.0f%% (policy.py, live; both "
+                   "the action policy and the interrupt policy)"
                    % (100 * _P.EPSILON, 100 * _P.BETA, 100 * (1 - _P.EPSILON - _P.BETA)))
     except Exception as e:
         pol_cfg = "unreadable: %s" % repr(e)[:60]
@@ -1200,16 +1215,58 @@ def render_infra(run_dir):
                 pass
 
     ctl = ("<h2>control</h2>"
-           "<div class=dim style='margin-bottom:8px'>kills the running session and the game; "
-           "a restart cold-starts a new campaign series</div>"
-           "<div style='display:flex;gap:8px;flex-wrap:wrap'>"
-           "<a class=btn href='/ctl/kill' onclick=\"return confirm('Kill the session and the game?')\">"
+           "<div class=dim style='margin-bottom:8px'>launch kills session + game + recorder, "
+           "starts a fresh recorder (bus reset, new run dir), then the session; each campaign's "
+           "turn cap is drawn uniformly from [min, max]</div>"
+           "<div style='display:flex;gap:16px;flex-wrap:wrap;align-items:center'>"
+           "<a class=btn href='/ctl/kill' "
+           "onclick=\"return ctl(this.href,'Kill the session and the game?')\">"
            "kill session + game</a>"
-           "<a class=btn href='/ctl/restart?retrain=1' "
-           "onclick=\"return confirm('Restart WITH retraining?')\">restart (retrain)</a>"
-           "<a class=btn href='/ctl/restart?retrain=0' "
-           "onclick=\"return confirm('Restart WITHOUT retraining?')\">restart (no retrain)</a>"
-           "</div>")
+           "<form action='/ctl/restart' method='get' onsubmit='return launchRun(this)' "
+           "style='display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0'>"
+           "<label>campaigns <input name=campaigns type=number min=1 max=999 value=100 "
+           "style='width:70px'></label>"
+           "<label>turns min <input name=turns_min type=number min=1 max=999 value=2 "
+           "style='width:70px'></label>"
+           "<label>turns max <input name=turns_max type=number min=1 max=999 value=20 "
+           "style='width:70px'></label>"
+           "<label><input type=checkbox name=retrain value=1> retrain first</label>"
+           "<label>retrain every <input name=retrain_every type=number min=0 max=999 value=0 "
+           "style='width:60px' title='0 = never; N = retrain before campaign 1 and every Nth "
+           "campaign after'></label>"
+           "<button class=btn>launch run</button>"
+           "</form></div>"
+           "<div class=dim style='margin:14px 0 8px'>cold start: same kill+recorder sequence, but "
+           "the session runs with NO model &mdash; both the main policy and the interrupt policy "
+           "are forced to cold_random, so the run generates data from an untrained agent. Never "
+           "retrains.</div>"
+           "<form action='/ctl/coldstart' method='get' onsubmit='return launchCold(this)' "
+           "style='display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0'>"
+           "<label>campaigns <input name=campaigns type=number min=1 max=999 value=10 "
+           "style='width:70px'></label>"
+           "<label>max turns <input name=turns_max type=number min=1 max=999 value=40 "
+           "style='width:70px'></label>"
+           "<button class=btn>launch cold start</button>"
+           "</form>"
+           "<pre id=ctlout class=dim style='margin-top:8px;white-space:pre-wrap'></pre>"
+           "<script>"
+           "function ctl(u,m){if(m&&!confirm(m))return false;"
+           "var o=document.getElementById('ctlout');o.textContent='working\\u2026';"
+           "fetch(u+(u.indexOf('?')>=0?'&':'?')+'ajax=1')"
+           ".then(function(r){return r.text()}).then(function(t){o.textContent=t})"
+           ".catch(function(e){o.textContent='request failed: '+e});return false}"
+           "function launchRun(f){var q=new URLSearchParams(new FormData(f)).toString();"
+           "return ctl('/ctl/restart?'+q,'Kill everything and launch this run?')}"
+           "function launchCold(f){var q=new URLSearchParams(new FormData(f)).toString();"
+           "return ctl('/ctl/coldstart?'+q,'Kill everything and launch a COLD START "
+           "(no model, cold_random throughout)?')}"
+           "(function(){var f=document.querySelector(\"form[action='/ctl/restart']\");"
+           "if(!f)return;Array.prototype.forEach.call(f.elements,function(el){"
+           "if(!el.name)return;var k='launch.'+el.name,v=localStorage.getItem(k);"
+           "if(v!==null){if(el.type==='checkbox'){el.checked=(v==='1')}else{el.value=v}}"
+           "el.addEventListener('change',function(){localStorage.setItem(k,"
+           "el.type==='checkbox'?(el.checked?'1':'0'):el.value)})})})();"
+           "</script>")
     return svc + models + activity + ctl + tail
 
 
@@ -1223,21 +1280,64 @@ def _kill_session():
            "Stop-Process -Force -ErrorAction SilentlyContinue; 'killed sessions={0}' -f $n")
     try:
         r = subprocess.run(["powershell", "-NoProfile", "-Command", cmd],
-                           capture_output=True, text=True, timeout=40)
+                           capture_output=True, text=True, timeout=40,
+                           creationflags=subprocess.CREATE_NO_WINDOW)
         return (r.stdout or "").strip() or "killed"
     except Exception as e:
         return "kill failed: %s" % repr(e)[:120]
 
 
-def _start_session(retrain=True, campaigns=10, turns=40):
-    """Spawn a detached session. Returns a status line."""
+def _kill_recorder():
+    """Kill manager.py. Returns a status line."""
+    import subprocess
+    cmd = ("$n=0; Get-CimInstance Win32_Process -Filter \"Name like '%python%'\" | "
+           "? { $_.CommandLine -like '*manager.py*' } | % { Stop-Process -Id $_.ProcessId -Force "
+           "-ErrorAction SilentlyContinue; $n++ }; 'killed recorders={0}' -f $n")
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", cmd],
+                           capture_output=True, text=True, timeout=40,
+                           creationflags=subprocess.CREATE_NO_WINDOW)
+        return (r.stdout or "").strip() or "recorder killed"
+    except Exception as e:
+        return "recorder kill failed: %s" % repr(e)[:120]
+
+
+SERVICES_LOG_DIR = r"D:\twdata\logs\services"
+
+
+def _start_recorder(shots=60):
+    """Spawn a detached recorder: resets the bus and opens a fresh run dir."""
     import subprocess
     import time
     ts = time.strftime("%Y%m%d_%H%M%S")
-    log = os.path.join(LOG_DIR, "session_%dx%d_%s.log" % (campaigns, turns, ts))
+    log = os.path.join(SERVICES_LOG_DIR, "manager_%s.log" % ts)
+    try:
+        os.makedirs(SERVICES_LOG_DIR, exist_ok=True)
+        fo = open(log, "w", encoding="utf-8")
+        subprocess.Popen([VENV_PY, "-u", "manager/manager.py", "--shots", str(shots)],
+                         cwd=TW_STACK, stdout=fo, stderr=subprocess.STDOUT,
+                         creationflags=getattr(subprocess, "DETACHED_PROCESS", 0)
+                         | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+        return "recorder started -> %s" % os.path.basename(log)
+    except Exception as e:
+        return "recorder start failed: %s" % repr(e)[:160]
+
+
+def _start_session(retrain=True, campaigns=10, turns=40, retrain_every=0, cold=False):
+    """Spawn a detached session; `turns` is an int or a 'MIN-MAX' per-campaign range.
+
+    cold=True passes --cold, which makes the session ignore any fitted model and play
+    cold_random throughout."""
+    import subprocess
+    import time
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    log = os.path.join(LOG_DIR, "session_%s%dx%s_%s.log"
+                       % ("cold_" if cold else "", campaigns, turns, ts))
     err = log[:-4] + ".err"
-    args = [VENV_PY, "-u", "advisor/session.py", str(campaigns), str(turns),
-            "--factions", "all"] + (["--retrain"] if retrain else [])
+    args = ([VENV_PY, "-u", "advisor/session.py", str(campaigns), str(turns),
+             "--factions", "all"] + (["--cold"] if cold else [])
+            + (["--retrain"] if retrain and not cold else [])
+            + (["--retrain-every", str(retrain_every)] if retrain_every and not cold else []))
     try:
         os.makedirs(LOG_DIR, exist_ok=True)
         fo, fe = open(log, "w", encoding="utf-8"), open(err, "w", encoding="utf-8")
@@ -1246,32 +1346,72 @@ def _start_session(retrain=True, campaigns=10, turns=40):
                          | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
         with open(CURRENT_LOG, "w", encoding="utf-8") as fh:
             fh.write(log)
-        return "started %s -> %s" % ("with retrain" if retrain else "no retrain",
+        return "started %s -> %s" % ("COLD (no model, cold_random throughout)" if cold else
+                                     "with retrain" if retrain else "no retrain",
                                      os.path.basename(log))
     except Exception as e:
         return "start failed: %s" % repr(e)[:160]
 
 
-def _control(path):
-    """Handle /ctl/kill and /ctl/restart?retrain=0|1. Returns the result page body."""
+def _control_steps(path):
+    """Run /ctl/kill or /ctl/restart; returns the plain-text step report."""
     import time
     from urllib.parse import parse_qs, urlparse
     u = urlparse(path)
     q = parse_qs(u.query or "")
-    steps = []
     if u.path == "/ctl/kill":
-        steps.append(_kill_session())
-    elif u.path == "/ctl/restart":
-        retrain = (q.get("retrain", ["1"])[0] != "0")
-        steps.append(_kill_session())
+        return _kill_session()
+    if u.path == "/ctl/coldstart":
+        try:
+            campaigns = int(q.get("campaigns", [""])[0])
+            tmax = int(q.get("turns_max", [""])[0])
+        except ValueError:
+            return ("invalid cold start: campaigns=%r turns_max=%r -- both must be integers, "
+                    "nothing was killed or started"
+                    % (q.get("campaigns"), q.get("turns_max")))
+        if not (1 <= campaigns <= 999 and 1 <= tmax <= 999):
+            return ("invalid cold start: campaigns=%d turns_max=%d -- need 1 <= campaigns <= 999 "
+                    "and 1 <= turns_max <= 999, nothing was killed or started"
+                    % (campaigns, tmax))
+        steps = [_kill_session(), _kill_recorder()]
         time.sleep(1.5)
-        steps.append(_start_session(retrain=retrain))
-    else:
-        steps.append("unknown control: %s" % u.path)
-    return ("<h1>control</h1><pre>%s</pre>"
-            "<p><a class=btn href='/'>back</a></p>"
-            "<div class=dim>the page below refreshes on its own; give the session ~20s to "
-            "appear</div>" % _esc("\n".join(steps)))
+        steps.append(_start_recorder())
+        time.sleep(3.0)
+        steps.append(_start_session(retrain=False, campaigns=campaigns, turns=tmax, cold=True))
+        steps.append("give the recorder + session ~20s to appear in the tables above")
+        return "\n".join(steps)
+    if u.path == "/ctl/restart":
+        retrain = (q.get("retrain", ["0"])[0] not in ("0", ""))
+        try:
+            campaigns = int(q.get("campaigns", [""])[0])
+            tmin = int(q.get("turns_min", [""])[0])
+            tmax = int(q.get("turns_max", [""])[0])
+            every = int(q.get("retrain_every", ["0"])[0] or 0)
+        except ValueError:
+            return ("invalid launch: campaigns=%r turns_min=%r turns_max=%r retrain_every=%r "
+                    "-- all must be integers, nothing was killed or started"
+                    % (q.get("campaigns"), q.get("turns_min"), q.get("turns_max"),
+                       q.get("retrain_every")))
+        if not (1 <= campaigns <= 999 and 1 <= tmin <= tmax <= 999 and 0 <= every <= 999):
+            return ("invalid launch: campaigns=%d turns_min=%d turns_max=%d retrain_every=%d "
+                    "-- need 1 <= campaigns <= 999, 1 <= min <= max <= 999, 0 <= every <= 999, "
+                    "nothing was killed or started" % (campaigns, tmin, tmax, every))
+        turns = str(tmin) if tmin == tmax else "%d-%d" % (tmin, tmax)
+        steps = [_kill_session(), _kill_recorder()]
+        time.sleep(1.5)
+        steps.append(_start_recorder())
+        time.sleep(3.0)
+        steps.append(_start_session(retrain=retrain, campaigns=campaigns, turns=turns,
+                                    retrain_every=every))
+        steps.append("give the recorder + session ~20s to appear in the tables above")
+        return "\n".join(steps)
+    return "unknown control: %s" % u.path
+
+
+def _control(path):
+    """Full-page fallback for direct /ctl/ navigation without JS."""
+    return ("<h1>control</h1><pre>%s</pre><p><a class=btn href='/'>back</a></p>"
+            % _esc(_control_steps(path)))
 
 
 def serve(run_dir, port=8777, follow=False):
@@ -1286,7 +1426,8 @@ def serve(run_dir, port=8777, follow=False):
                 con = _con(active)
                 try:
                     if self.path.startswith("/ctl/"):
-                        body = _page(_control(self.path))
+                        body = (_control_steps(self.path) if "ajax=1" in self.path
+                                else _page(_control(self.path)))
                     elif self.path.startswith("/d/"):
                         body = render_decision(con, int(self.path[3:]))
                     elif self.path.startswith("/api/"):
@@ -1300,8 +1441,11 @@ def serve(run_dir, port=8777, follow=False):
                 body = _page("<h1>error</h1><pre>%s</pre>" % _esc(repr(e)))
             data = body.encode("utf-8")
             self.send_response(200)
-            self.send_header("Content-Type", "application/json" if self.path.startswith("/api/")
-                             else "text/html; charset=utf-8")
+            ctype = ("application/json" if self.path.startswith("/api/")
+                     else "text/plain; charset=utf-8"
+                     if (self.path.startswith("/ctl/") and "ajax=1" in self.path)
+                     else "text/html; charset=utf-8")
+            self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)

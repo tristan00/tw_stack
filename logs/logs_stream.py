@@ -13,8 +13,8 @@ LOGTAIL_EVERY = 3.0
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "campaigns"))
 try:
-    from splitter import scan_state_rows            # noqa: E402
-except Exception as e:                              # noqa: BLE001 -- degrade to single-campaign
+    from splitter import scan_state_rows
+except Exception as e:
     scan_state_rows = None
     sys.stderr.write("logs: scan_state_rows import failed (campaign-swap disabled) -> %s\n"
                      % repr(e)[:80])
@@ -103,7 +103,7 @@ def run(ctx, log_dirs, poll_every: float = LOGTAIL_EVERY, own_slack: float = 2.0
                     if sz < off[src]:
                         off[src] = 0
                     if sz > off[src]:
-                        with open(src, "rb") as f:    # binary: text-mode seek corrupts offsets
+                        with open(src, "rb") as f:
                             f.seek(off[src])
                             chunk = f.read(sz - off[src])
                         if split_campaigns and "script_log" in os.path.basename(src).lower():

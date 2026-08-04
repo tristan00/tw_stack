@@ -216,7 +216,7 @@ def _readable_start(stamp: str | None) -> str | None:
     try:
         d, hm = stamp.split("_")
         return "20%s-%s-%s %s:%s" % (d[4:6], d[2:4], d[0:2], hm[0:2], hm[2:4])
-    except Exception as e:                       # noqa: BLE001 -- label is cosmetic
+    except Exception as e:
         sys.stderr.write("splitter: start-label skipped -> %s\n" % repr(e)[:80])
         return None
 

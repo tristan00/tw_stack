@@ -6,7 +6,8 @@ import os
 import sys
 
 RUNS_ROOT = "D:/twdata/runs/human"
-PHASES = ("wave_a_ms", "wave_b_ms", "wave_c_ms", "campaign_offers/diplomacy", "lord_pools_ms")
+PHASES = ("wave_a_ms", "wave_b_ms", "wave_c_ms", "campaign_offers/diplomacy", "lord_pools_ms",
+          "campaign_state_engine_ms")
 
 
 def newest_run():

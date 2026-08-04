@@ -27,11 +27,11 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from campaigns.splitter import split_run  # noqa: E402
+from campaigns.splitter import split_run
 
 DEFAULT_ROOT = r"D:/twdata/runs/human"
 DEFAULT_PREVIEW = r"D:/twdata/_split_preview"
-ACTIVE_RUN = "20260728_143603"          # currently recording -> never a migration target
+ACTIVE_RUN = "20260728_143603"
 
 
 def verify_report(rep: dict) -> tuple[bool, list[str], list[str]]:
@@ -125,7 +125,7 @@ def _iter_target_runs(root: str, only: str | None):
             continue
         name = os.path.basename(d)
         if name == ACTIVE_RUN:
-            continue                                    # active run: read-only, never a target
+            continue
         if only and name != only:
             continue
         yield d
@@ -156,7 +156,7 @@ def main() -> None:
         n_runs += 1
         try:
             rep = migrate_run(d, args.preview_dir, count_lines, write=not args.no_write)
-        except Exception as e:                          # noqa: BLE001 -- one bad run must not stop the sweep
+        except Exception as e:
             sys.stderr.write("migrate: run %s skipped -> %s\n" % (os.path.basename(d), repr(e)[:80]))
             continue
         n_ok += 1 if rep["verify_ok"] else 0

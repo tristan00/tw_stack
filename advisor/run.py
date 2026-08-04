@@ -14,16 +14,16 @@ sys.path.insert(0, r"D:\tw_stack\bus")
 sys.path.insert(0, r"D:\tw_stack\launcher")
 sys.path.insert(0, os.path.join(r"D:\tw_stack", "decisions"))
 
-import loop as L                                            # noqa: E402
-import policy as P                                          # noqa: E402
-import model as M                                           # noqa: E402
+import loop as L
+import policy as P
+import model as M
 
 
 def main():
     if len(sys.argv) < 2:
         print(__doc__.strip())
         return 1
-    import journal                                          # noqa: E402
+    import journal
     arg = sys.argv[1]
     turns = int(sys.argv[2]) if len(sys.argv) > 2 else 3
     if arg not in ("auto", "-"):
@@ -38,7 +38,6 @@ def main():
     ex = Executor(Bus())
     state = ex.ensure_campaign(fresh="--fresh" in sys.argv)
     print("campaign: %s" % json.dumps(state)[:200], flush=True)
-    # a campaign start rotates the run dir -- re-resolve it
     if not state.get("already_in_campaign"):
         live = journal.current_run_dir(timeout=120.0)
         if live != run_dir:

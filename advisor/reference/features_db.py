@@ -4,6 +4,9 @@ Returns {} / None when the key is absent so callers can featurize uniformly.
 import os
 import re
 import sqlite3
+import sys
+
+_EMPTY_SUFFIX_WARNED = set()
 
 DB = r"D:\twdata\reference\reference.sqlite"
 
@@ -13,7 +16,6 @@ _con = None
 def _connect():
     global _con
     if _con is None:
-        # check_same_thread=False: read-only reference DB, shared across the UI server's threads
         _con = sqlite3.connect(DB, check_same_thread=False)
         _con.row_factory = sqlite3.Row
     return _con
@@ -66,6 +68,175 @@ def label(key):
     return row["text"] if row else None
 
 
+_AGENT_ACTION_NAME_PREFIX = "agent_actions_localised_action_name_"
+_AGENT_ACTION_DESC_PREFIX = "agent_actions_localised_action_description_"
+_TR_RE = re.compile(r"^\{\{tr:(.+)\}\}$")
+_TR_PREFIX = "ui_text_replacements_localised_text_"
+
+
+def agent_action_label(action_key):
+    """Display name of an agent action, following the loc `{{tr:...}}` indirection (or None).
+
+    agent_actions_localised_action_name_<key> holds `{{tr:agent_action_name_scout_settlement}}`,
+    which resolves through ui_text_replacements_localised_text_<...> to "Scout Ruins"."""
+    txt = label(_AGENT_ACTION_NAME_PREFIX + str(action_key))
+    if not txt:
+        return None
+    m = _TR_RE.match(txt.strip())
+    if not m:
+        return txt
+    return label(_TR_PREFIX + m.group(1))
+
+
+def agent_action_keys(name_suffix):
+    """Every agent_action key whose loc name row ends in `name_suffix`, e.g.
+    'hinder_settlement_scout_settlement' -> the champion/dignitary/.../wizard variants.
+
+    Takes a single suffix or a sequence of them, matching agent_action_rows: HERO_ACTIONS carries
+    `loc_suffix` as a LIST, and stringifying that list made every LIKE miss, so no hero action
+    could resolve a method name and all 41 died before touching the game."""
+    sufs = [name_suffix] if isinstance(name_suffix, str) else list(name_suffix or ())
+    out = []
+    con = _connect()
+    for suf in sufs:
+        hit = 0
+        for row in con.execute("SELECT key FROM loc WHERE key LIKE ?",
+                               (_AGENT_ACTION_NAME_PREFIX + "%" + str(suf),)):
+            out.append(row["key"][len(_AGENT_ACTION_NAME_PREFIX):])
+            hit += 1
+        if not hit and str(suf) not in _EMPTY_SUFFIX_WARNED:
+            _EMPTY_SUFFIX_WARNED.add(str(suf))
+            sys.stderr.write(
+                "features_db: agent_action_keys(%r) matched NOTHING in loc -- every hero action "
+                "on this suffix dies at method_name before touching the game. Either the suffix "
+                "is wrong or reference.sqlite was built without the agent-action rows.\n" % suf)
+    return sorted(set(out))
+
+
+def verify_hero_action_mappings(hero_actions):
+    """{action: label|None} for a HERO_ACTIONS catalogue, logging the unresolved ones loudly.
+
+    One call answers 'can the executor run any of these', instead of learning it one failed
+    action at a time in a live campaign."""
+    out, missing = {}, []
+    for name, spec in sorted((hero_actions or {}).items()):
+        label = None
+        for k in agent_action_keys((spec or {}).get("loc_suffix")):
+            label = agent_action_label(k)
+            if label:
+                break
+        out[name] = label
+        if not label:
+            missing.append(name)
+    if missing:
+        sys.stderr.write("features_db: %d/%d hero actions have NO method-name mapping and cannot "
+                         "execute: %s\n" % (len(missing), len(out), ", ".join(missing)))
+    else:
+        sys.stderr.write("features_db: all %d hero actions resolve a method name\n" % len(out))
+    return out
+
+
+_AGENT_ABILITIES = ("hinder_settlement", "hinder_army", "hinder_agent", "hinder_character",
+                    "hinder_province", "assist_army", "assist_settlement", "assist_province")
+_AGENT_KEY_RE = re.compile(
+    r"agent_action_([a-z0-9]+)_(%s)_(.+)$" % "|".join(_AGENT_ABILITIES))
+_matrix_cache = {}
+
+
+def agent_action_rows(name_suffix):
+    """[{key, agent, ability, attribute, chance}] for every agent_actions row ending in `suffix`.
+
+    The agent_actions DB table is the authority: 176 rows carrying the real per-agent-type action
+    set with its base success chance and attribute. The loc table is a pure existence list."""
+    sufs = [name_suffix] if isinstance(name_suffix, str) else list(name_suffix or ())
+    out = []
+    con = _connect()
+    for suf in sufs:
+        for row in con.execute(
+                "SELECT key,agent,ability,attribute,chance_of_success FROM agent_actions "
+                "WHERE key LIKE ?", ("%" + str(suf),)):
+            out.append({"key": row["key"], "agent": row["agent"], "ability": row["ability"],
+                        "attribute": row["attribute"], "chance": row["chance_of_success"]})
+    return out
+
+
+_catalogue_cache = None
+
+
+def agent_action_catalogue():
+    """[{action, ability, category, types:{agent: key}, attribute:{}, chance:{}}] for every
+    non-ambient agent action the game defines.
+
+    Generated from agent_actions rather than hand-listed: the table is the authority on which
+    agent types may perform what, and hand lists go stale against DLC."""
+    global _catalogue_cache
+    if _catalogue_cache is not None:
+        return _catalogue_cache
+    con = _connect()
+    cats = {r["key"]: r["category"] for r in con.execute("SELECT key,category FROM agent_abilities")}
+    out = {}
+    for r in con.execute("SELECT key,agent,ability,attribute,chance_of_success FROM agent_actions"):
+        ability = r["ability"]
+        if cats.get(ability) == "ambient":
+            continue
+        pre = "agent_action_%s_%s_" % (r["agent"], ability)
+        i = r["key"].find(pre)
+        if i < 0:
+            continue
+        action = r["key"][i + len(pre):]
+        e = out.setdefault((ability, action), {"action": action, "ability": ability,
+                                               "category": cats.get(ability), "types": {},
+                                               "attribute": {}, "chance": {}})
+        e["types"][r["agent"]] = r["key"]
+        e["attribute"][r["agent"]] = r["attribute"]
+        e["chance"][r["agent"]] = r["chance_of_success"]
+    _catalogue_cache = sorted(out.values(), key=lambda e: (e["ability"], e["action"]))
+    return _catalogue_cache
+
+
+def agent_ability_category(ability):
+    """actions | embedded | ambient -- 'ambient' abilities are never right-click methods."""
+    row = _connect().execute("SELECT category FROM agent_abilities WHERE key=?",
+                             (str(ability),)).fetchone()
+    return row["category"] if row else None
+
+
+def permitted_agent_subtypes(faction):
+    """[(agent_type, subtype)] the faction may field -- the recruit-hero universe."""
+    return [(r["agent"], r["subtype"]) for r in _connect().execute(
+        "SELECT agent,subtype FROM agent_permitted_subtypes WHERE faction=? ORDER BY agent,subtype",
+        (str(faction),))]
+
+
+def agent_action_matrix(name_suffix):
+    """{agent_type_key: full_action_key} -- which agent classes may perform this action.
+
+    The engine's character_type_key() ('engineer', 'wizard', ...) is the same token the action
+    key embeds, so this map IS the per-hero gate: a type absent here cannot perform the action."""
+    suffixes = [name_suffix] if isinstance(name_suffix, str) else list(name_suffix or ())
+    ck = tuple(suffixes)
+    if ck not in _matrix_cache:
+        out = {}
+        for suffix in suffixes:
+            for key in agent_action_keys(suffix):
+                m = _AGENT_KEY_RE.search(key)
+                if m and key.endswith(suffix):
+                    out.setdefault(m.group(1), key)
+        _matrix_cache[ck] = out
+    return dict(_matrix_cache[ck])
+
+
+def agent_action_ability(name_suffix):
+    """The ability class of an action suffix, e.g. hinder_settlement | hinder_agent | assist_army."""
+    suffixes = [name_suffix] if isinstance(name_suffix, str) else list(name_suffix or ())
+    for suffix in suffixes:
+        for key in agent_action_keys(suffix):
+            m = _AGENT_KEY_RE.search(key)
+            if m and key.endswith(suffix):
+                return m.group(2)
+    return None
+
+
 _EDICT_PREFIX = "provincial_initiative_records_localised_name_"
 _EDICT_RE = re.compile(r"_edict_([a-z]+)_")
 _edict_cache = None
@@ -89,7 +260,7 @@ def edict_options(race_tokens):
 _BUILD_NAME_PREFIX = "building_chains_encyclopedia_name_"
 _BUILD_VARIANT_PREFIX = "building_culture_variants_name_"
 _BUILD_TIP_PREFIX = "building_chains_chain_tooltip_"
-_BUILD_RE = re.compile(r"^wh\d?_[a-z0-9]+_([a-z]+)_")   # race token = key segment[2] (wh2_main_HEF_...)
+_BUILD_RE = re.compile(r"^wh\d?_[a-z0-9]+_([a-z]+)_")
 _building_cache = None
 
 
@@ -110,7 +281,7 @@ def building_options(race_tokens):
     a superset, since the DB rows are not slot/climate/resource/tech/LL-gated."""
     global _building_cache
     if _building_cache is None:
-        by_chain = {}          # chain -> (key, level, race_tok)
+        by_chain = {}
         for row in _connect().execute("SELECT key,building_chain,level FROM buildings"):
             key, chain = row["key"], row["building_chain"]
             if not key or not chain:

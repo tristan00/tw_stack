@@ -146,7 +146,7 @@ def parse_db_header(b):
     if b[p:p + 4] == VERSION_MARKER:
         p += 4
         version = struct.unpack_from("<I", b, p)[0]; p += 4
-    p += 1  # 1-byte flag between (optional) version and the row count
+    p += 1
     row_count = struct.unpack_from("<I", b, p)[0]; p += 4
     return guid, version, row_count, p
 
@@ -200,10 +200,81 @@ def decode_db_table(files, d, table, schema):
 _CAPTIVE_BUTTON = {"kill": "kill", "release": "release", "enslave": "enslave",
                    "enslave_slaves_only": "enslave", "enslave_replenishment_only": "enslave"}
 _CAPTIVE_ROLE = re.compile(r"^[A-Z][A-Z_]*$")
-# criteria-junction column layout: (entity_type, value_index, member_index); role is always col2
 _CAPTIVE_CRIT = {"campaign_group_member_criteria_cultures_tables": ("culture", 0, 1),
                  "campaign_group_member_criteria_factions_tables": ("faction", 0, 1),
                  "campaign_group_member_criteria_subcultures_tables": ("subculture", 1, 0)}
+
+
+def _agent_reference(cur, files, d, schema, report):
+    """Hero/agent-action reference: the per-agent-type action matrix with base chances
+    (`agent_actions`), the agent types (`agent_types`), ability categories
+    (`agent_abilities`), and the faction recruitment gate (`agent_permitted_subtypes`).
+    Feeds hero offer building, featurization, and the executor's action whitelist."""
+    def bail(table, rows, expect):
+        """Column names come from the RPFM schema -- if the decode's names differ from the
+        documented ones, say which names actually arrived instead of writing NULL keys."""
+        if rows and not any(k in rows[0] for k in expect):
+            print("  !! %s decoded with UNEXPECTED columns %s -- expected one of %s"
+                  % (table, sorted(rows[0].keys()), expect))
+            return True
+        return False
+
+    acts, ameta = decode_db_table(files, d, "agent_actions_tables", schema)
+    report["agent_actions_tables"] = ameta
+    if ameta["ok"] and not bail("agent_actions_tables", acts, ("unique_id",)):
+        cur.execute("DROP TABLE IF EXISTS agent_actions")
+        # cannot_fail/critical_*/failure/success are action_results KEY REFS (StringU8 in
+        # the pack schema), not booleans
+        cur.execute("CREATE TABLE agent_actions (key TEXT PRIMARY KEY, agent TEXT, ability TEXT, "
+                    "attribute TEXT, chance_of_success INTEGER, cannot_fail_result TEXT, "
+                    "succeed_always INTEGER, crit_success_mod REAL, opportune_failure_mod REAL, "
+                    "crit_failure_mod REAL, show_in_ui INTEGER, subculture TEXT, "
+                    "loc_name TEXT)")
+        for r in acts:
+            cur.execute("INSERT OR REPLACE INTO agent_actions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", (
+                r.get("unique_id"), r.get("agent"), r.get("ability"), r.get("attribute"),
+                r.get("chance_of_success"), r.get("cannot_fail"),
+                int(bool(r.get("succeed_always_override"))),
+                r.get("critical_success_proportion_modifier"),
+                r.get("opportune_failure_proportion_modifier"),
+                r.get("critical_failure_proportion_modifier"),
+                int(bool(r.get("show_action_info_in_ui"))), r.get("subculture"),
+                r.get("localised_action_name")))
+        report["_written"]["agent_actions"] = len(acts)
+
+    types, tmeta = decode_db_table(files, d, "agents_tables", schema)
+    report["agents_tables"] = tmeta
+    if tmeta["ok"] and not bail("agents_tables", types, ("key",)):
+        cur.execute("DROP TABLE IF EXISTS agent_types")
+        cur.execute("CREATE TABLE agent_types (key TEXT PRIMARY KEY, move_points INTEGER, "
+                    "faction_total_cap INTEGER, playable INTEGER)")
+        for r in types:
+            cur.execute("INSERT OR REPLACE INTO agent_types VALUES (?,?,?,?)", (
+                r.get("key"), r.get("move_points"), r.get("faction_total_cap"),
+                int(bool(r.get("playable")))))
+        report["_written"]["agent_types"] = len(types)
+
+    abil, bmeta = decode_db_table(files, d, "abilities_tables", schema)
+    report["abilities_tables"] = bmeta
+    if bmeta["ok"] and not bail("abilities_tables", abil, ("ability", "key")):
+        cur.execute("DROP TABLE IF EXISTS agent_abilities")
+        cur.execute("CREATE TABLE agent_abilities (key TEXT PRIMARY KEY, category TEXT)")
+        for r in abil:
+            cur.execute("INSERT OR REPLACE INTO agent_abilities VALUES (?,?)",
+                        (r.get("ability") or r.get("key"), r.get("category")))
+        report["_written"]["agent_abilities"] = len(abil)
+
+    perm, pmeta = decode_db_table(files, d, "faction_agent_permitted_subtypes_tables", schema)
+    report["faction_agent_permitted_subtypes_tables"] = pmeta
+    if pmeta["ok"] and not bail("faction_agent_permitted_subtypes_tables", perm,
+                                ("faction", "subtype")):
+        cur.execute("DROP TABLE IF EXISTS agent_permitted_subtypes")
+        cur.execute("CREATE TABLE agent_permitted_subtypes (faction TEXT, agent TEXT, "
+                    "subtype TEXT, PRIMARY KEY (faction, agent, subtype))")
+        for r in perm:
+            cur.execute("INSERT OR REPLACE INTO agent_permitted_subtypes VALUES (?,?,?)",
+                        (r.get("faction"), r.get("agent"), r.get("subtype")))
+        report["_written"]["agent_permitted_subtypes"] = len(perm)
 
 
 def _captive_reference(cur, files, d, schema, report):
@@ -228,7 +299,7 @@ def _captive_reference(cur, files, d, schema, report):
     report["campaign_post_battle_captive_options_tables"] = ometa
     if not ometa["ok"]:
         return
-    key2recs = {}          # option KEY -> [(record_key, outcome)]
+    key2recs = {}
     cur.execute("DROP TABLE IF EXISTS captive_options")
     cur.execute("CREATE TABLE captive_options (record_key TEXT PRIMARY KEY, option_key TEXT, "
                 "outcome TEXT, onscreen_name TEXT)")
@@ -247,7 +318,7 @@ def _captive_reference(cur, files, d, schema, report):
         grp2mem.setdefault(g, set()).add(m)
         member_universe.add(g); member_universe.add(m)
 
-    member_crit = {}       # campaign_group_member -> [(entity_type, entity_value, role)]
+    member_crit = {}
     for t, (typ, vi, mi) in _CAPTIVE_CRIT.items():
         rows, cmeta = decode_db_table(files, d, t, schema)
         report[t] = cmeta
@@ -275,7 +346,6 @@ def _captive_reference(cur, files, d, schema, report):
                 stack.append((m, dep + 1))
         return res
 
-    # (entity_type, entity_key, button) -> best (rank, record_key)
     best = {}
     for g in option_keys:
         for (etype, ekey, cond) in originators(g):
@@ -407,6 +477,7 @@ def decode_db_tables(con, files, d, schema, report):
         report["_written"]["rituals"] = len(rituals)
 
     _captive_reference(cur, files, d, schema, report)
+    _agent_reference(cur, files, d, schema, report)
 
     con.commit()
 

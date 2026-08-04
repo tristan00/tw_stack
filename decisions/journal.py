@@ -31,7 +31,7 @@ def current_run_dir(runs_root=RUNS_ROOT, timeout=0.0):
         time.sleep(0.5)
 
 
-_io_lock = threading.Lock()        # guards every append and _new_id
+_io_lock = threading.Lock()
 
 
 def _append(run_dir, name, row):
@@ -214,7 +214,7 @@ def labelled_decisions(run_dir):
     """(decisions, target_series) for this run."""
     import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from store import DecisionStore                                    # noqa: E402
+    from store import DecisionStore
     s = DecisionStore(run_dir)
     try:
         return s.labelled_decisions(), s.target_series()

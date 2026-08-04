@@ -1,7 +1,7 @@
-# Force the Warhammer3 window RESTORED + MAXIMIZED + FOREGROUND, robust to the minimized
-# state (a minimized WH3 can report MainWindowHandle=0, so enumerate ALL top-level windows
-# owned by the process). WH3 pauses its sim + the mod's poll while minimized/background,
-# which looks like a crash. Call before every UI operation.
+
+
+
+
 Add-Type @"
 using System; using System.Collections.Generic; using System.Runtime.InteropServices;
 public class Win {
@@ -71,7 +71,7 @@ public class Win {
   }
 }
 "@
-[Win]::KeepAwake()   # disable screensaver + keep display awake before any UI operation
+[Win]::KeepAwake()
 $proc = Get-Process Warhammer3 -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $proc) { Write-Output "no-process"; exit 0 }
 $h = [Win]::Find([uint32]$proc.Id)

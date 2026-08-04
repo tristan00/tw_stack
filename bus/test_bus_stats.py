@@ -13,7 +13,6 @@ import os
 import sys
 import tempfile
 
-# make bus_stats write to a scratch DB and stay enabled BEFORE importing the modules
 _TMP = tempfile.mkdtemp(prefix="bus_stats_test_")
 os.environ["BUS_STATS"] = "1"
 os.environ["BUS_STATS_DB"] = os.path.join(_TMP, "bus_stats.sqlite")
@@ -24,7 +23,6 @@ from errors import TWError
 fails = []
 
 
-# ---- 1. classifier ------------------------------------------------------------------------
 FIND_HIT = {"seq": 1, "cmd": "find", "path": "units_panel",
             "result": {"found": True, "id": "units_panel"}, "child_ids": ["a", "b"]}
 FIND_EMPTY = {"seq": 2, "cmd": "find", "path": "rituals_panel",
@@ -45,26 +43,19 @@ for name, ch, reply, want in cases:
         fails.append("classify %s: got %r want %r" % (name, got, want))
 
 
-# ---- 2. StatsTracker + report round-trip --------------------------------------------------
-# tiny flush thresholds so we exercise a real disk flush; register_atexit off for a clean test.
 tr = bus_stats.StatsTracker(os.environ["BUS_STATS_DB"], flush_every_n=3, flush_every_s=999,
                             register_atexit=False)
 
-# a genuine JUNK key: 6 calls, all empty (never a hit) -> must appear in the junk list.
 for _ in range(6):
     tr.record("find", "great_game_rituals", "empty", 12.5)
-# a healthy key: mostly hits -> must NOT be junk.
 for _ in range(5):
     tr.record("find", "units_panel", "hit", 3.0)
-# a timeout-only key with >=5 calls and 0 hits -> junk too (wasted time is what we want to see).
 for _ in range(5):
     tr.record("find", "rituals_panel", "timeout", 300.0)
-# a low-volume empty key (<5 calls) -> below the junk threshold, must NOT be junk.
 for _ in range(2):
     tr.record("find", "occasional_panel", "empty", 4.0)
 tr.flush()
 
-# accumulate-on-conflict check: a SECOND flush of the same key must ADD, not overwrite.
 tr.record("find", "great_game_rituals", "empty", 7.5)
 tr.flush()
 
@@ -80,29 +71,23 @@ if ("find", "units_panel") in junk_keys:
 if ("find", "occasional_panel") in junk_keys:
     fails.append("occasional_panel (<5 calls) must NOT be junk")
 
-# accumulate check: great_game_rituals must show 7 calls (6 + 1), not 1.
 ggr = next((r for r in rep["rows"] if r["key"] == "great_game_rituals"), None)
 if ggr is None or ggr["calls"] != 7 or ggr["empties"] != 7:
     fails.append("accumulate-on-conflict broken: great_game_rituals=%r (want calls=7 empties=7)" % ggr)
 
-# totals sanity: 6+5+5+2 + 1(second flush) = 19 calls, 5 hits.
 if rep["totals"]["calls"] != 19:
     fails.append("totals.calls = %d, want 19" % rep["totals"]["calls"])
 if rep["totals"]["hits"] != 5:
     fails.append("totals.hits = %d, want 5" % rep["totals"]["hits"])
 
 
-# ---- 3. Bus.send instrumentation (stubbed _send_impl, NO game) -----------------------------
 import bus
 
-# Section 3 exercises the MEASUREMENT layer in isolation: disable the active barrier so repeated
-# timeouts are all recorded as real round-trips (the barrier is proven separately in Section 4).
 os.environ["BUS_GUARD"] = "0"
 
-# a fresh tracker for the send-path DB, installed as the process singleton the wrapper uses.
 send_db = os.path.join(_TMP, "send_stats.sqlite")
 send_tr = bus_stats.StatsTracker(send_db, flush_every_n=1, flush_every_s=999,
-                                 register_atexit=False)  # flush every call so we can read immediately
+                                 register_atexit=False)
 bus_stats.install_tracker(send_tr)
 
 b = bus.Bus(cmd_path=os.path.join(_TMP, "commands.txt"),
@@ -117,20 +102,20 @@ def _stub_send_impl(channel, payload="", timeout=30):
         return FIND_EMPTY
     if payload == "slow_missing_panel":
         raise TWError("bus timeout: no result for seq 9 cmd find")
-    raise TWError("bus: WH3 process gone while awaiting seq 9 cmd find")  # CTD -> error
+    raise TWError("bus: WH3 process gone while awaiting seq 9 cmd find")
 
 
-b._send_impl = _stub_send_impl  # instance-level monkeypatch (no game touched)
+b._send_impl = _stub_send_impl
 
-assert b.send("find", "units_panel") is FIND_HIT           # HIT recorded
-assert b.send("find", "great_game_rituals") is FIND_EMPTY  # EMPTY recorded
+assert b.send("find", "units_panel") is FIND_HIT
+assert b.send("find", "great_game_rituals") is FIND_EMPTY
 for _ in range(5):
     try:
-        b.send("find", "slow_missing_panel")               # TIMEOUT recorded x5 -> junk
+        b.send("find", "slow_missing_panel")
     except TWError:
         pass
 try:
-    b.send("find", "dead_game")                            # CTD -> error (NOT timeout)
+    b.send("find", "dead_game")
 except TWError:
     pass
 send_tr.flush()
@@ -152,18 +137,11 @@ if ("find", "slow_missing_panel") not in {(r["channel"], r["key"]) for r in srep
     fails.append("send-path: slow_missing_panel (5 timeouts, 0 hits) should be JUNK")
 
 
-# ---- 4. ACTIVE junk-find barrier (short-circuit + re-probe + reset + never-suppress-a-hitter) ---
-# Prove the barrier WITHOUT a game: stub _send_impl to count real round-trips per payload and
-# return a hit / a miss / a timeout by key. A dead key must be short-circuited (NO _send_impl call)
-# and return a well-formed miss; re-probe must eventually let one real call through; reset must
-# clear suppression; a HITTING key must NEVER be suppressed; non-find channels must NEVER be
-# short-circuited.
 os.environ["BUS_GUARD"] = "1"
 
-# small threshold / reprobe so the test is short and deterministic.
 guard = bus_stats.SuppressionGuard(threshold=3, reprobe_every=5)
 bus_stats.install_guard(guard)
-bus_stats.reset_suppression()   # start clean
+bus_stats.reset_suppression()
 
 impl_calls = {}
 
@@ -176,7 +154,7 @@ def _guard_stub(channel, payload="", timeout=30):
     if channel == "find" and payload == "absent_panel":
         return FIND_EMPTY
     if channel == "find" and payload == "slow_panel":
-        raise TWError("bus timeout: no result for seq 1 cmd find")   # -> timeout outcome
+        raise TWError("bus timeout: no result for seq 1 cmd find")
     if channel == "eval":
         return EVAL_EMPTY
     return FIND_EMPTY
@@ -186,7 +164,6 @@ gb = bus.Bus(cmd_path=os.path.join(_TMP, "g_commands.txt"),
              out_path=os.path.join(_TMP, "g_twcontrol.jsonl"))
 gb._send_impl = _guard_stub
 
-# (a) below threshold: the first 3 finds on an absent key all reach the mod (learning phase).
 for _ in range(3):
     r = gb.send("find", "absent_panel")
     if r.get("short_circuited"):
@@ -195,7 +172,6 @@ if impl_calls.get(("find", "absent_panel")) != 3:
     fails.append("barrier: first 3 absent_panel finds should all hit _send_impl, got %r"
                  % impl_calls.get(("find", "absent_panel")))
 
-# (b) the 4th find is now short-circuited: NO _send_impl call, and a well-formed synthetic miss.
 r4 = gb.send("find", "absent_panel")
 if impl_calls.get(("find", "absent_panel")) != 3:
     fails.append("barrier: 4th absent_panel find must NOT call _send_impl (still 3), got %r"
@@ -208,8 +184,6 @@ if bus_stats.classify_outcome("find", r4) != "empty":
     fails.append("barrier: synthetic miss must classify as 'empty' (a clean miss), not %r"
                  % bus_stats.classify_outcome("find", r4))
 
-# (c) re-probe: keep sending on the dead key; with reprobe_every=5, exactly ONE of the next 5
-# checks is let through to a real _send_impl call (auto un-suppress path).
 before = impl_calls.get(("find", "absent_panel"))
 sc_count = 0
 for _ in range(5):
@@ -222,7 +196,6 @@ if after - before != 1:
 if sc_count != 4:
     fails.append("barrier: 4 of every 5 dead-key calls should be short-circuited, got %d" % sc_count)
 
-# (d) reset clears suppression: after reset the dead key is treated as fresh -> real _send_impl again.
 bus_stats.reset_suppression()
 before2 = impl_calls.get(("find", "absent_panel"))
 r_reset = gb.send("find", "absent_panel")
@@ -231,7 +204,6 @@ if impl_calls.get(("find", "absent_panel")) != before2 + 1:
 if r_reset.get("short_circuited"):
     fails.append("barrier: after reset_suppression the first call must NOT be short-circuited")
 
-# (e) a HITTING key is NEVER suppressed, even well past the threshold.
 bus_stats.reset_suppression()
 for i in range(10):
     rh = gb.send("find", "units_panel")
@@ -242,7 +214,6 @@ if impl_calls.get(("find", "units_panel")) != 10:
     fails.append("barrier: every units_panel find must reach _send_impl, got %r"
                  % impl_calls.get(("find", "units_panel")))
 
-# (f) SCOPE SAFETY: a non-find channel (eval) is NEVER short-circuited, no matter how many empties.
 bus_stats.reset_suppression()
 for _ in range(8):
     re_ = gb.send("eval", "some_absent_getter")
@@ -253,7 +224,6 @@ if impl_calls.get(("eval", "some_absent_getter")) != 8:
     fails.append("barrier: every eval must reach _send_impl (never suppressed), got %r"
                  % impl_calls.get(("eval", "some_absent_getter")))
 
-# (g) timeout-only keys also go dead (hits==0 via timeouts, not just empties).
 bus_stats.reset_suppression()
 for _ in range(3):
     try:
@@ -261,15 +231,14 @@ for _ in range(3):
     except TWError:
         pass
 before3 = impl_calls.get(("find", "slow_panel"))
-r_slow = gb.send("find", "slow_panel")   # 4th -> should be short-circuited (no timeout burned)
+r_slow = gb.send("find", "slow_panel")
 if impl_calls.get(("find", "slow_panel")) != before3:
     fails.append("barrier: a timeout-only dead key must be short-circuited too (no _send_impl call)")
 if not r_slow.get("short_circuited"):
     fails.append("barrier: 4th slow_panel find should be short_circuited, got %r" % r_slow)
 
-# (h) BUS_GUARD=0 disables the barrier entirely (exact prior behaviour: no short-circuit).
 os.environ["BUS_GUARD"] = "0"
-bus_stats.install_guard(None)            # force a rebuild against the new env on next get_guard()
+bus_stats.install_guard(None)
 before4 = impl_calls.get(("find", "absent_panel"))
 for _ in range(6):
     rg = gb.send("find", "absent_panel")
@@ -279,7 +248,7 @@ for _ in range(6):
 if impl_calls.get(("find", "absent_panel")) != before4 + 6:
     fails.append("barrier: with BUS_GUARD=0 every call must reach _send_impl, got %r"
                  % (impl_calls.get(("find", "absent_panel")) - before4))
-os.environ["BUS_GUARD"] = "1"            # restore for any later use
+os.environ["BUS_GUARD"] = "1"
 bus_stats.install_guard(None)
 
 print("### ACTIVE JUNK-FIND BARRIER (offline, no game/bus) ###\n")
@@ -294,7 +263,6 @@ print("  (g)   timeout-only dead key (slow_panel): short-circuited after 3 timeo
 print("  (h)   BUS_GUARD=0: 6/6 finds reached the mod -- barrier fully disabled (exact prior behaviour).\n")
 
 
-# ---- report / verdict ---------------------------------------------------------------------
 print("### JUNK-CALL REPORT (from StatsTracker round-trip DB) ###\n")
 print(bus_stats.format_report(rep))
 print("\n### JUNK-CALL REPORT (from instrumented Bus.send DB) ###\n")

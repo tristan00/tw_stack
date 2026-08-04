@@ -12,7 +12,6 @@ import time
 from errors import TWError
 from screen import ScreenBridge
 
-# must match the paths compiled into tw.pack
 CMD_PATH = "D:/totalwar_runner/data/commands.txt"
 OUT_PATH = "D:/totalwar_runner/data/twcontrol.jsonl"
 
@@ -46,7 +45,6 @@ class GameManager:
     SCREEN_W = 2560
     SCREEN_H = 1440
 
-    # seconds
     T_WINDOW = 180
     T_MENU_FLOOR = 20
     T_MENU_STABLE = 60
@@ -191,7 +189,7 @@ class GameManager:
         },
     }
 
-    _FACTION_HINT_RACE = (        # order matters: first substring match wins
+    _FACTION_HINT_RACE = (
         ("northern_provinces", "cathay_miao_ying"),
         ("taurox", "beastmen_taurox"),
         ("barrow_legion", "vmp_barrow_legion"),
@@ -437,7 +435,8 @@ class GameManager:
                "Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1; "
                "if ($p) { 'up' } else { 'down' }"]
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=20,
+                               creationflags=subprocess.CREATE_NO_WINDOW)
             return r.returncode == 0 and "up" in (r.stdout or "")
         except Exception as exc:
             self._log("WARN _game_up process check failed: %s" % repr(exc)[:80])
@@ -498,7 +497,8 @@ class GameManager:
                               "refusing to spawn a 2nd game" % lp)
         try:
             r = subprocess.run(["taskkill", "/F", "/IM", "Warhammer3.exe"],
-                               capture_output=True, text=True)
+                               capture_output=True, text=True,
+                               creationflags=subprocess.CREATE_NO_WINDOW)
             if "SUCCESS" in (r.stdout or ""):
                 self._log("singleton: killed pre-existing Warhammer3.exe before spawn")
                 time.sleep(4)
@@ -980,7 +980,8 @@ def reach_campaign(race: str | None = None, faction: str | None = None, attempts
             last = exc
             print("launch attempt %d/%d failed: %s" % (i + 1, attempts, exc))
             if i + 1 < attempts:
-                subprocess.run(["taskkill", "/F", "/IM", "Warhammer3.exe"], capture_output=True)
+                subprocess.run(["taskkill", "/F", "/IM", "Warhammer3.exe"], capture_output=True,
+                               creationflags=subprocess.CREATE_NO_WINDOW)
                 time.sleep(6)
     raise last
 
@@ -1047,7 +1048,7 @@ def launch_lord(faction_key: str, culture_key: str | None = None) -> dict:
         nav.mouse("move", *nav.ui_to_screen(start["x"] + start["w"] / 2, start["y"] + start["h"] / 2)); time.sleep(0.2)
         nav.mouse("click", *nav.ui_to_screen(start["x"] + start["w"] / 2, start["y"] + start["h"] / 2))
     else:
-        nav.mouse("click", 1280, 1376)   # Start Campaign, bottom-centre
+        nav.mouse("click", 1280, 1376)
     deadline = time.time() + gm.T_LOAD
     while time.time() < deadline:
         if gm._mod_started_since(out_offset):

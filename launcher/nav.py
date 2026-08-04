@@ -10,7 +10,6 @@ _TREE_T = 12.0
 def _warn(where, detail):
     sys.stderr.write("nav: %s -> %s\n" % (where, detail))
 
-# dismiss/close controls only -- never a decision button
 DISMISS_BUTTON_IDS = frozenset((
     "button_accept",
     "button_ok",
@@ -31,13 +30,8 @@ PERSISTENT_ROOTS = frozenset((
 
 _CLICKABLE_STATES = frozenset(("active", "default", "NewState", "selected", "hover", "down"))
 
-# our own panels -- the only roots exempt from pre-dismiss dumping
 BENIGN_PANELS = frozenset(("units_panel", "settlement_panel", "recruitment_options"))
 
-# roots that can carry a DECISION: on diplomacy_dropdown the dismiss-id button_accept ACCEPTS
-# the treaty -- that one control belongs to the advisor (interrupts), never to a dismiss sweep.
-# The same root also hosts the war_declared ack and declare-war confirm subpanels (button_ok_*),
-# which stay dismissable here -- their only dismiss path is this sweep.
 DECISION_ROOTS = frozenset(("diplomacy_dropdown", "ally_attacked"))
 
 SCREEN_DUMP_DIR = r"D:/twdata/runs/human/screens"
@@ -183,7 +177,8 @@ def mouse(action, x=None, y=None, d=None):
         if v is not None:
             cmd.append(str(v))
     t0 = time.time()
-    out = (_sp.run(cmd, capture_output=True, text=True, timeout=30).stdout or "").strip()
+    out = (_sp.run(cmd, capture_output=True, text=True, timeout=30,
+                   creationflags=_sp.CREATE_NO_WINDOW).stdout or "").strip()
     trace.hardware(action, x=x, y=y, result=out, d=d, ms=int((time.time() - t0) * 1000))
     return out
 
@@ -314,7 +309,7 @@ def capital_region(bus):
 
 if __name__ == "__main__":
     sys.path.insert(0, r"D:\tw_stack\bus")
-    from bus import Bus  # noqa
+    from bus import Bus
     _bus = Bus()
     before = _open_roots(_bus)
     print("open popup roots BEFORE:", before)

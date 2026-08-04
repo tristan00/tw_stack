@@ -22,11 +22,11 @@ _STACK = os.path.dirname(_HERE)
 for _repo in ("input", "shots", "logs"):
     sys.path.insert(0, os.path.join(_STACK, _repo))
 
-import manager                       # noqa: E402
-import input_stream                  # noqa: E402
-import shots_stream                  # noqa: E402
-import logs_stream                   # noqa: E402
-from PIL import Image                 # noqa: E402
+import manager
+import input_stream
+import shots_stream
+import logs_stream
+from PIL import Image
 
 
 def load_rows(out_dir):
@@ -39,7 +39,6 @@ def load_rows(out_dir):
     return rows
 
 
-# ----------------------------------------------------------------- UNIT: stub streams
 def unit_stubs():
     fails = []
 
@@ -56,7 +55,7 @@ def unit_stubs():
             time.sleep(0.02)
 
     def stub_crash(ctx):
-        raise RuntimeError("boom")           # unhandled -> must be logged, must not stop others
+        raise RuntimeError("boom")
 
     out_root = tempfile.mkdtemp(prefix="mgr_unit_")
     rec = manager.start(out_root,
@@ -88,14 +87,12 @@ def unit_stubs():
     errlog = os.path.join(out, "errors.log")
     if not (os.path.isfile(errlog) and "stream:crash" in open(errlog).read()):
         fails.append("crashing stream was not logged to errors.log (silent death)")
-    # one shared clock: every row's t is within the run window
     ts = [r["t"] for r in rows]
     if any(t < 0 or t > 5.0 for t in ts):
         fails.append("row timestamps outside the shared-clock window: %s" % ts)
     return fails
 
 
-# ----------------------------------------------------------- INTEGRATION: real streams
 class FakeOS:
     def __init__(self):
         self.fg = ("editor - x.py", 1)
@@ -137,14 +134,13 @@ def integration():
     rec = manager.start(out_root, streams, recorder_version="v5-decomp",
                         meta_overrides={"shots_enabled": True, "ui_enabled": False})
 
-    # drive synthetic activity: move, keypress, click (-> shot_req), and a NEW game log
     time.sleep(0.2)
     os_state.pos = (100, 200)
     time.sleep(0.15)
-    os_state.keys = {0x53}                     # 'S'
+    os_state.keys = {0x53}
     time.sleep(0.15)
     os_state.keys = set()
-    os_state.keys = {0x01}                     # LEFT mouse -> shot_req
+    os_state.keys = {0x01}
     time.sleep(0.15)
     os_state.keys = set()
     with open(os.path.join(logdir, "script_log_test.txt"), "wb") as f:
@@ -159,15 +155,12 @@ def integration():
     for need in ("start", "focus", "move", "key_down", "shot", "log_open", "log_tail", "stop"):
         if need not in kinds:
             fails.append("integration events.jsonl missing %r (got %s)" % (need, sorted(kinds)))
-    # shots landed
     sdir = os.path.join(out, "shots")
     if not (os.path.isdir(sdir) and any(f.endswith(".jpg") for f in os.listdir(sdir))):
         fails.append("no shots/*.jpg produced")
-    # the fresh game log was captured from byte 0
     tail = os.path.join(out, "logs", "script_log_test.txt.tail")
     if not (os.path.isfile(tail) and b"TWSTATE fresh session line" in open(tail, "rb").read()):
         fails.append("fresh game log not captured from byte 0")
-    # one shared clock across all three streams
     ts = [r["t"] for r in rows]
     if any(t < 0 or t > 6.0 for t in ts):
         fails.append("timestamps outside shared-clock window")

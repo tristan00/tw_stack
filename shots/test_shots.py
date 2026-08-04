@@ -60,10 +60,10 @@ def main():
                           daemon=True)
     th.start()
 
-    time.sleep(0.35)                 # an immediate interval frame (last=0)
-    ctx.shot_req.set()               # request a click frame
-    time.sleep(0.4)                  # click frame captured; shot_req cleared
-    time.sleep(0.4)                  # another interval frame
+    time.sleep(0.35)
+    ctx.shot_req.set()
+    time.sleep(0.4)
+    time.sleep(0.4)
     ctx.stop()
     th.join(timeout=2.0)
 
@@ -81,7 +81,6 @@ def main():
         fails.append("no interval-triggered shot -- triggers=%s" % triggers)
     if ctx.shot_req.is_set():
         fails.append("shot_req not cleared after the click shot")
-    # every announced file must exist and be a readable 64x48 JPEG
     for r in shot_rows:
         p = r.get("file")
         if not (p and os.path.isfile(p)):

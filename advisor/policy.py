@@ -7,26 +7,21 @@ import sys
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 
-import model as M                                          # noqa: E402
+import model as M
 
 FORBIDDEN_KEYS = frozenset({"button_attack", "button_spectate"})
 
 MAX_ACTIONS_PER_TURN = 10
 MAX_ACTIONS_PER_ENTITY = 6
 
-EPSILON = 0.25                     # P(uniform random pick)          (operator, 2026-08-02)
-BETA = 0.25                        # P(argmax novelty); the remainder is argmax exploit
+EPSILON = 0.25
+BETA = 0.25
 
-SUBSAMPLE_CAPS = {"diplomacy": 12}
-# per (context_kind, context_id, action_type), per turn
-# counted once across entities rather than per entity. The exact scope of the game's character
-# capacity is UNCONFIRMED (province-wide is at least as likely as faction-wide); this is the
-# conservative choice, and multi-province campaigns are rare enough that it rarely binds.
-FACTION_WIDE_CAPS = frozenset(("recruit_lord", "research", "rites"))
-PER_TURN_CAPS = {"recruit_lord": 1, "recruit_unit": 4, "edict": 1, "research": 1, "rites": 1,
+FACTION_WIDE_CAPS = frozenset(("recruit_lord", "recruit_hero", "research", "rites"))
+PER_TURN_CAPS = {"recruit_lord": 1, "recruit_hero": 1, "recruit_unit": 4, "edict": 1,
+                 "research": 1, "rites": 1,
                  "diplomacy": 1,
-                 "stance": 1}
-COLD_NOOP_WEIGHT = 0.10
+                 "stance": 1, "hero_action": 3}
 
 
 def _cap_key(context_kind, context_id, action_type):
@@ -43,11 +38,11 @@ class Policy:
         self.rng = random.Random(seed)
         self.max_actions_per_turn = max_actions_per_turn
         self.max_actions_per_entity = max_actions_per_entity
-        self.retired = set()           # (context_kind, context_id) done for this turn
-        self.blacklist = set()         # (ck, cid, action_type, key) that failed confirmation
+        self.retired = set()
+        self.blacklist = set()
         self.failed_types = set()
-        self.entity_actions = {}       # (ck, cid) -> confirmed actions this turn
-        self.type_actions = {}         # (ck, cid, action_type) -> confirmed of THAT type this turn
+        self.entity_actions = {}
+        self.type_actions = {}
 
     def new_turn(self):
         self.retired.clear()
@@ -62,7 +57,6 @@ class Policy:
     def note_result(self, pick, counted):
         """A confirmed action advances that entity's counter; an unconfirmed one is blacklisted."""
         k = (pick["context_kind"], str(pick["context_id"]))
-        # counts attempts, not confirmations -- must stay above the `if counted` branch
         tk = _cap_key(k[0], k[1], pick["action_type"])
         self.type_actions[tk] = self.type_actions.get(tk, 0) + 1
         if counted:
@@ -98,26 +92,13 @@ class Policy:
                     _cap_key(k[0], k[1], r["action_type"]), 0) >= cap:
                 continue
             out.append(r)
-        return self._subsample(out)
-
-    def _subsample(self, rows):
-        """Thin the action types listed in SUBSAMPLE_CAPS down to their cap, uniformly."""
-        keep, pools = [], {}
-        for r in rows:
-            cap = SUBSAMPLE_CAPS.get(r["action_type"])
-            (pools.setdefault(r["action_type"], []) if cap else keep).append(r)
-        for atype, pool in pools.items():
-            cap = SUBSAMPLE_CAPS[atype]
-            keep.extend(pool if len(pool) <= cap else self.rng.sample(pool, cap))
-        return keep
+        return out
 
     def choose(self, record, actions_taken=0):
         """(pick, ranked) -- the action to execute next, and the full scored table. pick is None
         when nothing is eligible."""
         ranked = self.ranker.score(record)
         hot = self.ranker.ready
-        if not hot:
-            self._cold_scores(ranked, actions_taken)
         for i, r in enumerate(ranked):
             r["rank"] = i + 1
         elig = self.eligible(ranked, actions_taken=actions_taken)
@@ -125,7 +106,7 @@ class Policy:
             return None, ranked
         roll = self.rng.random() if hot else 1.0
         if hot and roll < EPSILON:
-            mode, best = "epsilon_random", self.rng.choice(elig)
+            mode, best = "epsilon_random", self._hier_random(elig)
         elif hot and roll < EPSILON + BETA:
             mode = "explore"
             best = max(elig, key=lambda r: r.get("explore") or 0.0)
@@ -133,8 +114,7 @@ class Policy:
             mode = "exploit"
             best = max(elig, key=lambda r: r.get("exploit") or 0.0)
         else:
-            mode = "cold_random"
-            best = max(elig, key=lambda r: r["score"] if r["score"] is not None else 0.0)
+            mode, best = "cold_random", self._hier_random(elig)
         pick = {"context_kind": best["context_kind"], "context_id": best["context_id"],
                 "action_type": best["action_type"], "key": best["key"],
                 "params": best.get("params") or {},
@@ -142,19 +122,13 @@ class Policy:
                 "score": best.get("score"), "rank": best.get("rank")}
         return pick, ranked
 
-    def _cold_scores(self, ranked, actions_taken):
-        """Uniform random scores, with end_turn weighted up by actions_taken and noop weighted down."""
-        end_w = min(0.9, 0.05 + 0.9 * (actions_taken / float(max(self.max_actions_per_turn, 1))))
-        for r in ranked:
-            base = self.rng.random()
-            if r["action_type"] == "end_turn":
-                r["score"] = base * end_w + (1.0 - end_w) * 0.0 + end_w
-            elif r["action_type"] == "noop":
-                r["score"] = base * COLD_NOOP_WEIGHT
-            else:
-                r["score"] = base
-            r.setdefault("exploit", None)
-            r.setdefault("explore", None)
+    def _hier_random(self, elig):
+        """Hierarchical uniform: one of the AVAILABLE action types first, then one of that
+        type's actions -- a type with 12 sampled offers gets no more mass than one with 1."""
+        pools = {}
+        for r in elig:
+            pools.setdefault(r["action_type"], []).append(r)
+        return self.rng.choice(pools[self.rng.choice(sorted(pools))])
 
 
 def scores_for_store(ranked, limit=None):

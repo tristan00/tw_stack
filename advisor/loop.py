@@ -12,12 +12,13 @@ _last_beat_turn = [None]
 sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.join(r"D:\tw_stack", "decisions"))
 
-import journal                                             # noqa: E402
-import policy as P                                         # noqa: E402
+import features as F
+import journal
+import policy as P
 
 sys.path.insert(0, os.path.join(r"D:\tw_stack", "launcher"))
-import trace as TR                                         # noqa: E402
-from watchdog import Watchdog                              # noqa: E402
+import trace as TR
+from watchdog import Watchdog
 
 
 class CampaignLost(RuntimeError):
@@ -32,9 +33,35 @@ class TurnResult(dict):
     pass
 
 
+NO_MODEL_DIR = r"D:\twdata\models\__cold_start__"
+
+
+def _verify_action_catalogues(log):
+    """Assert at campaign start that every offerable action can actually be executed.
+
+    Learning that a whole action class is dead one failed attempt at a time, mid-campaign, is how
+    41/41 hero actions sat unexecutable: each attempt reported only that it failed, never that the
+    catalogue behind it resolved nothing."""
+    try:
+        sys.path.insert(0, os.path.join(r"D:\tw_stack", "advisor", "reference"))
+        import collect as C
+        import features_db as DB
+        mapped = DB.verify_hero_action_mappings(C.HERO_ACTIONS)
+        dead = sorted(k for k, v in mapped.items() if not v)
+        log("hero actions: %d/%d executable%s"
+            % (len(mapped) - len(dead), len(mapped),
+               (" -- DEAD: " + ", ".join(dead)) if dead else ""))
+    except Exception as e:
+        log("!! could not verify the hero-action catalogue: %s" % repr(e)[:160])
+
+
 def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
-                 stuck_seconds=None, on_stuck=None):
-    """Play `turns` turns. Returns the per-turn report rows (also written to loop_report.jsonl)."""
+                 stuck_seconds=None, on_stuck=None, cold=False):
+    """Play `turns` turns. Returns the per-turn report rows (also written to loop_report.jsonl).
+
+    cold=True points the INTERRUPT ranker at a directory holding no model, so blocking screens
+    fall to cold_random too. The main policy is made cold by its caller; both heads must be cold
+    or the run is only half untrained."""
     pol = pol or P.Policy()
     TR.set_run_dir(run_dir)
     import diplo_stream as DS
@@ -48,12 +75,20 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
     executor.mark_campaign_start()
     import interrupt_model as IM
     import interrupts as I
-    ranker = IM.InterruptRanker()
-    I.set_chooser(lambda screen, options, campaign: ranker.choose(screen, options, campaign))
+    _verify_action_catalogues(log)
+    ranker = IM.InterruptRanker(NO_MODEL_DIR) if cold else IM.InterruptRanker()
+    act_hist = []
+    act_counts = {}
+    I.reset_answers()
+    I.set_chooser(lambda screen, options, campaign, panel=None, world=None: ranker.choose(
+        screen, options, F.stamp_action_counts(
+            F.stamp_prev_actions(dict(campaign or {}), act_hist), act_counts), panel, world))
     if ranker.ready:
         log("interrupt policy: trained(%d rows, screens=%s)"
             % ((ranker.meta or {}).get("rows", 0),
                ",".join((ranker.meta or {}).get("screens") or [])))
+    elif cold:
+        log("interrupt policy: cold_random (FORCED -- cold start, the fitted model is ignored)")
     else:
         log("interrupt policy: cold_random (advisor-hosted; no interrupt model fitted yet)")
 
@@ -80,7 +115,8 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
                     raise CampaignLost("watchdog fired but the faction is DEAD -- defeat, "
                                        "not a stall (%s)" % stuck["reason"])
                 raise GameStuck("%s: %s" % (stuck["reason"], stuck["detail"]))
-            row = _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch)
+            row = _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch,
+                            act_hist, act_counts)
             rows.append(row)
             _append(report_path, row)
             log("== turn %s done: %d actions (%d confirmed), ended by %s =="
@@ -120,8 +156,6 @@ def _turn_trail(run_dir, executor, row, turn_index, log):
            "actions": row.get("actions"), "confirmed": row.get("confirmed"),
            "ended_by": row.get("ended_by")}
     if row.get("ended_by") == "defeated":
-        # the defeat modal pauses the script tick: both probes below burn their full
-        # timeouts (measured 20.1-20.8s across all recorded defeats, roots=[] every time)
         rec.update(roots=None, ui_state=None, probes_skipped="defeat_modal_tick_paused")
     else:
         for name, fn in (("roots", executor.visible_roots), ("ui_state", executor.ui_state)):
@@ -131,8 +165,6 @@ def _turn_trail(run_dir, executor, row, turn_index, log):
                 rec[name] = None
                 rec[name + "_error"] = repr(e)[:100]
     abnormal = row.get("ended_by") not in ("end_turn_chosen", "action_cap")
-    # defeated: _postmortem shoots the same modal seconds later (end_* shot); a second
-    # screenshot subprocess here only delays the exit
     if (abnormal or turn_index == 1 or turn_index % SHOT_EVERY_TURNS == 0) \
             and row.get("ended_by") != "defeated":
         try:
@@ -176,22 +208,26 @@ def _drain_interrupts(run_dir, log, diplo_epoch=None):
             % (len(recs), ", ".join("%s->%s" % (x.get("kind"), x.get("chosen")) for x in recs)))
 
 
-def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None):
+def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None, act_hist=None,
+              act_counts=None):
     import diplo_stream as DS
+    import interrupts as I
     diplo_epoch = diplo_epoch if diplo_epoch is not None else [0]
+    act_hist = act_hist if act_hist is not None else []
+    act_counts = act_counts if act_counts is not None else {}
     pol.new_turn()
     turn = journal.request_turn(run_dir)
     DS.TURN[0] = turn
-    _last_done_ts = [None]        # end of the previous action incl. its interrupt sweeps
-    _hk_parts = [{}]              # named components of that gap, ms, for timing.housekeep_parts
+    _last_done_ts = [None]
+    _hk_parts = [{}]
     log("== TURN %s ==" % turn)
     opening = executor.resolve_interrupts()
     _drain_interrupts(run_dir, log, diplo_epoch)
     if opening:
         log("   opening interrupts: %s" % ", ".join(str(s) for s in opening))
     actions, confirmed, ended_by, picks = 0, 0, "action_cap", []
-    moves = 0                                       # executed move actions this turn
-    active = None                                   # None = every entity is in play
+    moves = 0
+    active = None
     no_hud = 0
     last_record = {}
     while actions < pol.max_actions_per_turn:
@@ -255,6 +291,9 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None):
         decision_id, record = journal.request_snapshot(run_dir, active=active, diplo_epoch=diplo_epoch[0])
         (record.setdefault("campaign", {}))["act_index"] = actions + 1
         record["campaign"]["move_index"] = moves + 1
+        F.stamp_prev_actions(record["campaign"], act_hist)
+        F.stamp_action_counts(record["campaign"], act_counts)
+        I.set_snapshot(record["campaign"], record.get("world"))
         last_record = record
         if turn is not None and turn != _last_beat_turn[0]:
             _last_beat_turn[0] = turn
@@ -286,6 +325,9 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None):
             log("   nothing eligible -> ending turn")
             ended_by = "no_eligible_actions"
             _force_end_turn(run_dir, executor, decision_id, ranked, log)
+            act_hist.append("end_turn")
+            del act_hist[:-F.PREV_ACTIONS]
+            F.bump_action_counts(act_counts, "end_turn")
             break
         _t = time.time()
         journal.log_pick(run_dir, decision_id, pick, P.scores_for_store(ranked), timings=timing)
@@ -309,6 +351,9 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None):
 
         pre_off = executor.bus.out_offset()
         result = executor.execute(pick)
+        act_hist.append(pick["action_type"])
+        del act_hist[:-F.PREV_ACTIONS]
+        F.bump_action_counts(act_counts, pick["action_type"])
         _t = time.time()
         journal.log_verification(run_dir, decision_id, result)
         _hk_parts[0]["verify_log"] = int((time.time() - _t) * 1000)
@@ -361,10 +406,13 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None):
         ended_by = "action_cap"
         _force_end_turn(run_dir, executor, None, None, log)
 
-    # the reward row is sampled before the AI phase, at the same point in every turn
     terminal = ended_by in ("stuck", "no_campaign_ui", "defeated")
     target = None
-    if not terminal:
+    doomed = stuck.get("fired") or executor.defeated_row_seen()
+    if doomed and not terminal:
+        log("   reward row skipped: %s -- the campaign tick is frozen, the read can only "
+            "time out" % ("stuck flag up" if stuck.get("fired") else "defeat row seen"))
+    if not terminal and not doomed:
         target = journal.request_target(run_dir)
 
     if terminal:
@@ -442,7 +490,7 @@ def _append(path, row):
 def verify_streams(run_dir):
     """Per-stream counts plus the all_*/orphan_picks consistency flags."""
     sys.path.insert(0, os.path.join(r"D:\tw_stack", "decisions"))
-    from store import DecisionStore                          # noqa: E402
+    from store import DecisionStore
     s = DecisionStore(run_dir)
     try:
         q = lambda sql: s.con.execute(sql).fetchone()[0]

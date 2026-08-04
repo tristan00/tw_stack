@@ -17,13 +17,13 @@ import bus
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WORKER = os.path.join(HERE, "_bus_worker.py")
-N, K = 5, 40                      # 5 concurrent processes x 40 appends = 200 commands
+N, K = 5, 40
 
 tmp = tempfile.mkdtemp(prefix="bus_seqtest_")
 cmd = os.path.join(tmp, "commands.txt")
 out = os.path.join(tmp, "twcontrol.jsonl")
 open(out, "w").close()
-with open(cmd, "w", encoding="utf-8") as f:      # a malformed line the parser must skip
+with open(cmd, "w", encoding="utf-8") as f:
     f.write("garbage not a command line\n")
 
 procs = [subprocess.Popen([sys.executable, WORKER, cmd, out, str(K)]) for _ in range(N)]
@@ -38,7 +38,7 @@ for line in open(cmd, encoding="utf-8"):
 fails = []
 if any(r != 0 for r in rc):
     fails.append("a worker process exited non-zero: %s" % rc)
-if len(seqs) != N * K:                                   # malformed line skipped -> exactly N*K
+if len(seqs) != N * K:
     fails.append("expected %d command lines, got %d (malformed line not skipped?)" % (N * K, len(seqs)))
 if len(set(seqs)) != len(seqs):
     from collections import Counter

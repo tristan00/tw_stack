@@ -6,7 +6,7 @@ import time
 sys.path.insert(0, r"D:\tw_stack\bus")
 sys.path.insert(0, r"D:\tw_stack\launcher")
 
-from cco_actions import _ev, register           # noqa: E402
+from cco_actions import _ev, register
 
 _LOOKUP = "character_cqi:%s"
 
@@ -47,8 +47,6 @@ def _attack_army_snapshot(bus, ctx, pick):
 
 
 def _attack_army_gate(bus, ctx, pick, before):
-    if before.get("acted") == "true":
-        return False, "already_acted_this_turn"
     if before.get("can_reach") != "true":
         return False, "cannot_reach_target"
     return True, None
@@ -88,8 +86,6 @@ def _attack_sett_snapshot(bus, ctx, pick):
 
 
 def _attack_sett_gate(bus, ctx, pick, before):
-    if before.get("acted") == "true":
-        return False, "already_acted_this_turn"
     if before.get("can_reach") != "true":
         return False, "cannot_reach_settlement"
     return True, None
@@ -196,8 +192,6 @@ def _move_snapshot(bus, ctx, pick):
 
 
 def _move_gate(bus, ctx, pick, before):
-    if before.get("acted") == "true":
-        return False, "already_acted_this_turn"
     try:
         if float(before.get("ap") or 0) <= 0.0:
             return False, "no_action_points"

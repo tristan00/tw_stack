@@ -60,23 +60,21 @@ def main():
     os.makedirs(logdir)
     os.makedirs(outdir)
 
-    # (1) PRE-EXISTING log, created BEFORE the stream starts.
     old = os.path.join(logdir, "old.log")
     with open(old, "wb") as f:
         f.write(b"OLD-HISTORY-LINE\n")
-    time.sleep(0.05)                         # ensure old.log's ctime is clearly before start
+    time.sleep(0.05)
 
     ctx = FakeCtx(outdir)
     th = threading.Thread(target=logs_stream.run, args=(ctx, [logdir]),
                           kwargs={"poll_every": 0.15, "own_slack": 0.0}, daemon=True)
     th.start()
 
-    time.sleep(0.4)                          # stream opens old.log at its end (history skipped)
+    time.sleep(0.4)
     with open(old, "ab") as f:
         f.write(b"APPENDED-AFTER-START\n")
-    time.sleep(0.4)                          # only the appended bytes are tailed
+    time.sleep(0.4)
 
-    # (2) NEW log created AFTER start -> captured from byte 0.
     new = os.path.join(logdir, "new_script.txt")
     with open(new, "wb") as f:
         f.write(b"FRESH-FROM-BYTE-0\n")
@@ -85,7 +83,6 @@ def main():
         f.write(b"SECOND-LINE\n")
     time.sleep(0.4)
 
-    # (4) rotation: truncate-in-place -> offset resets, post-rotation content re-captured.
     with open(new, "wb") as f:
         f.write(b"ROTATED-CONTENT\n")
     time.sleep(0.4)
@@ -97,22 +94,18 @@ def main():
     old_tail = read_bytes(os.path.join(outdir, "logs", "old.log.tail"))
     new_tail = read_bytes(os.path.join(outdir, "logs", "new_script.txt.tail"))
 
-    # (1) + (3): pre-existing history skipped, appended bytes captured byte-exactly
     if old_tail != b"APPENDED-AFTER-START\n":
         fails.append("old.log.tail should be EXACTLY the appended bytes, got %r" % old_tail)
     if old_tail is not None and b"OLD-HISTORY" in old_tail:
         fails.append("SILENT-DATA BUG: pre-existing history leaked into old.log.tail")
 
-    # (2): new file captured from byte 0
     if not (new_tail and b"FRESH-FROM-BYTE-0" in new_tail):
         fails.append("new file not captured from byte 0 (got %r)" % new_tail)
     if not (new_tail and b"SECOND-LINE" in new_tail):
         fails.append("append to new file not tailed")
-    # (4): rotation re-captured
     if not (new_tail and b"ROTATED-CONTENT" in new_tail):
         fails.append("post-rotation content not re-captured (got %r)" % new_tail)
 
-    # log_open 'ours' flags correct
     opens = {os.path.basename(r["src"]): r for r in ctx.rows if r.get("kind") == "log_open"}
     if opens.get("old.log", {}).get("ours") is not False:
         fails.append("old.log should be marked ours=False")

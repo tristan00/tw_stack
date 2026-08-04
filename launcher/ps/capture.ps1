@@ -1,5 +1,5 @@
-# Capture the Warhammer3 window (or primary screen) to a PNG.
-# Usage: powershell -File capture.ps1 <outputPath>
+
+
 param([Parameter(Mandatory=$true)][string]$Out)
 
 Add-Type @"
@@ -29,8 +29,8 @@ if ($p) {
   if ([Win]::IsIconic($h)) { [Win]::ShowWindow($h, 9) | Out-Null; Start-Sleep -Milliseconds 400 }
   [Win]::SetForegroundWindow($h) | Out-Null
   Start-Sleep -Milliseconds 250
-  # Capture the CLIENT area (game content only, no title bar / borders) so pixel fractions
-  # are consistent whether the window is borderless-fullscreen or a bordered window.
+
+
   $r = New-Object Win+RECT
   [Win]::GetClientRect($h, [ref]$r) | Out-Null
   $pt = New-Object Win+POINT
@@ -48,13 +48,13 @@ $g = [System.Drawing.Graphics]::FromImage($bmp)
 $g.CopyFromScreen($x, $y, 0, 0, (New-Object System.Drawing.Size($w, $hh)))
 $bmp.Save($Out, [System.Drawing.Imaging.ImageFormat]::Png)
 
-# --- frame-content stats (downscaled 48x27): luma / colour-saturation / busyness -----------
-# A Windows screensaver / wallpaper-slideshow was seen cycling FULL-SCREEN images (solid black,
-# a mono Games-Workshop logo, a hyper-saturated "Intel Core" image) OVER the borderless game
-# whenever it lost foreground, so CopyFromScreen grabbed the OVERLAY, not the game -- poisoning
-# every vision gate. These three cheap statistics let the launcher REJECT such non-game frames
-# before trusting any diff (measured: black luma~2.6; mono logo sat~5.6; intel sat~123; real WH3
-# frames luma~81 sat~19 busy~11.5). Printed as an extra stdout line; the caller regex-parses it.
+
+
+
+
+
+
+
 $SW = 48; $SH = 27
 $small = New-Object System.Drawing.Bitmap($SW, $SH)
 $sg = [System.Drawing.Graphics]::FromImage($small)
@@ -86,12 +86,12 @@ $small.Dispose()
 $lm = $lsum / ($SW * $SH); $satm = $ssum / ($SW * $SH); $busy = $bsum / $bcnt
 Write-Output ("stats=(luma={0:F2} sat={1:F2} busy={2:F2})" -f $lm, $satm, $busy)
 
-# --- letterbox band stats (P7 cutscene corroboration): mean luma of the top / mid / bottom
-# row bands of the SAME 48x27 downscale. A playing cinematic LETTERBOXES the frame (near-black
-# bars top+bottom, ~12% each, around a lit picture) -- a signature the whole-frame stats above
-# cannot see. Rows 0-2 and 24-26 sit fully inside typical letterbox bars; rows 10-16 are the
-# picture. Printed as one extra stdout line; the caller regex-parses it (extra lines are inert
-# to the existing client=/stats= parsers).
+
+
+
+
+
+
 $tsum = 0.0; $msum = 0.0; $botsum = 0.0
 for ($xx = 0; $xx -lt $SW; $xx++) {
   for ($yy = 0; $yy -le 2; $yy++)   { $tsum += $luma[$yy * $SW + $xx] }

@@ -26,10 +26,9 @@ _STACK = os.path.dirname(_HERE)
 for _repo in ("logs", "campaigns"):
     sys.path.insert(0, os.path.join(_STACK, _repo))
 
-import manager                       # noqa: E402
-import logs_stream                   # noqa: E402
+import manager
+import logs_stream
 
-# Two campaigns in ONE script_log: high-elf Nagarythe (turns 1..3) then Slaanesh (turns 1..2).
 FAC_A = b"wh2_main_hef_nagarythe"
 SUB_A = b"wh2_main_sc_hef_high_elves"
 FAC_B = b"wh3_dlc27_sla_masque_of_slaanesh"
@@ -42,7 +41,6 @@ def _faction_row(fac: bytes, sub: bytes, turn: int) -> bytes:
 
 
 def _filler(turn: int) -> bytes:
-    # a non-identity state line (no is_human) -> ignored by the boundary kernel, still tailed.
     return b'TWSTATE {"kind":"turn","turn":%d,"note":"filler"}\n' % turn
 
 
@@ -103,7 +101,7 @@ def _run(log_bytes: bytes, reset_bus):
 
     log_name = "script_log_270720_1200.txt"
     log_path = os.path.join(gamedir, log_name)
-    with open(log_path, "wb") as f:                  # complete, closed BEFORE recording starts
+    with open(log_path, "wb") as f:
         f.write(log_bytes)
     log_size = os.path.getsize(log_path)
 
@@ -113,14 +111,13 @@ def _run(log_bytes: bytes, reset_bus):
                         meta_overrides={"shots_enabled": False, "ui_enabled": False},
                         reset_bus=reset_bus)
 
-    # wait until every byte of the source log has been tailed (across whatever dirs were produced).
     deadline = time.time() + 5.0
     while time.time() < deadline:
         got = sum(len(_tail_bytes(d, log_name)) for d in rec.dirs)
         if got >= log_size:
             break
         time.sleep(0.05)
-    time.sleep(0.15)                                 # let the final log_tail row flush
+    time.sleep(0.15)
     rec.stop()
     return rec, gamedir, out_root, log_name, log_size
 
@@ -134,7 +131,6 @@ def two_campaign():
     dirs_on_disk = sorted(os.path.join(out_root, d) for d in os.listdir(out_root)
                           if os.path.isdir(os.path.join(out_root, d)))
 
-    # [A] two dirs
     if len(rec.dirs) != 2:
         fails.append("[A] expected 2 run dirs, rec.dirs=%s" % rec.dirs)
     if len(dirs_on_disk) != 2:
@@ -146,23 +142,19 @@ def two_campaign():
         d1, d2 = rec.dirs[0], rec.dirs[1]
         t1, t2 = _tail_bytes(d1, log_name), _tail_bytes(d2, log_name)
 
-        # [B] boundary rows in the correct dir
         if FAC_A not in t1 or FAC_B in t1:
             fails.append("[B] dir1 tail must hold campaign A only (A in=%s, B in=%s)"
                          % (FAC_A in t1, FAC_B in t1))
         if FAC_B not in t2 or FAC_A in t2:
             fails.append("[B] dir2 tail must hold campaign B only (B in=%s, A in=%s)"
                          % (FAC_B in t2, FAC_A in t2))
-        # the split must fall exactly at campaign B's first faction row
         if t1 != _campaign_a() or t2 != _campaign_b():
             fails.append("[B] byte-exact split wrong: len(t1)=%d len(t2)=%d (want %d/%d)"
                          % (len(t1), len(t2), len(_campaign_a()), len(_campaign_b())))
 
-        # [C] nothing dropped -- parts sum to the whole
         if len(t1) + len(t2) != log_size:
             fails.append("[C] DROPPED BYTES: t1+t2=%d != original=%d" % (len(t1) + len(t2), log_size))
 
-        # [D] writer + out_dir re-pointed to the new dir
         ctx, out_file = rec._ctxs[0]
         if getattr(ctx._emit, "out_dir", None) != d2:
             fails.append("[D] ctx._emit not re-pointed to dir2 (=%s)" % getattr(ctx._emit, "out_dir", None))
@@ -170,16 +162,13 @@ def two_campaign():
             fails.append("[D] ctx.out_dir not re-pointed to dir2 (=%s)" % ctx.out_dir)
         if rec._writers["events.jsonl"].out_dir != d2:
             fails.append("[D] events writer not re-pointed to dir2")
-        # the OLD writer still points at dir1 (kept open so a racing emit is never dropped)
         old = [w for w in rec._all_writers if w.out_dir == d1 and w.name == "events.jsonl"]
         if not old:
             fails.append("[D] old dir1 events writer was not retained")
 
-        # [E] reset_bus invoked once (per swap)
         if reset_bus.calls != 1:
             fails.append("[E] reset_bus called %d times, expected 1" % reset_bus.calls)
 
-        # [F] meta + swap markers per dir
         m1 = json.load(open(os.path.join(d1, "meta.json")))
         m2 = json.load(open(os.path.join(d2, "meta.json")))
         if m1.get("campaign_index") != 0:
@@ -194,7 +183,6 @@ def two_campaign():
         if not any(r.get("kind") == "start" and r.get("swap") for r in e2):
             fails.append("[F] dir2 events.jsonl missing swap 'start' row")
 
-    # no stream errored in either dir
     for d in rec.dirs:
         el = os.path.join(d, "errors.log")
         if os.path.isfile(el):
