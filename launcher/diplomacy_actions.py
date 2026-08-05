@@ -97,6 +97,10 @@ def _gate(bus, ctx, pick, before):
         return False, "already_trading"
     if t.get("at_war") and diplomacy.DECLARE_WAR in terms:
         return False, "already_at_war"
+    if t.get("at_war") and not (diplomacy.PEACE in terms):
+        return False, "at_war_offers_only_peace"
+    if not t.get("at_war") and diplomacy.PEACE in terms:
+        return False, "not_at_war"
     if t.get("our_master") or t.get("their_vassal"):
         if "vassal" in terms or "confederation" in terms:
             return False, "already_in_vassalage"

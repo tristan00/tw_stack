@@ -442,7 +442,7 @@ def _target_units(atype, params, key, world):
 
 
 DIPLO_TERM_FEATS = ("nonaggression_pact", "trade_agreement", "defensive_alliance", "soft_access",
-                    "military_alliance", "vassal", "confederation", "declare_war")
+                    "military_alliance", "vassal", "confederation", "declare_war", "peace")
 DIPLO_GIFT_RANK = {"small": 1, "medium": 2, "large": 3}
 
 
