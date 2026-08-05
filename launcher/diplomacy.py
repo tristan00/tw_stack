@@ -15,8 +15,9 @@ OFFERS_PATH = ("diplomacy_dropdown|offers_panel|diplomacy_hud_offers_panel|panel
                "offers_list_panel|list_possible_actions")
 
 TERMS = ("nonaggression_pact", "trade_agreement", "defensive_alliance", "soft_access",
-         "military_alliance", "vassal", "confederation")
+         "military_alliance", "vassal", "confederation", "peace")
 DECLARE_WAR = "declare_war"
+PEACE = "peace"
 MAX_TERMS = 1
 
 PAYMENT_OPTION = "payment"

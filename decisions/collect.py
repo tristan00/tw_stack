@@ -1450,6 +1450,7 @@ def _campaign_offers_assemble(raw, diplo_offers):
 DIPLO_TERMS = ("nonaggression_pact", "trade_agreement", "defensive_alliance", "soft_access",
                "military_alliance", "vassal", "confederation")
 DIPLO_DECLARE_WAR = "declare_war"
+DIPLO_PEACE = "peace"
 DIPLO_GIFT_TIERS = ("small", "medium", "large")
 
 _LUA_DIPLO_TARGETS = (
@@ -1594,14 +1595,20 @@ def _diplo_offers_build(bus, turn, epoch, raw):
         f = t["faction"]
         rel = {"standing": t["standing"], "at_war": t["at_war"], "allied": t["allied"],
                "trade": t["trade"], "their_vassal": t["their_vassal"]}
-        offers.append(_offer("diplomacy", "%s:%s" % (f, DIPLO_DECLARE_WAR), not t["at_war"],
-                             "already_at_war" if t["at_war"] else None,
+        at_war = bool(t["at_war"])
+        offers.append(_offer("diplomacy", "%s:%s" % (f, DIPLO_DECLARE_WAR), not at_war,
+                             "already_at_war" if at_war else None,
                              faction=f, terms=[DIPLO_DECLARE_WAR], **rel))
+        offers.append(_offer("diplomacy", "%s:%s" % (f, DIPLO_PEACE), at_war,
+                             None if at_war else "not_at_war",
+                             faction=f, terms=[DIPLO_PEACE], **rel))
         for a in DIPLO_TERMS:
-            offers.append(_offer("diplomacy", "%s:%s" % (f, a), True, None,
+            offers.append(_offer("diplomacy", "%s:%s" % (f, a), not at_war,
+                                 "at_war_offers_only_peace" if at_war else None,
                                  faction=f, terms=[a], **rel))
         for tier in DIPLO_GIFT_TIERS:
-            offers.append(_offer("diplomacy", "%s:gift_%s" % (f, tier), True, None,
+            offers.append(_offer("diplomacy", "%s:gift_%s" % (f, tier), not at_war,
+                                 "at_war_offers_only_peace" if at_war else None,
                                  faction=f, terms=[], gift=tier, **rel))
     return offers
 
