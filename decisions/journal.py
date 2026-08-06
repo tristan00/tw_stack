@@ -1,4 +1,3 @@
-"""The advisor/launcher side of the recorder contract: file IO plus read-only sqlite."""
 from __future__ import annotations
 
 import json
@@ -14,8 +13,14 @@ RUNS_ROOT = "D:/twdata/runs/human"
 CURRENT_POINTER = "CURRENT_RUN"
 
 
+RUN_DIR = "D:/twdata/runs/human/run"
+
+
 def current_run_dir(runs_root=RUNS_ROOT, timeout=0.0):
-    """The run dir the recorder is servicing now. Do not cache it -- a campaign swap moves it."""
+    return RUN_DIR
+
+
+def _unused_current_run_dir(runs_root=RUNS_ROOT, timeout=0.0):
     path = os.path.join(runs_root, CURRENT_POINTER)
     deadline = time.time() + max(0.0, timeout)
     while True:
@@ -61,12 +66,17 @@ def _read_rows(path, offset=0):
 
 
 def read_requests(run_dir, offset=0):
-    """(rows, new_offset) -- used by the recorder stream to tail the request log."""
     return _read_rows(os.path.join(run_dir, REQUESTS), offset)
 
 
+def requests_size(run_dir):
+    try:
+        return os.path.getsize(os.path.join(run_dir, REQUESTS))
+    except OSError:
+        return 0
+
+
 def respond(run_dir, req_id, **payload):
-    """Recorder -> advisor reply for one request."""
     _append(run_dir, RESPONSES, dict(payload, req_id=req_id,
                                      served_by=str(run_dir).replace("\\", "/")))
 
@@ -82,7 +92,6 @@ def _new_id(kind):
 
 
 def _await(run_dir, req_id, timeout, poll=0.05):
-    """Block until the recorder answers `req_id`; raises on timeout."""
     path = os.path.join(run_dir, RESPONSES)
     offset, deadline = 0, time.time() + timeout
     while time.time() < deadline:
@@ -106,7 +115,6 @@ def _await(run_dir, req_id, timeout, poll=0.05):
 
 
 def request_snapshot(run_dir, active=None, timeout=180.0, diplo_epoch=None):
-    """(decision_id, records) -- the recorder reads the game now and persists a decision point."""
     rid = _new_id("snapshot")
     t_request = time.time()
     _append(run_dir, REQUESTS, {"kind": "snapshot", "req_id": rid, "active": active,
@@ -123,7 +131,6 @@ def request_snapshot(run_dir, active=None, timeout=180.0, diplo_epoch=None):
 
 
 def log_interrupt(run_dir, payload):
-    """An interrupt-screen decision (pre-battle / battle results / occupation / dilemma)."""
     body = dict(payload)
     body["screen"] = body.pop("kind", None)
     body["kind"] = "interrupt"
@@ -131,14 +138,12 @@ def log_interrupt(run_dir, payload):
 
 
 def request_target(run_dir, timeout=120.0):
-    """Ask the recorder to read + persist this turn's reward row. Returns the row."""
     rid = _new_id("target")
     _append(run_dir, REQUESTS, {"kind": "target", "req_id": rid})
     return _await(run_dir, rid, timeout).get("row")
 
 
 def _retry_once(fn, what):
-    """Run `fn`; on a timeout (not a recorder-reported error) try exactly once more."""
     try:
         return fn()
     except RuntimeError as e:
@@ -149,14 +154,12 @@ def _retry_once(fn, what):
 
 
 def request_turn(run_dir, timeout=60.0):
-    """The current turn number, from the recorder."""
     rid = _new_id("turn")
     _append(run_dir, REQUESTS, {"kind": "turn", "req_id": rid})
     return _await(run_dir, rid, timeout).get("turn")
 
 
 def request_hash(run_dir, timeout=45.0):
-    """(hash, roots) -- the liveness digest; raises if the recorder cannot answer."""
     rid = _new_id("hash")
     _append(run_dir, REQUESTS, {"kind": "hash", "req_id": rid})
     r = _await(run_dir, rid, timeout)
@@ -164,13 +167,11 @@ def request_hash(run_dir, timeout=45.0):
 
 
 def log_pick(run_dir, decision_id, pick, scores=None, timings=None):
-    """The offer the advisor chose, plus the score it gave every offer."""
     _append(run_dir, REQUESTS, {"kind": "pick", "decision_id": decision_id,
                                 "pick": pick, "scores": scores, "timings": timings})
 
 
 def log_verification(run_dir, decision_id, result):
-    """The launcher's ActionRecord: executed / confirmed / counted + before/after evidence."""
     _append(run_dir, REQUESTS, {"kind": "verification", "decision_id": decision_id, "result": result})
 
 
@@ -184,7 +185,6 @@ def _con(run_dir):
 
 
 def read_decision(run_dir, decision_id):
-    """The stored decision point, in the shape the advisor featurizes."""
     con = _con(run_dir)
     try:
         dp = con.execute("SELECT * FROM decision_points WHERE decision_id=?",
@@ -211,7 +211,6 @@ def read_decision(run_dir, decision_id):
 
 
 def labelled_decisions(run_dir):
-    """(decisions, target_series) for this run."""
     import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from store import DecisionStore

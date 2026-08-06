@@ -12,8 +12,8 @@ sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.join(r"D:\tw_stack", "decisions"))
 
 import features as F
-from base_model import (RUNS_ROOT, TARGET_PARTS, SHORT_HORIZON, SHORT_WEIGHT,
-                        decision_deltas, future_best,
+from base_model import (RUNS_ROOT, TARGET_PARTS, target, SHORT_HORIZON, SHORT_WEIGHT,
+                        decision_deltas, fit_es, future_best,
                         isolation_forest, regressor, _encode, _mm, _mm0, _pct, _ranks, _sd)
 from store import DecisionStore, IncompatibleStore
 
@@ -25,9 +25,6 @@ MIN_ROWS = 40
 
 
 def _local_delta(eseries, rec, taken):
-    """The taken entity's growth from its last known pre-decision value: lord/hero read the
-    decision snapshot's own rank; province has no snapshot value, so the last recorded row
-    BEFORE this turn is the last known point (first-turn province rows stay unlabelled)."""
     kind, cid = taken[0], str(taken[1])
     turns = (eseries.get(rec.get("campaign_id")) or {}).get((kind, cid))
     if not turns:
@@ -47,7 +44,6 @@ def _local_delta(eseries, rec, taken):
 
 
 def gather(runs_root=RUNS_ROOT):
-    """The chosen action of every labelled decision point, as (E1 rows, E2 rows, y)."""
     dbs = sorted(glob.glob(os.path.join(runs_root, "*", "decisions.sqlite")))
     decisions, series, eseries, skipped_dbs = [], {}, {}, []
     for db in dbs:
@@ -76,7 +72,6 @@ def gather(runs_root=RUNS_ROOT):
     hist = {}
     counts = {}
     deltas, ldeltas = [], []
-    dist = {p: [] for p in TARGET_PARTS}
     ldist = {}
     for rec, taken, was_counted in decisions:
         ik = (rec.get("campaign_id"), rec.get("turn"))
@@ -96,23 +91,17 @@ def gather(runs_root=RUNS_ROOT):
         turns = series.get(rec.get("campaign_id")) or {}
         d = decision_deltas(rec.get("campaign"), turns, rec.get("turn"))
         deltas.append(d)
-        for p, v in d.items():
-            if v is not None:
-                dist[p].append(v)
         ld = _local_delta(eseries, rec, taken) if (taken and taken[0] in LOCAL_KINDS) else None
         ldeltas.append(ld)
         if ld is not None:
             ldist.setdefault(taken[0], []).append(ld)
-    for p in dist:
-        dist[p].sort()
     for k in ldist:
         ldist[k].sort()
     for (rec, taken, was_counted), d, ld in zip(decisions, deltas, ldeltas):
-        parts = [_pct(d[p], dist[p]) for p in TARGET_PARTS if d[p] is not None]
-        if not parts:
+        y = target(d)
+        if y is None:
             skipped += 1
             continue
-        y = sum(parts) / len(parts)
         for ent, offer, row in F.decision_rows(rec):
             if (ent["context_kind"], str(ent["context_id"]),
                     offer["action_type"], str(offer["key"])) != taken:
@@ -139,16 +128,16 @@ def train(runs_root=RUNS_ROOT):
     if len(rows) < MIN_ROWS:
         return {"trained": False, "rows": len(rows), "need": MIN_ROWS, **_counts(data)}
     os.makedirs(MODEL_DIR, exist_ok=True)
+    groups = data.get("groups")
+    fit_report = {}
     num, cat = F.split_columns(rows)
     X = F.matrix(rows, num, cat)
     cat_idx = list(range(len(num), len(num) + len(cat)))
-    e1 = regressor()
-    e1.fit(Pool(X, y, cat_features=cat_idx))
+    e1 = fit_es(X, y, cat_idx, groups, "e1", fit_report)
     snum, scat = F.split_columns(srows)
     Xs = F.matrix(srows, snum, scat)
     scat_idx = list(range(len(snum), len(snum) + len(scat)))
-    e2 = regressor()
-    e2.fit(Pool(Xs, y, cat_features=scat_idx))
+    e2 = fit_es(Xs, y, scat_idx, groups, "e2", fit_report)
     Xa, cat_maps = _encode(rows, num, cat)
     iso = isolation_forest()
     iso.fit(Xa)
@@ -164,10 +153,8 @@ def train(runs_root=RUNS_ROOT):
             "nov_lo": min(nov), "nov_hi": max(nov), "rows": len(rows),
             "campaigns": sorted(set(data["groups"])),
             "short_horizon": SHORT_HORIZON, "short_weight": SHORT_WEIGHT,
-            "target": ("blend(%.2f*near/turns_to_max@<=%d + %.2f*far/turns_to_max) "
-                       "- decision_snapshot: %s"
-                       % (SHORT_WEIGHT, SHORT_HORIZON, 1.0 - SHORT_WEIGHT,
-                          ",".join(TARGET_PARTS)))}
+            "target": ("gain(future_max - decision_snapshot) over %s"
+                       % ",".join(TARGET_PARTS))}
     stage = MODEL_DIR + ".staging"
     shutil.rmtree(stage, ignore_errors=True)
     os.makedirs(stage)
@@ -181,11 +168,10 @@ def train(runs_root=RUNS_ROOT):
     mae = sum(abs(a - b) for a, b in zip(preds, y)) / len(y)
     local = _train_local(data, num, cat, snum, scat, sd_global)
     return {"trained": True, "rows": len(rows), "mae_in_sample": round(mae, 5),
-            "local": local, **_counts(data)}
+            "fit": fit_report, "local": local, **_counts(data)}
 
 
 def _train_local(data, num, cat, snum, scat, sd_global):
-    """Second E1/E2 pair fitted on the LOCAL label, over the rows that have one."""
     from catboost import Pool
     idx = [i for i, v in enumerate(data["y_local"]) if v is not None]
     if len(idx) < MIN_ROWS:
@@ -193,14 +179,14 @@ def _train_local(data, num, cat, snum, scat, sd_global):
     rows = [data["full"][i] for i in idx]
     srows = [data["state"][i] for i in idx]
     yl = [data["y_local"][i] for i in idx]
+    lgroups = [data["groups"][i] for i in idx] if data.get("groups") else None
     X = F.matrix(rows, num, cat)
     cat_idx = list(range(len(num), len(num) + len(cat)))
     Xs = F.matrix(srows, snum, scat)
     scat_idx = list(range(len(snum), len(snum) + len(scat)))
-    e1 = regressor()
-    e1.fit(Pool(X, yl, cat_features=cat_idx))
-    e2 = regressor()
-    e2.fit(Pool(Xs, yl, cat_features=scat_idx))
+    lfit = {}
+    e1 = fit_es(X, yl, cat_idx, lgroups, "local_e1", lfit)
+    e2 = fit_es(Xs, yl, scat_idx, lgroups, "local_e2", lfit)
     li = [a - b for a, b in zip(e1.predict(Pool(X, cat_features=cat_idx)),
                                 e2.predict(Pool(Xs, cat_features=scat_idx)))]
     sd_local = _sd(li)
@@ -217,7 +203,7 @@ def _train_local(data, num, cat, snum, scat, sd_global):
     for name in ("e1.cbm", "e2.cbm", "meta.json"):
         os.replace(os.path.join(stage, name), os.path.join(LOCAL_MODEL_DIR, name))
     shutil.rmtree(stage, ignore_errors=True)
-    return {"trained": True, "rows": len(idx), "sd_local": round(sd_local, 6),
+    return {"trained": True, "rows": len(idx), "fit": lfit, "sd_local": round(sd_local, 6),
             "sd_global": round(sd_global, 6)}
 
 
@@ -226,7 +212,6 @@ def _counts(data):
 
 
 class Ranker:
-    """Loaded model set; `ready` is False when nothing is trained yet."""
 
     def __init__(self, model_dir=MODEL_DIR):
         self.ready = False
@@ -261,7 +246,6 @@ class Ranker:
             self.lmeta = self.l1 = self.l2 = None
 
     def score(self, record, w_local=None):
-        """Every offer of a stored decision record, scored, sorted best-first."""
         triples = F.decision_rows(record)
         if not self.ready or not triples:
             return [{"context_kind": e["context_kind"], "context_id": e["context_id"],

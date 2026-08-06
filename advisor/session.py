@@ -16,6 +16,7 @@ import journal
 import loop as L
 import model as M
 import policy as P
+from interrupts import UnhandledScreen
 
 RUNS_ROOT = "D:/twdata/runs/human"
 
@@ -26,9 +27,6 @@ ROTATE_MIN_AGE_S = 600
 
 
 def _rotate_logs(log):
-    """Archive-MOVE closed script logs (game dir + run-dir tails) once per campaign. Files
-    younger than ROTATE_MIN_AGE_S or still open (PermissionError) are skipped -- the active
-    log belongs to the live game/recorder. Never deletes, never raises."""
     import glob
     import shutil
     from bus_launcher import GAME_DIR
@@ -59,8 +57,21 @@ def _rotate_logs(log):
         moved, moved_mb, dst if moved else LOG_ARCHIVE, skipped)
 
 
+BUS_FILES = (r"D:\totalwar_runner\data\commands.txt",
+             r"D:\totalwar_runner\data\twcontrol.jsonl")
+
+
+def _bus_sizes():
+    out = {}
+    for p in BUS_FILES:
+        try:
+            out[os.path.basename(p)] = round(os.path.getsize(p) / 1e6, 2)
+        except OSError:
+            out[os.path.basename(p)] = None
+    return out
+
+
 def _pick_plan(plan, rng):
-    """`plan` is a faction KEY, or a list of faction keys to sample one from per campaign."""
     if isinstance(plan, (list, tuple, set)):
         choices = sorted(plan)
         if not choices:
@@ -72,7 +83,6 @@ def _pick_plan(plan, rng):
 
 
 def _tail_jsonl(path, n):
-    """Last n parsed rows of a .jsonl, best effort. Never raises."""
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
             lines = fh.readlines()[-n:]
@@ -88,7 +98,6 @@ def _tail_jsonl(path, n):
 
 
 def _ending_evidence(rd, entry, ex):
-    """State trajectory, recent battles, terminal signal and an advisory plausibility verdict."""
     import sqlite3
     out = {}
     try:
@@ -133,7 +142,13 @@ def _ending_evidence(rd, entry, ex):
         reasons.append("battle on the final turn")
     healthy = bool(traj) and peak <= lastn and not final_battle
     outcome = entry.get("outcome")
-    if outcome == "defeated":
+    if outcome == "stagnant":
+        g = entry.get("growth") or {}
+        verdict = ("abandoned_on_the_growth_bar at turn %s: %s"
+                   % (g.get("turn"),
+                      "; ".join("%s %s->%s" % (m.get("label"), m.get("then"), m.get("now"))
+                                for m in (g.get("metrics") or {}).values()) or "no metrics"))
+    elif outcome == "defeated":
         verdict = ("consistent_with_real_defeat" if reasons
                    else "SUSPICIOUS: no supporting evidence -- review the screenshot")
     elif outcome in ("stuck", "error"):
@@ -151,14 +166,13 @@ def _ending_evidence(rd, entry, ex):
 
 
 def _postmortem(runs_root, entry, ex, log):
-    """Append one record per campaign to postmortems.jsonl, on any outcome. Never raises."""
     rec = {"ts": time.time(), "when": time.strftime("%Y-%m-%d %H:%M:%S"),
            "campaign": entry.get("index"), "faction": entry.get("plan"),
            "policy": entry.get("policy"), "outcome": entry.get("outcome"),
            "error": entry.get("error"), "seconds": round(time.time() - entry.get("started", 0), 1),
            "turns_played": entry.get("turns_played"), "actions": entry.get("actions"),
            "confirmed": entry.get("confirmed"), "ended_by": entry.get("ended_by"),
-           "run_dir": entry.get("run_dir")}
+           "growth": entry.get("growth"), "run_dir": entry.get("run_dir")}
     try:
         from bus import _game_alive
         rec["wh3_running"] = _game_alive()
@@ -187,8 +201,9 @@ def _postmortem(runs_root, entry, ex, log):
     if rd:
         rec["turn_tail"] = _tail_jsonl(os.path.join(rd, "loop_report.jsonl"), 6)
         if rec.get("turns_played") is None:
+            since = float(entry.get("started") or 0)
             turn_rows = [r for r in _tail_jsonl(os.path.join(rd, "loop_report.jsonl"), 500)
-                         if r.get("kind") == "turn"]
+                         if r.get("kind") == "turn" and float(r.get("ts") or 0) >= since]
             if turn_rows:
                 rec["turns_played"] = len(turn_rows)
                 rec["actions"] = sum(int(r.get("actions") or 0) for r in turn_rows)
@@ -219,29 +234,34 @@ NO_MODEL_DIR = r"D:\twdata\models\__cold_start__"
 
 def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                   log=print, runs_root=RUNS_ROOT, retrain=False, retrain_every=0, seed=None,
-                  cold=False):
-    """Play `n` campaigns of up to `turns` turns each; a (min, max) `turns` samples each
-    campaign's cap uniformly from that range. retrain_every=N retrains before campaign 1
-    and then before every Nth campaign. Returns the session report.
-
-    cold=True points the ranker at a directory that holds no model, so `ready` stays False and
-    policy.choose falls to cold_random for every pick -- the run generates data from an untrained
-    agent rather than from whatever happens to be fitted."""
+                  cold=False, backend=None, backend_cfg=None):
     from bus import Bus
     from executor import Executor
 
+    import backends as B
     import random
     rng = random.Random(seed)
     ex = Executor(Bus())
-    report = {"started": time.time(), "requested": {"campaigns": n, "turns": turns, "plan": plan},
+    backend = backend or B.DEFAULT
+    backend_cfg = backend_cfg or {}
+    MB = B.resolve(backend)
+    log("model backend: %s -- %s%s"
+        % (backend, B.label(backend),
+           ("  cfg=%s" % json.dumps(backend_cfg)) if backend_cfg else ""))
+    report = {"started": time.time(), "requested": {"campaigns": n, "turns": turns, "plan": plan,
+                                                    "backend": backend,
+                                                    "backend_cfg": backend_cfg},
               "campaigns": []}
     if isinstance(plan, (list, tuple, set)):
         log("sampling the start per campaign from: %s" % ", ".join(sorted(plan)))
     stamp = time.strftime("%Y%m%d_%H%M%S")
     out_path = os.path.join(runs_root, "session_%s.json" % stamp)
+    report["session"] = out_path
+    report["trials"] = []
 
     hard_restart_next, prev_outcome = True, "session start"
     launch_failures = 0
+    stretch, generation, trained = [], 0, None
 
     for i in range(n):
         this_plan = _pick_plan(plan, rng)
@@ -256,11 +276,22 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
             log("previous campaign ended %s -- killing the game now" % prev_outcome)
             ex.kill_game()
         log("   log rotation: %s" % _rotate_logs(log))
-        if (retrain and i == 0) or (retrain_every and i % retrain_every == 0):
+        entry["bus_files"] = _bus_sizes()
+        log("   bus: %s" % ", ".join("%s %.1fMB" % (k, v)
+                                     for k, v in sorted(entry["bus_files"].items())))
+        if (retrain and i == 0) or (retrain_every and i and i % retrain_every == 0):
+            _flush_generation(stretch, backend, backend_cfg, generation, report, trained, log)
+            stretch = []
+            generation += 1
             try:
                 t0 = time.time()
-                rep = M.train()
-                entry["retrain"] = dict(rep, seconds=round(time.time() - t0, 1))
+                rep = MB.train(**backend_cfg) if backend_cfg else MB.train()
+                entry["retrain"] = dict(rep, seconds=round(time.time() - t0, 1),
+                                        backend=backend)
+                trained = entry["retrain"]
+                report["_corpus"] = {"rows": rep.get("rows"), "runs": rep.get("runs"),
+                                     "campaigns": rep.get("campaigns"),
+                                     "n_decisions": rep.get("n_decisions")}
                 log("retrained before run %d: %s" % (i + 1, json.dumps(rep)[:220]))
                 irep = IM.train()
                 entry["retrain_interrupt"] = irep
@@ -270,6 +301,7 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                         "played by a freshly trained model" % (i + 1, rep.get("rows"), rep.get("need")))
             except Exception as e:
                 entry["retrain"] = {"error": repr(e)[:250]}
+                trained = entry["retrain"]
                 log("!! retrain before run %d failed (continuing on the previous model): %s"
                     % (i + 1, repr(e)[:180]))
         try:
@@ -285,8 +317,9 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
             ex.shots_dir = os.path.join(run_dir, "shots")
             log("run dir: %s" % run_dir)
 
-            ranker = M.Ranker(NO_MODEL_DIR) if cold else M.Ranker()
+            ranker = MB.Ranker(B.NO_MODEL_DIR) if cold else MB.Ranker()
             pol = P.Policy(ranker)
+            entry["backend"] = backend
             entry["policy"] = ("cold_random(forced)" if cold else
                                "trained(%d rows)" % (ranker.meta or {}).get("rows", 0)
                                if ranker.ready else "cold_random")
@@ -295,15 +328,27 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
             entry.update(outcome="completed", turns_played=len(rows),
                          actions=sum(r["actions"] for r in rows),
                          confirmed=sum(r["confirmed"] for r in rows),
-                         ended_by=[r["ended_by"] for r in rows])
+                         ended_by=[r["ended_by"] for r in rows], **_growth_stats(rows))
         except L.CampaignLost as e:
-            entry.update(outcome="defeated", error=str(e)[:300])
+            entry.update(outcome="defeated", error=str(e)[:300], **_played(e))
             log("== campaign %d LOST (faction destroyed): %s" % (i + 1, str(e)[:200]))
+        except L.CampaignStagnant as e:
+            entry.update(outcome="stagnant", error=str(e)[:300],
+                         growth=getattr(e, "verdict", None), **_played(e))
+            log("== campaign %d ABANDONED (no growth): %s" % (i + 1, str(e)[:200]))
         except L.GameStuck as e:
-            entry.update(outcome="stuck", error=str(e)[:300])
+            entry.update(outcome="stuck", error=str(e)[:300], **_played(e))
             log("!! campaign %d abandoned (stuck): %s" % (i + 1, str(e)[:200]))
-        except Exception as e:
-            entry.update(outcome="error", error=repr(e)[:300])
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except UnhandledScreen as e:
+            _postmortem(runs_root, dict(entry, outcome="unhandled_screen",
+                                        error=str(e)[:400]), ex, log)
+            log("!! UNHANDLED SCREEN on campaign %d -- killing the session rather than "
+                "recording another campaign of unusable data:\n%s" % (i + 1, str(e)[:600]))
+            raise
+        except BaseException as e:
+            entry.update(outcome="error", error=repr(e)[:300], **_played(e))
             log("!! campaign %d failed: %s" % (i + 1, repr(e)[:200]))
             if "did not load" in str(e) or "never logged" in str(e):
                 launch_failures += 1
@@ -312,6 +357,7 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                         "the batch instead of proving it %d more times"
                         % (launch_failures, n - (i + 1)))
                     report["campaigns"].append(entry)
+                    stretch.append(entry)
                     break
             else:
                 launch_failures = 0
@@ -328,9 +374,11 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
         except Exception as e:
             entry["streams"] = {"error": repr(e)[:160]}
         report["campaigns"].append(entry)
+        stretch.append(entry)
         log("campaign %d -> %s in %.0fs" % (i + 1, entry["outcome"], entry["seconds"]))
         _write(out_path, report)
 
+    _flush_generation(stretch, backend, backend_cfg, generation, report, trained, log)
     report["seconds"] = round(time.time() - report["started"], 1)
     report["totals"] = _totals(report)
     _write(out_path, report)
@@ -341,17 +389,294 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
     return report
 
 
+METRICS_DIR = r"D:\twdata\metrics"
+EXPERIMENTS = os.path.join(METRICS_DIR, "experiments.jsonl")
+
+
+def _growth_stats(rows):
+    out = {}
+    for part in ("settlements", "lord_level"):
+        vals = [(r.get("state") or {}).get(part) for r in rows]
+        vals = [float(v) for v in vals if v is not None]
+        if not vals:
+            continue
+        out[part + "_start"] = vals[0]
+        out[part + "_peak"] = max(vals)
+        out[part + "_gained"] = max(vals) - vals[0]
+    return out
+
+
+def _gain_stats(stretch, part):
+    measured = [c for c in stretch if c.get(part + "_gained") is not None]
+    if not measured:
+        return {"total": None, "mean": None, "per_turn": None, "campaigns_measured": 0,
+                "campaigns_that_gained": None, "hist": {}}
+    vals = [float(c[part + "_gained"]) for c in measured]
+    turns = sum(int(c.get("turns_played") or 0) for c in measured)
+    return {"total": round(sum(vals), 2),
+            "mean": round(sum(vals) / len(vals), 3),
+            "per_turn": round(sum(vals) / turns, 4) if turns else None,
+            "campaigns_measured": len(measured),
+            "campaigns_that_gained": sum(1 for v in vals if v >= 1),
+            "hist": {str(int(v)): vals.count(v) for v in sorted(set(vals))}}
+
+
+def _flush_generation(stretch, backend, backend_cfg, gen_n, report, trained, log):
+    if not stretch:
+        return None
+    first, last = stretch[0], stretch[-1]
+    secs = sum(float(c.get("seconds") or 0.0) for c in stretch)
+    outcomes, policies = {}, {}
+    for c in stretch:
+        outcomes[c.get("outcome")] = outcomes.get(c.get("outcome"), 0) + 1
+        policies[c.get("policy")] = policies.get(c.get("policy"), 0) + 1
+    session = str(report.get("session") or "")
+    trial = os.path.basename(session).replace("session_", "").replace(".json", "")
+    row = {"trial": "%s-g%d" % (trial or "unstamped", gen_n),
+           "ts": time.time(), "when": time.strftime("%Y-%m-%d %H:%M:%S"),
+           "session": session or None,
+           "generation": gen_n,
+           "started": first.get("started"),
+           "campaign_index": [first.get("index"), last.get("index")],
+           "campaigns": len(stretch),
+           "backend": backend, "backend_cfg": backend_cfg,
+           "feature_version": _feature_version(),
+           "corpus_at_train": report.get("_corpus"),
+           "fit": trained,
+           "policies": policies,
+           "settlements": _gain_stats(stretch, "settlements"),
+           "lord_level": _gain_stats(stretch, "lord_level"),
+           "outcomes": outcomes,
+           "turns_total": sum(int(c.get("turns_played") or 0) for c in stretch),
+           "turns_per_campaign": round(float(sum(int(c.get("turns_played") or 0)
+                                                 for c in stretch)) / len(stretch), 2),
+           "campaigns_per_hour": (round(len(stretch) / (secs / 3600.0), 2) if secs else None),
+           "campaign_hours": round(secs / 3600.0, 2),
+           "run_dirs": sorted({c["run_dir"] for c in stretch if c.get("run_dir")})}
+    recovered = sum(1 for c in stretch if c.get("growth_source") == "run_dir")
+    if recovered:
+        row["growth_recovered"] = recovered
+    if report.get("backfilled"):
+        row["backfilled"] = True
+        row["backfilled_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    if report.get("stopped_short"):
+        row["stopped_short"] = True
+    _write_trial(row, log)
+    report.setdefault("trials", []).append(row)
+    return row
+
+
+def _write_trial(row, log):
+    try:
+        os.makedirs(METRICS_DIR, exist_ok=True)
+        with open(EXPERIMENTS, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, default=str) + "\n")
+    except OSError as e:
+        raise RuntimeError("trial %s NOT written to %s -- refusing to run unrecorded "
+                           "experiments: %s" % (row.get("trial"), EXPERIMENTS, repr(e)[:120]))
+    s, l = row["settlements"], row["lord_level"]
+    num = lambda v, f="%+.2f": "unmeasured" if v is None else f % v
+    log("   trial %s logged: %d campaigns (%s), settlements %s total / %s mean / %s campaigns"
+        " grew, lord level %s total, %.2f turns per campaign -> %s"
+        % (row["trial"], row["campaigns"],
+           ", ".join(sorted(str(p) for p in row["policies"])) or "?",
+           num(s["total"]), num(s["mean"], "%.3f"), num(s["campaigns_that_gained"], "%d"),
+           num(l["total"]), row["turns_per_campaign"], EXPERIMENTS))
+
+
+def _campaign_blocks(run_dir):
+    rows = []
+    path = os.path.join(run_dir, "loop_report.jsonl")
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                try:
+                    o = json.loads(line)
+                except ValueError:
+                    continue
+                if o.get("kind") == "turn":
+                    rows.append(o)
+    except OSError:
+        return []
+    blocks, cur, prev_id, prev_turn = [], [], None, None
+    for r in rows:
+        tg, st = r.get("target") or {}, r.get("state") or {}
+        ident = tg.get("campaign_uuid") or tg.get("campaign_id") or st.get("faction")
+        turn = float(r.get("turn") or 0)
+        if cur and ((ident is not None and prev_id is not None and ident != prev_id)
+                    or turn <= (prev_turn or 0)):
+            blocks.append(cur)
+            cur = []
+        cur.append(r)
+        prev_id = ident if ident is not None else prev_id
+        prev_turn = turn
+    if cur:
+        blocks.append(cur)
+    return [{"faction": ((b[0].get("target") or {}).get("campaign_id")
+                         or (b[0].get("state") or {}).get("faction")),
+             "rows": b} for b in blocks]
+
+
+def _recover_growth(campaigns, log):
+    missing = [c for c in campaigns
+               if c.get("settlements_gained") is None and c.get("run_dir")]
+    by_dir, filled = {}, 0
+    for c in missing:
+        by_dir.setdefault(c["run_dir"], None)
+    for rd in by_dir:
+        by_dir[rd] = _campaign_blocks(rd)
+    for rd, blocks in by_dir.items():
+        pending = [c for c in missing if c.get("run_dir") == rd]
+        cursor = 0
+        for c in pending:
+            while cursor < len(blocks) and blocks[cursor]["faction"] != c.get("plan"):
+                cursor += 1
+            if cursor >= len(blocks):
+                break
+            stats = _growth_stats(blocks[cursor]["rows"])
+            if stats:
+                c.update(stats)
+                c.setdefault("turns_played", len(blocks[cursor]["rows"]))
+                c["growth_source"] = "run_dir"
+                filled += 1
+            cursor += 1
+    if filled:
+        log("   recovered growth for %d campaigns from their run dirs" % filled)
+    return filled
+
+
+def _stretches(campaigns):
+    out, cur, gen = [], [], 0
+    for c in campaigns:
+        if c.get("retrain") and cur:
+            out.append((gen, cur))
+            cur = []
+        if c.get("retrain"):
+            gen += 1
+        cur.append(c)
+    if cur:
+        out.append((gen, cur))
+    return out
+
+
+LIVE_SESSION_S = 1800
+
+
+def _still_running(path, rep):
+    if rep.get("totals"):
+        return False
+    try:
+        return (time.time() - os.path.getmtime(path)) < LIVE_SESSION_S
+    except OSError:
+        return False
+
+
+def backfill(runs_root=RUNS_ROOT, log=print, include_live=False):
+    import glob
+    seen = set()
+    try:
+        with open(EXPERIMENTS, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    seen.add(json.loads(line).get("trial"))
+                except ValueError:
+                    continue
+    except OSError:
+        pass
+    written, skipped = [], 0
+    for path in sorted(glob.glob(os.path.join(runs_root, "session_*.json"))):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                rep = json.load(fh)
+        except (OSError, ValueError) as e:
+            log("!! %s unreadable, no trials recovered: %s" % (os.path.basename(path), repr(e)[:90]))
+            continue
+        campaigns = rep.get("campaigns") or []
+        if not campaigns:
+            continue
+        _recover_growth(campaigns, log)
+        req = rep.get("requested") or {}
+        stretches = _stretches(campaigns)
+        cut_short = None
+        if _still_running(path, rep) and stretches:
+            if include_live:
+                cut_short = stretches[-1][0]
+                log("   %s looks live -- recording generation %d anyway as stopped_short"
+                    % (os.path.basename(path), cut_short))
+            else:
+                gen, stretch = stretches.pop()
+                log("   %s is LIVE -- generation %d (%d campaigns so far) left for the session to "
+                    "record when it finishes" % (os.path.basename(path), gen, len(stretch)))
+        for gen, stretch in stretches:
+            stamp = os.path.basename(path).replace("session_", "").replace(".json", "")
+            if "%s-g%d" % (stamp, gen) in seen:
+                skipped += 1
+                continue
+            trained = stretch[0].get("retrain")
+            corpus = ({k: trained.get(k) for k in ("rows", "runs", "campaigns", "n_decisions")}
+                      if trained and not trained.get("error") else None)
+            shadow = {"session": path, "_corpus": corpus, "backfilled": True,
+                      "stopped_short": gen == cut_short}
+            row = _flush_generation(stretch, req.get("backend") or stretch[0].get("backend"),
+                                    req.get("backend_cfg") or {}, gen, shadow, trained, log)
+            if row:
+                written.append(row)
+    log("backfill: %d trials written, %d already in the ledger -> %s"
+        % (len(written), skipped, EXPERIMENTS))
+    return written
+
+
+def _feature_version():
+    import hashlib
+    for d in (r"D:\twdata\models\nn_global", r"D:\twdata\models\global"):
+        p = os.path.join(d, "meta.json")
+        if not os.path.isfile(p):
+            continue
+        try:
+            m = json.load(open(p, encoding="utf-8"))
+            cols = sorted((m.get("num") or []) + (m.get("cat") or []))
+            if cols:
+                return "%s:%d" % (hashlib.sha1(",".join(cols).encode()).hexdigest()[:8],
+                                  len(cols))
+        except Exception:
+            continue
+    return "unfitted"
+
+
+def _played(exc):
+    rows = getattr(exc, "rows", None)
+    if not rows:
+        return {}
+    return dict(_growth_stats(rows),
+                turns_played=len(rows),
+                actions=sum(int(r.get("actions") or 0) for r in rows),
+                confirmed=sum(int(r.get("confirmed") or 0) for r in rows),
+                ended_by=[r.get("ended_by") for r in rows])
+
+
+def _throughput(campaigns):
+    n = len(campaigns)
+    secs = sum(float(c.get("seconds") or 0) for c in campaigns)
+    turns = sum(int(c.get("turns_played") or 0) for c in campaigns)
+    hours = secs / 3600.0
+    return {"campaigns_per_hour": round(n / hours, 2) if hours else None,
+            "turns_per_hour": round(turns / hours, 2) if hours else None,
+            "turns_per_campaign": round(float(turns) / n, 2) if n else None,
+            "campaign_hours": round(hours, 2)}
+
+
 def _totals(report):
     done = [c for c in report["campaigns"] if c.get("outcome") == "completed"]
-    return {"campaigns": len(report["campaigns"]),
+    return dict(_throughput(report["campaigns"]), **{"campaigns": len(report["campaigns"]),
             "completed": len(done),
             "stuck": sum(1 for c in report["campaigns"] if c.get("outcome") == "stuck"),
             "defeated": sum(1 for c in report["campaigns"] if c.get("outcome") == "defeated"),
+            "stagnant": sum(1 for c in report["campaigns"] if c.get("outcome") == "stagnant"),
             "errored": sum(1 for c in report["campaigns"] if c.get("outcome") == "error"),
-            "turns_played": sum(c.get("turns_played", 0) for c in report["campaigns"]),
-            "actions": sum(c.get("actions", 0) for c in report["campaigns"]),
-            "confirmed": sum(c.get("confirmed", 0) for c in report["campaigns"]),
-            "run_dirs": [c.get("run_dir") for c in report["campaigns"] if c.get("run_dir")]}
+            "turns_played": sum(int(c.get("turns_played") or 0) for c in report["campaigns"]),
+            "actions": sum(int(c.get("actions") or 0) for c in report["campaigns"]),
+            "confirmed": sum(int(c.get("confirmed") or 0) for c in report["campaigns"]),
+            "run_dirs": [c.get("run_dir") for c in report["campaigns"] if c.get("run_dir")]})
 
 
 def _write(path, report):
@@ -363,7 +688,6 @@ def _write(path, report):
 
 
 def _parse_turns(arg):
-    """'12' -> 12 fixed; '2-20' -> (2, 20), each campaign's cap sampled from the range."""
     s = str(arg)
     if "-" in s:
         lo, hi = s.split("-", 1)
@@ -375,11 +699,23 @@ def _parse_turns(arg):
 
 
 def main():
+    sys.path.insert(0, _HERE)
+    if "--backfill" in sys.argv:
+        return 0 if backfill(include_live="--include-live" in sys.argv) else 1
     n = int(sys.argv[1]) if len(sys.argv) > 1 else 3
     turns = _parse_turns(sys.argv[2]) if len(sys.argv) > 2 else 20
+    import backends as B
     if "--factions" not in sys.argv:
         raise SystemExit("usage: session.py <campaigns> <turns|min-max> --factions "
-                         "all|<key,key,...> [--retrain]\n"
+                         "all|<key,key,...> [--retrain] [--model %s] [--nn-KEY VALUE ...]\n"
+                         "       session.py --backfill   -- write the trial rows for sessions "
+                         "that finished before the ledger recorded any\n"
+                         "  --model     -- which ranker to play on (default %s):\n%s\n"
+                         "  --nn-KEY V  -- backend hyperparameter, e.g. --nn-bottleneck 64\n"
+                         % ("|".join(B.names()), B.DEFAULT,
+                            "\n".join("                 %-10s %s" % (k, B.label(k))
+                                      for k in B.names()))
+                         + "\n"
                          "  all         -- sample from EVERY playable start in the installed game,\n"
                          "                 read from launcher/startable_factions.json (harvested\n"
                          "                 from the game's own frontend: 104 factions, 24 cultures)\n"
@@ -399,11 +735,19 @@ def main():
         if every < 0:
             raise SystemExit("--retrain-every must be >= 0")
     cold = "--cold" in sys.argv
+    if "--dev" in sys.argv:
+        os.environ["TW_DEV"] = "1"
+        sys.stderr.write("session: DEV logging on -- UI scrapes and overlay dumps enabled\n")
     if cold and ("--retrain" in sys.argv or every):
         raise SystemExit("--cold cannot be combined with --retrain/--retrain-every: a cold run "
                          "deliberately ignores the fitted model, so retraining it is wasted work")
+    backend = (sys.argv[sys.argv.index("--model") + 1].strip()
+               if "--model" in sys.argv else B.DEFAULT)
+    B.resolve(backend)
+    backend_cfg = B.parse_cfg(sys.argv)
     r = run_campaigns(n, turns, plan=keys, retrain="--retrain" in sys.argv,
-                      retrain_every=every, cold=cold)
+                      retrain_every=every, cold=cold, backend=backend,
+                      backend_cfg=backend_cfg)
     return 0 if r["totals"]["completed"] else 2
 
 

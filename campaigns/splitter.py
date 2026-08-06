@@ -1,7 +1,3 @@
-r"""splitter -- detect campaign boundaries in a recorded run and partition every stream.
-
-    python splitter.py <run-dir> [--no-state-lines]
-"""
 from __future__ import annotations
 
 import bisect
@@ -25,7 +21,6 @@ _RE_LOGSTAMP = re.compile(r"script_log_(\d{6})_(\d{4})")
 
 
 def _is_new_campaign(cur: dict | None, ident: tuple, min_turn: int, restart_turn: int) -> bool:
-    """True for a new campaign: no current one, a changed human identity, or the same faction restarting from an early turn."""
     if cur is None:
         return True
     if ident != cur["id"]:
@@ -36,7 +31,6 @@ def _is_new_campaign(cur: dict | None, ident: tuple, min_turn: int, restart_turn
 
 
 def segment_blocks(blocks: list[dict], restart_turn: int = 1) -> tuple[list[dict], list[dict]]:
-    """Merge ordered identity blocks into campaigns (pure; no I/O); returns (campaigns, leading identity-less orphan blocks)."""
     camps: list[dict] = []
     pending: list[dict] = []
     for b in blocks:
@@ -70,7 +64,6 @@ def _new_camp(b: dict) -> dict:
 
 
 class CampaignTracker:
-    """Incremental form of the boundary kernel: observe() returns True on the row that STARTS a new campaign."""
 
     def __init__(self, restart_turn: int = 1):
         self.restart_turn = restart_turn
@@ -91,7 +84,6 @@ class CampaignTracker:
 
 
 def scan_state_rows(chunk: bytes):
-    """Yield (faction, subculture, turn, line_offset) for every human-faction row in `chunk`, line_offset being the byte position of that line's start."""
     off = 0
     for raw in chunk.splitlines(keepends=True):
         p = _parse_human_line(raw)
@@ -101,7 +93,6 @@ def scan_state_rows(chunk: bytes):
 
 
 def _parse_human_line(raw: bytes) -> dict | None:
-    """(faction, subculture, turn) from one is_human faction row, or None if not one."""
     if _HUMAN_MARK not in raw or _FACTION_MARK not in raw:
         return None
     mf = _RE_FACTION.search(raw)
@@ -114,7 +105,6 @@ def _parse_human_line(raw: bytes) -> dict | None:
 
 
 def _scan_head_tail(path: str, size: int) -> dict:
-    """Cheap HEAD+TAIL identity probe of one script_log: head/tail identity, turn range, and whether they differ."""
     with open(path, "rb") as f:
         head = f.read(HEAD_BYTES)
         if size > HEAD_BYTES + TAIL_BYTES:
@@ -147,7 +137,6 @@ def _scan_head_tail(path: str, size: int) -> dict:
 
 
 def _full_scan_blocks(path: str) -> list[dict]:
-    """Stream one script_log start-to-end and cut it into line-aligned identity blocks."""
     blocks: list[dict] = []
     off = 0
     cur: dict | None = None
@@ -179,7 +168,6 @@ def _full_scan_blocks(path: str) -> list[dict]:
 
 
 def _file_blocks(path: str) -> list[dict]:
-    """Identity blocks for one script_log.tail: one block for the whole file unless its identity changes mid-file."""
     try:
         size = os.path.getsize(path)
     except OSError as e:
@@ -196,7 +184,6 @@ def _file_blocks(path: str) -> list[dict]:
 
 
 def _session_logs(run: str) -> list[str]:
-    """Every state-stream script_log for a run, chronologically (filename carries launch time)."""
     files = glob.glob(os.path.join(run, "logs", "script_log_*.tail"))
     files += glob.glob(os.path.join(run, "logs", "script_log_*.txt"))
     files += glob.glob(os.path.join(run, "script_log_*.txt"))
@@ -204,13 +191,11 @@ def _session_logs(run: str) -> list[str]:
 
 
 def _logstamp(path: str) -> str | None:
-    """The DDMMYY_HHMM launch stamp embedded in a script_log filename, if present."""
     m = _RE_LOGSTAMP.search(os.path.basename(path))
     return "%s_%s" % (m.group(1), m.group(2)) if m else None
 
 
 def _readable_start(stamp: str | None) -> str | None:
-    """script_log stamp DDMMYY_HHMM -> 'YYYY-MM-DD HH:MM' wall label, best effort."""
     if not stamp:
         return None
     try:
@@ -222,7 +207,6 @@ def _readable_start(stamp: str | None) -> str | None:
 
 
 def build_byte_time_index(run: str) -> dict:
-    """Per-.tail (cum_end_bytes, t) tables from log_tail events: the running size of each .tail at recorder-time t."""
     idx: dict[str, dict] = {}
     p = os.path.join(run, "events.jsonl")
     if not os.path.isfile(p):
@@ -256,7 +240,6 @@ def build_byte_time_index(run: str) -> dict:
 
 
 def _byte_to_t(idx: dict, dst_basename: str, off: int) -> float | None:
-    """recorder-t at which byte offset `off` of a .tail had been written; None if unmapped."""
     e = idx.get(dst_basename)
     if not e or not e["cum"]:
         return None
@@ -267,7 +250,6 @@ def _byte_to_t(idx: dict, dst_basename: str, off: int) -> float | None:
 
 
 def detect_campaigns(run: str) -> list[dict]:
-    """Campaigns in a run: identity, turn span, exact state byte-ranges, and a non-overlapping recorder-t window tiling [0, inf)."""
     run = run.rstrip("/\\")
     blocks: list[dict] = []
     for f in _session_logs(run):
@@ -308,13 +290,11 @@ def detect_campaigns(run: str) -> list[dict]:
 
 
 def _campaign_id(index: int, faction: str | None) -> str:
-    """Filesystem-safe per-campaign id, e.g. '01_wh3_dlc27_sla_masque_of_slaanesh'."""
     safe = re.sub(r"[^a-z0-9_]+", "_", (faction or "unknown").lower())
     return "%02d_%s" % (index + 1, safe)
 
 
 def _count_bytes_lines(path: str, lo: int = 0, hi: int | None = None) -> tuple[int, int]:
-    """(#bytes, #lines) in [lo, hi) of a file, counted in chunks (memory-safe on multi-GB logs)."""
     try:
         size = os.path.getsize(path)
     except OSError as e:
@@ -341,7 +321,6 @@ def _count_bytes_lines(path: str, lo: int = 0, hi: int | None = None) -> tuple[i
 
 
 def _which_campaign(camps: list[dict], t: float | None) -> int | None:
-    """Index of the campaign whose t-window contains t, or None if t is missing/out of range."""
     if t is None:
         return None
     for c in camps:
@@ -351,7 +330,6 @@ def _which_campaign(camps: list[dict], t: float | None) -> int | None:
 
 
 def _partition_jsonl_by_t(path: str, camps: list[dict]) -> dict:
-    """Count lines of a t-keyed jsonl per campaign. Lines without a parseable `t` -> 'shared'."""
     per = {c["index"]: 0 for c in camps}
     shared = 0
     total = 0
@@ -374,7 +352,6 @@ def _partition_jsonl_by_t(path: str, camps: list[dict]) -> dict:
 
 
 def _partition_shots(run: str, camps: list[dict]) -> dict:
-    """Count shot files per campaign via each shot event's `t`. Reconciled against files on disk."""
     per = {c["index"]: 0 for c in camps}
     shared = 0
     total = 0
@@ -404,7 +381,6 @@ def _partition_shots(run: str, camps: list[dict]) -> dict:
 
 
 def split_run(run: str, count_state_lines: bool = True) -> dict:
-    """Full per-campaign partition of a run plus a reconciliation proving sum-of-parts == original for every stream; reads only."""
     run = run.rstrip("/\\")
     camps = detect_campaigns(run)
 
@@ -479,7 +455,6 @@ def split_run(run: str, count_state_lines: bool = True) -> dict:
 
 
 def _reconcile_state(state_files: dict, camps: list[dict], count_lines: bool) -> dict:
-    """Per source script_log: original bytes/lines vs summed parts + unattributed, flagging any mismatch."""
     by_index = {c["index"]: c["id_str"] for c in camps}
     files_out = {}
     ok = True

@@ -11,18 +11,7 @@ PHASES = ("wave_a_ms", "wave_b_ms", "wave_c_ms", "campaign_offers/diplomacy", "l
 
 
 def newest_run():
-    try:
-        with open(os.path.join(RUNS_ROOT, "CURRENT_RUN"), encoding="utf-8") as f:
-            d = f.read().strip()
-        if d and os.path.isdir(d):
-            return d
-    except OSError:
-        pass
-    ds = sorted(glob.glob(os.path.join(RUNS_ROOT, "*", "decisions_stream.jsonl")),
-                key=os.path.getmtime, reverse=True)
-    if not ds:
-        raise SystemExit("no decisions_stream.jsonl under %s" % RUNS_ROOT)
-    return os.path.dirname(ds[0])
+    return 'D:/twdata/runs/human/run'
 
 
 def load(run_dir):

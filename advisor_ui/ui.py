@@ -1,4 +1,3 @@
-r"""python advisor_ui/ui.py [run_dir] [port]      # default: newest run, :8777"""
 from __future__ import annotations
 
 import glob
@@ -17,18 +16,7 @@ RUNS_ROOT = "D:/twdata/runs/human"
 
 
 def newest_run():
-    try:
-        with open(os.path.join(RUNS_ROOT, "CURRENT_RUN"), encoding="utf-8") as f:
-            d = f.read().strip()
-        if d and os.path.isfile(os.path.join(d, "decisions.sqlite")):
-            return d
-    except OSError:
-        pass
-    dbs = sorted(glob.glob(os.path.join(RUNS_ROOT, "*", "decisions.sqlite")),
-                 key=os.path.getmtime, reverse=True)
-    if not dbs:
-        raise SystemExit("no decisions.sqlite under %s -- run the manager first" % RUNS_ROOT)
-    return os.path.dirname(dbs[0])
+    return 'D:/twdata/runs/human/run'
 
 
 def _con(run_dir):
@@ -58,7 +46,6 @@ def summary(con):
 
 
 def _num(v, nd=4):
-    """"-" for None, else v to nd decimals."""
     return "-" if v is None else ("%%.%df" % nd) % float(v)
 
 
@@ -76,7 +63,6 @@ def sequence(con, limit=300):
 
 
 def ranking(con, did, limit=80):
-    """Offers for one decision point, each flagged with whether it was the one taken."""
     taken = con.execute("SELECT context_kind,context_id,action_type,action_key,counted,refusal"
                         " FROM action_taken WHERE decision_id=?", (did,)).fetchone()
     rows = [dict(r) for r in con.execute(
@@ -98,7 +84,6 @@ def ranking(con, did, limit=80):
 
 
 def timeline(con):
-    """(rows, rows_by_turn) -- decisions in order with per-phase timings and the gap before each."""
     rows = [dict(r) for r in con.execute(
         "SELECT d.decision_id, d.turn, d.ts, d.timings, t.context_kind, t.context_id, t.action_type,"
         " t.action_key, t.counted, t.refusal, t.latency_ms FROM decision_points d"
@@ -126,7 +111,6 @@ def timeline(con):
 
 
 def run_history(con, runs_root=RUNS_ROOT):
-    """Every campaign across every run dir under runs_root, oldest first, deduped by campaign_id."""
     seen, rows = {}, []
     dbs = sorted(glob.glob(os.path.join(runs_root, "*", "decisions.sqlite")), key=os.path.getmtime)
     for db in dbs:
@@ -376,7 +360,6 @@ def render_interrupts(runs_root=RUNS_ROOT):
 
 
 def starts_summary(runs_root=RUNS_ROOT):
-    """Per-faction aggregate over every campaign in every run dir, most-played first."""
     camps = {}
     for db in sorted(glob.glob(os.path.join(runs_root, "*", "decisions.sqlite")),
                      key=os.path.getmtime):
@@ -437,7 +420,6 @@ def starts_summary(runs_root=RUNS_ROOT):
 
 
 def faction_action_stats(runs_root=RUNS_ROOT):
-    """{(faction, action_type): [tried, ok, seconds]} for main picks and interrupt screens."""
     import collections
     main = collections.defaultdict(lambda: [0, 0, 0.0])
     inter = collections.defaultdict(lambda: [0, 0, 0.0])
@@ -517,7 +499,6 @@ def _matrix_tables(data, title):
 
 
 def _tail_jsonl(path, n=400):
-    """Last n parsed rows of a jsonl; [] when absent. Read-only, error-tolerant."""
     rows = []
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
@@ -532,7 +513,6 @@ def _tail_jsonl(path, n=400):
 
 
 def render_diplomacy(run_dir):
-    """The diplomacy analysis stream: deals, answers, checkpoints (diplomacy.jsonl)."""
     rows = _tail_jsonl(os.path.join(run_dir, "diplomacy.jsonl"), 600)
     if not rows:
         return ("<h2>diplomacy stream</h2><p class=muted>no diplomacy.jsonl rows in this run "
@@ -579,7 +559,6 @@ def _med(vals):
 
 
 def render_timing(run_dir):
-    """Decision-cycle timing: collect waves (recorder profile) + advisor-side pick timings."""
     pts = [r for r in _tail_jsonl(os.path.join(run_dir, "decisions_stream.jsonl"), 800)
            if r.get("kind") == "decisions_point"]
     picks = [r for r in _tail_jsonl(os.path.join(run_dir, "decisions_requests.jsonl"), 800)
@@ -633,10 +612,29 @@ def render_timing(run_dir):
     return "".join(out)
 
 
+def _throughput_from_log(lines):
+    secs, turns, camps, pending = 0.0, 0, 0, 0
+    for ln in lines:
+        if ln.startswith("== turn ") and " done:" in ln:
+            pending += 1
+            continue
+        m = re.match(r"campaign \d+ -> \S+ in ([\d.]+)s", ln)
+        if m:
+            camps += 1
+            secs += float(m.group(1))
+            turns += pending
+            pending = 0
+    if not camps or secs <= 0:
+        return {}
+    h = secs / 3600.0
+    return {"campaigns_per_hour": round(camps / h, 2), "turns_per_hour": round(turns / h, 2),
+            "turns_per_campaign": round(float(turns) / camps, 2), "campaigns": camps}
+
+
 def _session_state():
-    """Parsed live-session facts from the current session log + process table."""
     st = {"log": None, "campaign": None, "faction": None, "turn": None,
-          "outcomes": [], "session": None, "tail": [], "batch_timeouts": 0}
+          "outcomes": [], "session": None, "tail": [], "batch_timeouts": 0,
+          "rate": {}}
     try:
         lp = open(CURRENT_LOG, encoding="utf-8-sig").read().strip()
         if os.path.isfile(lp):
@@ -644,6 +642,7 @@ def _session_state():
             lines = open(lp, encoding="utf-8", errors="replace").read().splitlines()
             st["tail"] = lines[-22:]
             st["batch_timeouts"] = sum(1 for ln in lines if "batch timeout" in ln)
+            st["rate"] = _throughput_from_log(lines)
             for ln in reversed(lines):
                 if st["campaign"] is None and ln.startswith("CAMPAIGN "):
                     m = re.match(r"CAMPAIGN (\d+/\d+)\s+\(up to (\d+) turns, faction=(\S+)\)", ln)
@@ -663,7 +662,6 @@ def _session_state():
 
 
 def render_live(run_dir):
-    """The mid-run view: is everything alive, what is it doing, what went wrong last."""
     procs, wh3 = _ps()
     st = _session_state()
     sess = next((p for p in procs if "session.py" in p[2]), None)
@@ -686,6 +684,12 @@ def render_live(run_dir):
         card("campaign", _esc(st["campaign"] or "-")),
         card("faction", _esc((st["faction"] or "-")[:24])),
         card("turn", _esc(st["turn"] or "-")),
+    ] + [
+        card(k, "&mdash;" if (st["rate"] or {}).get(v) is None
+             else "<span class=ok>%s</span>" % st["rate"][v])
+        for k, v in (("campaigns/hr", "campaigns_per_hour"),
+                     ("turns/hr", "turns_per_hour"),
+                     ("turns/campaign", "turns_per_campaign"))
     ])
 
     alerts = []
@@ -713,7 +717,8 @@ def render_live(run_dir):
         alerts.append("<span class=bad>%d BATCH timeouts -- the wave path is "
                       "losing replies</span>" % st["batch_timeouts"])
     for o in st["outcomes"]:
-        cls = "ok" if "completed" in o else ("dim" if "defeated" in o else "warn")
+        cls = ("ok" if "completed" in o else
+               "dim" if ("defeated" in o or "stagnant" in o) else "warn")
         alerts.append("<span class=%s>%s</span>" % (cls, _esc(o)))
     alert_html = ("<h2>signals</h2><p class=muted>%s</p>"
                   % (" &middot; ".join(alerts) or "nothing notable"))
@@ -725,7 +730,6 @@ def render_live(run_dir):
 
 
 def render_endings(runs_root=RUNS_ROOT, limit=20):
-    """Campaign endings with their plausibility verdicts."""
     path = os.path.join(runs_root, "postmortems.jsonl")
     rows = []
     try:
@@ -1058,9 +1062,6 @@ _PS_CACHE = [0.0, ([], None)]
 
 
 def _ps():
-    """[(pid, started, cmdline)] for python processes, and the Warhammer3 count.
-    Cached ~5s: two panels call this per render, every 10s meta-refresh, and each
-    call is a PowerShell spawn (0.35s idle, 20s ceiling) on a single-threaded server."""
     import subprocess
     if time.time() - _PS_CACHE[0] < 5:
         return _PS_CACHE[1]
@@ -1086,7 +1087,6 @@ def _ps():
 
 
 def _age(path):
-    """(seconds since last write, mtime string) or (None, '-')."""
     import time
     try:
         st = os.stat(path)
@@ -1109,7 +1109,6 @@ def _meta(path):
 
 
 def render_infra(run_dir):
-    """Service status, model training state, and run activity."""
     import time
     procs, wh3 = _ps()
     running = {}
@@ -1232,8 +1231,15 @@ def render_infra(run_dir):
            "style='width:70px'></label>"
            "<label><input type=checkbox name=retrain value=1> retrain first</label>"
            "<label>retrain every <input name=retrain_every type=number min=0 max=999 value=0 "
-           "style='width:60px' title='0 = never; N = retrain before campaign 1 and every Nth "
-           "campaign after'></label>"
+           "style='width:60px' title='0 = never; N = retrain before every Nth campaign but NOT "
+           "before campaign 1 -- tick retrain first for that. Leave it unticked to run the first "
+           "N campaigns on the model already on disk. Each stretch between retrains is one trial "
+           "in the ledger'></label>"
+           "<label title='which ranker plays this trial'>model </label>") + _model_select() + (
+           "<label title='backend hyperparameters as KEY=VALUE pairs, e.g. bottleneck=64 lr=0.01"
+           " -- recorded on the trial as backend_cfg'>cfg <input name=cfg type=text value='' "
+           "placeholder='bottleneck=64 lr=0.01' style='width:170px'></label>"
+           "<label title='firehose script-log tail + UI tree scrapes; gigabytes per run'><input type=checkbox name=dev value=1> dev logging</label>"
            "<button class=btn>launch run</button>"
            "</form></div>"
            "<div class=dim style='margin:14px 0 8px'>cold start: same kill+recorder sequence, but "
@@ -1246,6 +1252,9 @@ def render_infra(run_dir):
            "style='width:70px'></label>"
            "<label>max turns <input name=turns_max type=number min=1 max=999 value=40 "
            "style='width:70px'></label>"
+           "<label title='which backend the cold run reports as -- the model is not consulted, "
+           "but the trial is labelled with it'>model </label>") + _model_select() + (
+           "<label title='firehose script-log tail + UI tree scrapes; gigabytes per run'><input type=checkbox name=dev value=1> dev logging</label>"
            "<button class=btn>launch cold start</button>"
            "</form>"
            "<pre id=ctlout class=dim style='margin-top:8px;white-space:pre-wrap'></pre>"
@@ -1260,18 +1269,20 @@ def render_infra(run_dir):
            "function launchCold(f){var q=new URLSearchParams(new FormData(f)).toString();"
            "return ctl('/ctl/coldstart?'+q,'Kill everything and launch a COLD START "
            "(no model, cold_random throughout)?')}"
-           "(function(){var f=document.querySelector(\"form[action='/ctl/restart']\");"
-           "if(!f)return;Array.prototype.forEach.call(f.elements,function(el){"
-           "if(!el.name)return;var k='launch.'+el.name,v=localStorage.getItem(k);"
+           "(function(){[['/ctl/restart','launch.'],['/ctl/coldstart','cold.']]"
+           ".forEach(function(p){"
+           "var f=document.querySelector(\"form[action='\"+p[0]+\"']\");if(!f)return;"
+           "Array.prototype.forEach.call(f.elements,function(el){"
+           "if(!el.name)return;var k=p[1]+el.name,v=localStorage.getItem(k);"
            "if(v!==null){if(el.type==='checkbox'){el.checked=(v==='1')}else{el.value=v}}"
-           "el.addEventListener('change',function(){localStorage.setItem(k,"
-           "el.type==='checkbox'?(el.checked?'1':'0'):el.value)})})})();"
+           "var save=function(){localStorage.setItem(k,"
+           "el.type==='checkbox'?(el.checked?'1':'0'):el.value)};"
+           "el.addEventListener('change',save);el.addEventListener('input',save)})})})();"
            "</script>")
-    return svc + models + activity + ctl + tail
+    return svc + models + _trials_table() + activity + ctl + tail
 
 
 def _kill_session():
-    """Kill session.py and the game. Returns a status line."""
     import subprocess
     cmd = ("$n=0; Get-CimInstance Win32_Process -Filter \"Name like '%python%'\" | "
            "? { $_.CommandLine -like '*session.py*' } | % { Stop-Process -Id $_.ProcessId -Force "
@@ -1282,13 +1293,24 @@ def _kill_session():
         r = subprocess.run(["powershell", "-NoProfile", "-Command", cmd],
                            capture_output=True, text=True, timeout=40,
                            creationflags=subprocess.CREATE_NO_WINDOW)
-        return (r.stdout or "").strip() or "killed"
+        killed = (r.stdout or "").strip() or "killed"
     except Exception as e:
         return "kill failed: %s" % repr(e)[:120]
+    return "%s; %s" % (killed, _bank_trials())
+
+
+def _bank_trials():
+    import session as S
+    try:
+        rows = S.backfill(log=lambda m: None, include_live=True)
+    except Exception as e:
+        return "!! TRIALS NOT BANKED: %s" % repr(e)[:140]
+    if not rows:
+        return "trials: already recorded"
+    return "trials banked: %s" % ", ".join(r["trial"] for r in rows)
 
 
 def _kill_recorder():
-    """Kill manager.py. Returns a status line."""
     import subprocess
     cmd = ("$n=0; Get-CimInstance Win32_Process -Filter \"Name like '%python%'\" | "
            "? { $_.CommandLine -like '*manager.py*' } | % { Stop-Process -Id $_.ProcessId -Force "
@@ -1305,8 +1327,67 @@ def _kill_recorder():
 SERVICES_LOG_DIR = r"D:\twdata\logs\services"
 
 
-def _start_recorder(shots=60):
-    """Spawn a detached recorder: resets the bus and opens a fresh run dir."""
+def _trials_table():
+    import session as S
+    try:
+        with open(S.EXPERIMENTS, encoding="utf-8") as fh:
+            rows = [json.loads(ln) for ln in fh if ln.strip()]
+    except OSError:
+        return ("<h2>experiment ledger</h2><div class=dim>no trials yet &mdash; %s does not exist. "
+                "Every session writes one row per retrain stretch; <code>python advisor/session.py "
+                "--backfill</code> reconstructs rows for sessions that predate the ledger.</div>"
+                % _esc(S.EXPERIMENTS))
+    except ValueError as e:
+        return "<h2>experiment ledger</h2><div class=bad>ledger unreadable: %s</div>" % _esc(repr(e)[:160])
+    rows.sort(key=lambda r: r.get("started") or r.get("ts") or 0, reverse=True)
+    best = max((r["settlements"]["mean"] for r in rows
+                if (r.get("settlements") or {}).get("mean") is not None), default=None)
+    out = []
+    for r in rows:
+        s = r.get("settlements") or {}
+        l = r.get("lord_level") or {}
+        cfg = r.get("backend_cfg") or {}
+        corpus = (r.get("corpus_at_train") or {}).get("rows")
+        flags = []
+        if r.get("backfilled"):
+            flags.append("<span class=dim title='reconstructed from the session report, not "
+                         "written live'>backfilled</span>")
+        if r.get("stopped_short"):
+            flags.append("<span class=warn title='the session was killed mid-stretch'>cut short</span>")
+        if r.get("growth_recovered"):
+            flags.append("<span class=dim title='campaigns whose growth was re-derived from the "
+                         "run dir'>+%d recovered</span>" % r["growth_recovered"])
+        sm = s.get("mean")
+        cls = " class=ok" if (sm is not None and best and sm >= best) else ""
+        out.append("<tr><td>%s<td>%s<td class=dim>%s<td>%s<td class=dim>%s<td%s>%s<td>%s<td>%s"
+                   "<td>%s<td>%s<td class=dim>%s</tr>"
+                   % (_esc(r.get("trial", "?")), _esc(str(r.get("backend") or "-")),
+                      _esc(", ".join("%s=%s" % kv for kv in sorted(cfg.items())) or "-"),
+                      r.get("campaigns", 0), corpus if corpus else "-",
+                      cls, "-" if sm is None else "%.3f" % sm,
+                      "-" if s.get("total") is None else "%g" % s["total"],
+                      "-" if s.get("campaigns_that_gained") is None
+                      else "%s/%s" % (s["campaigns_that_gained"], s.get("campaigns_measured", "?")),
+                      "-" if l.get("total") is None else "%g" % l["total"],
+                      r.get("turns_per_campaign", "-"),
+                      " ".join(flags) or _esc(", ".join(sorted(r.get("outcomes") or {})))))
+    return ("<h2>experiment ledger <span class=dim style='font-weight:normal'>&mdash; one row per "
+            "trial (the campaigns one fitted model played); settlements/campaign is the score"
+            "</span></h2><div class=scroll><table>"
+            "<tr><th>trial<th>backend<th>cfg<th>campaigns<th>corpus<th>sett/camp<th>sett total"
+            "<th>grew<th>lord total<th>turns/camp<th>notes</tr>%s</table></div>"
+            % "".join(out))
+
+
+def _model_select():
+    import backends as B
+    opts = "".join("<option value='%s'%s>%s &mdash; %s</option>"
+                   % (n, " selected" if n == B.DEFAULT else "", n, _esc(B.label(n)))
+                   for n in B.names())
+    return "<select name=model style='max-width:260px'>%s</select>" % opts
+
+
+def _start_recorder(shots=60, dev=False):
     import subprocess
     import time
     ts = time.strftime("%Y%m%d_%H%M%S")
@@ -1314,7 +1395,8 @@ def _start_recorder(shots=60):
     try:
         os.makedirs(SERVICES_LOG_DIR, exist_ok=True)
         fo = open(log, "w", encoding="utf-8")
-        subprocess.Popen([VENV_PY, "-u", "manager/manager.py", "--shots", str(shots)],
+        subprocess.Popen([VENV_PY, "-u", "manager/manager.py", "--shots", str(shots)]
+                         + (["--dev"] if dev else []),
                          cwd=TW_STACK, stdout=fo, stderr=subprocess.STDOUT,
                          creationflags=getattr(subprocess, "DETACHED_PROCESS", 0)
                          | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
@@ -1323,21 +1405,24 @@ def _start_recorder(shots=60):
         return "recorder start failed: %s" % repr(e)[:160]
 
 
-def _start_session(retrain=True, campaigns=10, turns=40, retrain_every=0, cold=False):
-    """Spawn a detached session; `turns` is an int or a 'MIN-MAX' per-campaign range.
-
-    cold=True passes --cold, which makes the session ignore any fitted model and play
-    cold_random throughout."""
+def _start_session(retrain=True, campaigns=10, turns=40, retrain_every=0, cold=False, dev=False,
+                   model=None, cfg=None):
     import subprocess
     import time
     ts = time.strftime("%Y%m%d_%H%M%S")
-    log = os.path.join(LOG_DIR, "session_%s%dx%s_%s.log"
-                       % ("cold_" if cold else "", campaigns, turns, ts))
+    log = os.path.join(LOG_DIR, "session_%s%s%dx%s_%s.log"
+                       % ("cold_" if cold else "", ("%s_" % model) if model else "",
+                          campaigns, turns, ts))
     err = log[:-4] + ".err"
+    cfg_args = []
+    for k, v in sorted((cfg or {}).items()):
+        cfg_args += ["--nn-%s" % k, str(v)]
     args = ([VENV_PY, "-u", "advisor/session.py", str(campaigns), str(turns),
-             "--factions", "all"] + (["--cold"] if cold else [])
+             "--factions", "all"] + (["--model", model] if model else [])
+            + cfg_args + (["--cold"] if cold else [])
             + (["--retrain"] if retrain and not cold else [])
-            + (["--retrain-every", str(retrain_every)] if retrain_every and not cold else []))
+            + (["--retrain-every", str(retrain_every)] if retrain_every and not cold else [])
+            + (["--dev"] if dev else []))
     try:
         os.makedirs(LOG_DIR, exist_ok=True)
         fo, fe = open(log, "w", encoding="utf-8"), open(err, "w", encoding="utf-8")
@@ -1346,15 +1431,42 @@ def _start_session(retrain=True, campaigns=10, turns=40, retrain_every=0, cold=F
                          | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
         with open(CURRENT_LOG, "w", encoding="utf-8") as fh:
             fh.write(log)
-        return "started %s -> %s" % ("COLD (no model, cold_random throughout)" if cold else
-                                     "with retrain" if retrain else "no retrain",
-                                     os.path.basename(log))
+        return "started %s on %s%s -> %s" % (
+            "COLD (no model, cold_random throughout)" if cold else
+            "with retrain" if retrain else "no retrain",
+            model or "default backend",
+            (" cfg=%s" % json.dumps(cfg)) if cfg else "",
+            os.path.basename(log))
     except Exception as e:
         return "start failed: %s" % repr(e)[:160]
 
 
+def _trial_params(q):
+    import backends as B
+    model = (q.get("model", [""])[0] or "").strip().lower()
+    if model and model not in B.names():
+        return None, None, ("unknown model %r -- known backends: %s, nothing was killed or started"
+                            % (model, ", ".join(B.names())))
+    cfg, raw = {}, (q.get("cfg", [""])[0] or "").strip()
+    for tok in raw.replace(",", " ").split():
+        if "=" not in tok:
+            return None, None, ("bad cfg %r -- want KEY=VALUE pairs, e.g. 'bottleneck=64 lr=0.01',"
+                                " nothing was killed or started" % tok)
+        k, v = tok.split("=", 1)
+        k = k.strip().replace("-", "_")
+        if not k:
+            return None, None, "bad cfg %r -- empty key, nothing was killed or started" % tok
+        try:
+            cfg[k] = int(v)
+        except ValueError:
+            try:
+                cfg[k] = float(v)
+            except ValueError:
+                cfg[k] = v.strip()
+    return (model or None), (cfg or None), None
+
+
 def _control_steps(path):
-    """Run /ctl/kill or /ctl/restart; returns the plain-text step report."""
     import time
     from urllib.parse import parse_qs, urlparse
     u = urlparse(path)
@@ -1373,11 +1485,16 @@ def _control_steps(path):
             return ("invalid cold start: campaigns=%d turns_max=%d -- need 1 <= campaigns <= 999 "
                     "and 1 <= turns_max <= 999, nothing was killed or started"
                     % (campaigns, tmax))
+        dev = (q.get("dev", ["0"])[0] not in ("0", ""))
+        model, cfg, err = _trial_params(q)
+        if err:
+            return "invalid cold start: %s" % err
         steps = [_kill_session(), _kill_recorder()]
         time.sleep(1.5)
-        steps.append(_start_recorder())
+        steps.append(_start_recorder(dev=dev))
         time.sleep(3.0)
-        steps.append(_start_session(retrain=False, campaigns=campaigns, turns=tmax, cold=True))
+        steps.append(_start_session(retrain=False, campaigns=campaigns, turns=tmax, cold=True,
+                                    dev=dev, model=model, cfg=cfg))
         steps.append("give the recorder + session ~20s to appear in the tables above")
         return "\n".join(steps)
     if u.path == "/ctl/restart":
@@ -1397,25 +1514,27 @@ def _control_steps(path):
                     "-- need 1 <= campaigns <= 999, 1 <= min <= max <= 999, 0 <= every <= 999, "
                     "nothing was killed or started" % (campaigns, tmin, tmax, every))
         turns = str(tmin) if tmin == tmax else "%d-%d" % (tmin, tmax)
+        dev = (q.get("dev", ["0"])[0] not in ("0", ""))
+        model, cfg, err = _trial_params(q)
+        if err:
+            return "invalid launch: %s" % err
         steps = [_kill_session(), _kill_recorder()]
         time.sleep(1.5)
-        steps.append(_start_recorder())
+        steps.append(_start_recorder(dev=dev))
         time.sleep(3.0)
         steps.append(_start_session(retrain=retrain, campaigns=campaigns, turns=turns,
-                                    retrain_every=every))
+                                    retrain_every=every, dev=dev, model=model, cfg=cfg))
         steps.append("give the recorder + session ~20s to appear in the tables above")
         return "\n".join(steps)
     return "unknown control: %s" % u.path
 
 
 def _control(path):
-    """Full-page fallback for direct /ctl/ navigation without JS."""
     return ("<h1>control</h1><pre>%s</pre><p><a class=btn href='/'>back</a></p>"
             % _esc(_control_steps(path)))
 
 
 def serve(run_dir, port=8777, follow=False):
-    """`follow` re-resolves the run dir on every request."""
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass

@@ -1,7 +1,3 @@
-r"""The driver: wires recorder, advisor and launcher together and plays. Exits 2 when stuck.
-
-    python advisor/run.py <run_dir> [turns]
-"""
 from __future__ import annotations
 
 import json
@@ -21,7 +17,7 @@ import model as M
 
 def main():
     if len(sys.argv) < 2:
-        print(__doc__.strip())
+        print("python advisor/run.py <run_dir> [turns]")
         return 1
     import journal
     arg = sys.argv[1]

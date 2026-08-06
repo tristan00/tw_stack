@@ -9,14 +9,7 @@ RUNS_ROOT = "D:/twdata/runs/human"
 
 
 def live_run():
-    try:
-        with open(os.path.join(RUNS_ROOT, "CURRENT_RUN"), encoding="utf-8") as f:
-            d = f.read().strip()
-        if d and os.path.isfile(os.path.join(d, "decisions.sqlite")):
-            return d
-    except OSError:
-        pass
-    raise SystemExit("no live run")
+    return 'D:/twdata/runs/human/run'
 
 
 def _con(run_dir):
@@ -25,7 +18,6 @@ def _con(run_dir):
 
 
 def offer_honesty(con):
-    """Per action type: picked-while-available vs actually confirmed."""
     rows = []
     for at, in con.execute("SELECT DISTINCT action_type FROM action_taken"):
         r = con.execute(
@@ -40,7 +32,6 @@ def offer_honesty(con):
 
 
 def offered_vs_taken(con):
-    """Per action type: {offered, available, picked}."""
     out = {}
     for at, n, av in con.execute(
             "SELECT action_type, COUNT(*), SUM(available) FROM action_offers GROUP BY action_type"):

@@ -1,9 +1,3 @@
-r"""Timing and action-reliability metrics for one batch, appended to a tracking file.
-
-    python advisor/batch_metrics.py <batch_label> [started_epoch]
-
-Writes D:\twdata\metrics\batches.jsonl (one row per batch) and prints the table.
-"""
 from __future__ import annotations
 
 import collections
@@ -29,7 +23,6 @@ def _dist(xs):
 
 
 def collect(since):
-    """Per-action reliability and TRUE time (decision to next decision) for campaigns after `since`."""
     acts = collections.defaultdict(lambda: {"tried": 0, "ok": 0, "secs": [], "fail_secs": [],
                                             "refusals": collections.Counter()})
     inter = collections.defaultdict(lambda: {"seen": 0, "ok": 0, "lat": []})
@@ -92,6 +85,28 @@ def collect(since):
     return acts, inter, camps, turns_by_camp
 
 
+def throughput(since):
+    n, secs, turns = 0, 0.0, 0
+    for p in sorted(glob.glob(os.path.join(RUNS, "session_*.json"))):
+        try:
+            s = json.load(open(p, encoding="utf-8"))
+        except Exception:
+            continue
+        for c in (s.get("campaigns") or []):
+            if not isinstance(c, dict) or (c.get("started") or 0) < since:
+                continue
+            if not c.get("seconds"):
+                continue
+            n += 1
+            secs += float(c["seconds"])
+            turns += int(c.get("turns_played") or 0)
+    h = secs / 3600.0
+    return {"campaigns": n, "campaign_hours": round(h, 2),
+            "campaigns_per_hour": round(n / h, 2) if h else None,
+            "turns_per_hour": round(turns / h, 2) if h else None,
+            "turns_per_campaign": round(float(turns) / n, 2) if n else None}
+
+
 def outcomes(since):
     out = collections.Counter()
     for p in sorted(glob.glob(os.path.join(RUNS, "session_*.json"))):
@@ -120,7 +135,7 @@ def main():
         "actions_tried": tried, "actions_confirmed": ok,
         "confirm_pct": round(100.0 * ok / tried, 1) if tried else None,
         "action_seconds": _dist(all_secs), "failed_action_seconds": _dist(fail_secs),
-        "outcomes": outcomes(since),
+        "outcomes": outcomes(since), "throughput": throughput(since),
         "by_action": {a: {"tried": v["tried"], "ok": v["ok"],
                           "pct": round(100.0 * v["ok"] / v["tried"], 1) if v["tried"] else None,
                           "sec_per_try": round(sum(v["secs"]) / len(v["secs"]), 1) if v["secs"] else None,
@@ -141,7 +156,11 @@ def main():
     print("BATCH %s  campaigns=%d turns=%d  confirm=%s%%"
           % (label, row["campaigns"], row["turns_total"], row["confirm_pct"]))
     print("outcomes:", row["outcomes"])
-    print("turns/campaign:", row["turns_per_campaign"])
+    tp = row["throughput"]
+    print("THROUGHPUT  campaigns/hr=%s  turns/hr=%s  turns/campaign=%s  (%s campaigns over %sh)"
+          % (tp["campaigns_per_hour"], tp["turns_per_hour"], tp["turns_per_campaign"],
+             tp["campaigns"], tp["campaign_hours"]))
+    print("turns/campaign dist:", row["turns_per_campaign"])
     print("action seconds:", row["action_seconds"], " failed:", row["failed_action_seconds"])
     print("-" * 78)
     print("%-18s %6s %6s %7s %9s %9s  %s" % ("action", "tried", "ok", "pct", "s/try", "s/fail",

@@ -1,6 +1,3 @@
-r"""Lookup API over reference.sqlite (offline game data) for the advisor featurizer.
-Returns {} / None when the key is absent so callers can featurize uniformly.
-"""
 import os
 import re
 import sqlite3
@@ -29,41 +26,30 @@ def _lookup(table, key_col, key):
 
 
 def building_features(key):
-    """building level key -> create_cost, create_time, upkeep_cost, food_cost, dev_point_cost,
-    building_chain, level, building_instance_key."""
     return _lookup("buildings", "key", key)
 
 
 def building_chain_features(key):
-    """building chain key -> superchain, chain_category, sort_order (the chain graph)."""
     return _lookup("building_chains", "key", key)
 
 
 def tech_features(key):
-    """tech key -> research_points_required, cost_per_round, tier, required_parents, food_cost,
-    node_set, building_level (unlock link), is_civil/is_engineering/is_military/is_hidden."""
     return _lookup("tech", "key", key)
 
 
 def unit_features(key):
-    """unit key (main_units.unit) -> recruitment_cost, upkeep_cost, create_time, food_cost,
-    multiplayer_cost, caste, category, class, tier, num_men, is_naval, ui_unit_group_land."""
     return _lookup("units", "key", key)
 
 
 def skill_features(key):
-    """skill key -> unlocked_at_rank, influence_cost, is_background_skill, background_weighting."""
     return _lookup("skills", "key", key)
 
 
 def ritual_features(key):
-    """ritual key -> category, cast_time, cooldown_time, slave_cost, influence_cost,
-    required_resources, expended_resources."""
     return _lookup("rituals", "key", key)
 
 
 def label(key):
-    """Localised name for a record key via the loc table (or None)."""
     row = _connect().execute("SELECT text FROM loc WHERE key=?", (key,)).fetchone()
     return row["text"] if row else None
 
@@ -75,10 +61,6 @@ _TR_PREFIX = "ui_text_replacements_localised_text_"
 
 
 def agent_action_label(action_key):
-    """Display name of an agent action, following the loc `{{tr:...}}` indirection (or None).
-
-    agent_actions_localised_action_name_<key> holds `{{tr:agent_action_name_scout_settlement}}`,
-    which resolves through ui_text_replacements_localised_text_<...> to "Scout Ruins"."""
     txt = label(_AGENT_ACTION_NAME_PREFIX + str(action_key))
     if not txt:
         return None
@@ -88,13 +70,27 @@ def agent_action_label(action_key):
     return label(_TR_PREFIX + m.group(1))
 
 
-def agent_action_keys(name_suffix):
-    """Every agent_action key whose loc name row ends in `name_suffix`, e.g.
-    'hinder_settlement_scout_settlement' -> the champion/dignitary/.../wizard variants.
+_performable_cache = None
 
-    Takes a single suffix or a sequence of them, matching agent_action_rows: HERO_ACTIONS carries
-    `loc_suffix` as a LIST, and stringifying that list made every LIKE miss, so no hero action
-    could resolve a method name and all 41 died before touching the game."""
+
+def performable_action_keys():
+    global _performable_cache
+    if _performable_cache is None:
+        con = _connect()
+        cats = {r["key"]: r["category"] for r in con.execute(
+            "SELECT key,category FROM agent_abilities")}
+        out = set()
+        for r in con.execute("SELECT key,ability,show_in_ui FROM agent_actions"):
+            if cats.get(r["ability"]) == "ambient":
+                continue
+            if str(r["show_in_ui"]).strip().lower() in ("0", "false", "none", ""):
+                continue
+            out.add(r["key"])
+        _performable_cache = out
+    return _performable_cache
+
+
+def agent_action_keys(name_suffix):
     sufs = [name_suffix] if isinstance(name_suffix, str) else list(name_suffix or ())
     out = []
     con = _connect()
@@ -114,10 +110,6 @@ def agent_action_keys(name_suffix):
 
 
 def verify_hero_action_mappings(hero_actions):
-    """{action: label|None} for a HERO_ACTIONS catalogue, logging the unresolved ones loudly.
-
-    One call answers 'can the executor run any of these', instead of learning it one failed
-    action at a time in a live campaign."""
     out, missing = {}, []
     for name, spec in sorted((hero_actions or {}).items()):
         label = None
@@ -144,10 +136,6 @@ _matrix_cache = {}
 
 
 def agent_action_rows(name_suffix):
-    """[{key, agent, ability, attribute, chance}] for every agent_actions row ending in `suffix`.
-
-    The agent_actions DB table is the authority: 176 rows carrying the real per-agent-type action
-    set with its base success chance and attribute. The loc table is a pure existence list."""
     sufs = [name_suffix] if isinstance(name_suffix, str) else list(name_suffix or ())
     out = []
     con = _connect()
@@ -164,11 +152,6 @@ _catalogue_cache = None
 
 
 def agent_action_catalogue():
-    """[{action, ability, category, types:{agent: key}, attribute:{}, chance:{}}] for every
-    non-ambient agent action the game defines.
-
-    Generated from agent_actions rather than hand-listed: the table is the authority on which
-    agent types may perform what, and hand lists go stale against DLC."""
     global _catalogue_cache
     if _catalogue_cache is not None:
         return _catalogue_cache
@@ -195,24 +178,18 @@ def agent_action_catalogue():
 
 
 def agent_ability_category(ability):
-    """actions | embedded | ambient -- 'ambient' abilities are never right-click methods."""
     row = _connect().execute("SELECT category FROM agent_abilities WHERE key=?",
                              (str(ability),)).fetchone()
     return row["category"] if row else None
 
 
 def permitted_agent_subtypes(faction):
-    """[(agent_type, subtype)] the faction may field -- the recruit-hero universe."""
     return [(r["agent"], r["subtype"]) for r in _connect().execute(
         "SELECT agent,subtype FROM agent_permitted_subtypes WHERE faction=? ORDER BY agent,subtype",
         (str(faction),))]
 
 
 def agent_action_matrix(name_suffix):
-    """{agent_type_key: full_action_key} -- which agent classes may perform this action.
-
-    The engine's character_type_key() ('engineer', 'wizard', ...) is the same token the action
-    key embeds, so this map IS the per-hero gate: a type absent here cannot perform the action."""
     suffixes = [name_suffix] if isinstance(name_suffix, str) else list(name_suffix or ())
     ck = tuple(suffixes)
     if ck not in _matrix_cache:
@@ -227,7 +204,6 @@ def agent_action_matrix(name_suffix):
 
 
 def agent_action_ability(name_suffix):
-    """The ability class of an action suffix, e.g. hinder_settlement | hinder_agent | assist_army."""
     suffixes = [name_suffix] if isinstance(name_suffix, str) else list(name_suffix or ())
     for suffix in suffixes:
         for key in agent_action_keys(suffix):
@@ -243,8 +219,6 @@ _edict_cache = None
 
 
 def edict_options(race_tokens):
-    """[(edict_key, label)] of every provincial-initiative EDICT matching a race token; a slight
-    superset, since the DB rows are not LL/tech-gated."""
     global _edict_cache
     if _edict_cache is None:
         _edict_cache = []
@@ -265,8 +239,6 @@ _building_cache = None
 
 
 def building_label(chain):
-    """Display name of a building CHAIN via loc: encyclopedia name, then variant, then chain tooltip,
-    skipping empty / `placeholder` / `{{tr:...}}` rows."""
     con = _connect()
     for pfx in (_BUILD_NAME_PREFIX, _BUILD_VARIANT_PREFIX, _BUILD_TIP_PREFIX):
         row = con.execute("SELECT text FROM loc WHERE key=?", (pfx + chain,)).fetchone()
@@ -277,8 +249,6 @@ def building_label(chain):
 
 
 def building_options(race_tokens):
-    """[(building_key, label)]: one card (the lowest `level`) per building CHAIN matching a race token;
-    a superset, since the DB rows are not slot/climate/resource/tech/LL-gated."""
     global _building_cache
     if _building_cache is None:
         by_chain = {}
@@ -298,7 +268,6 @@ def building_options(race_tokens):
 
 
 def occupation_label(card_id):
-    """On-screen NAME of a settlement-occupation option, from its numeric card id (or None)."""
     row = _connect().execute(
         "SELECT text FROM loc WHERE key=?",
         ("culture_settlement_occupation_options_tooltip_%s" % card_id,)).fetchone()
@@ -308,7 +277,6 @@ def occupation_label(card_id):
 
 
 def occupation_desc(card_id):
-    """Description of an occupation option (the part AFTER '||' in the tooltip loc), or None."""
     row = _connect().execute(
         "SELECT text FROM loc WHERE key=?",
         ("culture_settlement_occupation_options_tooltip_%s" % card_id,)).fetchone()
@@ -318,7 +286,6 @@ def occupation_desc(card_id):
 
 
 def captive_label(record_key):
-    """Faction-correct display NAME of a post-battle captive option, from its record key (or None)."""
     row = _connect().execute(
         "SELECT text FROM loc WHERE key=?",
         ("campaign_post_battle_captive_options_onscreen_name_%s" % record_key,)).fetchone()
@@ -329,8 +296,6 @@ _CAPTIVE_BUTTONS = ("kill", "enslave", "release")
 
 
 def captive_options(culture=None, faction=None, subculture=None):
-    """{button: {"record_key", "name"}} for kill/enslave/release, resolved faction, then culture,
-    then subculture -- the first entity with a binding for that button wins."""
     con = _connect()
     out = {}
     for button in _CAPTIVE_BUTTONS:
@@ -362,11 +327,6 @@ _subtype_cache = None
 
 
 def agent_subtypes(race_tokens):
-    """[(subtype_key, label)] for these race tokens -- every lore variant the game ships.
-
-    A SUPERSET: the caller must confirm each against the engine's recruitment pool. The live
-    world only shows subtypes some faction already fielded, which is why an unplayed lore
-    (every Wood Elf Spellweaver, 8 of 9 High Elf Archmages) never reached the advisor."""
     global _subtype_cache
     if _subtype_cache is None:
         _subtype_cache = []
@@ -377,3 +337,29 @@ def agent_subtypes(race_tokens):
             _subtype_cache.append((m.group(1) if m else None, sub, row["text"]))
     toks = set(race_tokens or ())
     return [(sub, txt) for tok, sub, txt in _subtype_cache if tok in toks]
+
+
+UNLOCK_DB = r"D:\twdata\reference\agent_action_unlocks.sqlite"
+_unlock_con = None
+_unlock_cache = {}
+
+
+def _unlock_connect():
+    global _unlock_con
+    if _unlock_con is None:
+        _unlock_con = sqlite3.connect("file:%s?mode=ro" % UNLOCK_DB.replace("\\", "/"),
+                                      uri=True, check_same_thread=False)
+        _unlock_con.row_factory = sqlite3.Row
+    return _unlock_con
+
+
+def actions_for_skills(skill_keys):
+    out = set()
+    con = _unlock_connect()
+    for k in skill_keys or ():
+        k = str(k)
+        if k not in _unlock_cache:
+            _unlock_cache[k] = {r["agent_action"] for r in con.execute(
+                "SELECT agent_action FROM skill_actions WHERE skill=?", (k,))}
+        out |= _unlock_cache[k]
+    return out

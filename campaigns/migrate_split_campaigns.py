@@ -1,23 +1,3 @@
-r"""migrate_split_campaigns -- offline, dry-run splitter for the whole run corpus.
-
-Walks every run under a root (default D:/twdata/runs/human), EXCLUDING the currently-active
-run, and computes how each would split into one-directory-per-campaign. It NEVER writes into an
-original run dir and NEVER deletes anything. In the default dry-run it writes only a per-run
-report + split PLAN (a manifest of which byte-ranges/lines/shots go to each campaign) into a
-scratch preview area, and prints a reconciliation proving sum-of-parts == original for every
-stream (the invariant: no campaign, no line, no byte, no shot is dropped).
-
-    python migrate_split_campaigns.py                 # dry-run over the corpus, write reports
-    python migrate_split_campaigns.py --run <id>      # one run only
-    python migrate_split_campaigns.py --no-state-lines # skip newline counting on huge logs (fast)
-    python migrate_split_campaigns.py --commit         # REFUSED (guarded; see below)
-
-The --commit path is intentionally NOT implemented here. Its contract, for a future change, is:
-per run, (1) materialise each campaign's streams into <run>/<campaign>/ (or a sibling run dir),
-(2) re-run split_run() and require reconciliation all_ok AND sum_ok for every stream, and only
-THEN (3) delete the big original. This module already computes and verifies (2); it performs
-neither (1) nor (3).
-"""
 from __future__ import annotations
 
 import argparse
@@ -35,15 +15,6 @@ ACTIVE_RUN = "20260728_143603"
 
 
 def verify_report(rep: dict) -> tuple[bool, list[str], list[str]]:
-    """Check the drop-nothing invariant and collect honest caveats.
-
-    Returns (invariant_ok, problems, notes):
-      * problems -- HARD reconciliation failures (parts + unattributed != original). These must
-        never happen; if they do, the split is buggy and a future --commit must abort.
-      * notes    -- soft caveats that do NOT break the invariant but WOULD block a --commit that
-        only materialises campaign dirs: identity-less bytes with no campaign home, or timed
-        streams that could not be mapped (state split stays exact regardless).
-    """
     problems: list[str] = []
     notes: list[str] = []
     rec = rep["reconciliation"]
@@ -72,7 +43,6 @@ def verify_report(rep: dict) -> tuple[bool, list[str], list[str]]:
 
 
 def _plan(rep: dict) -> dict:
-    """The dry-run split PLAN: what each campaign dir WOULD contain. No files are created."""
     rec = rep["reconciliation"]
     campaigns = []
     for c in rep["campaigns"]:
@@ -99,7 +69,6 @@ def _plan(rep: dict) -> dict:
 
 
 def migrate_run(run_dir: str, preview_dir: str, count_state_lines: bool, write: bool = True) -> dict:
-    """Dry-run one run: compute the partition, verify the invariant, write report+plan to preview."""
     rep = split_run(run_dir, count_state_lines=count_state_lines)
     ok, problems, notes = verify_report(rep)
     rep["verify_ok"] = ok

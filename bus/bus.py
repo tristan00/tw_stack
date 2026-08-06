@@ -1,5 +1,3 @@
-"""twapi.bus -- the commands.txt -> twcontrol.jsonl command-bus CLIENT."""
-
 from __future__ import annotations
 
 import json
@@ -34,7 +32,6 @@ _CMD_RE = re.compile(r"^\s*(\d+)\s+(\S+)\s*(.*)$")
 
 
 def _game_alive() -> bool:
-    """True if Warhammer3.exe is in tasklist output, or if the check itself errored (fail-open)."""
     try:
         import subprocess
         out = subprocess.run(
@@ -49,7 +46,6 @@ def _game_alive() -> bool:
 
 
 class _ProcLock:
-    """Cross-process mutex over a lock file (msvcrt byte-range lock); a no-op if locking is unavailable."""
 
     def __init__(self, path: str) -> None:
         self._f = None
@@ -87,11 +83,9 @@ class _ProcLock:
 
 
 class Bus:
-    """Synchronous client over the commands.txt -> twcontrol.jsonl command bus."""
 
     def __init__(self, cmd_path: str = CMD_PATH, out_path: str = OUT_PATH,
                  poll_seconds: float = READ_POLL_SECONDS) -> None:
-        """Initialise the bus client and seed the seq counter from the command file."""
         self.cmd_path = cmd_path
         self.out_path = out_path
         self.poll_seconds = poll_seconds
@@ -100,7 +94,6 @@ class Bus:
         self._proc_lock = _ProcLock(cmd_path + ".lock")
 
     def _tail_seq(self) -> int:
-        """Highest seq currently in the command file, read from its TAIL."""
         try:
             with open(self.cmd_path, "rb") as f:
                 f.seek(0, 2)
@@ -118,7 +111,6 @@ class Bus:
         return 0
 
     def _max_existing_seq(self) -> int:
-        """Return the highest seq already present in the command file, or 0 if there is none."""
         try:
             with open(self.cmd_path, "r", encoding="utf-8", errors="replace") as f:
                 last = 0
@@ -134,25 +126,21 @@ class Bus:
             return 0
 
     def _next_seq(self) -> int:
-        """Increment and return the monotonic command sequence number."""
         with self._seq_lock:
             self._seq += 1
             return self._seq
 
     def _out_size(self) -> int:
-        """Return the current byte size of the result file, or 0 if it cannot be stat'd."""
         try:
             return os.path.getsize(self.out_path)
         except OSError:
             return 0
 
     def out_offset(self) -> int:
-        """Current byte offset of the mod's output stream, for wait_row."""
         return self._out_size()
 
     def wait_row(self, kinds, timeout: float, offset: int | None = None,
                  poll: float = 0.25, pred=None):
-        """Block until the mod appends a row with cmd in `kinds` (and pred(row), if given); returns (row, new_offset), or (None, last_offset) on timeout."""
         kinds = frozenset(kinds)
         off = self._out_size() if offset is None else offset
         deadline = time.time() + timeout
@@ -181,10 +169,6 @@ class Bus:
             time.sleep(min(poll, max(0.02, deadline - time.time())))
 
     def _scan_result(self, offset: int, seq: int, channel: str | None) -> dict | None:
-        """Return the LAST JSON line appended to out_path after `offset` whose seq (and cmd) match, else None.
-
-        Read binary: text mode's newline translation would skew the byte offset.
-        """
         try:
             with open(self.out_path, "rb") as f:
                 f.seek(offset)
@@ -205,7 +189,6 @@ class Bus:
         return match
 
     def send(self, channel: str, payload: str = "", timeout: float = DEFAULT_TIMEOUT) -> dict:
-        """Append one command line and block until its result appears; returns the parsed result dict, raises TWError on timeout."""
         if _bus_stats is None or not _bus_stats.active():
             return self._send_impl(channel, payload, timeout)
         _key = _bus_stats.make_key(channel, payload)
@@ -230,7 +213,6 @@ class Bus:
         return reply
 
     def _send_impl(self, channel: str, payload: str = "", timeout: float = DEFAULT_TIMEOUT) -> dict:
-        """Append one command line and block until its result appears; raises TWError on append failure, CTD, or timeout."""
         try:
             seq, offset = self._alloc_and_append(channel, payload)
         except OSError as exc:
@@ -252,10 +234,6 @@ class Bus:
         raise TWError("bus timeout: no result for seq %d cmd %s" % (seq, channel))
 
     def send_batch(self, requests, timeout: float = DEFAULT_TIMEOUT) -> list:
-        """Append EVERY command in one write, then block until every reply arrived; returns the
-        parsed result dicts in request order. The mod executes all pending lines in a single
-        tick (twcontrol.lua process()), so N independent commands cost ~one round-trip floor
-        instead of N. Raises TWError naming the missing seqs on timeout -- no partial returns."""
         if not requests:
             return []
         with self._seq_lock, self._proc_lock:
@@ -302,7 +280,6 @@ class Bus:
                       % (len(found), len(wanted), sorted(set(wanted) - set(found))))
 
     def _scan_lines(self, offset: int):
-        """Every parsed JSON line appended to out_path after `offset` (fresh read per call)."""
         try:
             with open(self.out_path, "rb") as f:
                 f.seek(offset)
@@ -319,7 +296,6 @@ class Bus:
                 continue
 
     def _alloc_and_append(self, channel: str, payload: str) -> tuple[int, int]:
-        """Allocate the next seq and append the command line under both locks; returns (seq, result-file size before the append)."""
         with self._seq_lock, self._proc_lock:
             t = self._tail_seq()
             if t + 1000 < self._seq:

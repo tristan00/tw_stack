@@ -1,4 +1,3 @@
-"""The decision store: SQLite, one file per run dir. Single writer (the recorder)."""
 from __future__ import annotations
 
 import json
@@ -10,7 +9,7 @@ DB_NAME = "decisions.sqlite"
 
 
 class IncompatibleStore(RuntimeError):
-    """This decisions.sqlite predates the current schema and cannot be read."""
+    pass
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS interrupt_decisions(
@@ -78,6 +77,7 @@ class DecisionStore:
                    ("decision_points", "world", "TEXT"),
                    ("decision_points", "timings", "TEXT"),
                    ("action_taken", "timing", "TEXT"),
+                   ("action_taken", "diagnostics", "TEXT"),
                    ("interrupt_decisions", "executed", "INTEGER"),
                    ("interrupt_decisions", "confirmed", "INTEGER"),
                    ("interrupt_decisions", "counted", "INTEGER"),
@@ -126,11 +126,9 @@ class DecisionStore:
                 self.con.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, col, typ))
 
     def campaign_key(self, faction, uuid=None):
-        """The campaign uuid if there is one, else faction@rundir."""
         return str(uuid) if uuid else "%s@%s" % (faction, self.run_id)
 
     def write_target_row(self, row):
-        """Exactly-once per (campaign, turn). Returns True if this call inserted it."""
         cur = self.con.execute(
             "INSERT OR IGNORE INTO target_rows"
             "(campaign_id,turn,ts,income,settlements,allies,vassals,power_rank,lord_level)"
@@ -143,7 +141,6 @@ class DecisionStore:
         return cur.rowcount > 0
 
     def write_decision(self, snapshot, decision_seq=0, policy=None):
-        """Persist one collect.snapshot() as a decision point; returns the decision_id."""
         camp = snapshot.get("campaign") or {}
         ents = snapshot.get("entities") or []
         n_offers = sum(len(e.get("offers") or []) for e in ents)
@@ -173,7 +170,6 @@ class DecisionStore:
         return did
 
     def attach_timings(self, decision_id, timings):
-        """Millisecond phase timings for one decision."""
         if not timings:
             return 0
         self.con.execute("UPDATE decision_points SET timings=? WHERE decision_id=?",
@@ -182,7 +178,6 @@ class DecisionStore:
         return 1
 
     def attach_scores(self, decision_id, scores):
-        """Attach per-offer scores to one decision; returns the number of offer rows updated."""
         n = 0
         for s in scores or []:
             n += self.con.execute(
@@ -197,7 +192,6 @@ class DecisionStore:
         return n
 
     def attach_taken(self, decision_id, taken, policy=None):
-        """The chosen offer and its verification. A second call for the same decision replaces the row."""
         ck, cid = taken.get("context_kind"), str(taken.get("context_id"))
         atype, akey = taken.get("action_type"), str(taken.get("key"))
         row = self.con.execute(
@@ -210,14 +204,19 @@ class DecisionStore:
         self.con.execute(
             "INSERT INTO action_taken(decision_id,snapshot_id,offer_id,ts,context_kind,context_id,"
             "action_type,action_key,executed,confirmed,counted,refusal,confirm_signal,"
-            "confirm_before,confirm_after,latency_ms,policy)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "confirm_before,confirm_after,latency_ms,policy,timing,diagnostics)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (decision_id, snap_id, offer_id, taken.get("ts") or time.time(), ck, cid, atype, akey,
              1 if taken.get("executed") else 0, 1 if taken.get("confirmed") else 0,
              1 if taken.get("counted") else 0, taken.get("refusal"), conf.get("signal"),
              json.dumps(conf.get("before"), default=str),
              json.dumps(conf.get("after"), default=str),
-             conf.get("latency_ms"), policy or taken.get("policy")))
+             conf.get("latency_ms"), policy or taken.get("policy"),
+             json.dumps(taken.get("timing"), default=str),
+             json.dumps({"stderr": taken.get("stderr"), "gates": taken.get("gates"),
+                         "execute_error": taken.get("execute_error"),
+                         "doomed": taken.get("doomed"), "params": taken.get("params")},
+                        default=str)))
         self.con.commit()
         return offer_id is not None
 
@@ -232,7 +231,6 @@ class DecisionStore:
                 "unconfirmed": q("SELECT COUNT(*) FROM action_taken WHERE executed=1 AND confirmed=0")}
 
     def read_decision(self, decision_id):
-        """One stored decision point in the shape the advisor featurizes."""
         dp = self.con.execute("SELECT * FROM decision_points WHERE decision_id=?",
                               (decision_id,)).fetchone()
         if dp is None:
@@ -261,7 +259,6 @@ class DecisionStore:
                 "world": json.loads(dp["world"] or "{}"), "entities": ents}
 
     def labelled_decisions(self, confirmed_only=False):
-        """Every decision point with a chosen action: (record, taken_key, counted)."""
         out = []
         for (did,) in self.con.execute("SELECT decision_id FROM decision_points").fetchall():
             t = self.con.execute(
@@ -278,11 +275,9 @@ class DecisionStore:
 
     @staticmethod
     def _flag(v):
-        """None stays None (unknown); anything else becomes a hard 0/1."""
         return None if v is None else (1 if v else 0)
 
     def write_interrupt(self, row):
-        """One interrupt-screen decision."""
         camp = row.get("campaign") or {}
         opts = row.get("options") or {}
         counted = row.get("counted")
@@ -311,10 +306,6 @@ class DecisionStore:
         self.con.commit()
 
     def campaign_snapshots(self):
-        """Every decision point's campaign AND world dicts in decision order:
-        [(campaign_id, ts, campaign, world)]. The interrupt trainer takes the last one before a
-        screen's ts as both its baseline and its feature state -- the screen's own stored
-        campaign/world were read at drain time, after the screen resolved."""
         out = []
         for camp, ts, cjson, wjson in self.con.execute(
                 "SELECT campaign_id, ts, campaign, world FROM decision_points"
@@ -331,8 +322,6 @@ class DecisionStore:
         return out
 
     def action_sequence(self):
-        """Every executed (non-noop, non-awaiting) taken action in decision order:
-        [(campaign_id, ts, action_type)]. The interrupt trainer interleaves these by ts."""
         return self.con.execute(
             "SELECT dp.campaign_id, at.ts, at.action_type FROM action_taken at"
             " JOIN decision_points dp ON dp.decision_id = at.decision_id"
@@ -341,7 +330,6 @@ class DecisionStore:
             " ORDER BY at.decision_id").fetchall()
 
     def interrupt_rows(self):
-        """Every recorded interrupt-screen decision."""
         out = []
         for (iid, ts, camp, turn, kind, opts, chosen, executed, confirmed, counted, refusal,
              cjson, wjson, pjson) in self.con.execute(
@@ -365,7 +353,6 @@ class DecisionStore:
         return out
 
     def target_series(self):
-        """{campaign_id: {turn: {income, settlements, power_rank, allies, vassals, lord_level}}}."""
         out = {}
         for camp, turn, inc, setl, allies, vass, rank, lvl in self.con.execute(
                 "SELECT campaign_id,turn,income,settlements,allies,vassals,power_rank,lord_level"
@@ -378,7 +365,6 @@ class DecisionStore:
         return out
 
     def write_entity_target_rows(self, campaign_id, turn, rows):
-        """[{context_kind, context_id, value}] for one turn. Exactly-once per key."""
         n = 0
         for r in rows or []:
             if r.get("value") is None:
@@ -393,7 +379,6 @@ class DecisionStore:
         return n
 
     def entity_series(self):
-        """{campaign_id: {(context_kind, context_id): {turn: value}}}."""
         out = {}
         for camp, turn, kind, cid, val in self.con.execute(
                 "SELECT campaign_id,turn,context_kind,context_id,value FROM entity_target_rows"):

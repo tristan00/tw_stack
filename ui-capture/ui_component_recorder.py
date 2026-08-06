@@ -1,7 +1,3 @@
-r"""ui_component_recorder.py -- at menu-open, capture a panel's options and whether each is clickable.
-
-    python ui_component_recorder.py --panel <name> | --scan | --watch
-"""
 from __future__ import annotations
 
 import os
@@ -33,7 +29,6 @@ _RECRUIT_SOURCE_PREFIX = (
 
 
 def _recruit_source(container: str) -> str:
-    """Normalized recruit-source label for a pool-group container id, or the raw id when unrecognised."""
     g = (container or "").lower()
     for pre, label in _RECRUIT_SOURCE_PREFIX:
         if g.startswith(pre) or pre in g:
@@ -365,7 +360,6 @@ except Exception as e:
 
 
 def _extract_key(component_id: str) -> str:
-    """Best-effort BARE game key from a key-embedded component Id, or the Id itself when no wrapper matches."""
     s = component_id
     if s.endswith("_recruitable"):
         s = s[:-len("_recruitable")]
@@ -382,7 +376,6 @@ def _extract_key(component_id: str) -> str:
 
 
 def _find(bus: Bus, path: str) -> dict | None:
-    """One find call. Returns the mod's row {result, child_ids} or None if the bus/game is gone."""
     try:
         return bus.send("find", path, timeout=_FIND_TIMEOUT)
     except TWError:
@@ -390,7 +383,6 @@ def _find(bus: Bus, path: str) -> dict | None:
 
 
 def _child_ids(resp: dict | None) -> list:
-    """The child_ids list from a find response, tolerating both wrapper shapes."""
     if not resp:
         return []
     kids = resp.get("child_ids")
@@ -400,7 +392,6 @@ def _child_ids(resp: dict | None) -> list:
 
 
 def _child_contexts(resp: dict | None) -> list:
-    """The child_contexts list from a find response, parallel to child_ids (None entries are kept)."""
     if not resp:
         return []
     ctxs = resp.get("child_contexts")
@@ -412,7 +403,6 @@ def _child_contexts(resp: dict | None) -> list:
 
 
 def _context_key(context, prefix: str) -> str | None:
-    """The part of a "<CcoType>:<id>" context id after the first colon when the type matches `prefix`, else None."""
     if not isinstance(context, str):
         return None
     head = prefix + ":"
@@ -422,7 +412,6 @@ def _context_key(context, prefix: str) -> str | None:
 
 
 def _read_state_text(bus: Bus, path: str) -> str | None:
-    """Best-effort on-screen name at a component path via GetStateText (text, else text_label), or None."""
     r = _find(bus, path)
     res = (r or {}).get("result") or {}
     if not res.get("found"):
@@ -432,7 +421,6 @@ def _read_state_text(bus: Bus, path: str) -> str | None:
 
 
 def _tooltip_title(tooltip) -> str | None:
-    """The on-screen label of an icon button: the "Title||Description" tooltip's title, or None."""
     if not tooltip:
         return None
     title = str(tooltip).split("||", 1)[0].strip()
@@ -440,14 +428,12 @@ def _tooltip_title(tooltip) -> str | None:
 
 
 def _named_from_nodes(bus: Bus, base_path: str, cfg: dict):
-    """(onscreen, category) for a card via GetStateText on its cfg["name_node"] / cfg["label_node"] children."""
     onscreen = _read_state_text(bus, base_path + "|" + cfg["name_node"]) if cfg.get("name_node") else None
     category = _read_state_text(bus, base_path + "|" + cfg["label_node"]) if cfg.get("label_node") else None
     return onscreen, category
 
 
 def _clickable(state, visible, allow=None) -> bool | None:
-    """Clickability from a leaf's CurrentState + Visible: True/False when read, None when UNREAD (never assume clickable)."""
     if visible is False:
         return False
     if state is None:
@@ -464,7 +450,6 @@ def _clickable(state, visible, allow=None) -> bool | None:
 
 def enumerate_options(bus: Bus, cfg: dict, max_depth: int = MAX_DEPTH,
                       max_finds: int = MAX_FINDS) -> list | None:
-    """Bounded key-embedded recursion from cfg["root"]: a list of option dicts, or None when the bus did not answer."""
     opt = cfg["_opt"]
     descend = cfg.get("_descend")
     skip_invis = cfg.get("_skip_invis", descend)
@@ -528,7 +513,6 @@ def enumerate_options(bus: Bus, cfg: dict, max_depth: int = MAX_DEPTH,
 
 def _collect_cards(bus: Bus, list_path: str, source: str, opt, state_at, allow,
                    out: list, seen: set, budget: list, max_depth: int = MAX_DEPTH) -> bool:
-    """Bounded key-embedded recursion from ONE card-list container, tagging leaves with `source`; False if the bus went away."""
     stack = [(list_path, 0)]
     while stack:
         if budget[0] <= 0:
@@ -563,7 +547,6 @@ def _collect_cards(bus: Bus, list_path: str, source: str, opt, state_at, allow,
 
 
 def enumerate_sourced_options(bus: Bus, cfg: dict, max_finds: int = MAX_FINDS) -> list | None:
-    """Recruitment SOURCE-AWARE enumeration: every recruit card with its pool `source`, or None when the bus did not answer."""
     opt = cfg["_opt"]
     state_at = cfg.get("state_at")
     allow = cfg.get("clickable_states")
@@ -597,7 +580,6 @@ def enumerate_sourced_options(bus: Bus, cfg: dict, max_finds: int = MAX_FINDS) -
 
 
 def enumerate_positional(bus: Bus, cfg: dict) -> list | None:
-    """Enumerate cards whose id carries no game key, left->right by x; None when the bus did not answer."""
     container = cfg["card_container"]
     state_sub = cfg.get("state_sub")
     label_sub = cfg.get("label_sub")
@@ -654,7 +636,6 @@ def enumerate_positional(bus: Bus, cfg: dict) -> list | None:
 
 
 def enumerate_context_cards(bus: Bus, cfg: dict) -> list | None:
-    """CONTEXT-CARD enumeration: keyless cards identified by their bound cfg["cco_prefix"] context object; None when the bus did not answer."""
     container = cfg["card_container"]
     card_re = cfg["_card"]
     prefix = cfg["cco_prefix"]
@@ -717,7 +698,6 @@ def enumerate_context_cards(bus: Bus, cfg: dict) -> list | None:
 
 
 def _clickable_by_state(state, allow=None) -> bool | None:
-    """Clickability from CurrentState ALONE -- for collapsible stacks, whose collapsed options report Visible=False while available."""
     if state is None:
         return None
     st = str(state).lower()
@@ -727,7 +707,6 @@ def _clickable_by_state(state, allow=None) -> bool | None:
 
 
 def _strip_prefixes(cid: str, prefixes) -> str:
-    """The option KEY: `cid` with the first matching prefix stripped (list them most-specific first)."""
     for pre in prefixes:
         if cid.startswith(pre):
             return cid[len(pre):]
@@ -735,7 +714,6 @@ def _strip_prefixes(cid: str, prefixes) -> str:
 
 
 def enumerate_children(bus: Bus, cfg: dict) -> list | None:
-    """CHILD-COUNT enumeration of each cfg["roots"] entry's direct children (not visibility-gated); None when the bus did not answer."""
     key_prefixes = cfg.get("key_prefixes", [])
     allow = cfg.get("clickable_states")
     optre = cfg.get("_opt")
@@ -785,7 +763,6 @@ def enumerate_children(bus: Bus, cfg: dict) -> list | None:
 
 
 def _read_scalars(bus: Bus, specs: list) -> dict:
-    """Best-effort SCALAR reads: one find per spec, returning {name: GetStateText | state | None}."""
     out = {}
     for sp in specs:
         r = _find(bus, sp["path"])
@@ -802,7 +779,6 @@ def _read_scalars(bus: Bus, specs: list) -> dict:
 
 
 def _selected_child_key(bus: Bus, spec: dict) -> str | None:
-    """The id-suffix key of the first `prefix` child of a list whose state starts with `selected*`, else None."""
     root = spec["root"]
     prefix = spec["prefix"]
     sstate = spec.get("selected_state_prefix", "selected")
@@ -820,7 +796,6 @@ def _selected_child_key(bus: Bus, spec: dict) -> str | None:
 
 
 def panel_open(bus: Bus, cfg: dict) -> bool | None:
-    """Cheap check: is this panel currently OPEN? True/False, or None when the bus did not answer."""
     resp = _find(bus, cfg["open_path"])
     if resp is None:
         return None
@@ -836,7 +811,6 @@ def panel_open(bus: Bus, cfg: dict) -> bool | None:
 
 
 def capture_panel(bus: Bus, name: str) -> dict | None:
-    """Enumerate one panel into a {"kind":"menu_open","panel","n","options"[,"reason"][,"deal"]} row, or None on a bus miss."""
     cfg = PANELS[name]
     if cfg.get("positional"):
         opts = enumerate_positional(bus, cfg)
@@ -882,7 +856,6 @@ def capture_panel(bus: Bus, name: str) -> dict | None:
 
 
 def scan_open(bus: Bus, panels: dict | None = None, exclude=None) -> tuple[list, bool]:
-    """Enumerate every configured panel that is currently OPEN and populated; returns (rows, bus_ok)."""
     panels = panels or PANELS
     exclude = set(exclude or ())
     rows = []
@@ -913,7 +886,6 @@ def scan_open(bus: Bus, panels: dict | None = None, exclude=None) -> tuple[list,
 
 
 def _newest_script_log() -> str | None:
-    """Path of the newest script_log*.txt WH3 is writing (game dir or AppData logs), or None."""
     best, best_m = None, -1.0
     for base in (_APPDATA_LOGS, _GAME_DIR):
         try:
@@ -933,7 +905,6 @@ def _newest_script_log() -> str | None:
 
 
 def _panel_opened(chunk: str) -> bool:
-    """True if a log chunk contains a real PanelOpenedCampaign occurrence, excluding trigger-registration lines."""
     if "PanelOpenedCampaign" not in chunk:
         return False
     if '"event":"PanelOpenedCampaign"' in chunk:
@@ -945,19 +916,16 @@ def _panel_opened(chunk: str) -> bool:
 
 
 def _opened_components(chunk: str) -> list:
-    """Component ids of every real PanelOpenedCampaign occurrence in a fresh log chunk, in order."""
     if "PanelOpenedCampaign" not in chunk:
         return []
     return _PANEL_OPEN_RE.findall(chunk)
 
 
 def _tech_tab_switched(chunk: str) -> bool:
-    """True if a fresh log chunk contains a technology-panel TAB component event."""
     return "CcoTechnologyUiTabRecord" in chunk and bool(_TECH_TAB_RE.search(chunk))
 
 
 def watch(bus: Bus, emit, panels: dict | None = None, is_running=lambda: True) -> None:
-    """Tail the newest script_log for PanelOpenedCampaign and emit each opened panel's options, plus a low-rate poll of POLL_PANELS."""
     panels = panels or PANELS
     bus_ok = None
     logpath, fh, off = None, None, 0
@@ -1132,7 +1100,6 @@ def watch(bus: Bus, emit, panels: dict | None = None, is_running=lambda: True) -
 
 
 def _main(argv: list[str]) -> None:
-    """CLI: --panel <name> one-shot dump | --scan dump every open panel | --watch event loop."""
     import json
     bus = Bus()
     if "--panel" in argv:

@@ -11,7 +11,6 @@ POLL_SECONDS = 15.0
 class Watchdog:
     def __init__(self, request_hash, on_stuck, stuck_seconds=STUCK_SECONDS,
                  poll_seconds=POLL_SECONDS, log=None):
-        """request_hash() -> (hash, roots); on_stuck(reason, detail) is called ONCE, from this thread."""
         self._request = request_hash
         self._on_stuck = on_stuck
         self.stuck_seconds = stuck_seconds
@@ -39,7 +38,6 @@ class Watchdog:
             self._thread.join(timeout=self.poll_seconds + 5.0)
 
     def beat(self, why="action"):
-        """Reset the idle timer."""
         with self._lock:
             self._last_change = time.time()
         return why

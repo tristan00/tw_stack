@@ -1,4 +1,3 @@
-r"""Confirm (not assume) what db.pack actually contains for the numeric option features."""
 import re
 import struct
 
