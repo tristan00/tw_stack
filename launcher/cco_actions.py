@@ -761,6 +761,22 @@ _LUA_HERO_CHAR_STATE = (_G +
     "return ts(c:performed_action_this_turn())..'~'..ts(c:logical_position_x())"
     "..'~'..ts(c:logical_position_y())..'~'..ts(t~=nil)..'~'..ts(t and t:is_null_interface()==false)")
 
+_LUA_EMBED = (
+    "local a=cm:get_character_by_cqi(%(cqi)s) if not a then return 'NO-AGENT' end "
+    "local t=cm:get_character_by_cqi(%(tgt)s) if not t then return 'NO-TARGET' end "
+    "if t:is_null_interface() then return 'NULL-TARGET' end "
+    "if not t:has_military_force() then return 'TARGET-HAS-NO-FORCE' end "
+    "if a:is_embedded_in_military_force() then return 'ALREADY-EMBEDDED' end "
+    "cm:embed_agent_in_force(a, t:military_force()) return 'called'")
+
+_LUA_EMBEDDED = (
+    "local a=cm:get_character_by_cqi(%(cqi)s) if not a then return 'NO-AGENT' end "
+    "if not a:is_embedded_in_military_force() then return 'false' end "
+    "local f=a:embedded_in_military_force() "
+    "if not f then return 'true~none' end "
+    "return 'true~'..tostring(f:general_character():command_queue_index())")
+
+
 _LUA_SETT_DISPLAY = ("local r=cm:get_region('%(tgt)s') if not r then return 'NO-REGION' end "
                      "local s=r:settlement() if not s then return 'NO-SETT' end "
                      "return tostring(s:display_position_x())..'~'..tostring(s:display_position_y())")
@@ -815,6 +831,16 @@ def _hero_target(pick):
     return None, None
 
 
+def _assist_route(pick):
+    action = (pick.get("params") or {}).get("action")
+    spec = _collect_mod().HERO_ACTIONS.get(action) or {}
+    return tuple(spec.get("targets") or ()) == ("own_armies",)
+
+
+def _embedded(bus, cqi):
+    return str(_ev(bus, _LUA_EMBEDDED % {"cqi": cqi}, timeout=8.0) or "")
+
+
 def _hero_action_snapshot(bus, ctx, pick):
     kind, tid = _hero_target(pick)
     if tid is None:
@@ -826,6 +852,9 @@ def _hero_action_snapshot(bus, ctx, pick):
     st["target_kind"], st["target_id"] = kind, tid
     st["region"] = tid if kind == "settlement" else None
     st["stream_off"] = bus._out_size()
+    st["route"] = "embed" if _assist_route(pick) else "panel"
+    if st["route"] == "embed":
+        st["embedded_before"] = _embedded(bus, ctx["entity_id"])
     return st
 
 
@@ -844,6 +873,8 @@ def _hero_action_gate_target(bus, ctx, pick, before):
 
 
 def _hero_action_gate_reach(bus, ctx, pick, before):
+    if before.get("route") == "embed":
+        return True, None
     is_char = before.get("target_kind") == "character"
     tid = before["target_id"]
     reach_c, reach_s = _collect_mod()._reach(
@@ -1080,6 +1111,15 @@ def _hero_action_execute_inner(bus, ctx, pick, before):
                          % (step, where, (" -- " + detail) if detail else ""))
         return False
 
+    if before.get("route") == "embed":
+        if kind != "character":
+            return fail("embed_target", "assist_army action targeted %s:%s" % (kind, tid))
+        r = str(_ev(bus, _LUA_EMBED % {"cqi": ctx["entity_id"], "tgt": tid}, timeout=15.0) or "")
+        before["embed_call"] = r
+        if r != "called":
+            return fail("embed", r)
+        return True
+
     name = _hero_action_method_name(action)
     if not name:
         return fail("method_name", "no method name maps to action %r" % action)
@@ -1118,6 +1158,12 @@ def _hero_action_execute_inner(bus, ctx, pick, before):
 
 
 def _hero_action_confirm(bus, ctx, pick, before):
+    if before.get("route") == "embed":
+        now = _embedded(bus, ctx["entity_id"])
+        after = {"route": "embed", "embedded_before": before.get("embedded_before"),
+                 "embedded_after": now, "embed_call": before.get("embed_call")}
+        ok = now.startswith("true") and now.split("~")[-1] == str(before.get("target_id"))
+        return ok, after
     timeout = 0.05 if before.get("failed_at") else 0.75
     row, _ = bus.wait_row(("agent_action",), timeout=timeout, offset=before["stream_off"],
                           poll=0.05,
