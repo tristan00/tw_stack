@@ -77,13 +77,13 @@ class BusLauncher:
             moved = []
             try:
                 with _bus._ProcLock(_bus.CMD_PATH + ".lock"):
-                    for p in (_bus.CMD_PATH, _bus.OUT_PATH):
+                    for p in (_bus.CMD_PATH, _bus.OUT_PATH, _bus.SEND_LOG_PATH):
                         if os.path.exists(p) and os.path.getsize(p) > 0:
                             shutil.move(p, os.path.join(
                                 dst, "%s_%s" % (stamp, os.path.basename(p))))
                             moved.append(os.path.basename(p))
                         open(p, "a", encoding="utf-8").close()
-                    bad = [p for p in (_bus.CMD_PATH, _bus.OUT_PATH)
+                    bad = [p for p in (_bus.CMD_PATH, _bus.OUT_PATH, _bus.SEND_LOG_PATH)
                            if not os.path.exists(p) or os.path.getsize(p) != 0]
                 if not bad:
                     _log("bus files rotated -> %s (%s)"

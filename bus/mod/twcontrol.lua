@@ -57,7 +57,21 @@ end
 local function or_null(v) if v == nil then return NULL end return v end
 
 local function say(m) if ModLog then pcall(ModLog, "[twcontrol] " .. m) end end
+local function now_epoch()
+  local ok, v = pcall(function() return os.time() end)
+  if ok and v then return v end
+  return nil
+end
+local function now_clock()
+  local ok, v = pcall(function() return os.clock() end)
+  if ok and v then return v end
+  return nil
+end
 local function log(tbl)
+  if type(tbl) == "table" then
+    if tbl.ts == nil then tbl.ts = now_epoch() end
+    if tbl.clk == nil then tbl.clk = now_clock() end
+  end
   local ok, line = pcall(encode, tbl)
   if not ok then say("encode failed"); return end
   local f = io.open(OUT_PATH, "a"); if not f then return end
