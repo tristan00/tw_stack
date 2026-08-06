@@ -245,6 +245,33 @@ def _agent_reference(cur, files, d, schema, report):
                         (r.get("ability") or r.get("key"), r.get("category")))
         report["_written"]["agent_abilities"] = len(abil)
 
+    res, rmeta = decode_db_table(files, d, "action_results_tables", schema)
+    report["action_results_tables"] = rmeta
+    if rmeta["ok"] and not bail("action_results_tables", res, ("key",)):
+        cur.execute("DROP TABLE IF EXISTS action_results")
+        cur.execute("CREATE TABLE action_results (key TEXT PRIMARY KEY, actor_bundle TEXT, "
+                    "target_bundle TEXT, actor_bundle_turns INTEGER, target_bundle_turns INTEGER)")
+        for r in res:
+            cur.execute("INSERT OR REPLACE INTO action_results VALUES (?,?,?,?,?)", (
+                r.get("key"), r.get("actor_effect_bundle"), r.get("target_effect_bundle"),
+                r.get("actor_effect_bundle_turns"), r.get("target_effect_bundle_turns")))
+        report["_written"]["action_results"] = len(res)
+
+    outc, ometa = decode_db_table(files, d, "action_results_additional_outcomes_tables", schema)
+    report["action_results_additional_outcomes_tables"] = ometa
+    if ometa["ok"] and not bail("action_results_additional_outcomes_tables", outc,
+                                ("action_result_key",)):
+        cur.execute("DROP TABLE IF EXISTS action_result_outcomes")
+        cur.execute("CREATE TABLE action_result_outcomes (key TEXT PRIMARY KEY, "
+                    "action_result_key TEXT, outcome TEXT, effect TEXT, effect_scope TEXT, "
+                    "value REAL, affects_target INTEGER, advancement_stage TEXT)")
+        for r in outc:
+            cur.execute("INSERT OR REPLACE INTO action_result_outcomes VALUES (?,?,?,?,?,?,?,?)", (
+                r.get("key"), r.get("action_result_key"), r.get("outcome"),
+                r.get("effect_record"), r.get("effect_scope_record"), r.get("value"),
+                int(bool(r.get("affects_target"))), r.get("advancement_stage")))
+        report["_written"]["action_result_outcomes"] = len(outc)
+
     perm, pmeta = decode_db_table(files, d, "faction_agent_permitted_subtypes_tables", schema)
     report["faction_agent_permitted_subtypes_tables"] = pmeta
     if pmeta["ok"] and not bail("faction_agent_permitted_subtypes_tables", perm,
@@ -525,6 +552,14 @@ def _verify(cur):
         row = one(f"SELECT * FROM {tbl} LIMIT 1")
         cnt = one(f"SELECT COUNT(*) FROM {tbl}")[0]
         print(f"  {tbl}: {cnt} rows; sample={row}")
+
+    r = one("SELECT a.key, a.agent, a.cannot_fail_result, r.target_bundle, r.target_bundle_turns, "
+            "o.effect, o.effect_scope, o.value FROM agent_actions a "
+            "JOIN action_results r ON r.key=a.cannot_fail_result "
+            "LEFT JOIN action_result_outcomes o ON o.action_result_key=r.key "
+            "WHERE a.ability='assist_army' AND a.key LIKE '%assist_army_training' LIMIT 1")
+    print(f"  assist training {r and r[0]!r}: agent={r and r[1]} bundle={r and r[3]!r} "
+          f"turns={r and r[4]} effect={r and r[5]!r} scope={r and r[6]!r} value={r and r[7]}")
 
     for label, etype, ekey in (("High Elves", "culture", "wh2_main_hef_high_elves"),
                                ("Slaanesh/Masque", "faction", "wh3_dlc27_sla_masque_of_slaanesh"),

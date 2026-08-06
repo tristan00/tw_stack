@@ -9,8 +9,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 MOVIE = 4
-sys.path.insert(0, str(HERE)); import config
-DEFAULT_GAME = config.GAME_DIR
+DEFAULT_GAME = r"D:\SteamLibrary\steamapps\common\Total War WARHAMMER III"
 
 SCRIPTS = [
     ("twstate", HERE / "mod" / "twstate.lua", "campaign"),
