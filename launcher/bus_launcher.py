@@ -127,7 +127,7 @@ class BusLauncher:
                     continue
                 if obj.get("cmd") in kinds:
                     return obj
-            time.sleep(1.0)
+            time.sleep(0.25)
         return None
 
     def _send(self, channel, payload="", timeout=15, tries=3):
@@ -147,7 +147,7 @@ class BusLauncher:
                 self.bus.send("roots", "", timeout=8)
                 return True
             except TWError:
-                time.sleep(1.0)
+                time.sleep(0.4)
         return False
 
     def _roots_safe(self):
@@ -180,7 +180,7 @@ class BusLauncher:
             for k in self._roots_safe():
                 if k.get("id") == root_id and k.get("visible"):
                     return True
-            time.sleep(1.0)
+            time.sleep(0.4)
         return False
 
     def _child_path_matching(self, container, substrings, leaf):
@@ -210,35 +210,41 @@ class BusLauncher:
     def advance_to_hud(self, timeout=200):
         t0 = time.time()
         did_continue = False
+        last_skip = 0.0
+        last_continue_probe = 0.0
+        cinematic_keys = 0
         while time.time() - t0 < timeout:
-            if not did_continue:
-                res = self.find(P_CONTINUE).get("result") or {}
-                if res.get("found") and res.get("visible"):
-                    self.click(P_CONTINUE, settle=2.0)
-                    did_continue = True
-                    _log("dismissed loading-screen Continue")
-                    continue
-            try:
-                self.bus.send("eval", "cm:skip_all_campaign_cutscenes()", timeout=10)
-            except TWError:
-                pass
             roots = self._roots_safe()
+            for k in roots:
+                if k.get("id") == "hud_campaign" and k.get("visible"):
+                    _log("interactive HUD reached in %.1fs (%d cinematic keys)"
+                         % (time.time() - t0, cinematic_keys))
+                    return True
             skip_roots = [k.get("id") for k in roots
                           if k.get("id") in ("campaign_space_bar_options", "black_fade")
                           and k.get("visible")]
+            now = time.time()
             if skip_roots:
+                if now - last_skip > 2.0:
+                    last_skip = now
+                    try:
+                        self.bus.send("eval", "cm:skip_all_campaign_cutscenes()", timeout=10)
+                    except TWError:
+                        pass
                 key = "space" if "campaign_space_bar_options" in skip_roots else "escape"
                 try:
-                    r = self.bus.send("key", "@root %s" % key, timeout=10) or {}
-                except TWError as e:
-                    r = {"error": repr(e)[:80]}
-                _log("cinematic on screen (%s) -> bus key %s (sent=%s changed=%s)"
-                     % (",".join(skip_roots), key, r.get("sent"), r.get("changed")))
-            for k in roots:
-                if k.get("id") == "hud_campaign" and k.get("visible"):
-                    _log("interactive HUD reached (hud_campaign visible)")
-                    return True
-            time.sleep(2.0)
+                    self.bus.send("key", "@root %s" % key, timeout=10)
+                    cinematic_keys += 1
+                except TWError:
+                    pass
+            elif not did_continue and now - last_continue_probe > 1.0:
+                last_continue_probe = now
+                res = self.find(P_CONTINUE).get("result") or {}
+                if res.get("found") and res.get("visible"):
+                    self.click(P_CONTINUE, settle=0.6)
+                    did_continue = True
+                    _log("dismissed loading-screen Continue")
+            time.sleep(0.3)
         return False
 
     CAMPAIGN_KEYS = {"Immortal Empires": "wh3_main_combi",
@@ -255,9 +261,9 @@ class BusLauncher:
         t0 = time.time()
         while time.time() - t0 < timeout:
             if any(k.get("id") == "main" and k.get("visible") for k in self._roots_safe()):
-                _log("back at the main menu via cm:quit() (%.0fs)" % (time.time() - t0))
+                _log("back at the main menu via cm:quit() (%.1fs)" % (time.time() - t0))
                 return True
-            time.sleep(2.0)
+            time.sleep(0.4)
         raise TWError("cm:quit() dispatched but the main menu never appeared within %ds" % timeout)
 
     def start_campaign(self, faction, campaign="Immortal Empires", load_timeout=120):
@@ -269,15 +275,19 @@ class BusLauncher:
                "'StartCampaign(\"%s\", \"%s\", \"SP_NORMAL\")') end) "
                "return 'ok='..tostring(ok)..' err='..tostring(e)" % (ckey, faction))
         _log("StartCampaign(%s, %s, SP_NORMAL)" % (ckey, faction))
+        t0 = time.time()
         r = self._send("eval", lua, timeout=30)
         if not str((r or {}).get("result", "")).startswith("ok=true"):
             raise TWError("StartCampaign did not dispatch: %s" % r)
         started = self.wait_for({"started"}, load_timeout)
         if not started:
             raise TWError("campaign did not load ('started' never logged) within %ds" % load_timeout)
+        t_started = time.time()
+        _log("campaign 'started' after %.1fs" % (t_started - t0))
         if not self.advance_to_hud():
             raise TWError("reached 'started' but never got the interactive HUD (loading/cinematic stuck)")
-        _log("CAMPAIGN PLAYABLE: %s / %s" % (ckey, faction))
+        _log("CAMPAIGN PLAYABLE: %s / %s -- load %.1fs + hud %.1fs = %.1fs"
+             % (ckey, faction, t_started - t0, time.time() - t_started, time.time() - t0))
         return started
 
     def restart_campaign(self, faction, campaign="Immortal Empires", load_timeout=120):
