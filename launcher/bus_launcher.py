@@ -48,6 +48,11 @@ class BusLauncher:
         self.last_startable = []
 
     def ensure_pack(self):
+        import pack_multi
+        built = str(pack_multi.build())
+        if os.path.abspath(built) != os.path.abspath(PACK_SRC):
+            raise TWError("pack_multi built %s but the launcher installs %s" % (built, PACK_SRC))
+        _log("mod pack built from %s" % os.path.join(os.path.dirname(PACK_SRC), "..", "mod"))
         if not os.path.isfile(PACK_SRC):
             raise TWError("mod pack missing: %s" % PACK_SRC)
         if os.path.isfile(PACK_DST):

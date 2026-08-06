@@ -391,6 +391,102 @@ function handlers.move(seq, rest)
   log({ seq = seq, cmd = "move", cqi = or_null(cqi), x = or_null(x), y = or_null(y), ordered = ok, turn = turn() })
 end
 
+local assist_watch = {}
+
+local function assist_host(hero)
+  local a = try(function() return cm:get_character_by_cqi(hero) end)
+  if not a then return nil end
+  if try(function() return a:is_embedded_in_military_force() end) ~= true then return nil end
+  local f = try(function() return a:embedded_in_military_force() end)
+  if not f then return nil end
+  return try(function() return f:general_character():command_queue_index() end)
+end
+
+local function assist_force_cqi(target)
+  local t = try(function() return cm:get_character_by_cqi(target) end)
+  if not t then return nil end
+  local f = try(function() return t:military_force() end)
+  if not f then return nil end
+  return try(function() return f:command_queue_index() end)
+end
+
+local function assist_cleanup()
+  for i = #assist_watch, 1, -1 do
+    local w = assist_watch[i]
+    if assist_host(w.hero) ~= w.target then
+      local shared = false
+      for j = 1, #assist_watch do
+        local o = assist_watch[j]
+        if j ~= i and o.target == w.target and o.bundle == w.bundle
+           and assist_host(o.hero) == o.target then
+          shared = true
+        end
+      end
+      local force = nil
+      if not shared then
+        force = assist_force_cqi(w.target)
+        if force then try(function() cm:remove_effect_bundle_from_force(w.bundle, force) end) end
+      end
+      table.remove(assist_watch, i)
+      log({ cmd = "assist_cleanup", hero = w.hero, target = w.target, bundle = w.bundle,
+            force = or_null(force), shared = shared, turn = turn() })
+    end
+  end
+end
+
+function handlers.assist(seq, rest)
+  local hero, target, bundle, turns, actor, aturns, effects = string.match(
+    rest, "^(%d+)%s+(%d+)%s+(%S+)%s+(%-?%d+)%s+(%S+)%s+(%-?%d+)%s+(%S+)$")
+  hero, target, turns, aturns = tonumber(hero), tonumber(target), tonumber(turns), tonumber(aturns)
+  local out = { seq = seq, cmd = "assist", hero = or_null(hero), target = or_null(target),
+                bundle = or_null(bundle), turn = turn() }
+  if not (hero and target and bundle and turns and actor and aturns and effects) then
+    out.error = "unparsed: " .. tostring(rest)
+    log(out); return
+  end
+  local a = try(function() return cm:get_character_by_cqi(hero) end)
+  local t = try(function() return cm:get_character_by_cqi(target) end)
+  if not a then out.error = "NO-AGENT"; log(out); return end
+  if not t or try(function() return t:is_null_interface() end) == true then
+    out.error = "NULL-TARGET"; log(out); return
+  end
+  if try(function() return t:has_military_force() end) ~= true then
+    out.error = "TARGET-HAS-NO-FORCE"; log(out); return
+  end
+  local force = try(function() return t:military_force() end)
+  local host = assist_host(hero)
+  out.host_before = or_null(host)
+  if host ~= nil and host ~= target then out.error = "EMBEDDED-ELSEWHERE"; log(out); return end
+  if host == nil then
+    out.embedded = try(function() cm:embed_agent_in_force(a, force); return true end) == true
+    if not out.embedded then out.error = "EMBED-FAILED"; log(out); return end
+  else
+    out.embedded = "already"
+  end
+
+  local eb = try(function() return cm:create_new_custom_effect_bundle(bundle) end)
+  if eb == nil then out.error = "NO-BUNDLE"; log(out); return end
+  try(function() eb:set_duration(turns) end)
+  local n = 0
+  for key, scope, value in string.gmatch(effects, "([^|;]+)|([^|;]+)|([^|;]+)") do
+    if try(function() eb:add_effect(key, scope, tonumber(value)); return true end) == true then
+      n = n + 1
+    end
+  end
+  out.effects = n
+  if n == 0 then out.error = "NO-EFFECTS"; log(out); return end
+  out.applied = try(function() cm:apply_custom_effect_bundle_to_force(eb, force); return true end) == true
+  out.actor_applied = try(function()
+    cm:apply_effect_bundle_to_character(actor, a, aturns); return true end) == true
+  out.ap_zeroed = try(function()
+    cm:zero_action_points(cm:char_lookup_str(a)); return true end) == true
+  out.active = try(function() return force:has_effect_bundle(bundle) end)
+  if out.applied then
+    assist_watch[#assist_watch + 1] = { hero = hero, target = target, bundle = bundle }
+  end
+  log(out)
+end
+
 function handlers.move_leader(seq, rest)
   local x, y = string.match(rest, "^(%-?%d+)%s+(%-?%d+)")
   x, y = tonumber(x), tonumber(y)
@@ -976,6 +1072,7 @@ end
 local POLL_MS = POLL_SECONDS * 1000
 local function poll()
   pcall(process)
+  if cm and #assist_watch > 0 then pcall(assist_cleanup) end
 
 
 

@@ -761,13 +761,15 @@ _LUA_HERO_CHAR_STATE = (_G +
     "return ts(c:performed_action_this_turn())..'~'..ts(c:logical_position_x())"
     "..'~'..ts(c:logical_position_y())..'~'..ts(t~=nil)..'~'..ts(t and t:is_null_interface()==false)")
 
-_LUA_EMBED = (
-    "local a=cm:get_character_by_cqi(%(cqi)s) if not a then return 'NO-AGENT' end "
+_LUA_BUNDLE_ACTIVE = (
     "local t=cm:get_character_by_cqi(%(tgt)s) if not t then return 'NO-TARGET' end "
-    "if t:is_null_interface() then return 'NULL-TARGET' end "
-    "if not t:has_military_force() then return 'TARGET-HAS-NO-FORCE' end "
-    "if a:is_embedded_in_military_force() then return 'ALREADY-EMBEDDED' end "
-    "cm:embed_agent_in_force(a, t:military_force()) return 'called'")
+    "if not t:has_military_force() then return 'NO-FORCE' end "
+    "return tostring(t:military_force():has_effect_bundle('%(bundle)s'))")
+
+_LUA_BUNDLE_EFFECTS = (
+    "local v=common.get_context_value('CcoCampaignCharacter','%(tgt)s',"
+    "[[MilitaryForceContext.EffectBundleUnfilteredList.Filter(Key == '%(bundle)s')"
+    ".FirstContext.EffectList.Size]]) return tostring(v)")
 
 _LUA_EMBEDDED = (
     "local a=cm:get_character_by_cqi(%(cqi)s) if not a then return 'NO-AGENT' end "
@@ -841,6 +843,26 @@ def _embedded(bus, cqi):
     return str(_ev(bus, _LUA_EMBEDDED % {"cqi": cqi}, timeout=8.0) or "")
 
 
+_assist_payloads = {}
+
+
+def _assist_payload(action):
+    if action not in _assist_payloads:
+        spec = _collect_mod().HERO_ACTIONS.get(action) or {}
+        sys.path.insert(0, r"D:\tw_stack\advisor\reference")
+        import features_db as _DB
+        _assist_payloads[action] = _DB.agent_action_payload(spec.get("loc_suffix"))
+    return _assist_payloads[action]
+
+
+def _bundle_state(bus, tid, bundle):
+    if not bundle:
+        return None, None
+    active = str(_ev(bus, _LUA_BUNDLE_ACTIVE % {"tgt": tid, "bundle": bundle}, timeout=8.0) or "")
+    live = str(_ev(bus, _LUA_BUNDLE_EFFECTS % {"tgt": tid, "bundle": bundle}, timeout=8.0) or "")
+    return active, live
+
+
 def _hero_action_snapshot(bus, ctx, pick):
     kind, tid = _hero_target(pick)
     if tid is None:
@@ -852,9 +874,13 @@ def _hero_action_snapshot(bus, ctx, pick):
     st["target_kind"], st["target_id"] = kind, tid
     st["region"] = tid if kind == "settlement" else None
     st["stream_off"] = bus._out_size()
-    st["route"] = "embed" if _assist_route(pick) else "panel"
-    if st["route"] == "embed":
+    st["route"] = "assist" if _assist_route(pick) else "panel"
+    if st["route"] == "assist":
         st["embedded_before"] = _embedded(bus, ctx["entity_id"])
+        payload = _assist_payload((pick.get("params") or {}).get("action"))
+        st["payload"] = payload
+        st["bundle_before"], st["effects_before"] = _bundle_state(
+            bus, tid, (payload or {}).get("target_bundle"))
     return st
 
 
@@ -873,8 +899,6 @@ def _hero_action_gate_target(bus, ctx, pick, before):
 
 
 def _hero_action_gate_reach(bus, ctx, pick, before):
-    if before.get("route") == "embed":
-        return True, None
     is_char = before.get("target_kind") == "character"
     tid = before["target_id"]
     reach_c, reach_s = _collect_mod()._reach(
@@ -1030,8 +1054,9 @@ def _hero_target_node(bus, kind, tid):
                            if n.get("context") and ":" in str(n.get("context"))})[:20]))
             return None
         import trace as TR
+        pool = [n for n in hits if n.get("visible")] or hits
         byid = {}
-        for n in hits:
+        for n in pool:
             byid.setdefault(str(n.get("id")), []).append(n)
         node, anchor = None, None
         for want in _MARKER_ANCHORS:
@@ -1040,6 +1065,7 @@ def _hero_target_node(bus, kind, tid):
                 break
         if node is None:
             node, anchor = byid[sorted(byid)[0]][0], "alphabetical_fallback"
+        anchor = "%s%s" % (anchor, "" if node.get("visible") else "_invisible")
         ux = float(node["x"]) + (node.get("w") or 0) / 2.0
         uy = float(node["y"]) + (node.get("h") or 0) / 2.0
         pt = nav.ui_to_screen(ux, uy)
@@ -1111,13 +1137,22 @@ def _hero_action_execute_inner(bus, ctx, pick, before):
                          % (step, where, (" -- " + detail) if detail else ""))
         return False
 
-    if before.get("route") == "embed":
+    if before.get("route") == "assist":
         if kind != "character":
-            return fail("embed_target", "assist_army action targeted %s:%s" % (kind, tid))
-        r = str(_ev(bus, _LUA_EMBED % {"cqi": ctx["entity_id"], "tgt": tid}, timeout=15.0) or "")
-        before["embed_call"] = r
-        if r != "called":
-            return fail("embed", r)
+            return fail("assist_target", "assist_army action targeted %s:%s" % (kind, tid))
+        payload = before.get("payload")
+        if not payload:
+            return fail("assist_payload", "no cannot-fail result bundle for action %r" % action)
+        effects = ";".join("%s|%s|%s" % (k, s, v) for k, s, v in payload["effects"])
+        r = bus.send("assist", "%s %s %s %s %s %s %s" % (
+            ctx["entity_id"], tid, payload["target_bundle"], payload["target_turns"],
+            payload["actor_bundle"], payload["actor_turns"], effects), timeout=25.0) or {}
+        before["assist"] = r
+        if r.get("error"):
+            return fail("assist", str(r.get("error")))
+        if not r.get("applied"):
+            return fail("assist_apply", "embedded=%s effects=%s active=%s"
+                        % (r.get("embedded"), r.get("effects"), r.get("active")))
         return True
 
     name = _hero_action_method_name(action)
@@ -1158,11 +1193,18 @@ def _hero_action_execute_inner(bus, ctx, pick, before):
 
 
 def _hero_action_confirm(bus, ctx, pick, before):
-    if before.get("route") == "embed":
+    if before.get("route") == "assist":
         now = _embedded(bus, ctx["entity_id"])
-        after = {"route": "embed", "embedded_before": before.get("embedded_before"),
-                 "embedded_after": now, "embed_call": before.get("embed_call")}
-        ok = now.startswith("true") and now.split("~")[-1] == str(before.get("target_id"))
+        payload = before.get("payload") or {}
+        bundle = payload.get("target_bundle")
+        active, live = _bundle_state(bus, before.get("target_id"), bundle)
+        after = {"route": "assist", "embedded_before": before.get("embedded_before"),
+                 "embedded_after": now, "bundle": bundle, "bundle_active": active,
+                 "effects_live": live, "effects_before": before.get("effects_before"),
+                 "effects": payload.get("effects"), "result_key": payload.get("result_key"),
+                 "assist": before.get("assist")}
+        ok = (now.startswith("true") and now.split("~")[-1] == str(before.get("target_id"))
+              and active == "true" and _numf(live) is not None and _numf(live) > 0)
         return ok, after
     timeout = 0.05 if before.get("failed_at") else 0.75
     row, _ = bus.wait_row(("agent_action",), timeout=timeout, offset=before["stream_off"],

@@ -109,6 +109,32 @@ def agent_action_keys(name_suffix):
     return sorted(set(out))
 
 
+def agent_action_payload(name_suffix):
+    con = _connect()
+    for key in agent_action_keys(name_suffix):
+        row = con.execute(
+            "SELECT r.key AS result, r.actor_bundle, r.target_bundle, r.actor_bundle_turns, "
+            "r.target_bundle_turns FROM agent_actions a JOIN action_results r "
+            "ON r.key=a.cannot_fail_result WHERE a.key=?", (key,)).fetchone()
+        if row is None:
+            continue
+        effects = [(o["effect"], o["effect_scope"], o["value"]) for o in con.execute(
+            "SELECT effect, effect_scope, value FROM action_result_outcomes "
+            "WHERE action_result_key=? AND outcome='generic_bonus_value' AND affects_target=1 "
+            "AND effect IS NOT NULL AND effect_scope IS NOT NULL ORDER BY key", (row["result"],))]
+        if not effects:
+            continue
+        return {"action_key": key, "result_key": row["result"],
+                "target_bundle": row["target_bundle"],
+                "target_turns": row["target_bundle_turns"],
+                "actor_bundle": row["actor_bundle"],
+                "actor_turns": row["actor_bundle_turns"],
+                "effects": effects}
+    sys.stderr.write("features_db: agent_action_payload(%r) resolved no result bundle -- the "
+                     "assist action cannot apply its effect\n" % (name_suffix,))
+    return None
+
+
 def verify_hero_action_mappings(hero_actions):
     out, missing = {}, []
     for name, spec in sorted((hero_actions or {}).items()):
