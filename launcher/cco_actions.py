@@ -1380,9 +1380,28 @@ def _endturn_confirm(bus, ctx, pick, before):
     return ok, after
 
 
+def _endturn_doomed(bus, ctx, pick, before, after):
+    if not after or after.get("interrupts"):
+        before["doom_streak"] = 0
+        return None
+    try:
+        moved = float(after.get("turn")) > float(before.get("turn"))
+    except (TypeError, ValueError):
+        moved = False
+    if moved or after.get("our_turn") is not True:
+        before["doom_streak"] = 0
+        return None
+    before["doom_streak"] = before.get("doom_streak", 0) + 1
+    if before["doom_streak"] < 2:
+        return None
+    return ("turn still %s and still our turn after %d polls -- EndTurn was refused"
+            % (after.get("turn"), before["doom_streak"]))
+
+
 register("end_turn", {
     "layer": "cco", "signal": "turn_number_increment",
     "snapshot": _endturn_snapshot, "execute": _endturn_execute, "confirm": _endturn_confirm,
+    "doomed": _endturn_doomed,
     "timeout_s": 45.0, "poll_s": 3.0, "retryable": False,
 })
 
