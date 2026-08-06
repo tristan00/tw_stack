@@ -23,6 +23,19 @@ except Exception as _stats_exc:
 
 CMD_PATH = "D:/totalwar_runner/data/commands.txt"
 OUT_PATH = "D:/totalwar_runner/data/twcontrol.jsonl"
+SEND_LOG_PATH = "D:/totalwar_runner/data/bus_send.jsonl"
+_send_log_lock = threading.Lock()
+
+
+def _log_send(seq, channel, payload):
+    try:
+        row = '{"seq":%d,"ts":%.4f,"cmd":"%s","payload":%s}\n' % (
+            seq, time.time(), channel, json.dumps(str(payload)[:160]))
+        with _send_log_lock:
+            with open(SEND_LOG_PATH, "a", encoding="utf-8") as f:
+                f.write(row)
+    except OSError:
+        pass
 POLL_SECONDS = 1.0
 
 READ_POLL_SECONDS = 0.05
@@ -309,4 +322,5 @@ class Bus:
             with open(self.cmd_path, "a", encoding="utf-8") as f:
                 f.write(line)
                 f.flush()
+        _log_send(seq, channel, payload)
         return seq, offset
