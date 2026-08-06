@@ -1282,25 +1282,22 @@ end
 
 local started = false
 local function start()
-  if started then return end
-  started = true
-  pcall(arm_defeat_listener)
-  pcall(arm_event_recorder)
-
-
+  local saved = try(function() return cm:get_saved_value("twcontrol_last_seq") end)
+  if not started then
+    started = true
+    pcall(arm_defeat_listener)
+    pcall(arm_event_recorder)
+    pcall(arm_event_feed_filter)
+    last_seq = saved or max_seq_in_file()
+    pcall(function() cm:callback(poll, POLL_SECONDS) end)
+    say("controller running, last_seq=" .. last_seq .. " -> polling " .. CMD_PATH)
+  end
 
   pcall(function() cm:skip_all_campaign_cutscenes() end)
   pcall(function() if cm:is_intro_cutscene_playing() then cm:skip_all_campaign_cutscenes() end end)
 
-  pcall(arm_event_feed_filter)
-
-
-  local saved = try(function() return cm:get_saved_value("twcontrol_last_seq") end)
-  last_seq = saved or max_seq_in_file()
   log({ cmd = "started", turn = turn(), last_seq = last_seq, fresh = (saved == nil),
         ui = (find_uicomponent ~= nil), cmd_path = CMD_PATH })
-  say("controller running, last_seq=" .. last_seq .. " -> polling " .. CMD_PATH)
-  pcall(function() cm:callback(poll, POLL_SECONDS) end)
 end
 
 
