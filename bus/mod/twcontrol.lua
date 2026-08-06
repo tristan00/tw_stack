@@ -1311,6 +1311,26 @@ local function start_frontend()
   poll()
 end
 
+local function suppress_intro_cutscene()
+  if type(faction_start) ~= "table" then return "no faction_start" end
+  if type(faction_start.register_intro_cutscene_callback) ~= "function" then
+    return "no register fn"
+  end
+  faction_start.register_intro_cutscene_callback = function(self, cb)
+    if type(self) == "table" then self.intro_cutscene_callback = nil end
+  end
+  local n = 0
+  for _, v in pairs(_G) do
+    if type(v) == "table" and rawget(v, "intro_cutscene_callback") ~= nil then
+      v.intro_cutscene_callback = nil
+      n = n + 1
+    end
+  end
+  return "suppressed (cleared " .. tostring(n) .. " live)"
+end
+
+log({ cmd = "intro_cutscene", result = tostring(try(suppress_intro_cutscene)) })
+
 function twcontrol() start() end
 if cm and cm.add_first_tick_callback then
   pcall(function() cm:add_first_tick_callback(start) end)
