@@ -1257,12 +1257,60 @@ def pending_action(bus):
     return _ev(bus, _LUA_PENDING, timeout=8.0)
 
 
+_LUA_NOTIF_EMPTY = ("local v=common.get_context_value('CcoCampaignRoot','',"
+                    "'NotificationQueueContext.IsNotificationListEmpty') return tostring(v)")
+
+_LUA_SUPPRESS_NOTIFS = ("common.call_context_command('CampaignRoot.NotificationQueueContext"
+                        ".SetAllNotificationsSuppressed(true)') return 'sent'")
+
+_END_TURN_BUTTON = "hud_campaign|faction_buttons_docker|button_end_turn"
+
+
+def _end_turn_tooltip(bus):
+    r = bus.send("find", _END_TURN_BUTTON, timeout=8.0) or {}
+    return str((r.get("result") or {}).get("tooltip") or "")
+
+
+def _clear_end_turn_blockers(bus):
+    import nav
+    t0 = time.time()
+    out = {"notifications_empty": _ev(bus, _LUA_NOTIF_EMPTY, timeout=8.0)}
+    if str(out["notifications_empty"]).lower() != "true":
+        _ev(bus, _LUA_SUPPRESS_NOTIFS, timeout=8.0)
+        out["notifications_empty_after"] = _ev(bus, _LUA_NOTIF_EMPTY, timeout=8.0)
+    _ev(bus, "cm:dismiss_advice() return 'ok'", timeout=8.0)
+    clicks = 0
+    for _ in range(6):
+        if "events" not in nav.visible_roots(bus):
+            break
+        btns = nav.find_dismiss_buttons(bus, "events")
+        if not btns:
+            sys.stderr.write("cco_actions: end_turn blocked -- events panel open with no dismiss "
+                             "button\n")
+            break
+        r = bus.send("click", btns[0], timeout=8.0) or {}
+        if not r.get("clicked"):
+            break
+        clicks += 1
+        time.sleep(0.6)
+    out["events_dismissed"] = clicks
+    out["events_open"] = "events" in nav.visible_roots(bus)
+    out["tooltip"] = _end_turn_tooltip(bus)
+    out["cleared_ms"] = int((time.time() - t0) * 1000)
+    if out["events_open"] or str(out.get("notifications_empty_after",
+                                         out["notifications_empty"])).lower() != "true":
+        sys.stderr.write("cco_actions: end_turn preconditions NOT clear -- %s\n"
+                         % json.dumps(out)[:300])
+    return out
+
+
 def _endturn_execute(bus, ctx, pick, before):
     try:
         import click_actions
         click_actions.clear_screen(bus)
     except Exception as e:
         sys.stderr.write("cco_actions: end_turn clear_screen -> %s\n" % repr(e)[:100])
+    before["blockers"] = _clear_end_turn_blockers(bus)
     pend = pending_action(bus)
     res = _ev(bus, _LUA_ENDTURN)
     ok = str(res or "").startswith("true")
