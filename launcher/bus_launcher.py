@@ -37,8 +37,6 @@ P_FACTION_NAME = ("campaign_select_new|right_holder|tab_lord|lord_details_panel|
 P_START = "campaign_select_new|button_start_parent|button_start_campaign"
 P_CONTINUE = "custom_loading_screen|bottom_parent|button_continue"
 
-MENU_REDISPATCH_S = 20.0
-
 
 def _log(msg):
     print("[launch] %s" % msg, flush=True)
@@ -278,23 +276,12 @@ class BusLauncher:
                "return 'ok='..tostring(ok)..' err='..tostring(e)" % (ckey, faction))
         _log("StartCampaign(%s, %s, SP_NORMAL)" % (ckey, faction))
         t0 = time.time()
-        started, attempts = None, 0
-        while started is None and time.time() - t0 < load_timeout:
-            attempts += 1
-            if attempts > 1:
-                _log("still at the main menu after %.0fs -- re-dispatching StartCampaign "
-                     "(attempt %d)" % (time.time() - t0, attempts))
-            r = self._send("eval", lua, timeout=30)
-            if not str((r or {}).get("result", "")).startswith("ok=true"):
-                raise TWError("StartCampaign did not dispatch: %s" % r)
-            left = load_timeout - (time.time() - t0)
-            started = self.wait_for({"started"}, min(MENU_REDISPATCH_S, left))
-            if started is None and not any(k.get("id") == "main" and k.get("visible")
-                                           for k in self._roots_safe()):
-                started = self.wait_for({"started"}, load_timeout - (time.time() - t0))
+        r = self._send("eval", lua, timeout=30)
+        if not str((r or {}).get("result", "")).startswith("ok=true"):
+            raise TWError("StartCampaign did not dispatch: %s" % r)
+        started = self.wait_for({"started"}, load_timeout)
         if not started:
-            raise TWError("campaign did not load ('started' never logged) within %ds "
-                          "(%d StartCampaign dispatches)" % (load_timeout, attempts))
+            raise TWError("campaign did not load ('started' never logged) within %ds" % load_timeout)
         t_started = time.time()
         _log("campaign 'started' after %.1fs" % (t_started - t0))
         if not self.advance_to_hud():
