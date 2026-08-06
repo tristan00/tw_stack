@@ -71,14 +71,8 @@ def main():
         top = ", ".join("%s x%d" % (k, v) for k, v in fails[a].most_common(3))
         print("  %-20s %5d %5d %5.0f%%   %s" % (a, ok, bad, 100.0 * ok / max(1, ok + bad), top))
 
-    run = None
-    cur = os.path.join(RUNS, "CURRENT_RUN")
-    if os.path.exists(cur):
-        run = io.open(cur, encoding="utf-8").read().strip().replace("/", os.sep)
-    tp = os.path.join(run, "trace.jsonl") if run else None
-    if not (tp and os.path.exists(tp)):
-        cand = sorted(glob.glob(os.path.join(RUNS, "*", "trace.jsonl")), key=os.path.getmtime)
-        tp = cand[-1] if cand else None
+    run = os.path.join(RUNS, "run")
+    tp = os.path.join(run, "trace.jsonl")
     if not tp:
         print("\n(no trace.jsonl yet -- FAST/SMOOTH pending)")
         return
@@ -121,11 +115,6 @@ def main():
                 print("  %-20s %5.0f%% fail  ~%6.1fs wasted" % (a, 100 * frac_bad, w))
         print("  %-20s %11s ~%6.1fs of %.1fs total = %.0f%%"
               % ("TOTAL WASTE", "", waste, grand, 100.0 * waste / max(1.0, grand)))
-
-    hw = sorted(e["ms"] for e in evs if e.get("kind") == "hardware_input" and e.get("ms"))
-    if hw:
-        print("\n  hardware clicks: n=%d median=%dms total=%.1fs" % (len(hw), hw[len(hw) // 2],
-                                                                    sum(hw) / 1000.0))
 
 
 if __name__ == "__main__":

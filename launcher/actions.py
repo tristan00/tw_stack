@@ -1,4 +1,3 @@
-r"""actions.py -- in-campaign actions via the command bus + synthetic mouse."""
 from __future__ import annotations
 import os
 import subprocess
@@ -9,7 +8,6 @@ sys.path.insert(0, r"D:\tw_stack\bus")
 sys.path.insert(0, r"D:\tw_stack\launcher")
 import nav
 
-_PS = r"D:\tw_stack\launcher\ps\input.ps1"
 _SETTLE = 1.8
 _ACT = 1.4
 
@@ -19,16 +17,6 @@ CX, CY = SCREEN_W // 2, SCREEN_H // 2
 
 def _warn(where, detail):
     sys.stderr.write("actions: %s -> %s\n" % (where, detail))
-
-
-def mouse(action: str, x: int = CX, y: int = CY, d=None) -> str:
-    """Drive ps/input.ps1: click|rclick|dclick|move|drag|wheel|key at absolute screen pixels."""
-    cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", _PS, action]
-    for v in (x, y, d):
-        if v is not None:
-            cmd.append(str(v))
-    return (subprocess.run(cmd, capture_output=True, text=True, timeout=30,
-                           creationflags=subprocess.CREATE_NO_WINDOW).stdout or "").strip()
 
 
 def _ev(bus, expr):
@@ -56,7 +44,6 @@ def _roots(bus):
 
 
 def focus_char_tight(bus, cqi, d=4.0):
-    """Centre the camera on a character so screen-centre is that character."""
     x, y = _disp_char(bus, cqi)
     if x is None or y is None:
         _warn("focus_char_tight", "unresolved display position for cqi %s (x=%s y=%s)" % (cqi, x, y))
@@ -75,19 +62,14 @@ def focus_sett_tight(bus, region, d=4.0):
 
 
 def selected_army(bus) -> bool:
-    """True if units_panel is visible."""
     return "units_panel" in _roots(bus)
 
 
 def select_char(bus, cqi, tries=2) -> bool:
-    """Focus a lord and click screen-centre to select it. True once units_panel appears."""
     for _ in range(tries):
         if not focus_char_tight(bus, cqi):
             return False
         time.sleep(_SETTLE)
-        mouse("move", CX, CY)
-        time.sleep(0.2)
-        mouse("click", CX, CY)
         time.sleep(1.0)
         if selected_army(bus):
             return True
@@ -103,10 +85,6 @@ def _ap(bus, cqi):
 
 
 def order_attack_at_center(bus) -> None:
-    """Right-click screen-centre to order an attack on whatever is focused there."""
-    mouse("move", CX, CY)
-    time.sleep(0.2)
-    mouse("rclick", CX, CY)
     time.sleep(_ACT)
 
 
@@ -115,7 +93,6 @@ def pre_battle_open(bus) -> bool:
 
 
 def attack_char(bus, enemy_cqi, lord_cqi=56) -> dict:
-    """Select lord_cqi and attack the enemy character. Returns {selected, pre_battle}."""
     sel = select_char(bus, lord_cqi)
     focus_char_tight(bus, enemy_cqi)
     time.sleep(_SETTLE)
@@ -124,7 +101,6 @@ def attack_char(bus, enemy_cqi, lord_cqi=56) -> dict:
 
 
 def attack_settlement(bus, region, lord_cqi=56) -> dict:
-    """Select lord_cqi and besiege/assault the settlement. Returns {selected, pre_battle}."""
     sel = select_char(bus, lord_cqi)
     focus_sett_tight(bus, region)
     time.sleep(_SETTLE)
@@ -139,7 +115,6 @@ def attack_settlement(bus, region, lord_cqi=56) -> dict:
 
 
 def autoresolve(bus) -> list:
-    """Autoresolve the open pre-battle. Returns the visible roots afterwards."""
     ar = bus.send("autoresolve", "", timeout=10.0) or {}
     if not ar or ar.get("error"):
         _warn("autoresolve", "autoresolve reply missing/errored: %s" % ar)
@@ -151,7 +126,6 @@ _BR = "popup_battle_results|mid|battle_results|post_battle_results_panel"
 
 
 def confirm_results_checkmark(bus) -> bool:
-    """Click the battle-results checkmark to reach the occupation panel."""
     p = "%s|button_set_settlement_captured|button_accept" % _BR
     r = bus.send("click", p, timeout=8.0) or {}
     time.sleep(2.5)
@@ -161,7 +135,6 @@ def confirm_results_checkmark(bus) -> bool:
 
 
 def handle_captives(bus, choice="release") -> bool:
-    """Pick a captive option (kill|enslave|release); the click commits and closes the panel."""
     p = "%s|button_set_win_holder|button_set_win|button_captive_option_%s" % (_BR, choice)
     r = bus.send("click", p, timeout=8.0) or {}
     time.sleep(1.5)
@@ -171,7 +144,6 @@ def handle_captives(bus, choice="release") -> bool:
 
 
 def occupy_settlement(bus, choice="Occupy") -> bool:
-    """Click the settlement_captured option whose dy_option text == `choice`."""
     tr = bus.send("tree", "settlement_captured 22 3000", timeout=15.0) or {}
     for n in (tr.get("nodes") or []):
         if n.get("id") == "dy_option" and str(n.get("text")).strip().lower() == choice.strip().lower():
@@ -185,7 +157,6 @@ def occupy_settlement(bus, choice="Occupy") -> bool:
 
 
 def clear_popups(bus) -> int:
-    """Drain popups. Returns how many dismiss-clicks were made."""
     return len(nav.close_popups(bus))
 
 
@@ -202,7 +173,6 @@ def _cco_ev(bus, lua, timeout=15.0):
 
 
 def cco_activate_stance(bus, char_cqi, stance_key, legal_keys) -> bool:
-    """Activate a stance on the lord's force; any key outside `legal_keys` is refused."""
     if not legal_keys or stance_key not in legal_keys:
         _warn("cco_activate_stance", "REFUSED %r: not in legality whitelist %s"
               % (stance_key, sorted(legal_keys or [])))
@@ -235,7 +205,6 @@ def cco_activate_stance(bus, char_cqi, stance_key, legal_keys) -> bool:
 
 
 def cco_construct(bus, region, slot_index, building_key, expected_cost=None) -> bool:
-    """Queue `building_key` in `region`'s slot `slot_index`; True once the slot reads new."""
     t0 = _ev(bus, "cm:get_faction(cm:get_local_faction_name(true)):treasury()")
     if expected_cost is not None and t0 is not None and t0 < expected_cost:
         _warn("cco_construct", "pre-check: treasury %s < cost %s" % (t0, expected_cost))

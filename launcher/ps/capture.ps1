@@ -9,6 +9,7 @@ public class Win {
   [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref POINT p);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr dc, uint flags);
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);
   [DllImport("user32.dll")] public static extern bool GetCursorInfo(ref CURSORINFO pci);
@@ -23,29 +24,59 @@ public class Win {
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
+$PW_RENDERFULLCONTENT = 2
+
+function Test-Rendered($bitmap, $bw, $bh) {
+  $nonblack = 0; $n = 0
+  for ($xx = 10; $xx -lt $bw; $xx += 211) {
+    for ($yy = 10; $yy -lt $bh; $yy += 149) {
+      $c = $bitmap.GetPixel($xx, $yy); $n++
+      if ($c.R -gt 8 -or $c.G -gt 8 -or $c.B -gt 8) { $nonblack++ }
+    }
+  }
+  if ($n -eq 0) { return $false }
+  return (($nonblack / $n) -gt 0.05)
+}
+
 $p = Get-Process Warhammer3 -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+$captured = $false
 if ($p) {
   $h = $p.MainWindowHandle
   if ([Win]::IsIconic($h)) { [Win]::ShowWindow($h, 9) | Out-Null; Start-Sleep -Milliseconds 400 }
-  [Win]::SetForegroundWindow($h) | Out-Null
-  Start-Sleep -Milliseconds 250
-
-
   $r = New-Object Win+RECT
   [Win]::GetClientRect($h, [ref]$r) | Out-Null
   $pt = New-Object Win+POINT
   [Win]::ClientToScreen($h, [ref]$pt) | Out-Null
   $x = $pt.X; $y = $pt.Y; $w = $r.Right - $r.Left; $hh = $r.Bottom - $r.Top
-  $src = "window '$($p.MainWindowTitle)' client=($x,$y $($w)x$($hh))"
+  if ($w -gt 0 -and $hh -gt 0) {
+    $bmp = New-Object System.Drawing.Bitmap($w, $hh)
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $dc = $g.GetHdc()
+    $ok = [Win]::PrintWindow($h, $dc, [uint32]$PW_RENDERFULLCONTENT)
+    $g.ReleaseHdc($dc)
+    if ($ok -and (Test-Rendered $bmp $w $hh)) {
+      $captured = $true
+      $src = "PrintWindow '$($p.MainWindowTitle)' $($w)x$($hh) (no foreground taken)"
+    } else {
+      $g.Dispose(); $bmp.Dispose()
+    }
+  }
+  if (-not $captured) {
+    [Win]::SetForegroundWindow($h) | Out-Null
+    Start-Sleep -Milliseconds 250
+    $src = "CopyFromScreen fallback '$($p.MainWindowTitle)' client=($x,$y $($w)x$($hh)) -- PrintWindow gave no frame"
+  }
 } else {
   $vs = [System.Windows.Forms.SystemInformation]::PrimaryMonitorSize
   $x = 0; $y = 0; $w = $vs.Width; $hh = $vs.Height
   $src = "no game window; primary screen $($w)x$($hh)"
 }
 if ($w -le 0 -or $hh -le 0) { Write-Output "bad rect: $src"; exit 1 }
-$bmp = New-Object System.Drawing.Bitmap($w, $hh)
-$g = [System.Drawing.Graphics]::FromImage($bmp)
-$g.CopyFromScreen($x, $y, 0, 0, (New-Object System.Drawing.Size($w, $hh)))
+if (-not $captured) {
+  $bmp = New-Object System.Drawing.Bitmap($w, $hh)
+  $g = [System.Drawing.Graphics]::FromImage($bmp)
+  $g.CopyFromScreen($x, $y, 0, 0, (New-Object System.Drawing.Size($w, $hh)))
+}
 $bmp.Save($Out, [System.Drawing.Imaging.ImageFormat]::Png)
 
 
