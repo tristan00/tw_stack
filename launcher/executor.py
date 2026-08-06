@@ -185,6 +185,26 @@ class Executor:
             return None
         return "hud_campaign" in roots
 
+    _LUA_TRANSITION = (
+        "local function g(c,p) local ok,v=pcall(function() return c:Call(p) end) "
+        "if ok and v~=nil then return tostring(v) end return 'nil' end "
+        "local function b(f) local ok,v=pcall(f) if not ok then return 'nil' end return tostring(v) end "
+        "local r=cco('CcoCampaignRoot','') "
+        "local pa=nil pcall(function() pa=r:Call('PendingActionContext') end) "
+        "return g(r,'IsLocomotionComplete')..'|'..g(r,'IsHUDVisible')..'|'.."
+        "(pa and (g(pa,'IsActive')..'~'..g(pa,'ActionType')..'~'"
+        "..g(pa,'ShouldBlockAllInteractions')) or 'none')..'|'.."
+        "b(function() return cm:is_any_cutscene_running() end)")
+
+    def transition_probe(self):
+        raw = self._eval(self._LUA_TRANSITION, timeout=10.0)
+        if not raw:
+            return None
+        p = str(raw).split("|")
+        if len(p) < 4:
+            return None
+        return {"locomotion_done": p[0], "hud_visible": p[1], "pending": p[2], "cutscene": p[3]}
+
     _LUA_UI_STATE = (
         "local function b(f) local ok,v=pcall(f) if not ok then return 'nil' end return tostring(v) end "
         "return b(function() return cm:is_any_cutscene_running() end)..'|'.."
