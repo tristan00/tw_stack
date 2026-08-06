@@ -30,7 +30,6 @@ POLL_STEP = 0.15
 
 
 def _wait(pred, limit, step=POLL_STEP):
-    """Poll a predicate. True if it came true inside `limit`."""
     t0 = time.time()
     while time.time() - t0 < limit:
         if pred():
@@ -49,7 +48,7 @@ def _path(n):
 
 
 class DiplomacyError(RuntimeError):
-    """The diplomacy panel did not behave as expected."""
+    pass
 
 
 def _tree(bus):
@@ -57,7 +56,6 @@ def _tree(bus):
 
 
 def _node(bus, node_id):
-    """Resolve a node by id; the list moves under the cursor, so the result must not be cached."""
     for n in _tree(bus):
         if str(n.get("id") or "") == node_id:
             return n
@@ -78,7 +76,6 @@ def _find(bus, node_id):
 
 
 def _list_band(bus):
-    """(y0, y1) of the faction list's clipping viewport."""
     for n in _tree(bus):
         p = str(_path(n) or "")
         if str(n.get("id") or "") == "list_clip" and FACTION_LIST in p:
@@ -87,7 +84,6 @@ def _list_band(bus):
 
 
 def _row_pitch(bus):
-    """Pixels between adjacent rows: one arrow click moves the list by exactly this."""
     ys = sorted(int(n.get("y") or 0) for n in _rows(bus))
     gaps = sorted({b - a for a, b in zip(ys, ys[1:]) if b > a})
     if not gaps:
@@ -96,7 +92,6 @@ def _row_pitch(bus):
 
 
 def _settled_y(bus, row_id, limit=3.0, agree=3):
-    """The row's y once `agree` consecutive reads return it unchanged (the list tweens)."""
     prev, n, t0 = None, 0, time.time()
     while time.time() - t0 < limit:
         cur = int(_find(bus, row_id).get("y") or 0)
@@ -108,7 +103,6 @@ def _settled_y(bus, row_id, limit=3.0, agree=3):
 
 
 def scroll_to_row(bus, row_id, margin=6):
-    """Bring `row_id`'s centre into the list viewport in one exact burst of arrow clicks."""
     n = _find(bus, row_id)
     if not n.get("found"):
         raise DiplomacyError("no %s in the panel -- that faction is not deal-able right now"
@@ -120,23 +114,35 @@ def scroll_to_row(bus, row_id, margin=6):
     if lo <= centre <= hi:
         return 0
     pitch = _row_pitch(bus)
-    if centre > hi:
-        clicks, arrow = -(-(centre - hi) // pitch), SCROLL_ARROW % "bottom"
-    else:
-        clicks, arrow = -(-(lo - centre) // pitch), SCROLL_ARROW % "top"
-    for _ in range(clicks):
+    budget = max(8, int(abs(centre - (hi if centre > hi else lo)) // max(pitch, 1)) * 3 + 8)
+    clicks, stalled, prev = 0, 0, centre
+    while clicks < budget:
+        arrow = SCROLL_ARROW % ("bottom" if centre > hi else "top")
         bus.send("click", arrow, timeout=8.0)
-    final = _settled_y(bus, row_id) + h // 2
-    if not lo <= final <= hi:
-        raise DiplomacyError("%d clicks of %spx left %s at centre %s, outside %s..%s -- the click "
-                             "count is wrong, not the direction"
-                             % (clicks, pitch, row_id, final, lo, hi))
-    return clicks
+        clicks += 1
+        centre = _settled_y(bus, row_id) + h // 2
+        if lo <= centre <= hi:
+            return clicks
+        if centre == prev:
+            stalled += 1
+            if stalled >= 3:
+                raise DiplomacyError("%s stopped moving at centre %s after %d clicks (band "
+                                     "%s..%s) -- the list will not scroll further"
+                                     % (row_id, centre, clicks, lo, hi))
+        else:
+            stalled = 0
+        prev = centre
+    raise DiplomacyError("%s still at centre %s after %d measured clicks, outside %s..%s"
+                         % (row_id, centre, clicks, lo, hi))
 
 
-def _hardware_click(node, double=False):
-    nav.mouse("dclick" if double else "click",
-              *nav.ui_to_screen(node["x"] + node["w"] / 2, node["y"] + node["h"] / 2))
+def _bus_click(bus, node, double=False):
+    path = _path(node)
+    r = bus.send("dclick" if double else "click", path, timeout=10.0) or {}
+    if not r.get("clicked"):
+        raise DiplomacyError("bus %s did not register on %s -- reply=%s"
+                             % ("dclick" if double else "click", path, r))
+    return r
 
 
 def _text_of(bus, node_id):
@@ -145,7 +151,6 @@ def _text_of(bus, node_id):
 
 
 def success_chance(bus):
-    """label_deal_success_chance as a signed float, or None."""
     raw = _text_of(bus, "label_deal_success_chance")
     if raw is None:
         return None
@@ -156,7 +161,6 @@ def success_chance(bus):
 
 
 def chance_after_change(bus, before, limit=4.0):
-    """success_chance once it has moved off `before`; None if it never moves."""
     out = {}
 
     def moved():
@@ -167,27 +171,11 @@ def chance_after_change(bus, before, limit=4.0):
     return out.get("v") if _wait(moved, limit) else None
 
 
-def dealable_factions(bus):
-    """Faction keys we can open a negotiation with, read from the panel's own row list."""
-    opened = open_panel(bus)
-    try:
-        keys, seen = [], set()
-        for n in _tree(bus):
-            nid = str(n.get("id") or "")
-            if nid.startswith("faction_row_entry_") and n.get("visible"):
-                key = nid[len("faction_row_entry_"):]
-                if key and key not in seen:
-                    seen.add(key)
-                    keys.append(key)
-        sys.stderr.write("diplomacy: %d dealable faction(s) read from the panel\n" % len(keys))
-        return keys
-    finally:
-        if opened:
-            close_panel(bus)
+def _is_selected(state):
+    return str(state or "").startswith("selected")
 
 
 def open_panel(bus, limit=10.0):
-    """Open the diplomacy panel and wait for a faction row to render. True if this call opened it."""
     already = ROOT in interrupts.roots(bus)
     if not already:
         nav.bus_click(bus, BTN_DIPLOMACY)
@@ -204,17 +192,13 @@ def open_panel(bus, limit=10.0):
 
 
 def close_panel(bus, tries=3, limit=2.5):
-    """Close the panel, asserting it is gone. Raises if it will not close.
-
-    The payments subpanel has to be backed out first: while it is up the panel offers neither
-    button_cancel nor button_close, so every dismissal path below is a no-op until it is gone."""
     for _ in range(tries):
         if ROOT not in interrupts.roots(bus):
             return True
         cancel_payments(bus)
         n = _node(bus, "button_cancel") or _node(bus, "button_close")
         if n and n.get("visible") and str(n.get("state")) in _CLICKABLE:
-            _hardware_click(n)
+            _bus_click(bus, n)
         else:
             nav.close_popups(bus)
         if _wait(lambda: ROOT not in interrupts.roots(bus), limit):
@@ -229,7 +213,6 @@ def close_panel(bus, tries=3, limit=2.5):
 
 
 def select_faction(bus, faction_key, limit=4.0):
-    """Open the negotiation with one faction."""
     row_id = "faction_row_entry_%s" % faction_key
     scroll_to_row(bus, row_id)
     for attempt in range(3):
@@ -238,13 +221,17 @@ def select_faction(bus, faction_key, limit=4.0):
             raise DiplomacyError("no %s in the panel -- that faction is not deal-able right now"
                                  % row_id)
         nav.bus_click(bus, _path(n))
-        if _wait(lambda: str(_find(bus, row_id).get("state") or "") == "selected", 1.5, step=0.2):
+        if _wait(lambda: _is_selected(_find(bus, row_id).get("state")), 1.5, step=0.2):
             break
         sys.stderr.write("diplomacy: %s did not take the click (attempt %d)\n"
                          % (row_id, attempt + 1))
     else:
         raise DiplomacyError("%s never became selected after 3 bus clicks" % row_id)
-    _hardware_click(_find(bus, row_id), double=True)
+    row = _node(bus, row_id)
+    if row is None or not _path(row):
+        raise DiplomacyError("%s vanished from the tree after selection -- no component path to "
+                             "open the negotiation with" % row_id)
+    _bus_click(bus, row, double=True)
     if _wait(lambda: bool(offered_terms(bus)), limit):
         return True
     raise DiplomacyError("selected %s but no negotiation opened (no diplomatic_option_* appeared)"
@@ -252,7 +239,6 @@ def select_faction(bus, faction_key, limit=4.0):
 
 
 def offered_terms(bus):
-    """{term: state} for every diplomatic_option_* on screen."""
     out = {}
     for n in _tree(bus):
         nid = str(n.get("id") or "")
@@ -262,11 +248,6 @@ def offered_terms(bus):
 
 
 def add_term(bus, term, limit=2.5):
-    """Stage one term on the open offer. True if its state changed, False if `inactive`/absent.
-
-    Every refusal names the term's state AND the full set the panel is actually offering -- the
-    offered set is already in hand here, and discarding it is why a `deal_selection` failure used
-    to say nothing about which terms were available for that faction."""
     node_id = "diplomatic_option_%s" % term
     offered = offered_terms(bus)
     before = offered.get(term)
@@ -287,10 +268,6 @@ def add_term(bus, term, limit=2.5):
 
 
 def open_payments(bus, limit=4.0):
-    """Click diplomatic_option_payment to raise the payments subpanel. False if it is not offered.
-
-    The subpanel is what `payment_state` reads and what a gift is staged through; nothing about
-    it is visible until this lands, so it must run before the tier buttons can be enumerated."""
     state = offered_terms(bus).get(PAYMENT_OPTION)
     if state is None or state == "inactive":
         return False
@@ -302,8 +279,6 @@ def open_payments(bus, limit=4.0):
 
 
 def _index(bus):
-    """{id: node} from ONE tree scrape. Every _node call re-scrapes 80k nodes, so a reader that
-    wants a dozen fields must not call it a dozen times."""
     idx = {}
     for n in _tree(bus):
         nid = str(n.get("id") or "")
@@ -323,12 +298,6 @@ def _num(node):
 
 
 def payment_state(bus):
-    """Everything the OPEN payments subpanel exposes, read-only, in one scrape.
-
-    A tier is available exactly when its own button is clickable; the game gates that on the
-    treasury covering that tier's cost, so availability is read off the panel, never computed.
-    `value` is the cost of the SELECTED tier only -- the panel shows one at a time, and the
-    price is per-target, not a fixed per-tier constant."""
     idx = _index(bus)
     tiers = {}
     for t in GIFT_TIERS:
@@ -340,7 +309,7 @@ def payment_state(bus):
     offer = idx.get(PAY_OFFER)
     label = idx.get("label_gift_type")
     return {"tiers": tiers,
-            "offer_selected": bool(offer and str(offer.get("state") or "") == "selected"),
+            "offer_selected": bool(offer and _is_selected(offer.get("state"))),
             "selected_tier": (str(label.get("text") or "").strip() if label else None),
             "selected_value": _num(idx.get("label_gift_value")),
             "treasury": _num(idx.get("dy_payments_treasury")),
@@ -356,12 +325,6 @@ def _trace(fmt, *a):
 
 
 def selected_tier(bus):
-    """Which gift tier the panel currently has selected, read from its own label_gift_type.
-
-    The label does NOT track the button id: button_large_gift displays 'Generous gift', so the
-    mapping is explicit. TIER_LABELS was read off ONE campaign, so any wording outside it is
-    logged loudly rather than silently returning None -- an unrecognised label is why a valid
-    gift gets cancelled, and it must name the string it saw."""
     raw = str(_text_of(bus, "label_gift_type") or "").strip().lower()
     for tier, label in TIER_LABELS.items():
         if raw == label:
@@ -372,25 +335,21 @@ def selected_tier(bus):
 
 
 def _committable(bus):
-    """True when ok_payments is live -- the panel's own verdict that a payment is staged."""
     return str(_find(bus, "ok_payments").get("state") or "") in _CLICKABLE
 
 
 def select_offer(bus, limit=2.0):
-    """Select Offer Payment. True once it reads back `selected`.
-
-    Required before the tier buttons: the panel needs a direction before a gift size takes."""
     n = _node(bus, PAY_OFFER)
     if n is None or not n.get("visible"):
         _trace("select_offer: %s absent/invisible", PAY_OFFER)
         return False
-    if str(n.get("state") or "") == "selected":
+    if _is_selected(n.get("state")):
         return True
     if not _path(n):
         _trace("select_offer: %s has no path", PAY_OFFER)
         return False
     nav.bus_click(bus, _path(n))
-    ok = _wait(lambda: str(_find(bus, PAY_OFFER).get("state") or "") == "selected", limit)
+    ok = _wait(lambda: _is_selected(_find(bus, PAY_OFFER).get("state")), limit)
     if not ok:
         _trace("select_offer: %s stayed %r after the click", PAY_OFFER,
                _find(bus, PAY_OFFER).get("state"))
@@ -398,11 +357,6 @@ def select_offer(bus, limit=2.0):
 
 
 def choose_gift(bus, tier, limit=2.0, ready=2.5):
-    """Click one gift tier. False when that tier stays unclickable -- treasury below its price.
-
-    The tier buttons are enabled a beat AFTER the direction is applied, so read them only once
-    the requested one has settled: sampling immediately reports every tier unavailable and turns
-    an affordable gift into a spurious refusal."""
     if tier not in GIFT_TIERS:
         raise DiplomacyError("unknown gift tier %r -- want one of %s" % (tier, list(GIFT_TIERS)))
     node_id = "button_%s_gift" % tier
@@ -426,7 +380,6 @@ def choose_gift(bus, tier, limit=2.0, ready=2.5):
 
 
 def commit_payment(bus, limit=3.0):
-    """Press ok_payments to put the staged payment on the offer table."""
     n = _node(bus, "ok_payments")
     if n is None or not n.get("visible") or not _path(n):
         _trace("commit_payment: ok_payments absent/invisible (node=%s)", n is not None)
@@ -443,10 +396,6 @@ def commit_payment(bus, limit=3.0):
 
 
 def cancel_payments(bus, limit=2.5):
-    """Back out of the payments subpanel. True once it is gone (or was never up).
-
-    Every failure inside the subpanel exits through here: leaving it up hides the faction list,
-    which wedges close_panel AND the next diplomacy action, whatever went wrong."""
     n = _node(bus, "cancel_payments")
     if n is None or not n.get("visible"):
         return True
@@ -457,11 +406,6 @@ def cancel_payments(bus, limit=2.5):
 
 
 def stage_gift(bus, tier):
-    """The payments walk, in the panel's required order: raise the subpanel, choose Offer Payment,
-    pick the tier, commit. Returns what each step did plus the subpanel's own readouts.
-
-    Every early return backs out of the subpanel first, so a refusal at any step leaves the panel
-    on the negotiation view rather than on a screen with no exit."""
     out = {"tier": tier, "opened": False, "offer_selected": False, "chosen": False,
            "committed": False, "panel": None, "failed_at": None, "backed_out": None}
     _trace("gift %s: walk start", tier)
@@ -512,8 +456,6 @@ def stage_gift(bus, tier):
 
 
 def prepare(bus, faction_key, terms, gift=None):
-    """Open a negotiation, stage `terms`, and stage `gift` through the payments subpanel.
-    Sends nothing. Returns what reached the table."""
     terms = list(terms)[:MAX_TERMS]
     open_panel(bus)
     carried = success_chance(bus)
@@ -545,10 +487,6 @@ RESPONSE_ACK = "button_accept"
 
 
 def offer_response(bus):
-    """The AI's answer on the post-send response screen, or None when it is not up.
-
-    `dy_text` carries the verdict in its STATE (they_accepted / they_declined ...), which is a
-    far cleaner settle signal than inferring one from treasury movement."""
     for n in _tree(bus):
         if str(n.get("id") or "") != "dy_text" or not n.get("visible"):
             continue
@@ -570,12 +508,6 @@ EXIT_AFTER_SEND = (
 
 
 def finish_after_send(bus, limit=2.0):
-    """The ONLY way out after a send: three clicks, by full path, in order.
-
-    MEASURED, not inferred: acknowledging alone leaves the panel up (root still present after 3s).
-    Addressed by path because the panel carries several button_cancel nodes and a bare-id lookup
-    returns whichever the tree yields first. Each step asserts the node it actually landed on and
-    reads the panel's disappearance out of the click reply's own roots_after."""
     for i, (path, want_id) in enumerate(EXIT_AFTER_SEND):
         if ROOT not in interrupts.roots(bus):
             _trace("post-send exit: panel already gone after %d step(s)", i)
@@ -598,17 +530,15 @@ def finish_after_send(bus, limit=2.0):
 
 
 def send(bus):
-    """Press Send. True if the button was live and pressed."""
     n = _node(bus, "button_send")
     if not (n and n.get("visible") and str(n.get("state")) in _CLICKABLE):
         return False
-    _hardware_click(n)
+    _bus_click(bus, n)
     _wait(lambda: not _find(bus, "button_send").get("visible"), 2.5, step=0.2)
     return True
 
 
 def propose(bus, faction_key, terms, gift=None):
-    """Stage terms and any gift, send if the game allows, close, report what the panel did."""
     out = {"faction": faction_key, "requested": list(terms)[:MAX_TERMS],
            "stage": "open", "ok": False, "failed_at": None}
     try:

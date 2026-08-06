@@ -1,4 +1,3 @@
-r"""dumps.py -- one-shot read-only capture of the current WH3 screen + game state."""
 from __future__ import annotations
 import collections
 import json
@@ -14,7 +13,6 @@ def _warn(where, exc):
 
 
 def _ev(bus, lua):
-    """eval a Lua expression, returning its result or None."""
     try:
         return (bus.send("eval", lua, timeout=_T) or {}).get("result")
     except Exception as exc:
@@ -23,8 +21,6 @@ def _ev(bus, lua):
 
 
 def _recover_hidden(bus, nodes, cap=80):
-    """[{path, child_ids, child_contexts}] for hidden nodes with children, via `find`. At most
-    `cap` finds."""
     out = []
     hidden = [n for n in nodes if n.get("visible") is False and n.get("path")]
     for n in hidden[:cap]:
@@ -41,7 +37,6 @@ def _recover_hidden(bus, nodes, cap=80):
 
 
 def dump_tree(bus, root, depth=40, nodes=16000):
-    """One panel's component tree. Returns {nodes[], truncated, ...summary}."""
     try:
         tr = bus.send("tree", "%s %d %d" % (root, depth, nodes), timeout=_TREE_T) or {}
     except Exception as exc:
@@ -59,8 +54,6 @@ def dump_tree(bus, root, depth=40, nodes=16000):
 
 
 def dump_screen(bus, log_path=None, save_dir=None, deep=True, depth=40, nodes=16000, log_tail=400):
-    """Capture roots, every visible panel's tree, the entity streams and the game state; with
-    `save_dir`, also writes dump.json + tree_<panel>.json there."""
     D = {
         "roots": [], "open_panels": [], "panels": {}, "entities": {}, "state": {},
         "log_tail": None, "filter_hits": [],

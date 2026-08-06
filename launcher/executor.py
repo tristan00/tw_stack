@@ -29,7 +29,6 @@ class Executor:
         self.counted = 0
 
     def execute(self, pick):
-        """Run one advisor pick through the confirmed-action engine; returns an ActionRecord dict."""
         ctx = {"context_kind": _ENTITY_KIND.get(pick.get("context_kind"), pick.get("context_kind")),
                "entity_id": str(pick.get("context_id"))}
         run = {"action_type": pick.get("action_type"), "key": pick.get("key"),
@@ -51,25 +50,24 @@ class Executor:
                        executed=rec.get("executed"), confirmed=rec.get("confirmed"),
                        counted=rec.get("counted"), refusal=rec.get("refusal"),
                        gate=rec.get("gate"), confirm=rec.get("confirm"),
-                       before=rec.get("before"), after=rec.get("after"))
+                       before=rec.get("before"), after=rec.get("after"),
+                       gates=rec.get("gates"), execute_error=rec.get("execute_error"),
+                       doomed=rec.get("doomed"), timing=rec.get("timing"),
+                       params=run["params"], stderr=rec.get("stderr"))
         self.executed += 1
         self.counted += 1 if rec.get("counted") else 0
         return rec
 
     def resolve_interrupts(self):
-        """Clear anything on screen the advisor did not ask for. Returns the steps taken."""
         return interrupts.resolve(self.bus)
 
     def defeated_probe(self):
-        """Engine-side: is the player faction dead? True/False, None when the probe failed."""
         return interrupts.defeated_probe(self.bus)
 
     def mark_campaign_start(self):
-        """Row-scan boundary: defeat rows only count if written after this point."""
         self._campaign_offset = self.bus.out_offset()
 
     def defeated_row_seen(self):
-        """True when the mod wrote a faction_destroyed row for us during this campaign."""
         import json
         off = getattr(self, "_campaign_offset", None)
         if off is None:
@@ -97,12 +95,10 @@ class Executor:
         return False
 
     def settle_between_turns(self, timeout=420.0, poll=4.0, turn_before=None, abort=None):
-        """Ride out the AI turns after end_turn; returns {"turn", "steps", "waited_s"}."""
         t0 = time.time()
         steps = []
 
         def _aborted():
-            """True when the caller's abort predicate fires."""
             return abort is not None and abort()
 
         def _bail():
@@ -152,7 +148,6 @@ class Executor:
         return {"turn": None, "steps": steps, "waited_s": round(time.time() - t0, 1)}
 
     def turn_number(self):
-        """Execution-side turn read, or None if unreadable."""
         try:
             r = self.bus.send("eval", "return cm:model():turn_number()", timeout=10.0) or {}
         except Exception:
@@ -178,7 +173,6 @@ class Executor:
             return []
 
     def defeat_screen(self, roots=None):
-        """The end-of-campaign victory/defeat screen's root name, or None."""
         try:
             return interrupts.defeat_screen(self.bus, roots)
         except Exception as e:
@@ -186,7 +180,6 @@ class Executor:
             return None
 
     def campaign_ui_alive(self):
-        """True while the campaign HUD is on screen. None when the bus cannot answer."""
         roots = self.visible_roots()
         if not roots:
             return None
@@ -204,12 +197,16 @@ class Executor:
         "s('input',function() cm:steal_user_input(false) end) "
         "s('borders',function() CampaignUI.ToggleCinematicBorders(false) end) "
         "s('ui',function() cm:enable_ui(true) end) "
+        "s('ui_hiding',function() cm:enable_ui_hiding(false) end) "
+        "r[#r+1]='hiding_now='..tostring(cm:is_ui_hiding_enabled()) "
         "return table.concat(r,',')")
     _LUA_NO_UI_HOTKEY = (
         "local r={} "
         "local function s(n,f) local ok=pcall(f) r[#r+1]=n..'='..tostring(ok) end "
         "s('toggle_ui',function() cm:disable_shortcut('root','toggle_ui',true) end) "
         "s('toggle_ui_borders',function() cm:disable_shortcut('root','toggle_ui_with_borders',true) end) "
+        "s('ui_hiding',function() cm:enable_ui_hiding(false) end) "
+        "r[#r+1]='hiding_now='..tostring(cm:is_ui_hiding_enabled()) "
         "return table.concat(r,',')")
 
     def _eval(self, lua, timeout=15.0):
@@ -224,7 +221,6 @@ class Executor:
         return r.get("result")
 
     def ui_state(self):
-        """{cutscene, cinematic_ui, ui_hiding}, or None if unreadable."""
         raw = self._eval(self._LUA_UI_STATE)
         if not raw:
             return None
@@ -235,7 +231,6 @@ class Executor:
         return {"cutscene": f(p[0]), "cinematic_ui": f(p[1]), "ui_hiding": f(p[2])}
 
     def force_ui_restore(self):
-        """Give the UI back. Returns what each step reported."""
         shown = None
         try:
             shown = self.bus.send("show", "hud_campaign", timeout=20.0)
@@ -246,13 +241,11 @@ class Executor:
         return {"show": shown, "script": out}
 
     def disable_ui_hotkeys(self):
-        """Disable the toggle_ui / toggle_ui_with_borders shortcuts."""
         out = self._eval(self._LUA_NO_UI_HOTKEY)
         sys.stderr.write("executor: disable_ui_hotkeys -> %s\n" % (out,))
         return out
 
     def start_game(self, plan, campaign="Immortal Empires", boot_timeout=90):
-        """Cold start: spawn WH3 and drive the frontend to a playable campaign."""
         import bus_launcher
         bl = bus_launcher.BusLauncher()
         started = bl.launch(plan, campaign=campaign, boot_timeout=boot_timeout)
@@ -260,7 +253,6 @@ class Executor:
         return started
 
     def kill_game(self):
-        """Kill the Warhammer3 process."""
         import subprocess
         try:
             subprocess.run(["powershell", "-NoProfile", "-Command",
@@ -272,7 +264,6 @@ class Executor:
             sys.stderr.write("executor: kill_game -> %s\n" % repr(e)[:120])
 
     def hard_restart(self, plan, campaign="Immortal Empires", boot_timeout=90):
-        """Kill the game process and cold-start a fresh campaign."""
         self.kill_game()
         time.sleep(8)
         return self.start_game(plan=plan, campaign=campaign, boot_timeout=boot_timeout)
@@ -281,7 +272,6 @@ class Executor:
         return "main" in self.visible_roots()
 
     def ensure_campaign(self, plan, campaign="Immortal Empires", fresh=False):
-        """Guarantee a playable campaign, from whatever state the game is in."""
         if self.at_main_menu():
             import bus_launcher
             bl = bus_launcher.BusLauncher()
@@ -296,7 +286,6 @@ class Executor:
                                                                 "turn": self.turn_number()}
 
     def new_campaign(self, plan, campaign="Immortal Empires"):
-        """Abandon the current campaign and start a fresh one without respawning the process."""
         import bus_launcher
         bl = bus_launcher.BusLauncher()
         bl.bus = self.bus
@@ -305,7 +294,6 @@ class Executor:
         return started
 
     def screenshot(self, name):
-        """Capture the game window to <shots_dir>/<name>.png. Returns the path, or None."""
         path = os.path.join(self.shots_dir, "%s.png" % name)
         try:
             os.makedirs(self.shots_dir, exist_ok=True)
@@ -331,4 +319,3 @@ if __name__ == "__main__":
     print("noop:", json.dumps({k: v for k, v in ex.execute(
         {"context_kind": "campaign", "context_id": "x", "action_type": "noop",
          "key": "noop"}).items() if k in ("executed", "confirmed", "counted", "refusal")}))
-

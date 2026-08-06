@@ -1,7 +1,3 @@
-r"""verify_cco_commands.py -- live verification of the cco commands, run on a disposable campaign.
-
-    python verify_cco_commands.py [construct]     # 'construct' also builds, spending gold
-"""
 from __future__ import annotations
 
 import sys
@@ -51,7 +47,6 @@ def verify_stance(bus):
 
 
 def verify_construct(bus):
-    """Queues a real building in the first open slot. Spends gold."""
     ents = CQ.list_entities(bus)
     if not ents["regions"]:
         return "SKIP (no regions)"

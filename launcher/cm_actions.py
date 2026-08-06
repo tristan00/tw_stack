@@ -60,7 +60,6 @@ def _attack_army_execute(bus, ctx, pick, before):
 
 
 def _attack_army_confirm(bus, ctx, pick, before):
-    """(landed, evidence) from the pre-battle popup or the acted-this-turn flag."""
     pb = _prebattle(bus)
     acted = _char_scalar(bus, ctx["entity_id"], "c:performed_action_this_turn()")
     landed = (pb is True) or (acted == "true" and before.get("acted") != "true")
@@ -98,7 +97,6 @@ def _attack_sett_execute(bus, ctx, pick, before):
 
 
 def _attack_sett_confirm(bus, ctx, pick, before):
-    """(landed, evidence) from the pre-battle popup, a new siege, or the acted-this-turn flag."""
     pb = _prebattle(bus)
     bes = _char_scalar(bus, ctx["entity_id"], "c:is_besieging()")
     acted = _char_scalar(bus, ctx["entity_id"], "c:performed_action_this_turn()")
@@ -201,7 +199,6 @@ def _move_gate(bus, ctx, pick, before):
 
 
 def _move_execute(bus, ctx, pick, before):
-    """Snap the sampled coordinate to a tile the pathfinder accepts, then order the move."""
     p = pick.get("params") or {}
     x, y = p.get("x"), p.get("y")
     if x is None or y is None:
@@ -220,7 +217,6 @@ def _move_execute(bus, ctx, pick, before):
 
 
 def _move_confirm(bus, ctx, pick, before):
-    """(moved, position) -- any change in logical position counts as a move."""
     cqi = ctx["entity_id"]
     x = _char_scalar(bus, cqi, "c:logical_position_x()")
     y = _char_scalar(bus, cqi, "c:logical_position_y()")
@@ -238,7 +234,6 @@ _SETTLE_PAUSE = 0.8
 
 
 def _await_standstill(bus, cqi, after):
-    """Poll until the character's logical position is unchanged twice running. True if it settled."""
     last = (after.get("x"), after.get("y"))
     stable = 0
     for _ in range(_SETTLE_POLLS):

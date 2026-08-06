@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import os
@@ -60,12 +60,6 @@ class BusLauncher:
         _log("installed mod pack -> %s" % PACK_DST)
 
     def _rotate_bus_files(self):
-        """Archive-move both bus files and recreate them empty, so every game instance boots on
-        condition-B state. A fresh mod instance booting on a grown commands.txt corrupts ~1 in 4
-        reply seqs (A/B-proven 2026-08-02: 22/100 evals answered under seq-minus-40000 on the
-        16.8MB file, 100/100 clean on empty files). RAISES rather than spawning on a grown file:
-        proceeding is the exact state that failed 26 straight campaigns. Serialized against live
-        bus clients via the bus's own cross-process lock; verified empty afterwards."""
         import bus as _bus
         if _bus._game_alive():
             raise TWError("bus rotation refused: Warhammer3 is still running -- spawning a second "
@@ -109,7 +103,6 @@ class BusLauncher:
         _log("spawned %s" % EXE)
 
     def wait_for(self, kinds, timeout):
-        """Wait for a mod record whose 'cmd' is in `kinds`, appended to OUT_PATH after now."""
         start = os.path.getsize(OUT_PATH) if os.path.exists(OUT_PATH) else 0
         t0 = time.time()
         while time.time() - t0 < timeout:
@@ -143,7 +136,6 @@ class BusLauncher:
         raise last
 
     def _wait_bus_ready(self, timeout=40):
-        """Probe `roots` until a round-trip succeeds."""
         t0 = time.time()
         while time.time() - t0 < timeout:
             try:
@@ -178,7 +170,6 @@ class BusLauncher:
         return (self.find(path).get("result") or {}).get("text")
 
     def wait_root(self, root_id, timeout=30):
-        """Wait until `root_id` is a visible top-level root."""
         t0 = time.time()
         while time.time() - t0 < timeout:
             for k in self._roots_safe():
@@ -188,8 +179,6 @@ class BusLauncher:
         return False
 
     def _child_path_matching(self, container, substrings, leaf):
-        """Path <container>|<child>|<leaf> for the first direct child whose id contains all of
-        `substrings`, else None."""
         t = self.tree(container, depth=1, nodes=200)
         for nd in (t.get("nodes") or []):
             p = nd.get("path", "")
@@ -203,7 +192,6 @@ class BusLauncher:
         return None
 
     def _campaign_card(self, label):
-        """Path of the campaign card whose button_txt equals `label`."""
         t = self.tree(P_LIST_PARENT, depth=1, nodes=200)
         for nd in (t.get("nodes") or []):
             p = nd.get("path", "")
@@ -215,7 +203,6 @@ class BusLauncher:
         return None
 
     def advance_to_hud(self, timeout=200):
-        """Dismiss the loading-screen Continue and skip cutscenes until hud_campaign is visible."""
         t0 = time.time()
         did_continue = False
         while time.time() - t0 < timeout:
@@ -231,15 +218,17 @@ class BusLauncher:
             except TWError:
                 pass
             roots = self._roots_safe()
-            if any(k.get("id") in ("campaign_space_bar_options", "black_fade")
-                   and k.get("visible") for k in roots):
-                import subprocess
-                r = subprocess.run(
-                    ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-                     os.path.join(os.path.dirname(os.path.abspath(__file__)), "ps", "input.ps1"),
-                     "key", "ESCAPE"], capture_output=True, text=True, timeout=30,
-                    creationflags=subprocess.CREATE_NO_WINDOW)
-                _log("cinematic on screen -> hardware ESC (%s)" % (r.stdout or "").strip()[:60])
+            skip_roots = [k.get("id") for k in roots
+                          if k.get("id") in ("campaign_space_bar_options", "black_fade")
+                          and k.get("visible")]
+            if skip_roots:
+                key = "space" if "campaign_space_bar_options" in skip_roots else "escape"
+                try:
+                    r = self.bus.send("key", "@root %s" % key, timeout=10) or {}
+                except TWError as e:
+                    r = {"error": repr(e)[:80]}
+                _log("cinematic on screen (%s) -> bus key %s (sent=%s changed=%s)"
+                     % (",".join(skip_roots), key, r.get("sent"), r.get("changed")))
             for k in roots:
                 if k.get("id") == "hud_campaign" and k.get("visible"):
                     _log("interactive HUD reached (hud_campaign visible)")
@@ -252,7 +241,6 @@ class BusLauncher:
                      "Prologue": "wh3_main_prologue"}
 
     def quit_to_main_menu(self, timeout=120):
-        """Leave a running campaign for the main menu, without respawning the process."""
         if self.bus is None:
             self.bus = Bus()
         r = self._send("eval", "local ok,e=pcall(function() cm:quit() end) "
@@ -268,7 +256,6 @@ class BusLauncher:
         raise TWError("cm:quit() dispatched but the main menu never appeared within %ds" % timeout)
 
     def start_campaign(self, faction, campaign="Immortal Empires", load_timeout=150):
-        """Main menu -> playable campaign. `faction` is a faction key."""
         ckey = self.CAMPAIGN_KEYS.get(campaign, campaign)
         faction = str(faction or "").strip()
         if not faction:
@@ -289,7 +276,6 @@ class BusLauncher:
         return started
 
     def restart_campaign(self, faction, campaign="Immortal Empires", load_timeout=150):
-        """Quit the current campaign and start a fresh one."""
         self.quit_to_main_menu()
         return self.start_campaign(faction, campaign, load_timeout)
 
@@ -309,7 +295,6 @@ class BusLauncher:
         return self.start_campaign(faction, campaign, load_timeout)
 
     def startable_factions(self):
-        """Faction keys from the harvested roster file."""
         import json
         if not os.path.exists(ROSTER_PATH):
             raise TWError("no startable-faction roster at %s -- regenerate it with "
@@ -321,7 +306,6 @@ class BusLauncher:
         return list(keys)
 
     def harvest_startable_factions(self, timeout=30.0):
-        """Re-read the faction keys from the live frontend. Requires campaign-select to be open."""
         import re
         import interrupts
         if self.bus is None:

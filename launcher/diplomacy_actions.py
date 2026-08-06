@@ -1,4 +1,3 @@
-r"""diplomacy_actions.py -- the `diplomacy` action type: propose a deal, confirm on treaty state."""
 from __future__ import annotations
 
 import sys
@@ -24,7 +23,6 @@ _LUA_TREATY = (
 
 
 def _treaty(bus, faction_key):
-    """{at_war, allied, trade, our_master, their_vassal, standing} or None if unreadable."""
     raw = _ev(bus, _LUA_TREATY % {"key": faction_key}, timeout=20.0)
     if not raw or str(raw) == "nil":
         return None
@@ -44,7 +42,6 @@ def _treaty(bus, faction_key):
 
 
 def _target(pick):
-    """The faction key this action is aimed at."""
     return (pick.get("params") or {}).get("faction")
 
 
@@ -53,8 +50,6 @@ def _terms(pick):
 
 
 def _gift(pick):
-    """The gift tier this pick carries, or None. A gift is a diplomacy SUBTYPE, not its own
-    action: same panel walk, same send, but it settles on treasury rather than treaty state."""
     g = (pick.get("params") or {}).get("gift")
     if not g:
         return None
@@ -108,7 +103,6 @@ def _gate(bus, ctx, pick, before):
 
 
 def _emit_stream(key, terms, panel, before, ok, gift=None):
-    """One diplomacy-analysis row per outgoing attempt (success or failure). Never raises."""
     try:
         import diplo_stream as DS
         DS.track(key)
@@ -147,7 +141,6 @@ def _execute(bus, ctx, pick, before):
 
 
 def _confirm(bus, ctx, pick, before):
-    """(changed, evidence) from the treaty tuple. `standing` alone does not count as a change."""
     panel = (pick.get("params") or {}).get("panel") or {}
     if panel and not panel.get("sent"):
         return False, {"reason": "never_sent", "failed_at": panel.get("failed_at"),
@@ -173,8 +166,6 @@ def _confirm(bus, ctx, pick, before):
 
 
 def _doomed_unsent(bus, ctx, pick, before, after):
-    """A deal the walk never SENT can never change treaty state -- one confirm probe, then stop.
-    Measured before this hook: 20.0s burned to exhaustion on 229/229 refused walks."""
     panel = (pick.get("params") or {}).get("panel") or {}
     if not panel.get("sent"):
         return "deal_never_sent(failed_at=%s)" % panel.get("failed_at")
@@ -185,6 +176,6 @@ register("diplomacy", {
     "layer": "click", "signal": "treaty_changed",
     "snapshot": _snapshot, "gates": [_gate], "execute": _execute, "confirm": _confirm,
     "doomed": _doomed_unsent,
-    "timeout_s": 20.0, "poll_s": 2.0,
+    "timeout_s": 0.0, "poll_s": 0.0, "confirm_settle_s": 0.6,
     "retryable": False,
 })
