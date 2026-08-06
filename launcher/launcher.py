@@ -1,5 +1,3 @@
-"""twapi.launcher -- GameManager: launch / prefs / frontend drive."""
-
 from __future__ import annotations
 
 import json
@@ -29,7 +27,6 @@ DEFAULT_FACTION = "wh2_main_hef_nagarythe"
 
 
 class GameManager:
-    """Launches WH3 and drives the frontend to a new campaign, then waits for the command-bus mod."""
 
     GAME_DIR = _GAME_DIR
     REPO = _REPO
@@ -226,44 +223,26 @@ class GameManager:
     def _run_ps(self, script: str, *args, **kw) -> subprocess.CompletedProcess | None:
         return self._screen._run_ps(script, *args, **kw)
 
-    def _input(self, action: str, a=None, b=None, d=None):
-        """input.ps1 action: (action, x, y, extra)."""
-        return self._screen._input(action, a, b, d)
-
     def _client_rect(self):
-        """(origin_x, origin_y, w, h) in screen pixels."""
         return self._screen._client_rect()
 
     def _map_frac(self, fx: float, fy: float):
-        """Client fraction -> absolute screen pixel (x, y)."""
         return self._screen._map_frac(fx, fy)
 
-    def _click_frac(self, fx: float, fy: float):
-        return self._screen._click_frac(fx, fy)
-
     def _restore(self):
-        """Un-minimise + foreground the game window."""
         return self._screen._restore()
 
-    def _nudge(self):
-        """Move the cursor, without clicking, to a neutral spot below the menu."""
-        return self._screen._nudge()
-
     def screenshot(self, name: str) -> str:
-        """Capture to SHOTS_DIR/<name>.png; returns the path."""
         path = os.path.join(self.SHOTS_DIR, name + ".png")
         return self._screenshot_to(path)
 
     def _screenshot_to(self, path: str) -> str:
-        """Capture to `path`; returns it."""
         return self._screen._screenshot_to(path)
 
     def _frame_ok(self) -> bool:
-        """True if the last captured frame is real game content."""
         return self._screen._frame_ok()
 
     def _valid_shot(self, name: str, tries: int = 6, settle: float = 1.2) -> tuple[str, bool]:
-        """Capture until the frame passes the content check; returns (path, ok)."""
         path = self.screenshot(name)
         for i in range(tries):
             if self._frame_ok():
@@ -271,23 +250,19 @@ class GameManager:
             self._log("capture %s: rejected non-game/screensaver frame #%d (stats=%s); "
                       "restoring + retrying" % (name, i, self._stats))
             self._restore()
-            self._nudge()
             time.sleep(settle)
             path = self.screenshot(name)
         return path, self._frame_ok()
 
     def _menu_match(self, path: str) -> float | None:
-        """Diff of `path` vs REF_MENU, or None."""
         if not os.path.isfile(self.REF_MENU):
             return None
         return self._img_diff(self.REF_MENU, path)
 
     def _scratch_shot(self, label: str) -> str:
-        """Capture to SCRATCH_DIR/<label>.png; returns the path."""
         return self._screenshot_to(os.path.join(self.SCRATCH_DIR, label + ".png"))
 
     def _fail_fast(self, label: str, msg: str):
-        """Save a labelled frame and raise TWError. Never returns."""
         self._restore()
         path = self._scratch_shot(label)
         self._log("FAIL-FAST @ %s: %s (frame: %s)" % (label, msg, path))
@@ -295,8 +270,6 @@ class GameManager:
 
     def _img_diff(self, path_a: str, path_b: str,
                   region: tuple[float, float, float, float] | None = None) -> float | None:
-        """Mean abs per-channel diff (0..255) of two frames, or None. `region` is (fl,ft,fr,fb)
-        crop fractions applied to both frames first."""
         args = [path_a, path_b]
         if region is not None:
             args += [region[0], region[1], region[2], region[3]]
@@ -318,9 +291,6 @@ class GameManager:
 
     def _wait_stable(self, timeout: float, min_wait: float = 0.0, label: str = "screen",
                      save_as: str | None = None) -> str:
-        """Poll until two consecutive frames differ by less than STABLE_THRESH; returns that
-        frame's path, or the last valid frame on timeout.
-        """
         self._restore()
         last = self.screenshot("_stable_0")
         last_ok = self._frame_ok()
@@ -360,9 +330,6 @@ class GameManager:
     def _await_transition(self, baseline_path: str, timeout: float, label: str = "screen",
                           region: tuple[float, float, float, float] | None = None,
                           thresh: float | None = None) -> str | None:
-        """Poll until a frame differs from `baseline_path` by more than `thresh` (default
-        CHANGE_THRESH); returns that frame's path, or None on timeout.
-        """
         thr = self.CHANGE_THRESH if thresh is None else thresh
         deadline = time.time() + timeout
         toggle = 0
@@ -386,9 +353,6 @@ class GameManager:
                         region: tuple[float, float, float, float] | None = None,
                         thresh: float | None = None,
                         before_tag: str | None = None) -> str | None:
-        """Click each candidate frac(x,y) until one produces a transition away from `baseline`;
-        returns that frame's path, or None.
-        """
         deadline = time.time() + total_timeout
         for i, (fx, fy) in enumerate(candidates):
             if time.time() >= deadline:
@@ -397,7 +361,6 @@ class GameManager:
             if before_tag:
                 self.screenshot("%s_%d_before" % (before_tag, i))
             self._log("frontend: click %s #%d @ frac(%.3f,%.3f)" % (label, i, fx, fy))
-            self._click_frac(fx, fy)
             budget = min(per_timeout, max(1.0, deadline - time.time()))
             settled = self._await_transition(baseline, budget, label, region=region,
                                               thresh=thresh)
@@ -406,7 +369,6 @@ class GameManager:
         return None
 
     def ensure_prefs(self) -> None:
-        """Check the exe exists and copy dist\\tw.pack into GAME_DIR\\data if missing or stale."""
         if not os.path.isfile(self.EXE):
             raise TWError("WH3 executable not found: %s" % self.EXE)
         try:
@@ -429,7 +391,6 @@ class GameManager:
         return None
 
     def _process_window_up(self) -> bool:
-        """True once a Warhammer3 process owns a main window."""
         cmd = ["powershell", "-NoProfile", "-Command",
                "$p=Get-Process Warhammer3 -ErrorAction SilentlyContinue | "
                "Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1; "
@@ -443,14 +404,12 @@ class GameManager:
             return False
 
     def _out_size(self) -> int:
-        """Current byte size of the mod's result log (OUT_PATH), or 0 if unreadable."""
         try:
             return os.path.getsize(OUT_PATH)
         except OSError:
             return 0
 
     def _mod_started_since(self, offset: int) -> bool:
-        """True if a {"cmd": "started"} record appears in OUT_PATH past byte `offset`."""
         try:
             with open(OUT_PATH, "rb") as f:
                 f.seek(offset)
@@ -470,7 +429,6 @@ class GameManager:
         return False
 
     def _reset_command_file(self) -> None:
-        """Truncate CMD_PATH."""
         try:
             with open(CMD_PATH, "w", encoding="utf-8") as f:
                 f.write("")
@@ -479,7 +437,6 @@ class GameManager:
             self._log("WARN could not clear %s: %s" % (CMD_PATH, exc))
 
     def _ensure_singleton(self) -> None:
-        """Take the cross-process launch lock and kill any running Warhammer3.exe. Idempotent."""
         import tempfile
         import msvcrt
         if getattr(GameManager, "_launch_lock_fh", None) is None:
@@ -506,7 +463,6 @@ class GameManager:
             self._log("singleton: taskkill skipped -> %r" % repr(exc)[:80])
 
     def _enforce_settings(self) -> None:
-        """Write the `profile` keys into preferences.script.txt. Best-effort; never fatal."""
         prefs = os.path.join(os.environ.get("APPDATA", ""), "The Creative Assembly",
                              "Warhammer3", "scripts", "preferences.script.txt")
         profile = {
@@ -550,7 +506,6 @@ class GameManager:
             self._log("settings: enforcement skipped -> %r" % repr(exc)[:80])
 
     def _spawn_game(self) -> None:
-        """Launch Warhammer3.exe directly, bypassing the Steam launcher."""
         flags = 0
         for name in ("DETACHED_PROCESS", "CREATE_NEW_PROCESS_GROUP"):
             flags |= getattr(subprocess, name, 0)
@@ -562,7 +517,6 @@ class GameManager:
         self._log("spawned %s" % self.EXE)
 
     def _wait_window(self, timeout: float) -> float | None:
-        """Poll until the game window exists; returns the timestamp, or None on timeout."""
         deadline = time.time() + timeout
         while time.time() < deadline:
             if self._process_window_up():
@@ -571,9 +525,6 @@ class GameManager:
         return None
 
     def _wait_menu(self) -> bool:
-        """Wait for the window, then for two consecutive frames matching REF_MENU within
-        MENU_MATCH_THRESH. True once confirmed; raises via _fail_fast otherwise.
-        """
         ready = self._wait_window(self.T_WINDOW)
         if ready is None:
             raise TWError("game window never appeared within %ds (exe launch failed? is "
@@ -608,7 +559,6 @@ class GameManager:
                 prev = None
                 self._log("main-menu: awaiting real menu (frame_ok=%s match=%s stats=%s)"
                           % (ok, ("%.2f" % match) if match is not None else None, self._stats))
-                self._nudge()
             time.sleep(2.0)
         if settled is None:
             self._fail_fast("menu_never_settled",
@@ -624,14 +574,12 @@ class GameManager:
         return True
 
     def _open_accordion(self, base_menu: str) -> bool:
-        """Click Campaign until the left-column crop diff vs `base_menu` clears LEFTCOL_THRESH."""
         cfx, cfy = self.MENU_CAMPAIGN
         region = (0, 0, self.LEFTCOL_FR, 1)
         for attempt, dx in enumerate((0.0, 0.014, -0.012)):
             self._restore()
             self._log("frontend: click Campaign (accordion, ONCE) #%d @ frac(%.3f,%.3f)"
                       % (attempt, cfx + dx, cfy))
-            self._click_frac(cfx + dx, cfy)
             time.sleep(2.5)
             self._restore()
             cur, ok = self._valid_shot("_acc_%d" % (attempt & 1))
@@ -647,14 +595,12 @@ class GameManager:
         return False
 
     def _drive_frontend(self, plan: dict | None = None) -> str:
-        """Menu -> New -> Immortal Empires -> race -> lord -> Start; returns the loading frame."""
         if plan is None:
             plan = self.RACE_PLANS["nagarythe"]
         base_fac = self._drive_to_race_grid()
         return self._drive_race_and_lord(plan, base_fac)
 
     def _drive_to_race_grid(self) -> str:
-        """Menu -> New -> Immortal Empires; returns the settled race-grid frame."""
         self._restore()
         self._client = None
         base_menu = self._scratch_shot("menu_baseline")
@@ -663,7 +609,6 @@ class GameManager:
                 break
             self._log("menu_baseline: rejected non-menu frame (stats=%s); retrying" % self._stats)
             self._restore()
-            self._nudge()
             time.sleep(1.2)
             base_menu = self._scratch_shot("menu_baseline")
         else:
@@ -710,8 +655,6 @@ class GameManager:
         return base_fac
 
     def _drive_race_and_lord(self, plan: dict, base_fac: str) -> str:
-        """Race tile -> lord (or the default when plan['lord'] is None) -> Start; returns the
-        loading frame."""
         race = self._try_candidates(
             plan["tiles"], base_fac, per_timeout=8, total_timeout=self.T_TRANSITION,
             label="%s tile->lord-details" % plan["name"], before_tag="31_race")
@@ -745,7 +688,6 @@ class GameManager:
                                             self.T_TRANSITION))
             else:
                 self._log("frontend: click lord portrait @ frac(%.3f,%.3f)" % (lfx, lfy))
-                self._click_frac(lfx, lfy)
                 time.sleep(2.5)
         else:
             self._log("frontend: accepting DEFAULT lord for %s (lord=None)" % plan["name"])
@@ -772,7 +714,6 @@ class GameManager:
         return loading
 
     def _bus_turn(self, bus) -> int:
-        """Turn number over the bus, or -1 on any failure."""
         try:
             r = bus.send("eval", "return cm:model():turn_number()", timeout=8)
             return int(r.get("result"))
@@ -780,7 +721,6 @@ class GameManager:
             return -1
 
     def _hud_ready(self, bus, path: str) -> bool:
-        """True when the component at `path` is found, visible and not inactive."""
         try:
             res = bus.send("find", path, timeout=8).get("result") or {}
         except TWError:
@@ -794,7 +734,6 @@ class GameManager:
         return True
 
     def _advance_to_map(self, campaign) -> None:
-        """Dismiss intro panels until turn>=1 and the end-turn button is ready."""
         bus = campaign.bus
         deadline = time.time() + self.T_MAP
 
@@ -836,7 +775,6 @@ class GameManager:
                         % (self.T_MAP, turn))
 
     def _advance_past_continue(self) -> None:
-        """Click through the campaign-intro loading screen onto the HUD. Never fatal."""
         import sys as _sys
         import os as _os
         _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "bus"))
@@ -870,9 +808,6 @@ class GameManager:
         self._log("WARN _advance_past_continue: loading screen still up after 60s (roots=%s)" % vis)
 
     def launch_new(self, faction: str | None = None, race: str | None = None):
-        """Boot a campaign for the RACE_PLANS key `race` (or a `faction` substring hint, else
-        "nagarythe"). Returns {"reached", "race", "plan", "faction", "seconds"}.
-        """
         if race is None:
             race = "nagarythe"
             if faction:
@@ -913,9 +848,6 @@ class GameManager:
                 "seconds": round(time.time() - self._t0, 1)}
 
     def _verify_loaded_faction(self, plan):
-        """Fail_fast unless the loaded faction name contains plan['guard'] and the mod answers
-        'focus'. Returns the faction key.
-        """
         import sys as _sys
         import os as _os
         _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "bus"))
@@ -968,9 +900,6 @@ class GameManager:
 
 
 def reach_campaign(race: str | None = None, faction: str | None = None, attempts: int = 3) -> dict:
-    """launch_new with up to `attempts` retries, killing the game between attempts.
-    Returns {"reached", "race", "plan", "faction", "seconds"}.
-    """
     import subprocess
     last = None
     for i in range(max(1, attempts)):
@@ -987,10 +916,6 @@ def reach_campaign(race: str | None = None, faction: str | None = None, attempts
 
 
 def launch_lord(faction_key: str, culture_key: str | None = None) -> dict:
-    """Launch a campaign for `faction_key` (e.g. 'wh2_main_hef_nagarythe'), selecting the tiles by
-    bus key rather than pixel coords. `culture_key` is derived from the faction key if omitted.
-    Returns {"reached", "faction", "requested", "culture", "seconds"}.
-    """
     import os as _os
     import sys as _sys
     _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "bus"))
@@ -1004,8 +929,8 @@ def launch_lord(faction_key: str, culture_key: str | None = None) -> dict:
                   if x.get("visible") and x.get("x") is not None and match in str(x.get("id", ""))), None)
         if not n:
             return None
-        nav.mouse("move", *nav.ui_to_screen(n["x"] + n["w"] / 2, n["y"] + n["h"] / 2)); time.sleep(0.2)
-        nav.mouse("click", *nav.ui_to_screen(n["x"] + n["w"] / 2, n["y"] + n["h"] / 2)); time.sleep(1.3)
+        nav.bus_input(bus, "launcher.py:campaign_select(%s)" % match, n.get("path"))
+        time.sleep(1.3)
         return n.get("id")
 
     gm = GameManager()
@@ -1045,10 +970,7 @@ def launch_lord(faction_key: str, culture_key: str | None = None) -> dict:
                   if "start" in str(x.get("id", "")).lower() and "button" in str(x.get("id", "")).lower()
                   and x.get("visible") and x.get("x") is not None), None)
     if start:
-        nav.mouse("move", *nav.ui_to_screen(start["x"] + start["w"] / 2, start["y"] + start["h"] / 2)); time.sleep(0.2)
-        nav.mouse("click", *nav.ui_to_screen(start["x"] + start["w"] / 2, start["y"] + start["h"] / 2))
-    else:
-        nav.mouse("click", 1280, 1376)
+        nav.bus_input(bus, "launcher.py:campaign_start", start.get("path"))
     deadline = time.time() + gm.T_LOAD
     while time.time() < deadline:
         if gm._mod_started_since(out_offset):

@@ -1,5 +1,5 @@
 from __future__ import annotations
-import sys, time
+import os, sys, time
 
 import trace as trace
 
@@ -38,12 +38,16 @@ SCREEN_DUMP_DIR = r"D:/twdata/runs/human/screens"
 _DUMP_MEMO = {}
 
 
+def dev_mode():
+    return str(os.environ.get("TW_DEV", "")).strip() not in ("", "0", "false", "False")
+
+
 def dump_screen(bus, root, why):
-    """Write the COMPLETE tree of `root` to disk -- every node, unfiltered. A screen we cannot
-    classify is at least fully recorded. Consecutive identical content per root is not rewritten."""
     import hashlib
     import json
     import os
+    if not dev_mode():
+        return None
     try:
         tr = bus.send("tree", "%s %d %d" % (root, 30, 80000), timeout=_TREE_T) or {}
         nodes = tr.get("nodes") or []
@@ -66,7 +70,6 @@ def dump_screen(bus, root, why):
 
 
 def _open_roots(bus):
-    """Visible, non-persistent top-level roots -- the popup candidates."""
     r = bus.send("roots", "", timeout=_FIND_T) or {}
     if not r.get("kids"):
         _warn("_open_roots", "empty/None roots reply (bus miss)")
@@ -79,13 +82,11 @@ def _open_roots(bus):
 
 
 def _is_dismiss_id(nid):
-    """True for a dismiss control id: an exact match, or any button_ok* variant."""
     nid = str(nid or "")
     return nid in DISMISS_BUTTON_IDS or nid.startswith("button_ok")
 
 
 def find_dismiss_buttons(bus, root, max_depth=24, max_nodes=4000):
-    """[component_path, ...] for every visible dismiss button inside `root`."""
     tr = bus.send("tree", "%s %d %d" % (root, max_depth, max_nodes), timeout=_TREE_T) or {}
     if not tr.get("nodes"):
         _warn("find_dismiss_buttons(%s)" % root, "empty/None tree reply (bus miss)")
@@ -98,8 +99,50 @@ def find_dismiss_buttons(bus, root, max_depth=24, max_nodes=4000):
     return hits
 
 
+def modeval(bus, expr, timeout=8.0):
+    try:
+        return bus.send("modeval", expr, timeout=timeout) or {}
+    except Exception as e:
+        _warn("modeval", "%s -> %s" % (expr[:60], repr(e)[:80]))
+        return {}
+
+
+def ccmd(bus, expr, timeout=12.0):
+    try:
+        return bus.send("ccmd", expr, timeout=timeout) or {}
+    except Exception as e:
+        _warn("ccmd", "%s -> %s" % (expr[:60], repr(e)[:80]))
+        return {}
+
+
+def is_hud_panel_open(bus, root):
+    try:
+        r = bus.send("eval",
+                     'return tostring(common.get_context_value([[IsHUDPanelOpen("%s")]]))' % root,
+                     timeout=8.0) or {}
+    except Exception:
+        return False
+    return str(r.get("result") or "").lower() == "true"
+
+
+CLOSE_AND_CLEAR = ('Do(DoIf(IsHUDPanelOpen("character_panel") || IsHUDPanelOpen("units_panel"), '
+                   'CloseCurrentHUDPanel), DoIf(IsPanelOpen("character_details_panel") == false, '
+                   'CampaignRoot.ClearSelection))')
+
+
+def close_panel(bus, root, settle=0.7):
+    before = visible_roots(bus)
+    if root not in before:
+        return True
+    if is_hud_panel_open(bus, root):
+        ccmd(bus, "CloseCurrentHUDPanel")
+    else:
+        modeval(bus, "CampaignUI.ClosePanel('%s') return 'called'" % root)
+    time.sleep(settle)
+    return root not in visible_roots(bus)
+
+
 def close_popups(bus, max_rounds=8, settle=0.7):
-    """Dismiss open popups until the screen is clear. Returns the paths clicked, in order."""
     clicked_paths = []
     for _ in range(max_rounds):
         clicked_this_round = False
@@ -118,11 +161,15 @@ def close_popups(bus, max_rounds=8, settle=0.7):
                     _warn("close_popups", "dismiss click did not register: %s (%s)" % (btn, res))
         if not clicked_this_round:
             break
+    for root in _open_roots(bus):
+        if root in BASE_ROOTS or root in BENIGN_PANELS or root in DECISION_ROOTS:
+            continue
+        if close_panel(bus, root, settle=settle):
+            clicked_paths.append("ClosePanel(%s)" % root)
     return clicked_paths
 
 
 def list_lords_and_heroes(bus):
-    """[{cqi, subtype, is_leader, kind}] for the player's characters; kind is 'lord' or 'hero'."""
     r = bus.send("chars", "", timeout=_FIND_T) or {}
     out = []
     for c in (r.get("chars") or []):
@@ -137,7 +184,6 @@ def list_lords_and_heroes(bus):
 
 
 def list_settlements(bus, include_enemy=True):
-    """Player settlements, plus visible enemy ones, each as {region, x, y, owner}."""
     out = []
     s = bus.send("setts", "", timeout=_FIND_T) or {}
     for x in (s.get("setts") or []):
@@ -156,35 +202,38 @@ def list_settlements(bus, include_enemy=True):
     return uniq
 
 
-import subprocess as _sp
 
 UI_BASE_W, UI_BASE_H = 1984.0, 1116.0
 CLIENT = (0, 0, 2560, 1440)
 CENTER = (1280, 720)
-_PS_INPUT = r"D:\tw_stack\launcher\ps\input.ps1"
 
 
 def ui_to_screen(ux, uy, client=CLIENT):
-    """Map a virtual-UI coordinate to an absolute screen pixel."""
     ox, oy, cw, ch = client
     return int(round(ox + ux * cw / UI_BASE_W)), int(round(oy + uy * ch / UI_BASE_H))
 
 
-def mouse(action, x=None, y=None, d=None):
-    """Synthetic input via ps/input.ps1 at absolute pixels: move|click|rclick|dclick|drag|wheel|key."""
-    cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", _PS_INPUT, action]
-    for v in (x, y, d):
-        if v is not None:
-            cmd.append(str(v))
-    t0 = time.time()
-    out = (_sp.run(cmd, capture_output=True, text=True, timeout=30,
-                   creationflags=_sp.CREATE_NO_WINDOW).stdout or "").strip()
-    trace.hardware(action, x=x, y=y, result=out, d=d, ms=int((time.time() - t0) * 1000))
-    return out
+BUS_CMD = {"click": "click", "dclick": "dclick", "rclick": "rclick",
+           "hover": "hover", "unhover": "unhover"}
+
+
+def bus_input(bus, where, path, action="click", timeout=8.0):
+    cmd = BUS_CMD.get(action)
+    if bus is None or cmd is None or not path:
+        _warn(where, "no bus/command/path for %r on %r" % (action, path))
+        return None
+    try:
+        r = bus.send(cmd, path, timeout=timeout) or {}
+    except Exception as e:
+        _warn(where, "%s raised: %s" % (cmd, repr(e)[:100]))
+        return None
+    if r.get("clicked") or r.get("sent"):
+        return r
+    _warn(where, "%s not delivered: %s" % (cmd, str(r)[:160]))
+    return None
 
 
 def bus_click(bus, path):
-    """SimulateLClick a component by pipe-path. Returns the whole reply."""
     r = bus.send("click", path, timeout=_FIND_T) or {}
     trace.click("bus", path, result=r)
     if not r.get("clicked"):
@@ -193,8 +242,6 @@ def bus_click(bus, path):
 
 
 def find_rect(bus, root, match):
-    """First node under `root` whose id==match or whose path ends with `match` (x,y,w,h in UI
-    coords + path), preferring a visible, positioned one."""
     tr = bus.send("tree", "%s 30 9000" % root, timeout=_TREE_T) or {}
     if not tr.get("nodes"):
         _warn("find_rect(%s, %s)" % (root, match), "empty/None tree reply (bus miss)")
@@ -212,26 +259,14 @@ def find_rect(bus, root, match):
     return fallback
 
 
-def hw_click(bus, root, match, frac=(0.5, 0.5), settle=0.25):
-    """Hardware-click a component located by find_rect, at `frac` of its rect."""
+def hover(bus, root, match, frac=(0.5, 0.5), settle=0.9):
     n = find_rect(bus, root, match)
     if not n or n.get("x") is None:
-        _warn("hw_click(%s, %s)" % (root, match), "find_rect returned nothing/position-less -> None")
+        _warn("hover(%s, %s)" % (root, match), "find_rect returned nothing/position-less -> None")
         return None
-    sx, sy = ui_to_screen(n["x"] + n["w"] * frac[0], n["y"] + n["h"] * frac[1])
-    mouse("move", sx, sy); time.sleep(settle); mouse("click", sx, sy)
-    return {"screen": [sx, sy], "path": n.get("path"), "id": n.get("id")}
-
-
-def hw_hover(bus, root, match, frac=(0.5, 0.5), settle=0.9):
-    """Move the cursor onto a component without clicking."""
-    n = find_rect(bus, root, match)
-    if not n or n.get("x") is None:
-        _warn("hw_hover(%s, %s)" % (root, match), "find_rect returned nothing/position-less -> None")
-        return None
-    sx, sy = ui_to_screen(n["x"] + n["w"] * frac[0], n["y"] + n["h"] * frac[1])
-    mouse("move", sx, sy); time.sleep(settle)
-    return {"screen": [sx, sy], "path": n.get("path")}
+    r = bus_input(bus, "nav.py:hover(%s,%s)" % (root, match), n.get("path"), action="hover")
+    time.sleep(settle)
+    return {"path": n.get("path"), "delivered": bool(r)}
 
 
 BASE_ROOTS = frozenset((
@@ -251,23 +286,20 @@ def visible_roots(bus):
 
 
 def open_views(bus):
-    """Non-base panels/views currently open."""
     return [r for r in visible_roots(bus) if r not in BASE_ROOTS]
 
 
 def is_clean(bus):
-    """True when only the base campaign HUD is showing."""
     return not open_views(bus)
 
 
 def deselect(bus):
-    """Deselect by left-clicking an empty patch of map above every panel."""
-    mouse("click", 1280, 210)
-    time.sleep(0.5)
+    r = ccmd(bus, CLOSE_AND_CLEAR)
+    time.sleep(0.4)
+    return r
 
 
 def quit_views(bus, max_rounds=6):
-    """Return to a clean campaign map. Returns is_clean()."""
     for _ in range(max_rounds):
         close_popups(bus)
         views = open_views(bus)
@@ -294,7 +326,6 @@ def quit_views(bus, max_rounds=6):
 
 
 def capital_region(bus):
-    """Region key of the player's province capital, else the first owned settlement."""
     s = bus.send("setts", "", timeout=_FIND_T) or {}
     if not s.get("setts"):
         _warn("capital_region", "empty/None setts reply (bus miss)")

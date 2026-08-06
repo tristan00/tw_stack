@@ -1,4 +1,3 @@
-r"""trace.py -- unsampled jsonl record of every click, advisor pick and launcher action."""
 from __future__ import annotations
 
 import json
@@ -13,7 +12,6 @@ _FALLBACK = r"D:\twdata\logs\launcher\trace_prerun.jsonl"
 
 
 def set_run_dir(run_dir):
-    """Point the trace at this campaign's run dir. Safe to call repeatedly."""
     try:
         if not run_dir:
             return
@@ -38,7 +36,6 @@ def _path():
 
 
 def emit(kind, **fields):
-    """Append one record. Never raises."""
     try:
         with _LOCK:
             _STATE["seq"] += 1
@@ -55,25 +52,16 @@ def emit(kind, **fields):
 
 
 def click(mechanism, target, result=None, **extra):
-    """One click. `mechanism` is 'bus', 'engine' or 'hardware'."""
     emit("click", mechanism=mechanism, target=target, result=result, **extra)
 
 
-def hardware(action, x=None, y=None, result=None, **extra):
-    """One real OS input -- cursor move, click, keystroke."""
-    emit("hardware_input", action=action, x=x, y=y, result=result, **extra)
-
-
 def advisor(pick, ranked_top=None, **extra):
-    """One advisor recommendation, with the head of its ranking."""
     emit("advisor_pick", pick=pick, ranked_top=ranked_top, **extra)
 
 
 def launcher(stage, action_type=None, key=None, **extra):
-    """One launcher step: snapshot / gate / execute / confirm."""
     emit("launcher", stage=stage, action_type=action_type, key=key, **extra)
 
 
 def screen(name, roots=None, **extra):
-    """One screen observation."""
     emit("screen", name=name, roots=roots, **extra)
