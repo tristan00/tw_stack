@@ -1274,7 +1274,20 @@ def _endturn_confirm(bus, ctx, pick, before):
                 ok, t = _took_effect()
         except Exception as e:
             sys.stderr.write("cco_actions: end_turn interrupt sweep -> %s\n" % repr(e)[:120])
-    return ok, {"turn": t, "our_turn": is_our_turn(bus), "interrupts": steps}
+    after = {"turn": t, "our_turn": is_our_turn(bus), "interrupts": steps}
+    if not ok:
+        after["pending_action"] = pending_action(bus)
+        try:
+            import interrupts as _I
+            after["roots"] = _I.roots(bus)
+        except Exception as e:
+            after["roots"] = repr(e)[:80]
+        after["endturn_call"] = before.get("endturn_call")
+        sys.stderr.write("cco_actions: end_turn UNCONFIRMED turn=%s our_turn=%s call=%r "
+                         "pending=%r roots=%s\n"
+                         % (t, after["our_turn"], after.get("endturn_call"),
+                            after["pending_action"], after["roots"]))
+    return ok, after
 
 
 register("end_turn", {
