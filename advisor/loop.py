@@ -37,7 +37,7 @@ class GameStuck(RuntimeError):
 GROWTH_WINDOW = 4
 GROWTH_LORD_WINDOW = 3
 GROWTH_MIN_GAIN = 1
-GROWTH_FIRST_CHECK_TURN = 4
+GROWTH_FIRST_CHECK_TURN = 10
 
 GROWTH_METRICS = (("settlements", "settlements", GROWTH_WINDOW),
                   ("lord_level", "legendary lord level", GROWTH_LORD_WINDOW))
