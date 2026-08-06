@@ -45,18 +45,35 @@ GROWTH_METRICS = (("settlements", "settlements", GROWTH_WINDOW),
                   ("lord_level", "legendary lord level", GROWTH_LORD_WINDOW))
 
 
-def _await_post_attack_hud(executor, log, tries=POST_ATTACK_HUD_TRIES,
-                           pause=POST_ATTACK_HUD_PAUSE):
-    alive = None
+def _trace_post_attack(executor, log, run_dir, pick, tries=POST_ATTACK_HUD_TRIES,
+                       pause=POST_ATTACK_HUD_PAUSE):
+    t0 = time.time()
+    samples = []
     for i in range(tries):
-        alive = executor.campaign_ui_alive()
-        if alive is not False:
-            if i:
-                log("   post-attack HUD settled after %d checks" % (i + 1))
-            return alive
+        roots = executor.visible_roots() or []
+        probe = executor.transition_probe() or {}
+        samples.append({"t_ms": int((time.time() - t0) * 1000),
+                        "hud_root": "hud_campaign" in roots,
+                        "popups": [r for r in roots if str(r).startswith("popup_")
+                                   or r in ("events", "dilemma_choice", "settlement_captured")],
+                        "locomotion_done": probe.get("locomotion_done"),
+                        "hud_visible": probe.get("hud_visible"),
+                        "pending": probe.get("pending"),
+                        "cutscene": probe.get("cutscene")})
+        if samples[-1]["popups"] or samples[-1]["hud_root"]:
+            break
         if i + 1 < tries:
             time.sleep(pause)
-    return alive
+    _append(os.path.join(run_dir, "post_attack_trace.jsonl"),
+            {"ts": time.time(), "action_type": pick.get("action_type"), "key": pick.get("key"),
+             "samples": samples})
+    last = samples[-1]
+    if not last["hud_root"] and not last["popups"]:
+        log("   post-attack: no HUD and no popup after %dms -- locomotion=%s pending=%s "
+            "cutscene=%s hud_visible=%s"
+            % (last["t_ms"], last["locomotion_done"], last["pending"], last["cutscene"],
+               last["hud_visible"]))
+    return last
 
 
 def _growth_verdict(hist, turn):
@@ -472,15 +489,11 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None, act_hist
                 timeout=POST_ATTACK_ROW_WAIT, offset=pre_off,
                 pred=lambda r: r.get("cmd") != "panel" or bool(r.get("opened")))
             if row is None:
-                settled = _await_post_attack_hud(executor, log)
-                if settled is False:
-                    log("   !! HUD gone after %s with no interrupt row -- restoring before the "
-                        "next action" % pick["action_type"])
-                    try:
-                        log("   post-attack UI restore: %s" % executor.force_ui_restore())
-                    except Exception as e:
-                        log("   !! post-attack force_ui_restore failed: %s" % repr(e)[:100])
-                    wd.beat("post_attack_hud_restore")
+                try:
+                    _trace_post_attack(executor, log, run_dir, pick)
+                except Exception as e:
+                    log("   !! post-attack trace failed: %s" % repr(e)[:120])
+                wd.beat("post_attack_trace")
             pre = executor.resolve_interrupts()
             _hk_parts[0]["post_attack"] = int((time.time() - _t) * 1000)
             if pre:
