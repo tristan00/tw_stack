@@ -195,6 +195,8 @@ def _move_gate(bus, ctx, pick, before):
             return False, "no_action_points"
     except (TypeError, ValueError):
         pass
+    if str(before.get("besieging")).lower() == "true":
+        return False, "besieging"
     return True, None
 
 
