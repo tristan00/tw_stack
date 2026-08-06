@@ -1,5 +1,3 @@
-"""The recorder stream: the only reader of the game for the advisor and the sole writer of
-decisions.sqlite. Services requests off <run>/decisions_requests.jsonl."""
 from __future__ import annotations
 
 import os
@@ -25,7 +23,6 @@ def run(ctx):
     last_uuid = [None]
 
     def campaign_changed(snap_camp):
-        """Record a campaign change; always returns False -- the run dir never rotates."""
         u = (snap_camp or {}).get("campaign_uuid")
         if not u or u == last_uuid[0]:
             return False
@@ -43,7 +40,7 @@ def run(ctx):
                 if store is not None:
                     store.close()
                 store = DecisionStore(out_dir)
-                cur_dir, offset, seq = out_dir, 0, 0
+                cur_dir, offset, seq = out_dir, journal.requests_size(out_dir), 0
                 ctx.emit({"kind": "decisions_status", "status": "store_open",
                           "db": os.path.join(out_dir, "decisions.sqlite")})
             rows, offset = journal.read_requests(out_dir, offset)

@@ -1,8 +1,3 @@
-r"""Decode db.pack + local_en.pack into reference.sqlite (loc, buildings, tech, units, skills,
-rituals, captive options/binding), driven by the vendored schema_db.json.
-
-    python build_reference.py      # builds ./reference.sqlite + prints verified joins
-"""
 import json
 import os
 import re
@@ -22,7 +17,6 @@ VERSION_MARKER = b"\xfc\xfd\xfe\xff"
 
 
 def parse_pack(path):
-    """PFH5 reader -> ([(name, offset, size, compressed)], raw_bytes)."""
     d = open(path, "rb").read()
     assert d[:4] == b"PFH5", d[:4]
     bitmask, _pack_count, pidx, fcount, fidx = struct.unpack_from("<5I", d, 4)
@@ -55,7 +49,6 @@ def read_file(files, d, name):
 
 
 def decode_loc(b):
-    """BOM(2) + 'LOC'(3) + pad(1) + u32 ver + u32 count + entries[u16 klen, utf16 key, u16 vlen, utf16 val, u8]."""
     assert b[0:2] == b"\xff\xfe" and b[2:5] == b"LOC"
     count = struct.unpack_from("<I", b, 10)[0]
     p = 14
@@ -71,7 +64,6 @@ def decode_loc(b):
 
 
 class _Reader:
-    """Little-endian cursor over a decoded DB table body."""
 
     def __init__(self, b, p=0):
         self.b = b
@@ -135,7 +127,6 @@ def _read_field(r, ft):
 
 
 def parse_db_header(b):
-    """RPFM-DB header ([GUID]? [VERSION]? flag byte, u32 row_count) -> (guid, version, rows, offset)."""
     p = 0
     guid = None
     if b[0:4] == GUID_MARKER:
@@ -152,13 +143,11 @@ def parse_db_header(b):
 
 
 def load_db_schema(path=SCHEMA_JSON):
-    """Vendored trimmed schema: {table: {version_str: [[field_name, field_type], ...]}}."""
     with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
 def decode_db_table(files, d, table, schema):
-    """Decode every db/<table>/* file at its pack-declared version -> (rows, meta)."""
     entries = [(n, off, sz, c) for (n, off, sz, c) in files
                if n.replace("\\", "/").startswith("db/%s/" % table)]
     meta = {"files": len(entries), "rows": 0, "version": None, "ok": False, "reason": ""}
@@ -206,13 +195,7 @@ _CAPTIVE_CRIT = {"campaign_group_member_criteria_cultures_tables": ("culture", 0
 
 
 def _agent_reference(cur, files, d, schema, report):
-    """Hero/agent-action reference: the per-agent-type action matrix with base chances
-    (`agent_actions`), the agent types (`agent_types`), ability categories
-    (`agent_abilities`), and the faction recruitment gate (`agent_permitted_subtypes`).
-    Feeds hero offer building, featurization, and the executor's action whitelist."""
     def bail(table, rows, expect):
-        """Column names come from the RPFM schema -- if the decode's names differ from the
-        documented ones, say which names actually arrived instead of writing NULL keys."""
         if rows and not any(k in rows[0] for k in expect):
             print("  !! %s decoded with UNEXPECTED columns %s -- expected one of %s"
                   % (table, sorted(rows[0].keys()), expect))
@@ -223,8 +206,6 @@ def _agent_reference(cur, files, d, schema, report):
     report["agent_actions_tables"] = ameta
     if ameta["ok"] and not bail("agent_actions_tables", acts, ("unique_id",)):
         cur.execute("DROP TABLE IF EXISTS agent_actions")
-        # cannot_fail/critical_*/failure/success are action_results KEY REFS (StringU8 in
-        # the pack schema), not booleans
         cur.execute("CREATE TABLE agent_actions (key TEXT PRIMARY KEY, agent TEXT, ability TEXT, "
                     "attribute TEXT, chance_of_success INTEGER, cannot_fail_result TEXT, "
                     "succeed_always INTEGER, crit_success_mod REAL, opportune_failure_mod REAL, "
@@ -278,10 +259,7 @@ def _agent_reference(cur, files, d, schema, report):
 
 
 def _captive_reference(cur, files, d, schema, report):
-    """Build `captive_options` (record_key -> option name) and `captive_binding`
-    ((entity_type, entity_key, button) -> record_key)."""
     def loc(rk):
-        """On-screen captive-option name for a record key, following {{tr:<loc_key>}} redirects."""
         row = cur.execute("SELECT text FROM loc WHERE key=?",
                           ("campaign_post_battle_captive_options_onscreen_name_%s" % rk,)).fetchone()
         v = row[0] if row else None
@@ -329,8 +307,6 @@ def _captive_reference(cur, files, d, schema, report):
             member_crit.setdefault(vals[mi], []).append((typ, vals[vi], vals[2]))
 
     def originators(g, maxdepth=6):
-        """Transitive ORIGINATOR (captor) entity criteria reachable from an option group, each with
-        a `conditional` flag (its member also carries a non-ORIGINATOR role)."""
         seen, res, stack = set(), [], [(g, 0)]
         while stack:
             node, dep = stack.pop()
@@ -374,7 +350,6 @@ def _captive_reference(cur, files, d, schema, report):
 
 
 def decode_db_tables(con, files, d, schema, report):
-    """Decode the advisor-relevant db tables into `con`, filling `report` with per-table outcomes."""
     cur = con.cursor()
 
     def src(table):

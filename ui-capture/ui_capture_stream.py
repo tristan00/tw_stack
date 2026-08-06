@@ -1,7 +1,3 @@
-r"""ui-capture stream -- bus-based menu scraping (the 4th capture stream).
-
-run(ctx) wraps ui_component_recorder.watch(), enumerating each opened panel into ui_components.jsonl.
-"""
 from __future__ import annotations
 
 import os
@@ -16,7 +12,6 @@ from bus import Bus
 
 
 def run(ctx, bus=None):
-    """Watch for panel opens and scrape them onto ui_components.jsonl until ctx.is_running() flips."""
     def emit(row):
         ctx.emit({"t": ctx.now(), **row})
     try:

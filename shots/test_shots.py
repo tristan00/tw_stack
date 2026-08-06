@@ -1,12 +1,3 @@
-r"""Offline test for the `shots` stream (no game, no desktop grab).
-
-Injects a tiny in-memory PIL image as the frame grabber and a fake foreground reader, so the
-whole capture+save+announce path runs deterministically without touching the real screen. We
-assert both trigger kinds fire (a click-shot via shot_req and an interval-shot) and that the
-written files are valid JPEGs matching the announced rows.
-
-    python test_shots.py
-"""
 import os
 import sys
 import tempfile

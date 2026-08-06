@@ -1,12 +1,10 @@
-r"""logs capture stream -- byte-exact tails of every log the game writes.
-
-run(ctx, log_dirs, ...) tails into <out_dir>/logs/<base>.tail and emits log_open / log_tail rows.
-"""
 from __future__ import annotations
 
 import os
 import sys
 import time
+
+BULK_ROOT = "D:/twdata/stream"
 
 LOGTAIL_EVERY = 3.0
 
@@ -21,8 +19,7 @@ except Exception as e:
 
 
 def _append_tail(ctx, base, data: bytes) -> str:
-    """Append `data` to <ctx.out_dir>/logs/<base>.tail and return that path; the dir is read fresh every call so it follows a campaign swap."""
-    d = os.path.join(ctx.out_dir, "logs")
+    d = os.path.join(BULK_ROOT, "logs")
     os.makedirs(d, exist_ok=True)
     dst = os.path.join(d, base + ".tail")
     with open(dst, "ab") as f:
@@ -31,7 +28,6 @@ def _append_tail(ctx, base, data: bytes) -> str:
 
 
 def _write_scriptlog_chunk(ctx, src, chunk: bytes, on_state, swap) -> None:
-    """Write one script_log tail chunk, splitting it byte-exactly at any campaign boundary (swap() re-points ctx.out_dir mid-chunk)."""
     base = os.path.basename(src)
     pos = 0
     for faction, subculture, turn, line_off in scan_state_rows(chunk):
@@ -58,8 +54,7 @@ def _write_scriptlog_chunk(ctx, src, chunk: bytes, on_state, swap) -> None:
 
 
 def run(ctx, log_dirs, poll_every: float = LOGTAIL_EVERY, own_slack: float = 2.0) -> None:
-    """Tail every *.txt / *.log under `log_dirs` until ctx.is_running() flips False -- files created after us (within own_slack) from byte 0, pre-existing ones from their current end."""
-    os.makedirs(os.path.join(ctx.out_dir, "logs"), exist_ok=True)
+    os.makedirs(os.path.join(BULK_ROOT, "logs"), exist_ok=True)
     off = {}
     cutoff = time.time() - own_slack
 

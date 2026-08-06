@@ -1,10 +1,3 @@
-r"""Live test for `bus` (needs a running game at a loaded campaign -- e.g. via the launcher).
-
-Round-trips real commands through the mod: eval arithmetic, the local faction, the turn number.
-Asserts the reply shape, correctness, and that seqs strictly increase across sends.
-
-    python test_bus_live.py
-"""
 import sys
 
 import bus

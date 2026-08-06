@@ -1,15 +1,3 @@
-r"""Offline test for the `manager` orchestrator (no game, no bus).
-
-Two parts:
-  UNIT (stub streams): run dir + meta.json + events.jsonl (start..stop) are created, all streams
-    share ONE clock, a crashing stream is LOGGED (errors.log) and does NOT stop the others.
-  INTEGRATION (real streams): wires the actual input + shots + logs repos against SYNTHETIC
-    inputs (fake OS probes / fake grabber / temp log dir) and proves the whole capture pipeline
-    produces a populated run -- events.jsonl (input+shot+log rows), shots/*.jpg, logs/*.tail,
-    meta.json -- entirely without the game.
-
-    python test_manager.py
-"""
 import json
 import os
 import sys

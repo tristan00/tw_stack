@@ -1,15 +1,3 @@
-r"""INTEGRATED LIVE test -- the whole decomposed recorder against the real running campaign.
-
-Runs the manager with ALL FOUR streams (input + shots + logs + ui-capture) for a fixed window,
-then verifies a real, populated run: events.jsonl (input+shot+log rows), shots/*.jpg,
-logs/*.tail carrying real TWSTATE, and ui_components.jsonl with the bus connected (and menu_open
-rows for any panel opened during the window).
-
-Panels are opened by a SEPARATE process (scratchpad/live.py send click ...) so this is also the
-genuine two-bus-client test the seq-lock exists for.
-
-    python test_integrated_live.py [seconds]        # default 30
-"""
 import json
 import os
 import sys

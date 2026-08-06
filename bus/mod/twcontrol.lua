@@ -120,6 +120,7 @@ end
 local function resolve(path_str)
   local parts = {}
   for p in string.gmatch(path_str, "[^|]+") do parts[#parts + 1] = p end
+  if #parts == 1 and parts[1] == "@root" then return root(), parts end
   if #parts == 0 then return nil, parts end
   local node = root()
   for _, name in ipairs(parts) do
@@ -324,7 +325,12 @@ function handlers.click(seq, rest)
     info.w = or_null(try(function() return uic:Width() end))
     info.h = or_null(try(function() return uic:Height() end))
     info.roots_before = root_names()
-    info.clicked = try(function() uic:SimulateLClick(); return true end) == true
+    if info.visible_from_root == false or info.visible_before == false then
+      info.clicked = false
+      info.refused = "target_not_visible"
+    else
+      info.clicked = try(function() uic:SimulateLClick(); return true end) == true
+    end
     info.state_after = or_null(try(function() return uic:CurrentState() end))
     info.visible_after = or_null(try(function() return uic:Visible() end))
     info.roots_after = root_names()
@@ -477,6 +483,24 @@ function handlers.eval(seq, rest)
 end
 
 
+function handlers.modeval(seq, rest)
+  local chunk, cerr = loadstring("return " .. rest)
+  if not chunk then chunk, cerr = loadstring(rest) end
+  local result, rerr
+  if chunk then
+    local okf = pcall(function() setfenv(chunk, getfenv(1)) end)
+    local ok, v = pcall(chunk)
+    if ok then result = v else rerr = tostring(v) end
+    if not okf and not rerr then rerr = "setfenv failed" end
+  else
+    rerr = tostring(cerr)
+  end
+  log({ seq = seq, cmd = "modeval", result = or_null(result),
+        rtype = or_null(type(result)), error = or_null(rerr),
+        roots_after = root_names(), turn = turn() })
+end
+
+
 
 
 
@@ -520,6 +544,84 @@ end
 
 
 
+
+
+function handlers.dclick(seq, rest)
+  local uic = resolve(rest)
+  local info = { seq = seq, cmd = "dclick", path = rest, found = (uic ~= nil), turn = turn() }
+  if uic then
+    info.id = or_null(try(function() return uic:Id() end))
+    info.state_before = or_null(try(function() return uic:CurrentState() end))
+    info.roots_before = root_names()
+    info.method = "SimulateDblLClick"
+    info.clicked = try(function() uic:SimulateDblLClick(); return true end) == true
+    if not info.clicked then
+      info.method = "two_SimulateLClick"
+      info.clicked = try(function()
+        uic:SimulateLClick(); uic:SimulateLClick(); return true end) == true
+    end
+    info.state_after = or_null(try(function() return uic:CurrentState() end))
+    info.roots_after = root_names()
+    info.changed = (info.state_before ~= info.state_after)
+                or (#info.roots_before ~= #info.roots_after)
+  else
+    info.clicked = false
+  end
+  log(info)
+end
+
+
+local function simulate(seq, cmd, path, fn, extra)
+  local uic = resolve(path)
+  local info = { seq = seq, cmd = cmd, path = path, found = (uic ~= nil), turn = turn() }
+  if extra then for k, v in pairs(extra) do info[k] = v end end
+  if uic then
+    info.id = or_null(try(function() return uic:Id() end))
+    info.state_before = or_null(try(function() return uic:CurrentState() end))
+    info.visible_before = or_null(try(function() return uic:Visible() end))
+    info.visible_from_root = or_null(try(function() return uic:VisibleFromRoot() end))
+    info.roots_before = root_names()
+    if info.visible_from_root == false or info.visible_before == false then
+      info.sent = false
+      info.refused = "target_not_visible"
+    else
+      info.sent = try(function() fn(uic); return true end) == true
+    end
+    info.state_after = or_null(try(function() return uic:CurrentState() end))
+    info.visible_after = or_null(try(function() return uic:Visible() end))
+    info.roots_after = root_names()
+    info.changed = (info.state_before ~= info.state_after)
+                or (info.visible_before ~= info.visible_after)
+                or (#info.roots_before ~= #info.roots_after)
+  else
+    info.sent = false
+  end
+  log(info)
+end
+
+
+function handlers.rclick(seq, rest)
+  simulate(seq, "rclick", rest, function(uic) uic:SimulateRClick() end)
+end
+
+
+function handlers.hover(seq, rest)
+  simulate(seq, "hover", rest, function(uic) uic:SimulateMouseOn() end)
+end
+
+
+function handlers.unhover(seq, rest)
+  simulate(seq, "unhover", rest, function(uic) uic:SimulateMouseOff() end)
+end
+
+
+function handlers.key(seq, rest)
+  local path, k = string.match(rest, "^(.-)%s+(%S+)%s*$")
+  if not k then path, k = "@root", rest end
+  if path == "" then path = "@root" end
+  k = string.lower(k)
+  simulate(seq, "key", path, function(uic) uic:SimulateKey(k) end, { key = k })
+end
 
 
 function handlers.clickidx(seq, rest)
@@ -658,7 +760,24 @@ function handlers.hostiles(seq)
         for j = 0, nc - 1 do
           if #out >= 60 then break end
           local c = try(function() return cl:item_at(j) end)
-          if c and try(function() return c:has_military_force() end) then
+          local hasforce = c and try(function() return c:has_military_force() end)
+          if c and hasforce == false then
+            local hvis = try(function() return c:is_visible_to_faction(myname) end)
+            if hvis == true then
+              local hx = try(function() return c:logical_position_x() end)
+              local hy = try(function() return c:logical_position_y() end)
+              out[#out + 1] = { kind = (at_war and "hero" or "neutral_hero"), faction = or_null(fname),
+                cqi = or_null(try(function() return c:command_queue_index() end)),
+                visible = true,
+                subtype = or_null(try(function() return c:character_subtype_key() end)),
+                agent_type = or_null(try(function() return c:character_type_key() end)),
+                province = or_null(try(function()
+                  local r = c:region()
+                  if r and not r:is_null_interface() then return r:province_name() end end)),
+                x = or_null(hx), y = or_null(hy), dist = or_null(dist(hx, hy)) }
+            end
+          end
+          if c and hasforce == true then
 
 
 
@@ -674,6 +793,7 @@ function handlers.hostiles(seq)
               out[#out + 1] = { kind = (at_war and "army" or "neutral_army"), faction = or_null(fname),
                 cqi = or_null(try(function() return c:command_queue_index() end)),
                 visible = true,
+                is_armed_citizenry = (try(function() return c:military_force():is_armed_citizenry() end) == true),
 
 
 
@@ -1036,6 +1156,33 @@ local function arm_event_recorder()
   log({ cmd = "event_recorder", armed = ok })
 end
 
+local EVENT_FEED_KEEP = {
+  { "faction_event_dilemma", "event_feed_target_dilemma_faction" },
+  { "faction_event_incident", "event_feed_target_incident_faction" },
+  { "faction_event_region_incident", "event_feed_target_incident_faction" },
+  { "faction_event_character_incident", "event_feed_target_incident_faction" },
+}
+
+local function arm_event_feed_filter()
+  if not (cm and cm.suppress_all_event_feed_messages and cm.whitelist_event_feed_event_type) then
+    log({ cmd = "event_feed_filter", armed = false, reason = "api_unavailable" })
+    return
+  end
+  local kept, failed = {}, {}
+  for _, pair in ipairs(EVENT_FEED_KEEP) do
+    local ok = pcall(function() cm:whitelist_event_feed_event_type(pair[1], pair[2]) end)
+    if ok then kept[#kept + 1] = pair[1] else failed[#failed + 1] = pair[1] end
+  end
+  if #failed > 0 then
+    log({ cmd = "event_feed_filter", armed = false, reason = "whitelist_failed",
+          failed = table.concat(failed, ","), kept = table.concat(kept, ",") })
+    return
+  end
+  local ok = pcall(function() cm:suppress_all_event_feed_messages(true) end)
+  log({ cmd = "event_feed_filter", armed = ok, kept = table.concat(kept, ",") })
+end
+
+
 local started = false
 local function start()
   if started then return end
@@ -1047,6 +1194,8 @@ local function start()
 
   pcall(function() cm:skip_all_campaign_cutscenes() end)
   pcall(function() if cm:is_intro_cutscene_playing() then cm:skip_all_campaign_cutscenes() end end)
+
+  pcall(arm_event_feed_filter)
 
 
   local saved = try(function() return cm:get_saved_value("twcontrol_last_seq") end)

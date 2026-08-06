@@ -1,8 +1,3 @@
-"""bus_stats -- low-overhead call-measurement layer for the WH3 command-bus client.
-
-Report:  `python bus_stats.py`  -> totals + the JUNK list (keys with calls>=5 and hits==0).
-"""
-
 from __future__ import annotations
 
 import atexit
@@ -30,7 +25,6 @@ GUARD_STRESS_THRESHOLD = 2
 
 
 def _env_enabled() -> bool:
-    """True unless BUS_STATS is explicitly set to a falsey value (0/false/no/off)."""
     v = os.environ.get("BUS_STATS")
     if v is None:
         return True
@@ -38,7 +32,6 @@ def _env_enabled() -> bool:
 
 
 def _env_guard_enabled() -> bool:
-    """True unless BUS_GUARD is explicitly set to a falsey value (0/false/no/off)."""
     v = os.environ.get("BUS_GUARD")
     if v is None:
         return True
@@ -46,12 +39,10 @@ def _env_guard_enabled() -> bool:
 
 
 def _env_db_path() -> str:
-    """Resolved DB path (BUS_STATS_DB override, else DEFAULT_DB_PATH)."""
     return os.environ.get("BUS_STATS_DB") or DEFAULT_DB_PATH
 
 
 def classify_outcome(channel: str, reply) -> str:
-    """Classify an arrived reply dict as 'hit' (something came back) or 'empty'; 'error' if the shape is unexpected."""
     try:
         if not isinstance(reply, dict):
             return "empty"
@@ -78,7 +69,6 @@ def classify_outcome(channel: str, reply) -> str:
 
 
 def make_key(channel: str, payload: str) -> str:
-    """The aggregation key: the payload string (for find/tree this IS the path), truncated."""
     try:
         s = "" if payload is None else str(payload)
     except Exception:
@@ -118,7 +108,6 @@ ON CONFLICT(channel, key) DO UPDATE SET
 
 
 class StatsTracker:
-    """In-memory per-(channel,key) accumulator with batched, accumulate-on-conflict sqlite flush."""
 
     def __init__(self, db_path: str, flush_every_n: int = FLUSH_EVERY_N,
                  flush_every_s: float = FLUSH_EVERY_S, register_atexit: bool = True) -> None:
@@ -133,7 +122,6 @@ class StatsTracker:
             atexit.register(self.close)
 
     def record(self, channel: str, key: str, outcome: str, elapsed_ms: float) -> None:
-        """Accumulate one call in memory; trigger a batched flush when due. Never raises."""
         try:
             if outcome not in VALID_OUTCOMES:
                 outcome = "error"
@@ -159,7 +147,6 @@ class StatsTracker:
             sys.stderr.write("bus_stats: record failed -> %s\n" % repr(e)[:120])
 
     def flush(self) -> None:
-        """Write pending deltas to the sqlite DB (accumulate-on-conflict). Never raises."""
         try:
             with self._lock:
                 if not self._pending:
@@ -180,7 +167,6 @@ class StatsTracker:
                              % (len(snapshot), repr(e)[:100]))
 
     def _write(self, snapshot: dict) -> None:
-        """Open a short-lived WAL connection and upsert-accumulate every pending delta."""
         d = os.path.dirname(self.db_path)
         if d:
             os.makedirs(d, exist_ok=True)
@@ -200,12 +186,10 @@ class StatsTracker:
             conn.close()
 
     def close(self) -> None:
-        """Final flush (atexit)."""
         self.flush()
 
 
 def synthetic_miss(channel: str, payload: str) -> dict:
-    """Synthetic MISS reply for a short-circuited find/tree; must stay shaped like the mod's real not-found reply (twcontrol.lua handlers.find / handlers.tree)."""
     if channel == "tree":
         return {"seq": -1, "cmd": "tree", "path": payload, "count": 0,
                 "truncated": False, "found": False, "nodes": [], "short_circuited": True}
@@ -214,7 +198,6 @@ def synthetic_miss(channel: str, payload: str) -> dict:
 
 
 class SuppressionGuard:
-    """Session-scoped, thread-safe dead-key detector: a (channel,key) called >= threshold times with zero hits is suppressed, with a periodic re-probe."""
 
     def __init__(self, threshold: int = GUARD_THRESHOLD, reprobe_every: int = GUARD_REPROBE_EVERY,
                  stress_window: int = GUARD_STRESS_WINDOW,
@@ -231,7 +214,6 @@ class SuppressionGuard:
         self._recent = deque(maxlen=max(1, int(stress_window)))
 
     def note(self, channel: str, key: str, outcome: str) -> None:
-        """Record the outcome of a REAL (non-short-circuited) find/tree round-trip. Never raises."""
         if channel not in GUARD_CHANNELS:
             return
         with self._lock:
@@ -245,14 +227,12 @@ class SuppressionGuard:
             self._recent.append(1 if outcome == "timeout" else 0)
 
     def _effective_threshold_locked(self) -> int:
-        """Dead-key threshold, lowered while the bus is in a timeout storm. Caller holds the lock."""
         n = len(self._recent)
         if n >= self.stress_min_samples and (sum(self._recent) / n) >= self.stress_frac:
             return min(self.threshold, self.stress_threshold)
         return self.threshold
 
     def should_short_circuit(self, channel: str, key: str) -> bool:
-        """True => skip the real send and return a synthetic miss; False => do a real round-trip."""
         if channel not in GUARD_CHANNELS:
             return False
         with self._lock:
@@ -269,12 +249,10 @@ class SuppressionGuard:
             return True
 
     def is_stressed(self) -> bool:
-        """Whether the rolling window currently reads as a timeout storm (exposed for testing)."""
         with self._lock:
             return self._effective_threshold_locked() < self.threshold
 
     def reset(self) -> None:
-        """Drop ALL dead-key state and the stress window."""
         with self._lock:
             self._state.clear()
             self._recent.clear()
@@ -288,22 +266,18 @@ _guard_lock = threading.Lock()
 
 
 def enabled() -> bool:
-    """Cheap gate check for the hot path -- honours env BUS_STATS."""
     return _env_enabled()
 
 
 def guard_enabled() -> bool:
-    """Cheap gate check for the active junk-find short-circuit -- honours env BUS_GUARD."""
     return _env_guard_enabled()
 
 
 def active() -> bool:
-    """True if the send-path wrapper must engage at all (measurement OR the barrier)."""
     return _env_enabled() or _env_guard_enabled()
 
 
 def get_tracker() -> StatsTracker | None:
-    """Return the process-wide tracker (lazily built from env), or None if disabled."""
     global _tracker, _disabled_logged
     if not _env_enabled():
         return None
@@ -322,7 +296,6 @@ def get_tracker() -> StatsTracker | None:
 
 
 def record(channel: str, key: str, outcome: str, elapsed_ms: float) -> None:
-    """Route one recorded call to the singleton tracker. Never raises."""
     try:
         t = get_tracker()
         if t is not None:
@@ -332,20 +305,17 @@ def record(channel: str, key: str, outcome: str, elapsed_ms: float) -> None:
 
 
 def install_tracker(tracker: StatsTracker | None) -> None:
-    """Test/tooling hook: force a specific tracker as the process singleton."""
     global _tracker
     with _tracker_lock:
         _tracker = tracker
 
 
 def reset_tracker() -> None:
-    """Test hook: drop the singleton so the next get_tracker() rebuilds from env, and clear suppression."""
     install_tracker(None)
     reset_suppression()
 
 
 def get_guard() -> SuppressionGuard | None:
-    """Return the process-wide suppression guard (lazily built), or None if BUS_GUARD is off."""
     global _guard
     if not _env_guard_enabled():
         return None
@@ -362,14 +332,12 @@ def get_guard() -> SuppressionGuard | None:
 
 
 def install_guard(guard: SuppressionGuard | None) -> None:
-    """Test/tooling hook: force a specific guard as the process singleton."""
     global _guard
     with _guard_lock:
         _guard = guard
 
 
 def note_outcome(channel: str, key: str, outcome: str) -> None:
-    """Feed one REAL round-trip outcome to the guard so it can learn dead keys. Never raises."""
     try:
         g = get_guard()
         if g is not None:
@@ -379,7 +347,6 @@ def note_outcome(channel: str, key: str, outcome: str) -> None:
 
 
 def short_circuit_reply(channel: str, payload: str, key: str) -> dict | None:
-    """If this find/tree key is dead, return a synthetic MISS reply (skipping the mod); else None. Never raises."""
     try:
         g = get_guard()
         if g is None:
@@ -394,7 +361,6 @@ def short_circuit_reply(channel: str, payload: str, key: str) -> dict | None:
 
 
 def reset_suppression() -> None:
-    """Clear ALL session-scoped dead-key suppression; call on every bus/session/campaign reset."""
     try:
         g = _guard
         if g is not None:
@@ -404,7 +370,6 @@ def reset_suppression() -> None:
 
 
 def load_rows(db_path: str | None = None) -> list[dict]:
-    """Read every call_stats row as a dict. Returns [] if the DB is missing/unreadable."""
     path = db_path or _env_db_path()
     if not os.path.exists(path):
         return []
@@ -424,7 +389,6 @@ def load_rows(db_path: str | None = None) -> list[dict]:
 
 
 def build_report(db_path: str | None = None, junk_min_calls: int = 5) -> dict:
-    """Compute totals + the JUNK list (calls>=junk_min_calls and hits==0), sorted by calls desc."""
     rows = load_rows(db_path)
     tot = {"calls": 0, "hits": 0, "empties": 0, "timeouts": 0, "errors": 0, "total_ms": 0.0}
     for r in rows:
@@ -443,7 +407,6 @@ def _pct(n: int, d: int) -> str:
 
 
 def format_report(rep: dict, top: int = 40) -> str:
-    """Render a build_report() dict as the human-readable text the CLI prints."""
     t = rep["totals"]
     calls = t["calls"]
     out = []

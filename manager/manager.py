@@ -1,5 +1,3 @@
-r"""manager -- the capture orchestrator: owns the run directory, the shared T0 clock, meta.json and
-the thread-safe writers, and runs each capture stream as a daemon thread."""
 from __future__ import annotations
 
 import json
@@ -21,7 +19,6 @@ except Exception as e:
 
 
 class Ctx:
-    """Per-stream context: a thin, game-free surface over the shared run state."""
 
     def __init__(self, out_dir, t0, stop_event, shot_req, emit, on_error,
                  on_state=None, swap=None):
@@ -47,16 +44,13 @@ class Ctx:
         self._on_error(where, exc)
 
     def on_state(self, faction, subculture, turn):
-        """Report one human-faction identity row to the tracker; True iff a dir swap is due."""
         return self._on_state(faction, subculture, turn)
 
     def swap(self):
-        """Open a fresh run dir and re-point every stream's writer + out_dir to it."""
         self._swap()
 
 
 class _Writer:
-    """A thread-safe append-only JSONL writer for <out_dir>/<name>; every write flushes."""
 
     def __init__(self, out_dir, name):
         self.out_dir = out_dir
@@ -85,12 +79,10 @@ class _Writer:
 
 
 def _writer(out_dir, name):
-    """Returns a callable, closable _Writer for <out_dir>/<name>."""
     return _Writer(out_dir, name)
 
 
 def _errlog(out_dir):
-    """A never-fatal error sink -> <out_dir>/errors.log."""
     import traceback
     _errs = [0]
 
@@ -108,7 +100,6 @@ def _errlog(out_dir):
 
 
 def _run_guarded(run, ctx, kwargs, name, on_error):
-    """Run a stream, recording an unhandled crash to errors.log."""
     try:
         run(ctx, **kwargs)
     except Exception as e:
@@ -116,19 +107,14 @@ def _run_guarded(run, ctx, kwargs, name, on_error):
 
 
 CURRENT_POINTER = "CURRENT_RUN"
+RUN_DIR_NAME = "run"
 
 
 def write_current_pointer(out_root, out_dir):
-    """Publish which run dir is LIVE, at a stable path the advisor can read."""
-    try:
-        with open(os.path.join(out_root, CURRENT_POINTER), "w", encoding="utf-8") as f:
-            f.write(str(out_dir).replace("\\", "/"))
-    except OSError as e:
-        sys.stderr.write("manager: could not publish the current-run pointer -> %s\n" % repr(e)[:90])
+    return
 
 
 def write_meta(out_dir, t0, meta_overrides=None):
-    """Write <out_dir>/meta.json (geometry + environment + versions) and return the meta dict."""
     meta = {"started": time.strftime("%Y-%m-%d %H:%M:%S"), "t0_epoch": t0, "out": out_dir}
     try:
         import ctypes
@@ -147,20 +133,12 @@ def write_meta(out_dir, t0, meta_overrides=None):
 
 
 def _new_run_dir(out_root):
-    """A fresh <out_root>/<YYYYmmdd_HHMMSS> run dir, numerically uniquified and already created."""
-    base = time.strftime("%Y%m%d_%H%M%S")
-    out = os.path.join(out_root, base)
-    n = 1
-    while os.path.exists(out):
-        out = os.path.join(out_root, "%s_%d" % (base, n))
-        n += 1
+    out = os.path.join(out_root, RUN_DIR_NAME)
     os.makedirs(out, exist_ok=True)
     return out
 
 
 class Recording:
-    """A live capture run: the run dir(s), the shared clock, the stream threads, stop() and the
-    campaign-swap that re-points every stream to a fresh dir."""
 
     def __init__(self, out_dir, t0, stop_event, threads, events_writer, *,
                  out_root=None, writers=None, ctxs=None, on_error=None,
@@ -185,7 +163,6 @@ class Recording:
         self.dirs = [out_dir]
 
     def observe_state(self, faction, subculture, turn):
-        """Feed one human-faction identity row to the tracker; True iff a dir swap is due."""
         if self._tracker is None:
             return False
         try:
@@ -198,8 +175,6 @@ class Recording:
         return bool(started_new and self._tracker.index >= 1)
 
     def perform_swap(self):
-        """Open a fresh run dir and re-point every stream's writer + out_dir to it; returns the
-        new dir (or the current one if it could not be created)."""
         with self._swap_lock:
             try:
                 new_dir = _new_run_dir(self.out_root)
@@ -246,7 +221,6 @@ class Recording:
             return new_dir
 
     def stop(self, join_timeout=3.0):
-        """Flip the shared run flag, write the terminal 'stop' row, join the streams, close writers."""
         self._stop.set()
         time.sleep(0.8)
         self._events({"t": round(time.time() - self.t0, 3), "kind": "stop"})
@@ -261,8 +235,6 @@ class Recording:
 
 def start(out_root, streams, *, recorder_version, meta_overrides=None,
           restart_turn=1, reset_bus=None, swap_dirs=False):
-    """Create the run dir + shared clock + meta, launch each stream ({"run": callable(ctx, **kwargs),
-    "name", "out_file", "kwargs"}) as a daemon thread; returns a Recording handle."""
     t0 = time.time()
     out = _new_run_dir(out_root)
     stop_event = threading.Event()
@@ -307,7 +279,6 @@ def start(out_root, streams, *, recorder_version, meta_overrides=None,
 
 
 def reset_bus_files():
-    """Truncate the two global append-only command-bus files; returns the bytes discarded."""
     import sys
     try:
         import bus
@@ -334,7 +305,6 @@ def reset_bus_files():
 
 
 def main():
-    """CLI: assemble the real input/shots/logs streams and record until Ctrl-C."""
     import sys
 
     here = os.path.dirname(os.path.abspath(__file__))
@@ -363,6 +333,7 @@ def main():
     ui_on = "--ui" in argv
     actions_on = "--v6-actions" in argv
     decisions_on = "--no-decisions" not in argv
+    dev_on = "--dev" in argv
     shot_every = 60.0
     if "--shots" in argv:
         i = argv.index("--shots")
@@ -376,9 +347,9 @@ def main():
     was = reset_bus_files()
     print("reset bus files (was %.1f MB)" % (was / (1024 * 1024)), flush=True)
 
-    streams = [
-        {"run": logs_stream.run, "name": "logs", "kwargs": {"log_dirs": log_dirs}},
-    ]
+    streams = []
+    if dev_on:
+        streams.append({"run": logs_stream.run, "name": "logs", "kwargs": {"log_dirs": log_dirs}})
     if decisions_on:
         streams.append({"run": decisions_stream.run, "name": "decisions",
                         "out_file": "decisions_stream.jsonl"})
@@ -399,7 +370,9 @@ def main():
                                 "shots_enabled": shots_on, "ui_enabled": ui_on,
                                 "actions_enabled": actions_on,
                                 "decisions_enabled": decisions_on,
-                                "input_enabled": input_on})
+                                "input_enabled": input_on,
+                                "dev_enabled": dev_on,
+                                "logs_enabled": dev_on})
     write_current_pointer(out_root, rec.out_dir)
     print("RECORDING -> %s  (streams: %s)" % (rec.out_dir, [s["name"] for s in streams]), flush=True)
     print("  Ctrl-C to stop.", flush=True)

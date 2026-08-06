@@ -1,14 +1,3 @@
-r"""Offline test for `bus_stats` (NO game / NO bus).
-
-Proves the call-measurement layer end to end without a running WH3:
-  1. classify_outcome() maps real find/eval reply shapes to hit/empty.
-  2. StatsTracker accumulates in memory and flushes to sqlite (accumulate-on-conflict),
-     and build_report() surfaces the JUNK list (calls>=5, hits==0).
-  3. Bus.send()'s instrumentation records the right outcome for a HIT / EMPTY / TIMEOUT
-     call when _send_impl is stubbed (so no game is touched), and those land in the DB.
-
-    python test_bus_stats.py
-"""
 import os
 import sys
 import tempfile
@@ -95,7 +84,6 @@ b = bus.Bus(cmd_path=os.path.join(_TMP, "commands.txt"),
 
 
 def _stub_send_impl(channel, payload="", timeout=30):
-    """Stand in for the real bus round-trip: reply shape / exception keyed off the payload."""
     if payload == "units_panel":
         return FIND_HIT
     if payload == "great_game_rituals":
@@ -147,7 +135,6 @@ impl_calls = {}
 
 
 def _guard_stub(channel, payload="", timeout=30):
-    """Count real round-trips; reply shape keyed off (channel,payload). NO game touched."""
     impl_calls[(channel, payload)] = impl_calls.get((channel, payload), 0) + 1
     if channel == "find" and payload == "units_panel":
         return FIND_HIT

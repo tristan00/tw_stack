@@ -1,12 +1,3 @@
-r"""Offline test for the `input` stream (no game, no real system input).
-
-Drives input_stream.run() with FAKE OS probes: the test thread mutates a scripted OS state
-(focus / cursor / pressed keys) while the stream polls, and we assert it emits the correct
-record.py row shapes -- focus, move, key_down/up, mouse_down/up -- with a monotonic clock and
-shot_req raised on the click. Deterministic; nothing touches the real desktop or the game.
-
-    python test_input.py
-"""
 import sys
 import threading
 import time
@@ -15,7 +6,6 @@ import input_stream
 
 
 class FakeOS:
-    """Scripted OS state the test mutates live while the stream polls it."""
 
     def __init__(self):
         self.fg = ("editor - notes.py", 111)
@@ -33,7 +23,6 @@ class FakeOS:
 
 
 class FakeCtx:
-    """Minimal manager context: collects emitted rows, owns the run flag + shot_req."""
 
     def __init__(self):
         self.rows = []

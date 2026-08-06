@@ -1,19 +1,3 @@
-r"""Offline test for R3 -- the recorder auto-swaps to a fresh run dir when a NEW campaign starts.
-
-No game, no bus. Drives a TWO-CAMPAIGN script_log through the REAL logs stream + REAL manager +
-REAL splitter.CampaignTracker, with an injected fake bus-reset and a temp game-log dir, and proves:
-
-  [A] TWO run dirs are created (initial + one swap) for a two-campaign log; ONE for a single one.
-  [B] BOUNDARY ROWS land in the correct dir -- campaign A's faction rows only in dir1, campaign B's
-      only in dir2 (byte-exact split at the boundary line).
-  [C] NOTHING IS DROPPED -- the sum of every dir's tail bytes equals the original log's bytes.
-  [D] EACH STREAM'S WRITER + out_dir is RE-POINTED to the new dir on the swap.
-  [E] reset_bus is invoked exactly once per swap (0 times with no swap).
-  [F] a fresh meta.json (campaign_index + swapped_from) and swap markers are written per dir.
-  [G] single-campaign recording is UNCHANGED (no swap signal -> exactly one dir, whole-file tail).
-
-    python test_campaign_swap.py
-"""
 import json
 import os
 import sys
@@ -59,7 +43,6 @@ def _campaign_b() -> bytes:
 
 
 class FakeBusReset:
-    """Thread-safe stand-in for reset_bus_files: counts swap-time invocations, touches no bus."""
 
     def __init__(self):
         self.calls = 0
@@ -91,8 +74,6 @@ def _events(run_dir: str) -> list:
 
 
 def _run(log_bytes: bytes, reset_bus):
-    """Write a static script_log, record it through the real logs stream + manager until the tail
-    is fully drained, then stop. Returns (rec, gamedir, out_root, log_name, log_size)."""
     tmp = tempfile.mkdtemp(prefix="r3_swap_")
     out_root = os.path.join(tmp, "runs")
     gamedir = os.path.join(tmp, "game")
@@ -191,7 +172,6 @@ def two_campaign():
 
 
 def single_campaign():
-    """[G] one campaign -> no swap signal -> exactly one dir, whole-file tail, bus never reset."""
     fails = []
     reset_bus = FakeBusReset()
     log_bytes = _campaign_a()

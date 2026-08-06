@@ -1,7 +1,3 @@
-r"""pack_multi.py -- build ONE PFH5 Movie pack containing SEVERAL mod scripts.
-
-    python tw\pack_multi.py build|install|uninstall|status [--game DIR]
-"""
 from __future__ import annotations
 
 import argparse
@@ -25,12 +21,10 @@ PACK = HERE / "dist" / "tw.pack"
 
 
 def game_dir(explicit: str | None = None) -> Path:
-    """Resolve the game directory: explicit arg, then GAME_DIR env, then config."""
     return Path(explicit or os.environ.get("GAME_DIR") or DEFAULT_GAME)
 
 
 def build() -> Path:
-    """Write the PFH5 Movie pack containing every script in SCRIPTS; returns its path."""
     entries = []
     for name, path, env in SCRIPTS:
         if not path.exists():
@@ -51,7 +45,6 @@ def build() -> Path:
 
 
 def is_ours(path: Path) -> bool:
-    """True if the pack at `path` contains every one of our internal script paths."""
     try:
         blob = path.read_bytes()
     except OSError as e:
@@ -61,7 +54,6 @@ def is_ours(path: Path) -> bool:
 
 
 def cmd_build(a: argparse.Namespace) -> None:
-    """Build the pack and print its size and contents."""
     p = build()
     print("built %s (%d bytes)" % (p, p.stat().st_size))
     for n, s, env in SCRIPTS:
@@ -69,7 +61,6 @@ def cmd_build(a: argparse.Namespace) -> None:
 
 
 def cmd_install(a: argparse.Namespace) -> None:
-    """Build the pack and copy it into the game's data\\ directory."""
     p = build()
     dst = game_dir(a.game) / "data" / p.name
     if dst.exists() and not is_ours(dst):
@@ -85,7 +76,6 @@ def cmd_install(a: argparse.Namespace) -> None:
 
 
 def cmd_uninstall(a: argparse.Namespace) -> None:
-    """Remove the installed pack from the game's data\\ directory, if it is ours."""
     dst = game_dir(a.game) / "data" / PACK.name
     if not dst.exists():
         print("not installed")
@@ -97,7 +87,6 @@ def cmd_uninstall(a: argparse.Namespace) -> None:
 
 
 def cmd_status(a: argparse.Namespace) -> None:
-    """Print whether the pack is built, installed, and whether sources exist."""
     dst = game_dir(a.game) / "data" / PACK.name
     print("built:     %s" % (PACK if PACK.exists() else "(no)"))
     print("installed: %s" % (dst if dst.exists() else "(no)"))
@@ -106,7 +95,6 @@ def cmd_status(a: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    """Parse the CLI (build|install|uninstall|status [--game DIR]) and dispatch."""
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["build", "install", "uninstall", "status"])
     ap.add_argument("--game")

@@ -24,7 +24,6 @@ STANCE_CHANNELS = ("friend", "enemy", "neutral")
 
 
 def race_of(faction_key):
-    """The race/culture code inside a faction key: wh2_dlc09_tmb_khemri -> tmb."""
     if not faction_key:
         return None
     parts = str(faction_key).split("_")
@@ -32,31 +31,23 @@ def race_of(faction_key):
 
 
 def stamp_prev_actions(campaign, history):
-    """Write prev_action_1..N onto `campaign` from `history` (oldest->newest executed action
-    types, noop excluded): prev_action_1 is the most recent, "none" pads a short history."""
     for i in range(PREV_ACTIONS):
         campaign["prev_action_%d" % (i + 1)] = history[-1 - i] if len(history) > i else "none"
     return campaign
 
 
 def stamp_action_counts(campaign, counts):
-    """Write the campaign-long action histogram onto `campaign` for _action_history_feats.
-
-    Kept beside stamp_prev_actions so the live loop and the trainer build it identically; a
-    mismatch there would silently shift every camp_taken_* feature between train and predict."""
     campaign["action_counts"] = dict(counts or {})
     return campaign
 
 
 def bump_action_counts(counts, action_type):
-    """Count one executed action. noop is excluded, matching prev_action history."""
     if action_type and action_type != "noop":
         counts[action_type] = counts.get(action_type, 0) + 1
     return counts
 
 
 def _f(v):
-    """Bools become 0/1, unparseable becomes None."""
     if isinstance(v, bool):
         return 1.0 if v else 0.0
     try:
@@ -66,7 +57,6 @@ def _f(v):
 
 
 def _resource_feats(campaign):
-    """`res_<key>` per pooled resource, plus how many there are."""
     res = (campaign or {}).get("resources") or {}
     out = {"camp_n_resources": float(len(res))}
     for k, v in res.items():
@@ -78,10 +68,6 @@ HERO_AGENT_TYPES = ("champion", "dignitary", "engineer", "runesmith", "spy", "wi
 
 
 def _hero_roster_feats(armies):
-    """camp_heroes_<type> -- how many heroes of each agent type the faction fields.
-
-    Agent actions are gated per agent type and per-type hero cap, so the roster shape is what a
-    model needs to learn when a hero_action or recruit_hero is worth picking without any panel read."""
     heroes = [a for a in (armies or []) if not a.get("has_army")]
     counts = {}
     for a in heroes:
@@ -95,10 +81,6 @@ def _hero_roster_feats(armies):
 
 
 def _agent_feats(armies, world):
-    """camp_agents_* -- friendly and enemy agents, tracked like armies and settlements.
-
-    Enemy agents are the target class for wound/assassinate, and friendly agent count drives
-    what hero actions are available at all, so both belong beside the army/settlement counts."""
     w = world or {}
     own = [a for a in (armies or []) if not a.get("has_army")]
     enemy = w.get("enemy_agents") or []
@@ -115,10 +97,6 @@ def _agent_feats(armies, world):
 
 
 def _action_history_feats(campaign):
-    """camp_taken_<action> -- histogram of every action type taken so far this campaign.
-
-    prev_action_1..N only carries the last five; the campaign-long counts tell the model what it
-    has already leaned on, which is what caps and diminishing returns actually depend on."""
     hist = campaign.get("action_counts") or {}
     out = {"camp_taken_total": float(sum(hist.values()) if hist else 0)}
     for a in ACTION_TYPES:
@@ -219,7 +197,6 @@ def _corruption_feats(corr):
 
 
 def positioning_block(near, world, prov_key, locus=None):
-    """pos_*/agg_*/prov_* features for one locus."""
     out = {}
     fe, en = near.get("near_friend_1_dist"), near.get("near_enemy_1_dist")
     out["pos_enemy_minus_friend"] = (en - fe) if (fe is not None and en is not None) else None
@@ -267,8 +244,6 @@ def positioning_block(near, world, prov_key, locus=None):
 
 
 def province_buildings_block(provinces, prov_state):
-    """pbld_<key> per building in this province's owned settlements, pbldnow_<key> per one being
-    built, plus counts."""
     out = {"pbld_count": None, "pbld_inprogress": None}
     if not prov_state or not prov_state.get("settlement_present"):
         return out
@@ -292,7 +267,6 @@ def province_buildings_block(provinces, prov_state):
 
 
 def lord_recruit_block(state):
-    """lrec_<key> per unit mid-recruitment, plus the count."""
     ks = (state or {}).get("pending_recruit_keys") or []
     out = {"lrec_inprogress": float(len(ks))}
     for k in ks:
@@ -301,7 +275,6 @@ def lord_recruit_block(state):
 
 
 def carried_province_block(provinces, here):
-    """own_* totals over every owned settlement, carried regardless of where the actor is."""
     owned = [s for s in (provinces or {}).values() if s.get("settlement_present")]
     n = len(owned)
     out = {"own_provinces": float(len({s.get("province") for s in owned})) if n else 0.0,
@@ -314,7 +287,6 @@ def carried_province_block(provinces, here):
 
 
 def bearing(dx, dy):
-    """(sin, cos) of the direction (dx, dy); (None, None) for a zero-length vector."""
     d = math.hypot(dx, dy)
     if d < 1e-9:
         return None, None
@@ -322,14 +294,11 @@ def bearing(dx, dy):
 
 
 def _units_of(item):
-    """Known troop count, or None when unknown -- never 0."""
     u = item.get("units")
     return None if u is None else _f(u)
 
 
 def near_block(world, locus):
-    """near_* per channel around locus (x, y): ring counts, and the nearest few with distance,
-    direction and strength."""
     w = world or {}
     groups = (("friend", [a for a in (w.get("armies") or []) if a.get("has_army")]),
               ("enemy", [h for h in (w.get("hostiles") or []) if h.get("kind") == "army"]),
@@ -402,7 +371,6 @@ def near_block(world, locus):
 
 
 def _db_features(action_type, key):
-    """The offline DB record for this action key, or {}."""
     if action_type == "building":
         d = dict(DB.building_features(key))
         d.update({("chain_" + k): v for k, v in
@@ -423,7 +391,6 @@ _COST_FIELDS = ("create_cost", "recruitment_cost", "cost_per_round", "influence_
 
 
 def _target_units(atype, params, key, world):
-    """Defender strength for an action that starts a fight, else None."""
     w = world or {}
     if atype == "attack_army":
         cqi = (params or {}).get("target_cqi")
@@ -447,7 +414,6 @@ DIPLO_GIFT_RANK = {"small": 1, "medium": 2, "large": 3}
 
 
 def _diplomacy_feats(atype, params):
-    """dip_* features for a diplomacy offer; {} for anything else."""
     if atype != "diplomacy":
         return {}
     terms = list(params.get("terms") or [])
@@ -477,15 +443,12 @@ def _diplomacy_feats(atype, params):
     return out
 
 
-HERO_ABILITIES = ("hinder_settlement", "hinder_army", "assist_army")
+HERO_ABILITIES = ("assist_army", "hinder_agent", "hinder_army", "hinder_character",
+                  "hinder_settlement")
 HERO_AGENT_TYPES = ("champion", "dignitary", "engineer", "runesmith", "spy", "wizard")
 
 
 def _hero_action_feats(atype, params, locus, world):
-    """ha_* features for a hero_action offer; {} for anything else.
-
-    Carries what the choice actually turns on: which action, which ability class, whether it
-    helps or hinders, what kind of thing is being targeted and how strong that target is."""
     if atype != "hero_action":
         return {}
     ability = params.get("ability")
@@ -530,11 +493,6 @@ def _hero_action_feats(atype, params, locus, world):
 
 
 def _recruit_hero_feats(atype, params):
-    """rh_* for a recruit_hero offer.
-
-    The per-type hero cap is moved by buildings, techs and effect bundles, so it is not
-    computable from static data -- the roster shape and this offer's type are handed to the
-    model as features so it can learn the cap rather than have a wrong rule imposed."""
     if atype != "recruit_hero":
         return {}
     t = params.get("agent_type")
@@ -559,8 +517,34 @@ def _target_hp(atype, params, world):
     return None
 
 
-def action_block(offer, locus, treasury, world=None, self_units=None, self_hp=None):
-    """opt_* for one offer: what it is, whether it was on, its params, geometry and DB record."""
+AFTER_CHANNELS = ("friend", "enemy", "enemysett", "ownsett")
+AFTER_FIELDS = ("dist", "dir_sin", "dir_cos")
+
+
+def _after_move_keys():
+    out = []
+    for name in AFTER_CHANNELS:
+        for k in range(NEAR_K.get(name, NEAR_K_DEFAULT)):
+            for f in AFTER_FIELDS:
+                out.append("near_%s_%d_%s" % (name, k + 1, f))
+    return out
+
+
+def _after_move_block(world, dest, near_before):
+    after = near_block(world, dest) if (world is not None and dest is not None) else {}
+    before = near_before or {}
+    out = {}
+    for k in _after_move_keys():
+        a, b = after.get(k), before.get(k)
+        a = a if isinstance(a, (int, float)) else None
+        b = b if isinstance(b, (int, float)) else None
+        out["opt_after_" + k] = a
+        out["opt_delta_" + k] = None if (a is None or b is None) else round(a - b, 2)
+    return out
+
+
+def action_block(offer, locus, treasury, world=None, self_units=None, self_hp=None,
+                 near_before=None):
     atype, key = offer.get("action_type"), str(offer.get("key"))
     params = offer.get("params") or {}
     out = {"opt_type": atype, "opt_key": key,
@@ -580,22 +564,9 @@ def action_block(offer, locus, treasury, world=None, self_units=None, self_hp=No
         out["opt_target_dist"] = None
         out["opt_target_dir_sin"] = out["opt_target_dir_cos"] = None
     if atype == "move" and tx is not None and ty is not None:
-        others = [a for a in ((world or {}).get("armies") or [])
-                  if a.get("has_army") and a.get("x") is not None
-                  and not (locus and abs(float(a["x"]) - float(locus[0])) < 1e-6
-                           and abs(float(a["y"]) - float(locus[1])) < 1e-6)]
-        ds = sorted(math.hypot(float(tx) - float(a["x"]), float(ty) - float(a["y"]))
-                    for a in others)
-        out["opt_after_lords_n"] = float(len(ds))
-        out["opt_after_lord_nearest"] = round(ds[0], 2) if ds else None
-        out["opt_after_lord_mean"] = round(sum(ds) / len(ds), 2) if ds else None
-        for i in range(3):
-            out["opt_after_lord_%d_dist" % (i + 1)] = round(ds[i], 2) if i < len(ds) else None
+        out.update(_after_move_block(world, (tx, ty), near_before))
     else:
-        out["opt_after_lords_n"] = None
-        out["opt_after_lord_nearest"] = out["opt_after_lord_mean"] = None
-        for i in range(3):
-            out["opt_after_lord_%d_dist" % (i + 1)] = None
+        out.update(_after_move_block(None, None, near_before))
     tgt_units = _target_units(atype, params, key, world)
     out["opt_self_units"] = _f(self_units)
     out["opt_target_units"] = tgt_units
@@ -647,7 +618,6 @@ def _locus(context_kind, state, world, provinces):
 
 
 def state_row(record, entity):
-    """E2's input: everything about the situation, nothing about the action."""
     world = record.get("world") or {}
     provinces = {e["context_id"]: e.get("state") or {} for e in record.get("entities") or []
                  if e.get("context_kind") == "province"}
@@ -680,7 +650,6 @@ def state_row(record, entity):
 
 
 def offer_rows(record, entity):
-    """[(offer, E1 row)] for one entity: its state row plus each offer's action block."""
     world = record.get("world") or {}
     provinces = {e["context_id"]: e.get("state") or {} for e in record.get("entities") or []
                  if e.get("context_kind") == "province"}
@@ -690,17 +659,17 @@ def offer_rows(record, entity):
     self_units = _f(st.get("units"))
     self_hp = _f(st.get("hp"))
     base = state_row(record, entity)
+    near_before = {k: v for k, v in base.items() if k.startswith("near_")}
     out = []
     for o in entity.get("offers") or []:
         row = dict(base)
         row.update(action_block(o, locus, treasury, world=world, self_units=self_units,
-                                self_hp=self_hp))
+                                self_hp=self_hp, near_before=near_before))
         out.append((o, row))
     return out
 
 
 def decision_rows(record):
-    """[(entity, offer, E1 row)] for a whole decision point."""
     out = []
     for e in record.get("entities") or []:
         for offer, row in offer_rows(record, e):
@@ -708,22 +677,54 @@ def decision_rows(record):
     return out
 
 
+MODEL_COLUMNS = frozenset((
+    "opt_type", "opt_key", "opt_available", "opt_gate", "opt_cost", "opt_cost_vs_treasury",
+    "opt_hp_ratio", "opt_hp_diff", "opt_self_hp", "opt_self_units",
+    "opt_strength_ratio", "opt_strength_diff",
+    "opt_target_faction", "opt_target_race", "opt_target_dist", "opt_is_active", "ctx_kind",
+    "lord_subtype", "lord_hp", "lord_stance", "lord_units", "lord_rank", "lord_skill_points",
+    "lord_ap_pct", "lord_acted", "lord_has_army",
+    "near_enemy_1_dist", "near_enemy_1_stance", "near_enemy_1_faction",
+    "near_enemysett_1_dist", "near_enemysett_1_faction",
+    "near_neutral_1_faction", "near_neutral_1_race",
+    "near_enemy_total", "near_enemysett_total",
+    "prov_province", "prov_active_edict", "prov_is_capital", "prov_buildings", "prov_free_slots",
+    "camp_faction", "camp_race", "camp_turn", "camp_lord_level", "camp_power_rank",
+    "camp_settlements", "camp_enemy_settlements", "camp_income", "camp_treasury", "camp_armies",
+    "camp_taken_total", "camp_taken_diplomacy", "camp_act_index",
+    "camp_prev_action_1", "camp_prev_action_2", "camp_prev_action_3",
+    "camp_prev_action_4", "camp_prev_action_5",
+    "dip_target", "dip_target_race", "dip_at_war", "dip_allied", "dip_has_any_tie",
+    "dip_gift_tier", "dip_gift_rank",
+    "pos_exposed", "pos_support_ratio", "agg_enemy_n", "agg_enemy_mean_dist",
+    "isc_screen", "isc_n_options", "isc_option", "isc_fc_result", "isc_fc_casualties",
+    "isc_dilemma_id", "isc_option_id", "isc_option_label", "isc_payload", "isc_n_payload",
+))
+
+MODEL_COLUMNS_ENABLED = True
+
+
 def split_columns(rows):
-    """(numeric_cols, categorical_cols): numeric only if every present value is a number."""
     cols = {}
     for r in rows:
         for k, v in r.items():
+            if MODEL_COLUMNS_ENABLED and k not in MODEL_COLUMNS:
+                continue
             if v is None:
                 cols.setdefault(k, True)
                 continue
             cols[k] = cols.get(k, True) and isinstance(v, (int, float)) and not isinstance(v, bool)
     num = sorted(k for k, isnum in cols.items() if isnum)
     cat = sorted(k for k, isnum in cols.items() if not isnum)
+    if MODEL_COLUMNS_ENABLED and rows and not (num or cat):
+        raise RuntimeError(
+            "MODEL_COLUMNS matched nothing against %d built columns -- the feature names have "
+            "moved and every model would train on an empty matrix. Built sample: %s"
+            % (len(rows[0]), sorted(list(rows[0])[:12])))
     return num, cat
 
 
 def matrix(rows, num, cat):
-    """Numerics as floats (None -> nan), categoricals as strings."""
     out = []
     for r in rows:
         vals = []

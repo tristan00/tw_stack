@@ -1,16 +1,3 @@
-r"""Offline test for the `logs` stream (no game): the silent-data-critical capture rule.
-
-Uses SYNTHETIC log files in a temp "game dir" to prove all four behaviours without WH3:
-  1. a PRE-EXISTING log -> its history is SKIPPED; only bytes appended after start are tailed.
-  2. a NEW log created after start (the game-restart case) -> captured from byte 0.
-  3. byte-exactness -> the .tail is exactly the appended bytes, no more, no less.
-  4. rotation/truncation -> the offset resets and post-rotation content is re-captured.
-
-This is the exact code path that used to silently gut a restarted run, so it is verified in
-full offline.
-
-    python test_logs.py
-"""
 import os
 import sys
 import tempfile

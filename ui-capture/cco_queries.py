@@ -1,7 +1,3 @@
-r"""cco_queries.py -- pure-data ACTION-SPACE reads over the bus eval sandbox's cco() layer.
-
-Ids: settlement = 'settlement:<region_key>'; character = bare cqi string.
-"""
 from __future__ import annotations
 
 import sys
@@ -16,11 +12,10 @@ _G = ("local function g(c,p) local ok,v=pcall(function() return c:Call(p) end);"
 
 
 class CcoQueryError(RuntimeError):
-    """A chain broke (bus miss, nil context, unparseable reply)."""
+    pass
 
 
 def _ev(bus, lua, timeout=_T):
-    """One eval. Returns the result or raises CcoQueryError -- never a silent None."""
     try:
         r = bus.send("eval", lua, timeout=timeout) or {}
     except Exception as e:
@@ -37,7 +32,6 @@ def _b(v):
 
 
 def list_entities(bus):
-    """Player lords + owned regions: {"lords": [{"cqi", "name", "is_leader"}], "regions": [str, ...]}."""
     lua = (
         "local f=cm:get_local_faction(true); if not f then return 'NO-FACTION' end "
         "local out={} local cl=f:character_list() "
@@ -65,7 +59,6 @@ def list_entities(bus):
 
 
 def settlement_actions(bus, region):
-    """The settlement's buildable action space + province edict space in ONE eval: {"region", "slots", "edicts"}."""
     lua = (_G +
         "local s=cco('CcoCampaignSettlement','settlement:%s');"
         "if not s then return 'NO-CTX' end "
@@ -127,7 +120,6 @@ def settlement_actions(bus, region):
 
 
 def lord_actions(bus, char_cqi):
-    """The lord's stance action space + force snapshot in ONE eval: {"cqi", "stances", "unit_count", "pending_recruits", "action_point_pct"}."""
     lua = (_G +
         "local ch=cco('CcoCampaignCharacter','%s');"
         "if not ch then return 'NO-CTX' end "

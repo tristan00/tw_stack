@@ -1,13 +1,3 @@
-r"""Offline test for `bus` (no game): the cross-process seq-safety guarantee.
-
-N separate OS processes each append K commands to one shared cmd file via the locked
-allocate+append. Correct = every command line gets a UNIQUE seq that strictly increases in file
-order (no collision). Without the _ProcLock, concurrent clients seed from the same file max and
-collide -> the mod's strict-increase gate would drop the duplicate -> a 30s timeout. This is the
-m0 "bus contention" bug; this test proves the lock fixes it.
-
-    python test_bus.py
-"""
 import os
 import subprocess
 import sys

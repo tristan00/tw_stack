@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import collections
 import math
 import random
 import re
@@ -23,7 +24,7 @@ _G = ("local function g(c,p) local ok,v=pcall(function() return c:Call(p) end);"
 
 
 class CollectError(RuntimeError):
-    """A collection chain broke (bus miss / nil context)."""
+    pass
 
 
 def _ev(bus, lua, timeout=20.0, allow_nil=False):
@@ -56,7 +57,6 @@ def _num(x):
 
 
 def _flags(raw):
-    """'a=true,b=false' -> {'a': True, 'b': False}"""
     out = {}
     for part in str(raw or "").split(","):
         if "=" in part:
@@ -80,7 +80,6 @@ _LUA_TARGET = (_G +
 
 
 def target_row(bus):
-    """{campaign_id, turn, income, settlements, allies, vassals, power_rank, lord_level}."""
     p = str(_ev(bus, _LUA_TARGET, timeout=60.0)).split("|")
     if len(p) < 8:
         raise CollectError("target row malformed: %r" % p)
@@ -125,7 +124,6 @@ def _parse_resources(raw):
 
 
 def faction_resources(bus):
-    """{resource_key: value} for the player faction; {} when unreadable."""
     return _parse_resources(_ev(bus, _LUA_FACTION_RESOURCES, timeout=25.0, allow_nil=True))
 
 
@@ -148,7 +146,6 @@ _LUA_DIPLO = (
 
 
 def diplomacy_state(bus):
-    """[{faction, standing, at_war, allied, their_vassal, our_master, trade}] per faction."""
     raw = str(_ev(bus, _LUA_DIPLO, timeout=30.0, allow_nil=True) or "")
     out = []
     for row in raw.split(","):
@@ -172,7 +169,6 @@ _LUA_UUID = _LUA_UUID_EXPR
 
 
 def campaign_uuid(bus):
-    """This playthrough's id, minted on first read and cached in the campaign; None if absent."""
     v = _ev(bus, _LUA_UUID, timeout=25.0, allow_nil=True)
     return None if v in (None, "NO-UUID", "nil", "") else str(v)
 
@@ -208,7 +204,6 @@ _GAME_VERSION = ["unread"]
 
 
 def _game_version():
-    """Warhammer3.exe file version (e.g. '8.1.1.0'), read once per process; None if unreadable."""
     if _GAME_VERSION[0] != "unread":
         return _GAME_VERSION[0]
     try:
@@ -285,7 +280,6 @@ def _parse_ruins(raw):
 
 
 def ruins(bus):
-    """Settlements that LOOK like ruins to the player: [{region, x, y}]."""
     return _parse_ruins(_ev(bus, _LUA_RUINS, timeout=30.0, allow_nil=True))
 
 
@@ -323,14 +317,10 @@ def _parse_enemy_agents(raw):
 
 
 def enemy_agents(bus):
-    """Visible non-player characters WITHOUT a military force -- the agent-targeting action set.
-
-    The hostiles channel only walks characters with a force, so enemy heroes are invisible to it."""
     return _parse_enemy_agents(_ev(bus, _LUA_ENEMY_AGENTS, timeout=30.0, allow_nil=True))
 
 
 def _tstage(prof, name, fn, *a, **k):
-    """Accumulate `fn`'s wall ms under prof[name]; a plain call when prof is None."""
     if prof is None:
         return fn(*a, **k)
     t = time.time()
@@ -341,7 +331,6 @@ def _tstage(prof, name, fn, *a, **k):
 
 
 def world_state(bus, prof=None):
-    """{armies, settlements, hostiles, ruins} -- raw positions for the whole visible map."""
     rs = _tstage(prof, "world_state/ruins", ruins, bus)
     ruin_keys = {r["region"] for r in rs}
     hostiles = [h for h in _tstage(prof, "world_state/hostiles", _chan, bus, "hostiles", "hostiles")
@@ -367,7 +356,6 @@ _LUA_HASH = (_G +
 
 
 def state_hash(bus):
-    """{hash, roots, chars, ts} -- the liveness digest."""
     import hashlib
     parts = str(_ev(bus, _LUA_HASH, timeout=20.0))
     try:
@@ -418,13 +406,11 @@ def _parse_recruitable(raw):
 
 
 def recruitable_units(bus, cqi):
-    """Units this force can recruit, WITHOUT opening units_panel."""
     return _parse_recruitable(_ev(bus, _LUA_RECRUITABLE % {"cqi": cqi},
                                   timeout=30.0, allow_nil=True))
 
 
 def edict_options(bus, region):
-    """The province's edict record keys."""
     raw = _ev(bus, _G + "local s=cco('CcoCampaignSettlement','settlement:%s');"
                         "local m=g(s,'FactionProvinceManagerContext'); if not m then return '' end "
                         "local l=g(m,'InitiativeList'); if type(l)~='table' then return '' end local o={} "
@@ -587,7 +573,6 @@ _LUA_ENTITY_TARGETS = (_G +
 
 
 def entity_target_rows(bus):
-    """[{context_kind, context_id, value}] -- lord/hero: character level; province: settlement level."""
     raw = str(_ev(bus, _LUA_ENTITY_TARGETS, timeout=30.0, allow_nil=True) or "")
     out = []
     for chunk in raw.split(","):
@@ -641,7 +626,6 @@ _LUA_MOVE_CANDIDATES = (
 
 
 def _move_lua(cqi, state):
-    """The move-candidate eval for a character, or None when it has no position."""
     if state.get("x") is None or state.get("y") is None:
         return None
     return _LUA_MOVE_CANDIDATES % {"cqi": cqi, "minr": int(MOVE_MIN_R), "n": MOVE_CANDIDATES}
@@ -663,7 +647,6 @@ def _parse_moves(raw):
 
 
 def _move_offers(bus, cqi, state):
-    """Sampled move destinations for a character, filtered by the pathfinder."""
     lua = _move_lua(cqi, state)
     if lua is None:
         return []
@@ -693,7 +676,6 @@ def _parse_reach(raw):
 
 
 def _reach(bus, cqi, target_cqis, regions):
-    """({cqi: bool}, {region: bool}) -- both reachability sweeps in one round-trip."""
     if not target_cqis and not regions:
         return {}, {}
     return _parse_reach(_ev(bus, _reach_lua(cqi, target_cqis, regions), timeout=40.0,
@@ -736,12 +718,10 @@ def _parse_stationed(raw):
 
 
 def settlement_forces(bus):
-    """{"stationed": {region: cqi|None}, "citizenry": {cqi}} for our regions, in one bus call."""
     return _parse_stationed(_ev(bus, _LUA_STATIONED, timeout=25.0, allow_nil=True))
 
 
 def _lord_targets(world):
-    """(armies, enemy setts, own setts, ruin setts) -- the reach/attack target lists."""
     armies = [h for h in world["hostiles"] if h.get("kind") == "army" and h.get("cqi")]
     esetts = [h for h in world["hostiles"] if h.get("kind") == "settlement" and h.get("region")]
     osetts = [s for s in world["settlements"] if s.get("region")]
@@ -750,7 +730,6 @@ def _lord_targets(world):
 
 
 def lord_offers(bus, cqi, state, world, stationed=None, prof=None):
-    """Every lord-context offer, available or not (unavailable ones carry the game's gate reason)."""
     ev_raw = _tstage(prof, "lord_offers/ev", _ev, bus, _LUA_LORD_OFFERS % {"cqi": cqi},
                      timeout=25.0, allow_nil=True)
     recruit_rows = _tstage(prof, "lord_offers/recruitable", recruitable_units, bus, cqi)
@@ -765,7 +744,8 @@ def lord_offers(bus, cqi, state, world, stationed=None, prof=None):
 
 
 def _lord_offers_assemble(cqi, state, world, stationed, ev_raw, recruit_rows,
-                          reach_c, reach_s, moves, anc_pool=None, equipped=None):
+                          reach_c, reach_s, moves, anc_pool=None, equipped=None,
+                          equipped_anywhere=None):
     offers = []
     acted = state.get("acted")
     raw = str(ev_raw or "")
@@ -818,7 +798,7 @@ def _lord_offers_assemble(cqi, state, world, stationed, ev_raw, recruit_rows,
                                 else "settlement_occupied" if taken else "cannot_reach")
         offers.append(_offer("garrison", "settlement:%s" % s["region"], ok, gate,
                              x=s.get("x"), y=s.get("y")))
-    offers.extend(_item_offers(anc_pool, equipped))
+    offers.extend(_item_offers(anc_pool, equipped, equipped_anywhere))
     offers.extend(moves or [])
     offers.append(_offer("noop", "noop", True))
     return offers
@@ -831,7 +811,10 @@ _LUA_HERO_OFFERS = (_G +
     "local tk='' local ch=cm:get_character_by_cqi(%(cqi)s) "
     "if ch then local ok,v=pcall(function() return ch:character_type_key() end) "
     "if ok then tk=ts(v) end end "
-    "return ts(g(c,'IsAgent'))..'||'..ts(g(c,'CanBeEmbedded'))..'||'..table.concat(sk,',')..'||'..tk")
+    "local hk={} local h=g(c,'HiddenSkillList') "
+    "if type(h)=='table' then for i=1,#h do hk[#hk+1]=ts(g(h[i],'Key')) end end "
+    "return ts(g(c,'IsAgent'))..'||'..ts(g(c,'CanBeEmbedded'))..'||'..table.concat(sk,',')..'||'..tk"
+    "..'||'..table.concat(hk,',')")
 
 
 ABILITY_TARGETS = {
@@ -842,7 +825,23 @@ ABILITY_TARGETS = {
     "assist_army": ("own_armies",),
 }
 
+ACTION_TARGETS = {
+    "scout_settlement": ("ruins",),
+    "assault_garrison": ("enemy_settlements",),
+    "steal_technology": ("enemy_settlements",),
+    "damage_walls": ("enemy_settlements",),
+    "assassinate": ("enemy_agents",),
+    "wound": ("enemy_agents",),
+}
+
 INNATE_ACTIONS = frozenset(("scout_settlement",))
+
+COVERED_ACTIONS = frozenset((
+    "assassinate", "assault_garrison", "assault_units", "block_army", "damage_walls",
+    "hinder_replenishment", "increase_mobility", "replenish_troops", "scavenge", "scouting",
+    "steal_technology", "training", "wound",
+    "scout_settlement",
+))
 
 NEEDS_SUBPICK = frozenset((
     "damage_building",
@@ -851,11 +850,6 @@ NEEDS_SUBPICK = frozenset((
 
 
 def _build_hero_actions():
-    """The hero-action catalogue, generated from the agent_actions DB table.
-
-    Every non-ambient action the game defines, minus the ones whose panel embeds a further
-    selection list (damage_building was measured doing this: its agent_options dump carries
-    building_entry/building_level rows, which the one-click executor cannot satisfy)."""
     out = {}
     try:
         sys.path.insert(0, r"D:\tw_stack\advisor\reference")
@@ -866,9 +860,10 @@ def _build_hero_actions():
         return out
     for e in entries:
         act, ability = e["action"], e["ability"]
-        if act in NEEDS_SUBPICK or ability not in ABILITY_TARGETS:
+        if act not in COVERED_ACTIONS or act in NEEDS_SUBPICK or ability not in ABILITY_TARGETS:
             continue
-        spec = out.setdefault(act, {"loc_suffix": [], "targets": ABILITY_TARGETS[ability],
+        spec = out.setdefault(act, {"loc_suffix": [],
+                                    "targets": ACTION_TARGETS.get(act, ABILITY_TARGETS[ability]),
                                     "innate": act in INNATE_ACTIONS})
         spec["loc_suffix"].append("%s_%s" % (ability, act))
     return out
@@ -880,7 +875,6 @@ _hero_matrix = {}
 
 
 def hero_type_counts(world):
-    """{agent_type: n} heroes the faction currently fields -- the per-type cap's numerator."""
     out = {}
     for a in ((world or {}).get("armies") or []):
         if a.get("has_army"):
@@ -895,10 +889,6 @@ _subtype_types = {}
 
 
 def _hero_subtype_types(faction):
-    """{subtype: agent_type} the faction may field, from agent_permitted_subtypes.
-
-    Measured against the live recruit panel: this reproduces its four hero tabs exactly
-    (champion/spy/runesmith/wizard) with the same subtypes the tabs are labelled with."""
     key = str(faction or "")
     if key not in _subtype_types:
         try:
@@ -912,11 +902,6 @@ def _hero_subtype_types(faction):
 
 
 def _hero_action_matrix(action):
-    """Per-agent-type rows for a catalogue action, from the agent_actions DB table.
-
-    {types: {agent: key}, ability, attribute: {agent: attr}, chance: {agent: int}, category}.
-    agent_actions is the authority -- it carries the real action set per agent type with its base
-    success chance; the loc table only proves a key exists."""
     if action not in _hero_matrix:
         spec = HERO_ACTIONS.get(action) or {}
         try:
@@ -950,9 +935,37 @@ _LUA_EQUIPPED = (_G +
     "for i=1,#l do o[#o+1]=i..'~'..ts(g(l[i],'Name'))..'~'..ts(g(l[i],'Key')) end "
     "return table.concat(o,'|')")
 
+_LUA_AP_ALL = (
+    "local f=cm:get_local_faction(true) local cl=f:character_list() local o={} "
+    "local ok=pcall(function() for i=0,cl:num_items()-1 do local c=cl:item_at(i) "
+    "local cq=tostring(c:command_queue_index()) local x=cco('CcoCampaignCharacter',cq) "
+    "o[#o+1]=cq..'~'..tostring(x:Call('ActionPointsRemaining'))..'~'"
+    "..tostring(x:Call('ActionPointsPerTurn')) end end) "
+    "if not ok then return '' end return table.concat(o,'|')")
+
+
+def _parse_ap_all(raw):
+    out = {}
+    for row in str(raw or "").split("|"):
+        p = row.split("~")
+        if len(p) == 3 and p[0].isdigit():
+            rem, per = _num(p[1]), _num(p[2])
+            out[p[0]] = {"ap_remaining": rem, "ap_per_turn": per,
+                         "ap_pct": (rem / per) if (rem is not None and per) else None}
+    return out
+
+
+_LUA_EQUIPPED_ALL = (_G +
+    "local f=cm:get_local_faction(true) local cl=f:character_list() local o={} "
+    "for i=0,cl:num_items()-1 do local c=cl:item_at(i) "
+    "  local cq=ts(c:command_queue_index()) "
+    "  local l=g(cco('CcoCampaignCharacter',cq),'AncillaryList') "
+    "  if type(l)=='table' then for j=1,#l do "
+    "    o[#o+1]=j..'~'..ts(g(l[j],'Name'))..'~'..ts(g(l[j],'Key')) end end end "
+    "return table.concat(o,'|')")
+
 
 def _parse_ancillaries(raw):
-    """[{index, name, key}] from the packed ancillary list."""
     out = []
     for row in str(raw or "").split("|"):
         p = row.split("~")
@@ -962,20 +975,32 @@ def _parse_ancillaries(raw):
 
 
 def ancillary_pool(bus, faction_cqi):
-    """The faction's unequipped ancillary pool -- the `items` offer universe."""
     return _parse_ancillaries(_ev(bus, _LUA_ANCILLARY_POOL % {"fac": faction_cqi},
                                   timeout=25.0, allow_nil=True))
 
 
-def _item_offers(pool, equipped):
-    """`items` per pool entry and `item_unequip` per equipped entry, for one character.
+def _free_by_type(pool, equipped_anywhere):
+    held = collections.Counter(a["name"] for a in equipped_anywhere or [])
+    free = collections.Counter(a["name"] for a in pool or [])
+    for name, n in held.items():
+        free[name] -= n
+    return free
 
-    The executors have existed all along and expect exactly these params (pool_index /
-    equipped_index); only the offers were missing, so nothing could ever pick them."""
+
+def _item_offers(pool, equipped, equipped_anywhere=None):
     offers = []
+    if pool and equipped_anywhere is None:
+        raise CollectError("_item_offers: item pool with no faction-wide equipped set -- "
+                           "assignability cannot be counted")
+    free = _free_by_type(pool, equipped_anywhere)
     for a in pool or []:
-        offers.append(_offer("items", a["key"] or a["name"], True, None,
-                             pool_index=a["index"], item_name=a["name"], item_key=a["key"]))
+        name = a["name"]
+        ok = free.get(name, 0) > 0
+        if ok:
+            free[name] -= 1
+        offers.append(_offer("items", a["key"] or name, ok,
+                             None if ok else "already_equipped",
+                             pool_index=a["index"], item_name=name, item_key=a["key"]))
     for a in equipped or []:
         offers.append(_offer("item_unequip", a["key"] or a["name"], True, None,
                              equipped_index=a["index"], item_name=a["name"], item_key=a["key"]))
@@ -986,7 +1011,6 @@ SETTLEMENT_COLOCATION = 1.5
 
 
 def _settlement_points(world):
-    """Every settlement-ish map position: ours, hostile, and ruins."""
     w = world or {}
     pts = []
     for s in (w.get("settlements") or []):
@@ -1000,11 +1024,6 @@ def _settlement_points(world):
 
 
 def _on_settlement(pts, x, y):
-    """True when a character stands on a settlement -- measured at 61% of character targets.
-
-    A right-click there resolves to the SETTLEMENT, not the character: the panel comes back
-    offering Assault Garrison / Damage Building. Such a character is not separately clickable,
-    so offering an action against it can only produce a wrong click."""
     if x is None or y is None:
         return False
     fx, fy = float(x), float(y)
@@ -1014,8 +1033,15 @@ def _on_settlement(pts, x, y):
     return False
 
 
+def _is_citizenry(hostile):
+    if "is_armed_citizenry" not in hostile:
+        raise CollectError("hostiles row %s carries no is_armed_citizenry -- the installed mod "
+                           "pack is older than the handler that emits it; rebuild bus/dist/tw.pack"
+                           % hostile.get("cqi"))
+    return hostile["is_armed_citizenry"] is True
+
+
 def _hero_action_targets(world, kind, self_cqi):
-    """Candidate targets for one ability class, as {target_kind, region|cqi, x, y}."""
     w = world or {}
     if kind == "ruins":
         return [{"target_kind": "settlement", "region": t["region"], "x": t.get("x"),
@@ -1028,12 +1054,15 @@ def _hero_action_targets(world, kind, self_cqi):
     if kind == "enemy_armies":
         return [{"target_kind": "character", "target_cqi": h["cqi"], "x": h.get("x"),
                  "y": h.get("y"), "target_faction": h.get("faction")}
-                for h in (w.get("hostiles") or []) if h.get("kind") == "army" and h.get("cqi")]
+                for h in (w.get("hostiles") or [])
+                if h.get("kind") == "army" and h.get("cqi") and not _is_citizenry(h)]
     if kind == "own_armies":
+        cz = set(str(x) for x in w["citizenry"])
         return [{"target_kind": "character", "target_cqi": a["cqi"], "x": a.get("x"),
                  "y": a.get("y"), "target_own": True}
                 for a in (w.get("armies") or [])
-                if a.get("has_army") and a.get("cqi") and str(a["cqi"]) != str(self_cqi)]
+                if a.get("has_army") and a.get("cqi") and str(a["cqi"]) != str(self_cqi)
+                and str(a["cqi"]) not in cz]
     if kind == "enemy_agents":
         return [{"target_kind": "character", "target_cqi": a["cqi"], "x": a.get("x"),
                  "y": a.get("y"), "target_faction": a.get("faction"), "target_agent": True}
@@ -1042,16 +1071,32 @@ def _hero_action_targets(world, kind, self_cqi):
     return []
 
 
-def _hero_action_offers(cqi, state, world, reach_c, reach_s, is_agent, type_key, skills=()):
-    """One offer per (hero action, candidate target).
+def _same_tile(state, x, y):
+    hx, hy = (state or {}).get("x"), (state or {}).get("y")
+    if hx is None or hy is None or x is None or y is None:
+        return False
+    return abs(float(hx) - float(x)) < 1e-6 and abs(float(hy) - float(y)) < 1e-6
 
-    An agent action is unlocked by a character SKILL whose key embeds the action's suffix
-    (wh2_main_skill_all_hero_assist_army_scouting -> assist_army_scouting); a few actions are
-    innate and need none. Measured at the choke point: a hero holding only the scouting skill was
-    offered exactly "Scouting" on an own army, and "Scout Ruins" on a ruin with no such skill."""
+
+def _granted_actions(skill_keys):
+    try:
+        sys.path.insert(0, r"D:\tw_stack\advisor\reference")
+        import features_db as _DB
+        return _DB.actions_for_skills(skill_keys)
+    except Exception as e:
+        raise CollectError("agent-action unlock map unreadable (%s) -- refusing to offer hero "
+                           "actions the hero may not have" % repr(e)[:90])
+
+
+def _hero_action_offers(cqi, state, world, reach_c, reach_s, is_agent, type_key, skills=(),
+                        granted=None, can_embed=True):
     offers = []
     active = [k for k in (skills or ()) if k]
+    granted = set(granted or ())
     sett_pts = _settlement_points(world)
+    embedded = any(_same_tile(state, a.get("x"), a.get("y"))
+                   for a in (world.get("armies") or [])
+                   if a.get("has_army") and str(a.get("cqi")) != str(cqi))
     for action, spec in HERO_ACTIONS.items():
         mat = _hero_action_matrix(action)
         action_key = (mat["types"] or {}).get(type_key)
@@ -1060,7 +1105,7 @@ def _hero_action_offers(cqi, state, world, reach_c, reach_s, is_agent, type_key,
         sufs = spec["loc_suffix"]
         sufs = [sufs] if isinstance(sufs, str) else list(sufs)
         has_skill = any(any(s in k for s in sufs) for k in active)
-        unlocked = bool(spec.get("innate")) or has_skill
+        unlocked = action_key in granted
         cands = []
         for tk in spec["targets"]:
             cands.extend(_hero_action_targets(world, tk, cqi))
@@ -1069,12 +1114,16 @@ def _hero_action_offers(cqi, state, world, reach_c, reach_s, is_agent, type_key,
             tid = t.get("target_cqi") if is_char else t.get("region")
             reachable = bool((reach_c if is_char else reach_s or {}).get(str(tid)))
             in_sett = is_char and _on_settlement(sett_pts, t.get("x"), t.get("y"))
-            ok = bool(is_agent and action_key and unlocked and reachable)
+            embeds = mat.get("category") == "embedded"
+            ok = bool(is_agent and action_key and unlocked and reachable
+                      and not (embeds and embedded))
             gate = (None if ok else
                     "not_agent" if not is_agent else
                     "agent_type_cannot_%s" % (type_key or "unknown") if not action_key else
-                    "skill_not_unlocked" if not unlocked else
-                    "cannot_reach")
+                    ("no_granted_actions" if not granted else "action_not_granted")
+                    if not unlocked else
+                    "cannot_reach" if not reachable else
+                    "already_embedded")
             offers.append(_offer(
                 "hero_action", "%s@%s" % (action, ("cqi:%s" % tid) if is_char else tid), ok, gate,
                 action=action, action_key=action_key, ability=mat["ability"],
@@ -1091,7 +1140,6 @@ def _hero_action_offers(cqi, state, world, reach_c, reach_s, is_agent, type_key,
 
 
 def hero_offers(bus, cqi, state, world):
-    """A hero's offers: skills, moves, and agent actions on reachable targets."""
     ev_raw = _ev(bus, _LUA_HERO_OFFERS % {"cqi": cqi}, timeout=25.0, allow_nil=True)
     moves = _move_offers(bus, cqi, state)
     tgt_c, tgt_r = _hero_action_reach_targets(world, cqi)
@@ -1100,7 +1148,6 @@ def hero_offers(bus, cqi, state, world):
 
 
 def _hero_action_reach_targets(world, cqi):
-    """(character cqis, regions) to sweep for reach across the whole hero-action catalogue."""
     chars, regions = [], []
     for spec in HERO_ACTIONS.values():
         cands = []
@@ -1116,10 +1163,11 @@ def _hero_action_reach_targets(world, cqi):
 
 
 def _hero_offers_assemble(cqi, state, ev_raw, moves, world=None, reach_c=None, reach_s=None,
-                          anc_pool=None, equipped=None):
+                          anc_pool=None, equipped=None, equipped_anywhere=None):
     offers = []
     parts = str(ev_raw or "").split("||")
     is_agent = parts[0] == "true" if parts else False
+    can_embed = (parts[1] == "true") if len(parts) > 1 else False
     sk_raw = parts[2] if len(parts) > 2 else ""
     type_key = parts[3].strip() if len(parts) > 3 else ""
     has_pts = (state.get("skill_points") or 0) >= 1
@@ -1133,9 +1181,11 @@ def _hero_offers_assemble(cqi, state, ev_raw, moves, world=None, reach_c=None, r
         ok = (status == "active" and has_pts)
         offers.append(_offer("skills", key, ok,
                              None if ok else ("no_points" if not has_pts else status)))
+    hidden_skills = [k for k in (parts[4] if len(parts) > 4 else "").split(",") if k]
+    granted = _granted_actions(active_skills + hidden_skills)
     offers.extend(_hero_action_offers(cqi, state, world or {}, reach_c or {}, reach_s or {},
-                                      is_agent, type_key, active_skills))
-    offers.extend(_item_offers(anc_pool, equipped))
+                                      is_agent, type_key, active_skills, granted, can_embed))
+    offers.extend(_item_offers(anc_pool, equipped, equipped_anywhere))
     offers.extend(moves or [])
     offers.append(_offer("noop", "noop", True))
     return offers
@@ -1175,7 +1225,6 @@ _LUA_SLOT_STATES = (_G +
 
 
 def _parse_slot_states(raw):
-    """[{index, damaged, can_repair, repairing, can_dismantle, refund, building, can_cancel, key}]."""
     out = []
     for row in str(raw or "").split(","):
         p = row.split("~")
@@ -1191,10 +1240,6 @@ def _parse_slot_states(raw):
 
 
 def _slot_action_offers(region, slots):
-    """building_repair / building_cancel / building_dismantle, one per eligible slot.
-
-    The engine's own flags are the gate: CanRepair only reads true on a damaged slot, CanBeCancelled
-    only while something is queued, CanDismantle only on a standing building."""
     offers = []
     for s in slots or []:
         idx = s.get("index")
@@ -1223,7 +1268,6 @@ def _slot_action_offers(region, slots):
 
 
 def province_offers(bus, region, state, campaign):
-    """Every province-context offer (buildings across free slots, edicts, lord recruitment)."""
     combo = _ev(bus, _LUA_PROVINCE_OFFERS % region, timeout=30.0, allow_nil=True)
     campaign = dict(campaign, hero_type_counts=hero_type_counts(world))
     pools = _lord_pools(bus, campaign["faction_cqi"], _lord_subtypes(bus, campaign["faction"]))
@@ -1306,11 +1350,6 @@ _SUBTYPE_TOKEN = re.compile(r"^wh\d?_[a-z0-9]+_([a-z]+)_")
 
 
 def _lord_subtypes(bus, faction):
-    """Character subtypes to ASK the engine about, cached per faction.
-
-    The world query only returns subtypes some faction already fields, so a lore nobody has
-    recruited yet is invisible to it. The offline subtype list for the same race tokens is
-    added as a superset; _lord_pools' pool size is the authority that filters it back down."""
     key = str(faction)
     if key not in _SUBTYPE_CACHE:
         raw = str(_ev(bus, _LUA_SUBCULTURE_SUBTYPES, timeout=30.0, allow_nil=True) or "")
@@ -1338,7 +1377,6 @@ def _lord_subtypes(bus, faction):
 
 
 def _lord_pools(bus, faction_cqi, subtypes):
-    """{subtype: (pool_size, [can_recruit], [traits], [ranks])} for all subtypes in one round-trip."""
     if not subtypes:
         return {}
     lst = ",".join("'%s'" % s for s in subtypes)
@@ -1398,7 +1436,6 @@ _LUA_CAMPAIGN_OFFERS = (_G +
 
 
 def current_research(bus, faction_cqi):
-    """The tech actually being researched right now, or None."""
     v = _ev(bus, _G + "local m=g(cco('CcoCampaignFaction','%s'),'TechnologyManagerContext') "
                       "local c=m and g(m,'CurrentResearchingTechnologyContext') "
                       "if c then return ts(g(c,'NodeKey')) end return 'none'" % faction_cqi,
@@ -1407,7 +1444,6 @@ def current_research(bus, faction_cqi):
 
 
 def campaign_offers(bus, campaign, prof=None):
-    """Faction-wide offers: research, rites, diplomacy and end_turn."""
     fac = campaign["faction_cqi"]
     raw = _tstage(prof, "campaign_offers/ev", _ev, bus, _LUA_CAMPAIGN_OFFERS % {"fac": fac},
                   timeout=30.0, allow_nil=True)
@@ -1482,9 +1518,6 @@ _LUA_DIPLO_TARGETS = (
     "return table.concat(out,',')")
 
 
-DIPLO_PANEL_ROOT = "diplomacy_dropdown"
-DIPLO_OPEN_PATH = ("hud_campaign|faction_buttons_docker|button_group_management|button_diplomacy")
-_DEALABLE_CACHE = {"turn": None, "factions": None}
 
 
 def _bus(bus, cmd, arg=None, timeout=20.0):
@@ -1501,62 +1534,12 @@ def _roots(bus):
     return [k.get("id") for k in (r.get("kids") or [])] or list(r.get("roots") or [])
 
 
-def dealable_factions(bus, turn=None, epoch=None):
-    """Factions with a row in the diplomacy panel; cached per (turn, diplo epoch) -- the walk
-    re-runs at turn start and after every diplomatic event (operator cadence, 2026-08-02).
-    The panel must end up closed."""
-    ckey = (turn, epoch)
-    if turn is not None and _DEALABLE_CACHE["turn"] == ckey and _DEALABLE_CACHE["factions"] is not None:
-        return list(_DEALABLE_CACHE["factions"])
-    opened = False
-    if DIPLO_PANEL_ROOT not in _roots(bus):
-        _bus(bus, "click", DIPLO_OPEN_PATH)
-        for _ in range(8):
-            time.sleep(1.0)
-            if DIPLO_PANEL_ROOT in _roots(bus):
-                opened = True
-                break
-        if not opened:
-            sys.stderr.write("collect: diplomacy panel would not open -- deal-able set unread, so "
-                             "the offer builder falls back to the cm proxy, which under-reports\n")
-            _DEALABLE_CACHE.update(turn=ckey, factions=[])
-            return []
-    facs, seen = [], set()
-    nodes = (_bus(bus, "tree", "%s 6 6000" % DIPLO_PANEL_ROOT) or {}).get("nodes") or []
-    for n in nodes:
-        nid = str(n.get("id") or "")
-        if nid.startswith("faction_row_entry_") and n.get("visible"):
-            key = nid[len("faction_row_entry_"):]
-            if key and key not in seen:
-                seen.add(key)
-                facs.append(key)
-    if opened:
-        for _ in range(8):
-            if DIPLO_PANEL_ROOT not in _roots(bus):
-                break
-            tgt = next((x.get("path") for x in nodes
-                        if str(x.get("id") or "") in ("button_cancel", "button_close")
-                        and x.get("visible")), None)
-            if tgt:
-                _bus(bus, "click", tgt)
-            time.sleep(1.0)
-        if DIPLO_PANEL_ROOT in _roots(bus):
-            sys.stderr.write("collect: ⚠ DIPLOMACY PANEL STILL OPEN after reading it -- it will "
-                             "block every later action this turn until something clears it\n")
-    _DEALABLE_CACHE.update(turn=ckey, factions=list(facs))
-    sys.stderr.write("collect: %d deal-able faction(s) read from the panel\n" % len(facs))
-    return facs
-
-
 def diplomacy_offers(bus, turn=None, epoch=None):
-    """Target-faction x term-combination offers."""
     return _diplo_offers_build(bus, turn, epoch,
                                _ev(bus, _LUA_DIPLO_TARGETS, timeout=30.0, allow_nil=True))
 
 
 def _parse_diplo_targets(raw):
-    """[{faction, at_war, allied, trade, their_vassal, standing}] from the wave-A payload;
-    None means the read itself failed (broken), [] means genuinely no relationships."""
     if raw is None or str(raw) in ("nil", "None"):
         return None
     targets = []
@@ -1574,21 +1557,16 @@ def _parse_diplo_targets(raw):
 
 
 def _diplo_offers_build(bus, turn, epoch, raw):
-    """Offers from a pre-fetched targets payload; the panel walk stays cached per (turn, epoch)."""
-    panel = dealable_factions(bus, turn, epoch)
     targets = _parse_diplo_targets(raw)
     if targets is None:
         sys.stderr.write("collect: DIPLOMACY TARGET READ FAILED -- no diplomacy will be offered this "
                          "snapshot. This is a broken read, NOT an empty world.\n")
         return []
-    if not targets and not panel:
-        sys.stderr.write("collect: diplomacy targets EMPTY (faction has no relationship with anyone "
-                         "and no non-zero standing) -- 0 diplomacy offers this snapshot\n")
+    if not targets:
+        sys.stderr.write("collect: diplomacy targets EMPTY from the cm proxy -- 0 diplomacy offers "
+                         "this snapshot. The panel is never opened to check; under-reporting is "
+                         "accepted over scraping a screen.\n")
         return []
-    if panel:
-        known = {t["faction"]: t for t in targets}
-        targets = [known.get(f, {"faction": f, "at_war": False, "allied": False, "trade": False,
-                                 "their_vassal": False, "standing": 0.0}) for f in panel]
     targets.sort(key=lambda t: -abs(t["standing"]))
     offers = []
     for t in targets:
@@ -1614,8 +1592,6 @@ def _diplo_offers_build(bus, turn, epoch, raw):
 
 
 def _bres(reply, what, allow_nil=False):
-    """A batched eval reply under _ev's exact laws: lua errors raise loudly, nil raises unless
-    the serial path allowed it. Bypassing this was a silent-training-data defect (review find)."""
     r = reply or {}
     if r.get("error"):
         _e = str(r["error"])
@@ -1628,19 +1604,12 @@ def _bres(reply, what, allow_nil=False):
 
 
 def snapshot(bus, active=None, diplo_epoch=None):
-    """{ts, campaign, world, entities:[{context_kind, context_id, state, offers}], profile}.
-
-    THREE batched bus round-trips (the mod executes every pending command in one tick), so the
-    reads are taken at decision time as before but land within the same 1-3 game ticks instead
-    of being smeared across ~13 serial round-trip floors. Wave A: dependency-free world reads.
-    Wave B: per-entity states+offers (needs A's entity lists). Wave C: move candidates (needs
-    B's positions/AP). The diplomacy PANEL walk stays cached per (turn, diplo_epoch)."""
     prof = {}
     t0 = time.time()
     ra = bus.send_batch([("eval", _LUA_CAMPAIGN), ("eval", _LUA_FACTION_RESOURCES),
                          ("eval", _LUA_RUINS), ("chars", ""), ("setts", ""), ("hostiles", ""),
                          ("eval", _LUA_STATIONED), ("eval", _LUA_DIPLO_TARGETS),
-                         ("eval", _LUA_ENEMY_AGENTS)], timeout=40.0)
+                         ("eval", _LUA_ENEMY_AGENTS), ("eval", _LUA_AP_ALL)], timeout=40.0)
     prof["wave_a_ms"] = int((time.time() - t0) * 1000)
     camp = _parse_campaign(_bres(ra[0], "campaign_state"))
     prof["campaign_state_engine_ms"] = camp.pop("_eval_ms", None)
@@ -1658,6 +1627,14 @@ def snapshot(bus, active=None, diplo_epoch=None):
     world["relations"] = _parse_diplo_targets(diplo_raw)
     sf = _parse_stationed(_bres(ra[6], "settlement_forces", allow_nil=True))
     stationed, citizenry = sf["stationed"], sf["citizenry"]
+    world["citizenry"] = sorted(citizenry)
+    ap_all = _parse_ap_all(_bres(ra[9], "ap_all"))
+    for c in world["armies"]:
+        ap = ap_all.get(str(c.get("cqi")))
+        if ap is None:
+            raise CollectError("no action points for character %s -- every entity the features "
+                               "read must carry AP in the pre-decision snapshot" % c.get("cqi"))
+        c.update(ap)
     lords = [str(c.get("cqi")) for c in world["armies"]
              if c.get("has_army") and str(c.get("cqi")) not in citizenry]
     heroes = [str(c.get("cqi")) for c in world["armies"] if not c.get("has_army")]
@@ -1680,6 +1657,7 @@ def snapshot(bus, active=None, diplo_epoch=None):
                      + [s["region"] for s in rsetts_t])
     wave_b = []
     wave_b.append(("eval", _LUA_ANCILLARY_POOL % {"fac": camp["faction_cqi"]}))
+    wave_b.append(("eval", _LUA_EQUIPPED_ALL))
     for cqi in lords:
         wave_b += [("eval", _LUA_LORD % {"cqi": cqi}),
                    ("eval", _LUA_LORD_OFFERS % {"cqi": cqi}),
@@ -1706,6 +1684,8 @@ def snapshot(bus, active=None, diplo_epoch=None):
     i = 0
     lord_data, hero_data, prov_data = {}, {}, {}
     anc_pool = _parse_ancillaries(_bres(rb[i], "ancillary_pool", allow_nil=True))
+    i += 1
+    equipped_all = _parse_ancillaries(_bres(rb[i], "equipped_all"))
     i += 1
     for cqi in lords:
         lord_data[cqi] = (_parse_lord(_bres(rb[i], "lord_state:%s" % cqi), cqi),
@@ -1749,12 +1729,13 @@ def snapshot(bus, active=None, diplo_epoch=None):
         ents.append({"context_kind": "lord", "context_id": str(cqi), "state": st,
                      "offers": _lord_offers_assemble(cqi, st, world, stationed, ev, rec,
                                                      rch_c, rch_s, moves.get(cqi),
-                                                     anc_pool, equipped)})
+                                                     anc_pool, equipped, equipped_all)})
     for cqi in heroes:
         st, ev, (rch_c, rch_s), equipped = hero_data[cqi]
         ents.append({"context_kind": "hero", "context_id": str(cqi), "state": st,
                      "offers": _hero_offers_assemble(cqi, st, ev, moves.get(cqi), world,
-                                                     rch_c, rch_s, anc_pool, equipped)})
+                                                     rch_c, rch_s, anc_pool, equipped,
+                                                     equipped_all)})
     t0 = time.time()
     camp = dict(camp, hero_type_counts=hero_type_counts(world))
     pools = (_lord_pools(bus, camp["faction_cqi"], _lord_subtypes(bus, camp["faction"]))

@@ -14,18 +14,25 @@ FORBIDDEN_KEYS = frozenset({"button_attack", "button_spectate"})
 MAX_ACTIONS_PER_TURN = 10
 MAX_ACTIONS_PER_ENTITY = 6
 
-EPSILON = 0.25
-BETA = 0.25
+EPSILON = 0.20
+BETA = 0.10
 
-FACTION_WIDE_CAPS = frozenset(("recruit_lord", "recruit_hero", "research", "rites"))
+FACTION_WIDE_CAPS = frozenset(("recruit_lord", "recruit_hero", "research", "rites",
+                               "building_dismantle"))
 PER_TURN_CAPS = {"recruit_lord": 1, "recruit_hero": 1, "recruit_unit": 4, "edict": 1,
                  "research": 1, "rites": 1,
                  "diplomacy": 1,
-                 "stance": 1, "hero_action": 3}
+                 "stance": 1, "hero_action": 3, "building_dismantle": 1}
+
+
+def _tally(values):
+    out = {}
+    for v in values:
+        out[v] = out.get(v, 0) + 1
+    return out
 
 
 def _cap_key(context_kind, context_id, action_type):
-    """Cap counter key: faction-wide types share one counter across every entity."""
     if action_type in FACTION_WIDE_CAPS:
         return ("faction", "*", action_type)
     return (context_kind, str(context_id), action_type)
@@ -43,6 +50,8 @@ class Policy:
         self.failed_types = set()
         self.entity_actions = {}
         self.type_actions = {}
+        self.last_drops = []
+        self.last_choice = {}
 
     def new_turn(self):
         self.retired.clear()
@@ -55,7 +64,6 @@ class Policy:
         self.retired.add((context_kind, str(context_id)))
 
     def note_result(self, pick, counted):
-        """A confirmed action advances that entity's counter; an unconfirmed one is blacklisted."""
         k = (pick["context_kind"], str(pick["context_id"]))
         tk = _cap_key(k[0], k[1], pick["action_type"])
         self.type_actions[tk] = self.type_actions.get(tk, 0) + 1
@@ -69,39 +77,46 @@ class Policy:
             self.failed_types.add(pick["action_type"])
 
     def eligible(self, ranked, actions_taken=0):
-        """Available, not battle-UI, not blacklisted, not belonging to a retired entity.
-        end_turn is not OFFERED before the 6th decision of a turn (operator, 2026-08-02);
-        a turn with nothing else eligible still ends via the loop's forced end-turn path."""
         out = []
+        self.last_drops = []
         for r in ranked:
-            if not r.get("available"):
-                continue
-            if r["action_type"] == "end_turn" and actions_taken < 5:
-                continue
-            if str(r.get("key")) in FORBIDDEN_KEYS:
-                continue
             k = (r["context_kind"], str(r["context_id"]))
-            if k in self.retired and r["action_type"] != "end_turn":
-                continue
-            if r["action_type"] in self.failed_types:
-                continue
-            if (k[0], k[1], r["action_type"], str(r["key"])) in self.blacklist:
-                continue
             cap = PER_TURN_CAPS.get(r["action_type"])
-            if cap is not None and self.type_actions.get(
+            reason = None
+            if not r.get("available"):
+                reason = "unavailable:%s" % (r.get("gate") or "no_gate_recorded")
+            elif r["action_type"] == "end_turn" and actions_taken < 5:
+                reason = "end_turn_before_6th_decision"
+            elif str(r.get("key")) in FORBIDDEN_KEYS:
+                reason = "forbidden_key"
+            elif k in self.retired and r["action_type"] != "end_turn":
+                reason = "entity_retired"
+            elif r["action_type"] in self.failed_types:
+                reason = "type_failed_this_turn"
+            elif (k[0], k[1], r["action_type"], str(r["key"])) in self.blacklist:
+                reason = "blacklisted_this_turn"
+            elif cap is not None and self.type_actions.get(
                     _cap_key(k[0], k[1], r["action_type"]), 0) >= cap:
-                continue
-            out.append(r)
+                reason = "per_turn_cap:%d" % cap
+            if reason is None:
+                out.append(r)
+            else:
+                self.last_drops.append(
+                    {"context_kind": k[0], "context_id": k[1], "action_type": r["action_type"],
+                     "key": r.get("key"), "rank": r.get("rank"), "reason": reason})
         return out
 
     def choose(self, record, actions_taken=0):
-        """(pick, ranked) -- the action to execute next, and the full scored table. pick is None
-        when nothing is eligible."""
         ranked = self.ranker.score(record)
         hot = self.ranker.ready
         for i, r in enumerate(ranked):
             r["rank"] = i + 1
         elig = self.eligible(ranked, actions_taken=actions_taken)
+        self.last_choice = {"hot": bool(hot), "n_ranked": len(ranked), "n_eligible": len(elig),
+                            "n_dropped": len(self.last_drops), "actions_taken": actions_taken,
+                            "drop_reasons": _tally(d["reason"] for d in self.last_drops),
+                            "eligible_types": _tally(r["action_type"] for r in elig),
+                            "mode": None, "roll": None}
         if not elig:
             return None, ranked
         roll = self.rng.random() if hot else 1.0
@@ -120,11 +135,11 @@ class Policy:
                 "params": best.get("params") or {},
                 "policy": mode,
                 "score": best.get("score"), "rank": best.get("rank")}
+        self.last_choice["mode"] = mode
+        self.last_choice["roll"] = round(roll, 4)
         return pick, ranked
 
     def _hier_random(self, elig):
-        """Hierarchical uniform: one of the AVAILABLE action types first, then one of that
-        type's actions -- a type with 12 sampled offers gets no more mass than one with 1."""
         pools = {}
         for r in elig:
             pools.setdefault(r["action_type"], []).append(r)
@@ -132,7 +147,6 @@ class Policy:
 
 
 def scores_for_store(ranked, limit=None):
-    """The ranking rows the recorder persists next to the offers."""
     rows = ranked if limit is None else ranked[:limit]
     return [{"context_kind": r["context_kind"], "context_id": r["context_id"],
              "action_type": r["action_type"], "key": r["key"], "score": r.get("score"),

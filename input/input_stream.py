@@ -1,7 +1,3 @@
-r"""input capture stream -- system-wide keyboard / mouse / focus.
-
-run(ctx) polls Win32 for the whole desktop and emits focus / mouse / key / move rows.
-"""
 from __future__ import annotations
 
 import ctypes
@@ -31,14 +27,12 @@ _u32 = ctypes.windll.user32 if hasattr(ctypes, "windll") else None
 
 
 def _real_cursor() -> tuple[int, int]:
-    """Current mouse position (x, y) in screen-absolute pixels via Win32 GetCursorPos."""
     p = wintypes.POINT()
     _u32.GetCursorPos(ctypes.byref(p))
     return p.x, p.y
 
 
 def _real_foreground() -> tuple[str, int]:
-    """(title, pid) of the focused window. Pure Win32 -- no game knowledge; ("", 0) on failure."""
     try:
         h = _u32.GetForegroundWindow()
         n = _u32.GetWindowTextLengthW(h)
@@ -52,12 +46,10 @@ def _real_foreground() -> tuple[str, int]:
 
 
 def _real_keystate(vk: int) -> bool:
-    """True if virtual-key `vk` is currently pressed (high bit of GetAsyncKeyState)."""
     return bool(_u32.GetAsyncKeyState(vk) & 0x8000)
 
 
 class Probes:
-    """The three injectable OS reads (cursor / foreground / key-state); defaults are the real Win32 calls."""
 
     def __init__(self, cursor=_real_cursor, foreground=_real_foreground, keystate=_real_keystate):
         self.cursor = cursor
@@ -66,7 +58,6 @@ class Probes:
 
 
 def run(ctx, probes: Probes | None = None) -> None:
-    """Poll every key, mouse button, mouse move and focus change, in every window, until ctx.is_running() flips False; sets ctx.shot_req on every mouse_down."""
     probes = probes or Probes()
     prev, last_move, last_pos, last_fg = {}, 0.0, None, None
     while ctx.is_running():

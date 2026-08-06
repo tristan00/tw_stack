@@ -1,7 +1,3 @@
-r"""actions stream -- per-entity ACTIONABLE-STATE collection into actions.sqlite (the 5th stream).
-
-run(ctx) sweeps lords and settlements via cco_queries at every new turn, plus on-demand refreshes.
-"""
 from __future__ import annotations
 
 import glob
@@ -47,7 +43,6 @@ def _write(con, ts, turn, kind, eid, atype, payload):
 
 
 def _current_turn(out_dir):
-    """Newest human faction row's (turn, faction) from logs/script_log_*.tail; (None, None) until a state row exists."""
     best = (None, None)
     for p in glob.glob(os.path.join(out_dir, "logs", "script_log_*.tail")):
         try:
@@ -69,7 +64,6 @@ def _current_turn(out_dir):
 
 
 def _sweep_entity(bus, con, ts, turn, kind, eid):
-    """Refresh ONE entity's rows. Raises CcoQueryError on a broken chain (caller reports)."""
     if kind == "settlement":
         sa = CQ.settlement_actions(bus, eid)
         _write(con, ts, turn, "settlement", eid, "building_slots",
@@ -86,7 +80,6 @@ def _sweep_entity(bus, con, ts, turn, kind, eid):
 
 
 def _full_sweep(bus, con, ctx, turn):
-    """All lords + all settlements. Returns (n_ok, n_err); every failure is loud."""
     ts = ctx.now()
     ents = CQ.list_entities(bus)
     _write(con, ts, turn, "campaign", "entities", "entities", ents)
@@ -111,7 +104,6 @@ def _full_sweep(bus, con, ctx, turn):
 
 
 def run(ctx, bus=None):
-    """Turn-start full sweeps + on-demand per-entity refreshes until ctx.is_running() flips."""
     bus = bus or Bus()
     swept_turn = None
     cur_dir = None

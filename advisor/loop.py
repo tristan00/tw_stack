@@ -8,6 +8,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 
 HUD_MISS_BUDGET = 12
 HUD_MISS_PAUSE = 5.0
+POST_ATTACK_ROW_WAIT = 1.0
 _last_beat_turn = [None]
 sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.join(r"D:\tw_stack", "decisions"))
@@ -22,11 +23,63 @@ from watchdog import Watchdog
 
 
 class CampaignLost(RuntimeError):
-    """The faction was destroyed."""
+    pass
+
+
+class CampaignStagnant(RuntimeError):
+    pass
 
 
 class GameStuck(RuntimeError):
-    """The watchdog saw no progress."""
+    pass
+
+
+GROWTH_WINDOW = 4
+GROWTH_LORD_WINDOW = 3
+GROWTH_MIN_GAIN = 1
+GROWTH_FIRST_CHECK_TURN = 4
+
+GROWTH_METRICS = (("settlements", "settlements", GROWTH_WINDOW),
+                  ("lord_level", "legendary lord level", GROWTH_LORD_WINDOW))
+
+
+def _growth_verdict(hist, turn):
+    t = int(turn or 0)
+    if t < GROWTH_FIRST_CHECK_TURN:
+        return False, {"reason": "before_first_check", "turn": t,
+                       "first_check_turn": GROWTH_FIRST_CHECK_TURN}
+    detail = {"turn": t, "min_gain": GROWTH_MIN_GAIN, "metrics": {}}
+    grew, evaluable = [], []
+    first_turn = min(hist) if hist else t
+    for key, label, window in GROWTH_METRICS:
+        then_turn = max(t - window, first_turn)
+        now = (hist.get(t) or {}).get(key)
+        then = (hist.get(then_turn) or {}).get(key) if then_turn < t else None
+        m = {"label": label, "window": t - then_turn, "now": now, "then": then,
+             "then_turn": then_turn}
+        if now is None or then is None:
+            m["gain"] = None
+        else:
+            m["gain"] = now - then
+            evaluable.append(key)
+            if now - then >= GROWTH_MIN_GAIN:
+                grew.append(key)
+        detail["metrics"][key] = m
+    detail["grew"] = grew
+    detail["evaluable"] = evaluable
+    if not evaluable:
+        detail["reason"] = "no_metric_evaluable"
+        return False, detail
+    detail["reason"] = "growing" if grew else "stagnant"
+    return not grew, detail
+
+
+def _growth_line(detail):
+    return " | ".join(
+        "%s %s over %d turns (%s -> %s)"
+        % (m["label"], "?" if m["gain"] is None else "%+d" % m["gain"],
+           m["window"], m["then"], m["now"])
+        for m in detail.get("metrics", {}).values())
 
 
 class TurnResult(dict):
@@ -37,11 +90,6 @@ NO_MODEL_DIR = r"D:\twdata\models\__cold_start__"
 
 
 def _verify_action_catalogues(log):
-    """Assert at campaign start that every offerable action can actually be executed.
-
-    Learning that a whole action class is dead one failed attempt at a time, mid-campaign, is how
-    41/41 hero actions sat unexecutable: each attempt reported only that it failed, never that the
-    catalogue behind it resolved nothing."""
     try:
         sys.path.insert(0, os.path.join(r"D:\tw_stack", "advisor", "reference"))
         import collect as C
@@ -57,11 +105,6 @@ def _verify_action_catalogues(log):
 
 def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
                  stuck_seconds=None, on_stuck=None, cold=False):
-    """Play `turns` turns. Returns the per-turn report rows (also written to loop_report.jsonl).
-
-    cold=True points the INTERRUPT ranker at a directory holding no model, so blocking screens
-    fall to cold_random too. The main policy is made cold by its caller; both heads must be cold
-    or the run is only half untrained."""
     pol = pol or P.Policy()
     TR.set_run_dir(run_dir)
     import diplo_stream as DS
@@ -80,9 +123,10 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
     act_hist = []
     act_counts = {}
     I.reset_answers()
-    I.set_chooser(lambda screen, options, campaign, panel=None, world=None: ranker.choose(
-        screen, options, F.stamp_action_counts(
-            F.stamp_prev_actions(dict(campaign or {}), act_hist), act_counts), panel, world))
+    I.set_chooser(lambda screen, options, campaign, panel=None, world=None, meta=None:
+                  ranker.choose(screen, options, F.stamp_action_counts(
+                      F.stamp_prev_actions(dict(campaign or {}), act_hist), act_counts),
+                      panel, world, meta))
     if ranker.ready:
         log("interrupt policy: trained(%d rows, screens=%s)"
             % ((ranker.meta or {}).get("rows", 0),
@@ -107,7 +151,18 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
                   stuck_seconds=stuck_seconds or STUCK_SECONDS,
                   log=lambda m: log("   [watchdog] %s" % m)).start()
     rows = []
+    growth_hist = {}
     diplo_epoch = [0]
+
+    def _carry(exc):
+        if getattr(exc, "rows", None) is None:
+            exc.rows = list(rows)
+        return exc
+
+    log("growth bar: survives on %s, first checked at turn %d"
+        % (" OR ".join("+%d %s over %d turns" % (GROWTH_MIN_GAIN, label, window)
+                       for _, label, window in GROWTH_METRICS),
+           GROWTH_FIRST_CHECK_TURN))
     try:
         for t in range(turns):
             if stuck["fired"]:
@@ -134,6 +189,25 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
                     raise CampaignLost("watchdog fired but the faction is DEAD -- defeat, "
                                        "not a stall (%s)" % stuck["reason"])
                 raise GameStuck("%s: %s" % (stuck["reason"], stuck["detail"]))
+            growth_hist[int(row["turn"] or 0)] = dict(row.get("state") or {})
+            done, verdict = _growth_verdict(growth_hist, row["turn"])
+            _append(report_path, dict(verdict, kind="growth_check", ts=time.time()))
+            if verdict["reason"] == "no_metric_evaluable":
+                log("   !! growth bar NOT evaluated at turn %s -- neither settlements nor lord "
+                    "level is readable over its window; the campaign runs on" % row["turn"])
+            elif verdict["reason"] != "before_first_check":
+                log("   growth: %s -> %s" % (_growth_line(verdict),
+                                             ("kept by " + ",".join(verdict["grew"]))
+                                             if verdict["grew"] else "NO GROWTH"))
+            if done:
+                stop = CampaignStagnant(
+                    "no growth at turn %s (%s), +%d required on either -- after %d turns played"
+                    % (verdict["turn"], _growth_line(verdict), GROWTH_MIN_GAIN, len(rows)))
+                stop.rows = list(rows)
+                stop.verdict = verdict
+                raise stop
+    except (CampaignLost, CampaignStagnant, GameStuck) as e:
+        raise _carry(e)
     finally:
         wd.stop()
         _drain_interrupts(run_dir, log)
@@ -150,8 +224,6 @@ SHOT_EVERY_TURNS = 5
 
 
 def _turn_trail(run_dir, executor, row, turn_index, log):
-    """One turn_trail.jsonl row per turn, plus a screenshot on turn 1, every SHOT_EVERY_TURNS and on
-    any abnormal ending. Never raises."""
     rec = {"ts": time.time(), "turn": row.get("turn"), "turn_index": turn_index,
            "actions": row.get("actions"), "confirmed": row.get("confirmed"),
            "ended_by": row.get("ended_by")}
@@ -187,9 +259,6 @@ _DIPLO_SCREENS = frozenset(("diplomacy_proposal", "diplomacy_notice", "ally_atta
 
 
 def _drain_interrupts(run_dir, log, diplo_epoch=None):
-    """Hand every interrupt-screen decision the launcher buffered to the recorder. Bumps the
-    diplomacy epoch when a diplomacy-family screen was answered (the dealable-panel walk
-    re-runs on the next snapshot -- operator cadence, 2026-08-02)."""
     try:
         import interrupts as I
         recs = I.drain_interrupt_records()
@@ -265,7 +334,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None, act_hist
             if st:
                 log("   ui state: cutscene=%s cinematic_ui=%s ui_hiding=%s"
                     % (st.get("cutscene"), st.get("cinematic_ui"), st.get("ui_hiding")))
-            if no_hud == HUD_MISS_BUDGET // 2:
+            if no_hud == 1:
                 try:
                     log("   forcing UI restore: %s" % executor.force_ui_restore())
                 except Exception as e:
@@ -306,7 +375,8 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None, act_hist
                                        "score", "exploit", "explore", "rank")}
                                      for r in (ranked or [])[:10]],
                    turn=turn, decision_id=decision_id, actions_taken=actions,
-                   n_offers=len(ranked or []))
+                   n_offers=len(ranked or []),
+                   choice=pol.last_choice, dropped=pol.last_drops)
         t_traced = time.time()
         timing = {"t_request": record.get("_t_request"), "t_received": record.get("_t_received"),
                   "collect_ms": record.get("_collect_ms"),
@@ -381,8 +451,8 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None, act_hist
             continue
         if str(pick.get("action_type", "")).startswith("attack"):
             _t = time.time()
-            executor.bus.wait_row(("panel", "battle_completed", "dilemma_issued"), timeout=2.5,
-                                  offset=pre_off,
+            executor.bus.wait_row(("panel", "battle_completed", "dilemma_issued"),
+                                  timeout=POST_ATTACK_ROW_WAIT, offset=pre_off,
                                   pred=lambda r: r.get("cmd") != "panel" or bool(r.get("opened")))
             pre = executor.resolve_interrupts()
             _hk_parts[0]["post_attack"] = int((time.time() - _t) * 1000)
@@ -438,17 +508,17 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None, act_hist
     camp = (last_record.get("campaign") or {})
     state = {"faction": camp.get("faction"), "settlements": camp.get("settlements"),
              "armies": camp.get("armies"), "treasury": camp.get("treasury"),
-             "income": camp.get("income"), "campaign_turn": camp.get("turn")}
-    log("   state: turn=%s settlements=%s armies=%s treasury=%s income=%s"
+             "income": camp.get("income"), "lord_level": camp.get("lord_level"),
+             "campaign_turn": camp.get("turn")}
+    log("   state: turn=%s settlements=%s armies=%s treasury=%s income=%s lord_level=%s"
         % (state["campaign_turn"], state["settlements"], state["armies"],
-           state["treasury"], state["income"]))
+           state["treasury"], state["income"], state["lord_level"]))
     return TurnResult({"kind": "turn", "turn": turn, "actions": actions, "confirmed": confirmed,
                        "ended_by": ended_by, "picks": picks, "target": target,
                        "state": state, "inter_turn": settle, "ts": time.time()})
 
 
 def _active_from(record, pol):
-    """The entities still in play: this sweep minus everything the policy retired."""
     lords, regions = [], []
     for e in record.get("entities") or []:
         k = (e["context_kind"], str(e["context_id"]))
@@ -462,7 +532,6 @@ def _active_from(record, pol):
 
 
 def _noop_record(pick):
-    """The verification record for a noop -- executed and confirmed."""
     return {"context_kind": pick["context_kind"], "context_id": pick["context_id"],
             "action_type": "noop", "key": "noop", "executed": True, "confirmed": True,
             "counted": True, "refusal": None, "policy": pick.get("policy"),
@@ -470,7 +539,6 @@ def _noop_record(pick):
 
 
 def _force_end_turn(run_dir, executor, decision_id, ranked, log):
-    """End the turn without the model having picked it; tagged `forced_end_turn`."""
     log("   forcing end_turn (loop decision, not the model's)")
     pick = {"context_kind": "campaign", "context_id": "campaign", "action_type": "end_turn",
             "key": "end_turn", "params": {}, "policy": "forced_end_turn"}
@@ -488,7 +556,6 @@ def _append(path, row):
 
 
 def verify_streams(run_dir):
-    """Per-stream counts plus the all_*/orphan_picks consistency flags."""
     sys.path.insert(0, os.path.join(r"D:\tw_stack", "decisions"))
     from store import DecisionStore
     s = DecisionStore(run_dir)
