@@ -1,6 +1,6 @@
-"""interrupts.py -- driving screens that appear without the advisor asking for them."""
 from __future__ import annotations
 
+import json
 import sys
 import time
 
@@ -53,6 +53,7 @@ ADVANCE_PREFERENCE = (
 RESULTS_DECLINED = frozenset((
     "button_call_up_the_trolls",
     "button_hef_intrigue_at_the_court",
+    "button_white_tower",
 ))
 KNOWN_RESULTS_CONTROLS = CAPTIVE_OPTIONS | frozenset(ADVANCE_PREFERENCE) | RESULTS_DECLINED
 PREBATTLE_DECLINED = FORBIDDEN_CLICK_IDS | PREBATTLE_NEVER | frozenset(PREBATTLE_CHOOSABLE) | frozenset((
@@ -75,7 +76,6 @@ DISPLAY_PREFIXES = ("unit_",)
 
 
 def _unknown_controls(ctrls, known):
-    """`button_*` ids in `ctrls` that are neither in `known` nor in DISPLAY_CONTROLS."""
     return sorted(i for i in ctrls
                   if str(i).startswith("button_")
                   and i not in known and i not in DISPLAY_CONTROLS)
@@ -89,16 +89,10 @@ _LAST_SCORES = [None]
 
 
 def set_chooser(fn):
-    """Install the chooser: fn(screen, options, campaign, panel, world) -> (option, policy,
-    scores). `panel` is the screen's own forecast where it has one (pre-battle), else None;
-    `campaign`/`world` are the last decision snapshot, via set_snapshot. Required."""
     _CHOOSER[0] = fn
 
 
 def set_snapshot(campaign, world=None):
-    """The last decision snapshot, passed to the chooser as the screen's state. Both halves
-    matter: the interrupt trainer features off this same pre-screen snapshot, so a chooser
-    handed only the campaign scores against a half-empty state row."""
     _CAMPAIGN[0] = campaign
     _WORLD[0] = world
 
@@ -111,8 +105,7 @@ def _world_hint():
     return _WORLD[0]
 
 
-def _choose(screen, options, campaign=None, panel=None):
-    """Pick one of `options` via the installed chooser; a pick outside `options` raises."""
+def _choose(screen, options, campaign=None, panel=None, meta=None):
     opts = sorted(options)
     if not opts:
         return None
@@ -122,7 +115,7 @@ def _choose(screen, options, campaign=None, panel=None):
             "no interrupt chooser installed -- the advisor owns this decision and must call "
             "interrupts.set_chooser() before driving any screen. Refusing to invent a policy in "
             "the launcher (screen=%s, offered=%s)" % (screen, opts))
-    got, policy, scores = fn(screen, opts, campaign, panel, _world_hint())
+    got, policy, scores = fn(screen, opts, campaign, panel, _world_hint(), meta)
     if got not in options:
         raise RuntimeError(
             "chooser returned %r which is NOT among the legal options %s for %s. Taking it anyway "
@@ -150,7 +143,6 @@ UNHANDLED_LOG = r"D:/twdata/runs/human/unhandled_screens.jsonl"
 
 
 def _report_unhandled(bus, screen, unknown, offered, root=None):
-    """Append an unhandled-option record (with screenshot) to UNHANDLED_LOG. Never raises."""
     import json
     rec = {"ts": time.time(), "when": time.strftime("%Y-%m-%d %H:%M:%S"), "screen": screen,
            "unknown": list(unknown), "offered": list(offered), "root": root}
@@ -187,7 +179,7 @@ def _report_unhandled(bus, screen, unknown, offered, root=None):
 
 
 class UnhandledScreen(BaseException):
-    """An interrupt screen offered an option this code cannot pick or record."""
+    pass
 ACCEPT_TOKENS = ("accept", "confirm", "button_ok", "button_yes")
 DECLINE_TOKENS = ("decline", "reject", "refuse", "cancel", "close", "no_deal")
 DIPLOMACY_NEVER_CLICK_PREFIXES = ("diplomatic_option",)
@@ -205,6 +197,23 @@ def roots(bus):
         return []
 
 
+def _refusal(gone, clicked):
+    if gone is None:
+        return "confirm_unreadable_bus_failure"
+    if gone:
+        return None
+    return "command_silently_refused" if clicked else "execute_failed"
+
+
+def _root_gone(bus, root, tries=3, pause=0.4):
+    for _ in range(tries):
+        try:
+            return root not in nav.visible_roots(bus)
+        except Exception:
+            time.sleep(pause)
+    return None
+
+
 def _wait_root(bus, root, tries=30, pause=1.0):
     for _ in range(tries):
         if root in roots(bus):
@@ -214,6 +223,33 @@ def _wait_root(bus, root, tries=30, pause=1.0):
 
 
 CLICK_LOG = []
+
+
+_UI_HIDING = [None]
+
+_LUA_UI_HIDING = ("local ok,v=pcall(function() return cm:is_ui_hiding_enabled() end) "
+                  "if not ok then return 'nil' end return tostring(v)")
+
+
+def _sample_ui_hiding(bus, after_path):
+    try:
+        r = bus.send("eval", _LUA_UI_HIDING, timeout=6.0) or {}
+    except Exception:
+        return None
+    raw = str(r.get("result"))
+    now = True if raw == "true" else (False if raw == "false" else None)
+    prev = _UI_HIDING[0]
+    _UI_HIDING[0] = now
+    if now is True and prev is not True:
+        sys.stderr.write("interrupts: !! UI HIDING FLIPPED ON immediately after this click: %s "
+                         "(previous sample=%s)\n" % (after_path, prev))
+    try:
+        import trace as TR
+        TR.emit("ui_hiding_sample", path=after_path, ui_hiding=now, previous=prev,
+                flipped_on=bool(now is True and prev is not True))
+    except Exception:
+        pass
+    return now
 
 
 def _click(bus, path, settle=1.5):
@@ -227,6 +263,7 @@ def _click(bus, path, settle=1.5):
     ok = bool(r.get("clicked"))
     CLICK_LOG.append((time.time(), path, ok))
     sys.stderr.write("interrupts: CLICK %s -> clicked=%s\n" % (path, ok))
+    _sample_ui_hiding(bus, path)
     deadline = time.time() + settle
     while time.time() < deadline:
         time.sleep(0.3)
@@ -236,7 +273,6 @@ def _click(bus, path, settle=1.5):
 
 
 def evidence(bus, why, shots_dir=None):
-    """Screenshot + recent clicks + visible roots; returns the report dict."""
     import os
     import subprocess
     rep = {"why": why, "roots": roots(bus), "ts": time.time(),
@@ -260,7 +296,6 @@ def evidence(bus, why, shots_dir=None):
 
 
 def _found(bus, path):
-    """Found AND visible AND in a clickable state."""
     try:
         r = bus.send("find", path, timeout=8.0) or {}
         res = r.get("result") or {}
@@ -279,31 +314,41 @@ def _tree(bus, root, depth=22, nodes=4000):
 
 
 def cancel_declare_war(bus):
-    """Click a "Cancel Move" control in any non-base root. Returns the steps taken."""
     steps = []
     for root in [x for x in roots(bus)
                  if x not in nav.BASE_ROOTS and x not in DIPLOMACY_HUD_ROOTS
                  and x not in BENIGN_PANELS]:
-        target = None
-        for n in _tree(bus, root):
-            nid = str(n.get("id") or "").lower()
+        tree = _tree(bus, root)
+        targets = {}
+        for n in tree:
+            nid = str(n.get("id") or "")
             txt = str(n.get("text") or "").strip().lower()
             if not n.get("visible") or str(n.get("state")) not in _CLICKABLE:
                 continue
-            if txt in ("cancel move", "cancel") or "cancel_move" in nid or "button_cancel" in nid:
-                target = n.get("path")
-                break
-        if target is None:
+            if (txt in ("cancel move", "cancel") or "cancel_move" in nid.lower()
+                    or "button_cancel" in nid.lower()) and nid not in targets:
+                targets[nid] = n.get("path")
+        if not targets:
             continue
-        if _click(bus, target, settle=2.0):
+        labels = _control_labels(tree, targets)
+        opts = {k: {"context": None, "text": labels.get(k) or k,
+                    "dilemma_id": root, "option_id": k, "payload": [], "subtree": []}
+                for k in targets}
+        key = _choose("declare_war_cancel", sorted(opts), _campaign_hint(), meta=opts)
+        t0 = time.time()
+        clicked = _click(bus, targets[key], settle=2.0)
+        gone = _root_gone(bus, root)
+        _record_choice("declare_war_cancel", root, opts, key,
+                       extra={"tree": tree, "root_context": root},
+                       executed=clicked, confirmed=gone,
+                       refusal=_refusal(gone, clicked),
+                       latency_ms=int((time.time() - t0) * 1000))
+        if clicked:
             steps.append("declare_war_cancelled:%s" % root)
-        if root in roots(bus):
-            sys.stderr.write("interrupts: %s still open after cancel\n" % root)
     return steps
 
 
 def diplomacy_roots(bus, r=None):
-    """Visible diplomacy roots, excluding DIPLOMACY_HUD_ROOTS."""
     r = roots(bus) if r is None else r
     return [x for x in r if "diplo" in str(x).lower() and x not in DIPLOMACY_HUD_ROOTS]
 
@@ -312,7 +357,6 @@ DEFEAT_ROOT_TOKENS = ("defeat", "victory", "campaign_end", "game_over", "campaig
 
 
 def defeat_screen(bus, r=None):
-    """Root name matching DEFEAT_ROOT_TOKENS, or None. Root-only: never walks a tree."""
     r = roots(bus) if r is None else r
     for x in r:
         low = str(x).lower()
@@ -329,7 +373,6 @@ DEFEAT_PROBE = (
 
 
 def defeated_probe(bus):
-    """Engine-side death check: True/False, or None when the probe itself failed (logged)."""
     try:
         r = bus.send("eval", DEFEAT_PROBE, timeout=10.0) or {}
     except Exception as e:
@@ -349,7 +392,6 @@ def defeated_probe(bus):
 
 
 def pending(bus):
-    """Which interrupt kinds are on screen: a subset of {'battle', 'diplomacy', 'popup'}."""
     r = roots(bus)
     out = set()
     if r and "hud_campaign" not in r:
@@ -369,10 +411,6 @@ def in_battle(bus):
 
 
 def prebattle_forecast(bus):
-    """The autoresolve forecast the panel shows: {result, casualties}, each text + state.
-
-    dy_result / dy_casualties are present whatever the faction (verified on a Skaven panel
-    carrying its own Menace Below elements)."""
     out = {}
     for n in _tree(bus, "popup_pre_battle", 30, 40000):
         i = str(n.get("id") or "")
@@ -383,7 +421,6 @@ def prebattle_forecast(bus):
 
 
 def resolve_prebattle(bus):
-    """Drive the open pre-battle panel forward. Returns the control used, or False."""
     ctrls = _clickable_controls(bus, "popup_pre_battle")
     unknown = _unknown_controls(ctrls, KNOWN_PREBATTLE_CONTROLS)
     if unknown:
@@ -449,7 +486,6 @@ def resolve_prebattle(bus):
 
 
 def _results_appeared(bus, offset, timeout=20.0):
-    """Battle resolved: the mod's battle_completed/panel row, else the results root."""
     deadline = time.time() + timeout
     off = offset
 
@@ -472,7 +508,6 @@ def _results_appeared(bus, offset, timeout=20.0):
 
 
 def _clickable_controls(bus, root="popup_battle_results"):
-    """{id: path} for every visible+clickable node under `root`."""
     out = {}
     for n in _tree(bus, root, 22, 4000):
         if not n.get("visible") or str(n.get("state")) not in _CLICKABLE:
@@ -484,7 +519,6 @@ def _clickable_controls(bus, root="popup_battle_results"):
 
 
 def handle_results(bus):
-    """Drive the post-battle panel to closure. Returns the steps performed."""
     steps = []
     last, repeats, idle_waits = None, 0, 0
     for _ in range(4):
@@ -539,7 +573,6 @@ def handle_results(bus):
 
 
 def occupy(bus):
-    """Pick one of the captured settlement's options. Returns the label clicked, or None."""
     opts = {}
     for n in _tree(bus, "settlement_captured", 22, 3000):
         if n.get("id") == "dy_option" and n.get("text"):
@@ -568,7 +601,6 @@ def occupy(bus):
 
 
 def resolve_battle(bus, max_rounds=4):
-    """Drive battle screens, stopping as soon as a round leaves the root set unchanged."""
     steps = []
     for _ in range(max_rounds):
         before = tuple(roots(bus))
@@ -588,7 +620,6 @@ def resolve_battle(bus, max_rounds=4):
 
 
 def acknowledge_war_declared(bus, open_roots):
-    """Acknowledge a 'faction has declared war on you' notification. Returns the steps taken."""
     steps = []
     for root in open_roots:
         if root in nav.BASE_ROOTS or root in DIPLOMACY_HUD_ROOTS or root in BENIGN_PANELS:
@@ -596,25 +627,32 @@ def acknowledge_war_declared(bus, open_roots):
         tree = _tree(bus, root)
         if not any(WAR_DECLARED_MARKER in str(n.get("text") or "").lower() for n in tree):
             continue
-        target = None
+        targets = {}
         for n in tree:
-            nid = str(n.get("id") or "").lower()
+            nid = str(n.get("id") or "")
             if (n.get("visible") and str(n.get("state")) in _CLICKABLE
-                    and any(t in nid for t in ACCEPT_TOKENS)):
-                target = (str(n.get("id")), n.get("path"))
-                break
-        if target is None:
-            _report_unhandled(bus, "war_declared", ["no accept-family control"], [], root=root)
-            continue
-        opts = {target[0]: {"context": None, "text": "acknowledge war declaration"}}
+                    and any(t in nid.lower() for t in ACCEPT_TOKENS)
+                    and nid not in targets):
+                targets[nid] = n.get("path")
+        if not targets:
+            _report_unhandled(bus, "war_declared", ["no accept-family control"],
+                              sorted(_clickable_controls(bus, root)), root=root)
+            raise UnhandledScreen(
+                "war_declared notice on %s offers no accept-family control -- refusing to leave a "
+                "blocking screen unanswered or to guess at it. clickable=%s"
+                % (root, sorted(_clickable_controls(bus, root))))
+        labels = _control_labels(tree, {k: v for k, v in targets.items()})
+        opts = {k: {"context": None, "text": labels.get(k) or k,
+                    "dilemma_id": root, "option_id": k, "payload": [], "subtree": []}
+                for k in targets}
+        key = _choose("war_declared", sorted(opts), _campaign_hint(), meta=opts)
         t0 = time.time()
-        clicked = _click(bus, target[1], settle=2.0)
-        gone = root not in roots(bus)
-        _record_choice("war_declared", root, opts, target[0],
-                       extra={"tree": tree},
+        clicked = _click(bus, targets[key], settle=2.0)
+        gone = _root_gone(bus, root)
+        _record_choice("war_declared", root, opts, key,
+                       extra={"tree": tree, "root_context": root},
                        executed=clicked, confirmed=gone,
-                       refusal=None if gone else ("command_silently_refused" if clicked
-                                                  else "execute_failed"),
+                       refusal=_refusal(gone, clicked),
                        latency_ms=int((time.time() - t0) * 1000))
         if clicked:
             steps.append("war_declared_acknowledged:%s" % root)
@@ -622,7 +660,6 @@ def acknowledge_war_declared(bus, open_roots):
 
 
 def answer_diplomacy(bus):
-    """Answer an incoming proposal with one of its DECLINE controls. Returns the steps taken."""
     steps = []
     for root in diplomacy_roots(bus):
         answers = {}
@@ -664,8 +701,7 @@ def answer_diplomacy(bus):
         _record_choice("diplomacy", root, detail, want,
                        extra={"answer": kind, "tree": tree},
                        executed=clicked, confirmed=gone,
-                       refusal=None if gone else ("command_silently_refused" if clicked
-                                                  else "execute_failed"),
+                       refusal=_refusal(gone, clicked),
                        latency_ms=int((time.time() - t0) * 1000))
         try:
             import diplo_stream as DS
@@ -692,13 +728,10 @@ _ANSWER_TTL = 180.0
 
 
 def reset_answers():
-    """New campaign: no held answer from a previous campaign may survive."""
     _ANSWER_MEMO.clear()
 
 
 def _sticky_choice(screen, root, options, panel=None):
-    """The advisor's pick for `root`, chosen ONCE and held while the screen persists, so a retry
-    re-clicks the SAME answer instead of re-rolling a war decision. tries counts attempts."""
     m = _ANSWER_MEMO.get(root)
     if m and m.get("want") in options and time.time() - m.get("ts", 0) <= _ANSWER_TTL:
         m["tries"] += 1
@@ -720,8 +753,6 @@ def _await_root_gone(bus, root, limit=6.0):
 
 
 def _screen_facts(tree):
-    """Analysis extras parsed from a diplomacy screen tree, best-effort; the embedded tree
-    stays the truth. Ranks/reliability appear once per faction panel, so they are lists."""
     facts = {"strength_ranks": [], "reliability": [], "settlements": None}
     for n in tree or []:
         t = str(n.get("text") or "").strip()
@@ -736,8 +767,6 @@ def _screen_facts(tree):
 
 
 def _drive_decision(bus, root, kind, opts, detail, extra):
-    """Click the held pick for a decision screen. Bounded retries (same pick), then give up to
-    the watchdog; exactly ONE record per screen appearance -- at resolution or at the final try."""
     steps = []
     m = _sticky_choice(kind, root, opts)
     if m["tries"] > _ANSWER_TRIES:
@@ -756,8 +785,7 @@ def _drive_decision(bus, root, kind, opts, detail, extra):
         _record_choice(kind, root, detail, want,
                        extra=dict(extra, answer=detail[want]["answer"]),
                        executed=clicked, confirmed=gone,
-                       refusal=None if gone else ("command_silently_refused" if clicked
-                                                  else "execute_failed"),
+                       refusal=_refusal(gone, clicked),
                        latency_ms=int((time.time() - t0) * 1000))
         try:
             import diplo_stream as DS
@@ -781,7 +809,6 @@ def _drive_decision(bus, root, kind, opts, detail, extra):
 
 
 def _first_text(nodes, node_id, path_token=None):
-    """Text of the first visible node with id `node_id` (optionally path-filtered), else None."""
     for n in nodes:
         if str(n.get("id") or "") != node_id or not n.get("visible"):
             continue
@@ -794,16 +821,6 @@ def _first_text(nodes, node_id, path_token=None):
 
 
 def proposal_options(nodes):
-    """{answer_id: path} for an incoming diplomacy screen, {} when `nodes` is not one.
-
-    Three states exist in the 20260801 dump corpus (77 dumps): a PROPOSAL offers accept+cancel
-    both clickable (14/14 observed); a NOTICE (e.g. treaty termination) has button_accept only --
-    button_cancel absent from the tree entirely -- and accept is an acknowledgment (2/2 observed);
-    a decline that is present but unclickable was never observed and raises rather than guesses.
-    The incoming marker is button_accept visible+clickable; the 'Waiting on player...' labels are
-    visible=false in every dump. v1 policy (operator, 2026-08-01): accept/decline only --
-    button_counteroffer is NOT an option.
-    """
     out, present, odd = {}, set(), set()
     for n in nodes:
         nid = str(n.get("id") or "")
@@ -834,14 +851,6 @@ def proposal_options(nodes):
 
 
 def answer_incoming_proposal(bus):
-    """Answer an incoming proposal on the diplomacy dropdown: the advisor picks accept or decline.
-
-    Replaces two wrong behaviours: answer_diplomacy never saw this root (DIPLOMACY_HUD_ROOTS),
-    and nav.close_popups treated button_accept as a dismiss -- i.e. blind-accepted the deal.
-    Caveat (accepted): if the OUTGOING walk strands its negotiation-response screen (close_panel
-    raised), that screen also shows accept/cancel and gets answered here as if incoming -- the
-    advisor deciding a stranded negotiation beats a stuck campaign.
-    """
     if PROPOSAL_ROOT not in roots(bus):
         return []
     tree = _tree(bus, PROPOSAL_ROOT)
@@ -878,14 +887,6 @@ ALLY_ATTACKED_FURNITURE = frozenset(("button_txt", "button_flame", "button_paren
 
 
 def ally_attacked_options(nodes):
-    """{decision_id: path} for a call-to-arms screen. Raises UnhandledScreen when the screen
-    does not offer both a join and a decline, or offers a join control outside the known set.
-
-    Grounded in dump 1785619114999 (offensive variant): button_join_aggressor visible+active,
-    decline_button visible+active, button_join_defender present but hidden. The defensive
-    variant has never been tree-dumped; deriving from visibility handles it the moment it is.
-    Ids like button_txt/button_flame/option1_text are display furniture of the join assembly.
-    """
     out, unknown = {}, []
     for n in nodes:
         nid = str(n.get("id") or "")
@@ -901,19 +902,14 @@ def ally_attacked_options(nodes):
             "ally_attacked offers UNKNOWN decision control(s) %s -- add each to "
             "ALLY_ATTACKED_DECISIONS so it can be both picked and recorded. visible known=%s"
             % (sorted(unknown), sorted(out)))
-    if "decline_button" not in out or not any(k.startswith("button_join") for k in out):
+    if not out:
         raise UnhandledScreen(
-            "ally_attacked variant without a clickable join+decline pair (visible decisions=%s) "
-            "-- this code cannot answer it and will not dismiss a war decision" % sorted(out))
+            "ally_attacked offers no clickable decision at all -- refusing to guess. "
+            "visible known=%s" % sorted(out))
     return out
 
 
 def answer_ally_attacked(bus):
-    """Answer a call-to-arms: the advisor picks join (whichever side is offered) or decline.
-
-    Both options are real decisions -- join enters a war; decline breaks the alliance and costs
-    reliability -- so the pick is recorded like every other interrupt decision.
-    """
     steps = []
     if ALLY_ATTACKED_ROOT not in roots(bus):
         return steps
@@ -937,12 +933,10 @@ _stuck_sig = [None]
 
 
 def forget_stuck():
-    """Clear the stuck-screen memo so the next stuck screen is retried."""
     _stuck_sig[0] = None
 
 
 def choose_dilemma(bus, open_roots):
-    """Answer a dilemma by clicking one of its choice records. Returns the steps taken."""
     steps = []
     for root in open_roots:
         if (root in nav.BASE_ROOTS or root in DIPLOMACY_HUD_ROOTS or root in BENIGN_PANELS
@@ -954,24 +948,28 @@ def choose_dilemma(bus, open_roots):
         if not found:
             ctrls = _clickable_controls(bus, root)
             actionable = {i: p for i, p in ctrls.items()
-                          if str(i).startswith("button_")
-                          and i not in SCROLL_CHROME_IDS and i not in DISPLAY_CONTROLS}
+                          if i not in SCROLL_CHROME_IDS and i not in DISPLAY_CONTROLS}
             if not actionable:
                 continue
             ack = sorted(i for i in actionable
                          if any(t in i.lower() for t in ACCEPT_TOKENS)
                          or i in ("button_dismiss", "button_close"))
+            if len(actionable) == 1:
+                ack = sorted(actionable)
             if ack and len(ack) == len(actionable):
                 tree = _tree(bus, root)
-                opts = {i: {"context": None, "text": "acknowledge event"} for i in ack}
-                key = ack[0]
+                labels = _control_labels(tree, actionable)
+                opts = {i: {"context": None, "text": labels.get(i) or i,
+                            "dilemma_id": root, "option_id": i,
+                            "payload": [], "subtree": []} for i in ack}
+                key = _choose("event_ack", sorted(opts), _campaign_hint(), meta=opts)
                 t0 = time.time()
                 clicked = _click(bus, actionable[key], settle=2.0)
-                gone = root not in roots(bus)
-                _record_choice("event_ack", root, opts, key, extra={"tree": tree},
+                gone = _root_gone(bus, root)
+                _record_choice("event_ack", root, opts, key,
+                               extra={"tree": tree, "root_context": root, "dilemma_id": root},
                                executed=clicked, confirmed=gone,
-                               refusal=None if gone else ("command_silently_refused" if clicked
-                                                          else "execute_failed"),
+                               refusal=_refusal(gone, clicked),
                                latency_ms=int((time.time() - t0) * 1000))
                 if clicked:
                     steps.append("event_ack:%s:%s" % (root, key))
@@ -982,25 +980,66 @@ def choose_dilemma(bus, open_roots):
                 "dilemma %s is open but no choice records were found under %s -- refusing to click "
                 "anything. clickable=%s" % (root, DILEMMA_LIST, sorted(ctrls)))
         opts = {k: v["path"] for k, v in found.items()}
-        detail = {"root": root, "root_context": None,
-                  "options": {k: {"context": v["context"], "text": v["text"]}
+        before_tree = _tree(bus, root)
+        _require_choice_data(bus, root, found)
+        dilemma_id = sorted({v["dilemma_id"] for v in found.values()})[0]
+        detail = {"root": root, "root_context": dilemma_id,
+                  "options": {k: {"context": v["context"], "text": v["text"],
+                                  "dilemma_id": v["dilemma_id"], "option_id": v["option_id"],
+                                  "payload": v["payload"], "subtree": v["subtree"]}
                               for k, v in found.items()}}
-        key = _choose("dilemma", sorted(opts), _campaign_hint())
-        sys.stderr.write("interrupts: dilemma %s -- %d options -> %r\n" % (root, len(opts), key))
+        key = _choose("dilemma", sorted(opts), _campaign_hint(), meta=found)
+        sys.stderr.write("interrupts: dilemma %s (%s) -- %d options -> %r\n"
+                         % (root, dilemma_id, len(opts), key))
         t0 = time.time()
         clicked = _click(bus, opts[key], settle=2.5)
-        gone = root not in roots(bus)
+        gone = _root_gone(bus, root)
         if clicked:
             steps.append("dilemma:%s:%s" % (root, key))
         _record_choice("dilemma", root, detail["options"], key,
                        extra={"root_context": detail.get("root_context"),
-                              "tree": _tree(bus, root)},
+                              "dilemma_id": dilemma_id, "tree": before_tree},
                        executed=clicked, confirmed=gone,
-                       refusal=None if gone else ("command_silently_refused" if clicked
-                                                  else "execute_failed"),
+                       refusal=_refusal(gone, clicked),
                        latency_ms=int((time.time() - t0) * 1000))
         break
     return steps
+
+
+def _control_labels(tree, actionable):
+    texts = {str(n.get("path") or ""): str(n.get("text") or "").strip()
+             for n in tree if str(n.get("text") or "").strip() and n.get("visible")}
+    out = {}
+    for cid, path in actionable.items():
+        label = texts.get(path)
+        if not label:
+            label = next((t for p, t in texts.items() if p.startswith(path + "|")), None)
+        if label:
+            out[cid] = label
+    return out
+
+
+def _require_choice_data(bus, root, found):
+    problems = []
+    ids = sorted({v.get("dilemma_id") for v in found.values()})
+    if len(ids) != 1 or not ids[0]:
+        problems.append("dilemma_id not single and non-empty: %s" % ids)
+    opt_ids = [v.get("option_id") for v in found.values()]
+    if any(not o for o in opt_ids):
+        problems.append("option_id missing on %d of %d options"
+                        % (sum(1 for o in opt_ids if not o), len(opt_ids)))
+    if len(set(opt_ids)) != len(opt_ids):
+        problems.append("option_id not unique: %s" % sorted(opt_ids))
+    unlabelled = sorted(v.get("option_id") for v in found.values() if not v.get("text"))
+    if unlabelled:
+        problems.append("no label text for option(s) %s" % unlabelled)
+    if not problems:
+        return
+    _report_unhandled(bus, "dilemma", problems, sorted(found), root=root)
+    raise UnhandledScreen(
+        "DILEMMA DATA INCOMPLETE on %s with %d options -- %s. Refusing to answer or record: an "
+        "unlabelled or unidentified choice makes the whole corpus unusable. records=%s"
+        % (root, len(found), "; ".join(problems), sorted(found)))
 
 
 _INTERRUPT_LOG = []
@@ -1008,10 +1047,6 @@ _INTERRUPT_LOG = []
 
 def _record_choice(kind, root, options, chosen, extra=None,
                    executed=None, confirmed=None, refusal=None, latency_ms=None):
-    """Buffer one interrupt-screen decision. `options` is {id: {"context":..., "text":...}}.
-
-    `confirmed` comes only from a post-assert on game state, never from a click reporting True.
-    """
     confirmed_b = None if confirmed is None else bool(confirmed)
     executed_b = None if executed is None else bool(executed)
     counted = None if confirmed_b is None else bool(executed_b and confirmed_b)
@@ -1029,14 +1064,12 @@ def _record_choice(kind, root, options, chosen, extra=None,
 
 
 def drain_interrupt_records():
-    """Take and clear everything recorded since the last drain."""
     out = list(_INTERRUPT_LOG)
     del _INTERRUPT_LOG[:]
     return out
 
 
 def _options_of(bus, root, ids):
-    """{id: {"context","text"}} for the given control ids, read from the tree."""
     out = {}
     try:
         for n in _tree(bus, root, 22, 4000):
@@ -1055,11 +1088,34 @@ DILEMMA_MARKER = "dilemma_active"
 DILEMMA_LIST = "dilemma_list"
 
 
+
+
+
+def _read_tree_or_die(bus, root, tries=3, pause=0.4, timeout=2.0):
+    for attempt in range(tries):
+        try:
+            r = bus.send("tree", "%s %d %d" % (root, 22, 4000), timeout=timeout) or {}
+        except Exception as e:
+            sys.stderr.write("interrupts: dilemma tree read %d/%d on %s -> %s\n"
+                             % (attempt + 1, tries, root, repr(e)[:80]))
+            time.sleep(pause)
+            continue
+        nodes = r.get("nodes") or []
+        if nodes:
+            return nodes
+        sys.stderr.write("interrupts: dilemma tree read %d/%d on %s -> empty reply\n"
+                         % (attempt + 1, tries, root))
+        time.sleep(pause)
+    raise UnhandledScreen(
+        "could not read the %s tree in %d attempts at %.0fs -- refusing to answer a dilemma whose "
+        "options were never read. This is a bus failure, not an empty panel."
+        % (root, tries, timeout))
+
+
 def _dilemma_options(bus, root):
-    """{record: {"path","text","context"}} for each path segment directly under DILEMMA_LIST."""
-    tree = _tree(bus, root, 22, 4000)
+    tree = _read_tree_or_die(bus, root)
     texts = [(str(n.get("path") or ""), str(n.get("text") or "").strip())
-             for n in tree if str(n.get("text") or "").strip()]
+             for n in tree if str(n.get("text") or "").strip() and n.get("visible")]
     out = {}
     for n in tree:
         if not n.get("visible") or str(n.get("state")) not in _CLICKABLE:
@@ -1076,19 +1132,34 @@ def _dilemma_options(bus, root):
         if prev is not None and len(prev["path"]) <= len(path):
             continue
         sub = "|".join(parts[:i + 2])
-        label = sorted(t for p, t in texts if p == sub or p.startswith(sub + "|"))
-        out[record] = {"path": path, "text": (label[0] if label else None),
+        label = next((t for p, t in texts if p == sub + "|choice_button|button_txt"), None)
+        payload = [t for p, t in texts if p.startswith(sub + "|payload_list|")]
+        out[record] = {"path": path, "text": label, "payload": payload,
+                       "subtree": [dict(x) for x in tree
+                                   if str(x.get("path") or "").startswith(sub)],
                        "context": (str(n["context"]) if n.get("context") else None)}
-    return out
+    return _with_identity(out)
+
+
+def _with_identity(found):
+    import os as _os
+    records = sorted(found)
+    shared = _os.path.commonprefix(records) if len(records) > 1 else ""
+    for r in records:
+        found[r]["dilemma_id"] = shared or r
+        found[r]["option_id"] = r[len(shared):] or r
+    return found
+
+
 
 
 def _is_dilemma(bus, root):
-    """True if any node path under `root` contains DILEMMA_MARKER."""
-    return any(DILEMMA_MARKER in str(n.get("path") or "") for n in _tree(bus, root, 22, 4000))
+    tree = _read_tree_or_die(bus, root)
+    return any(DILEMMA_LIST + "|" in str(n.get("path") or "") and n.get("visible")
+               for n in tree)
 
 
 def resolve(bus, max_rounds=6):
-    """Clear every interrupt currently on screen. Returns the steps taken ([] = clean screen)."""
     steps = []
     for _ in range(max_rounds):
         before = tuple(roots(bus))
@@ -1099,7 +1170,14 @@ def resolve(bus, max_rounds=6):
                 sys.stderr.write("interrupts: close_popups (memo probe) -> %s\n" % repr(e)[:80])
                 n = 0
             if not n:
-                return ["stuck_unchanged"]
+                _report_unhandled(bus, "stuck_unchanged",
+                                  ["no control cleared the screen on a second pass"],
+                                  sorted({k for r in before for k in _clickable_controls(bus, r)}),
+                                  root=",".join(before))
+                raise UnhandledScreen(
+                    "screen UNCHANGED after a full resolve pass and close_popups cleared nothing "
+                    "-- roots=%s. Refusing to keep acting into a blocking screen: every action "
+                    "from here is recorded against a state the agent cannot see." % (list(before),))
             _stuck_sig[0] = None
             steps.append("popups_cleared:%d" % n)
             continue
@@ -1162,11 +1240,21 @@ def resolve(bus, max_rounds=6):
         odd = [x for x in before if x not in nav.BASE_ROOTS and x not in DIPLOMACY_HUD_ROOTS
                and x not in BENIGN_PANELS]
         if odd:
-            drivable = any(_clickable_controls(bus, x) for x in odd)
+            drivable = {x: _clickable_controls(bus, x) for x in odd}
+            drivable = {k: v for k, v in drivable.items() if v}
             steps.append("%s:%s" % ("undismissable" if drivable else "transient", ",".join(odd)))
             if drivable:
                 if before != _stuck_sig[0]:
                     evidence(bus, "undismissable")
-                _stuck_sig[0] = before
+                    _stuck_sig[0] = before
+                else:
+                    _report_unhandled(bus, "undismissable",
+                                      sorted({k for v in drivable.values() for k in v}),
+                                      sorted(drivable), root=",".join(sorted(drivable)))
+                    raise UnhandledScreen(
+                        "UNDISMISSABLE screen persisted across two resolve passes with clickable "
+                        "controls that none of the handlers claimed -- %s. Refusing to continue: "
+                        "actions taken now are recorded against a blocked screen."
+                        % json.dumps({k: sorted(v) for k, v in drivable.items()})[:400])
         break
     return steps

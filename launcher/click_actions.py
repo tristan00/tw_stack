@@ -1,4 +1,3 @@
-r"""click_actions.py -- executors driven through UI components; they register into cco_actions.REGISTRY."""
 from __future__ import annotations
 
 import sys
@@ -14,7 +13,12 @@ RECRUIT_BTN = ("hud_campaign|hud_center_docker|hud_center|small_bar|button_subpa
                "button_subpanel|button_group_army|button_recruitment")
 CREATE_ARMY_BTN = ("hud_campaign|hud_center_docker|hud_center|small_bar|button_subpanel_parent|"
                    "button_subpanel|button_group_settlement|button_create_army")
+AGENTS_BTN = ("hud_campaign|hud_center_docker|hud_center|small_bar|button_subpanel_parent|"
+              "button_subpanel|button_group_settlement|button_agents")
 CHAR_PANEL = "character_panel|character_panel_info_holder"
+PANEL_TITLE = CHAR_PANEL + "|header|title_plaque|tx_recruit"
+LORD_MODE = "recruit_general"
+AGENT_MODE = "recruit_agent"
 LORD_TYPE_LIST = CHAR_PANEL + "|lords_and_agents_holder|lord_parent|list_box"
 AGENT_TYPE_LIST = CHAR_PANEL + "|lords_and_agents_holder|agent_parent|list_box"
 BUTTON_CONFIRM = CHAR_PANEL + "|footer|button_confirm"
@@ -26,7 +30,6 @@ LORE_LIST = (CHAR_PANEL + "|general_selection_panel|main_holder|lore_select_pare
 
 
 def _click(bus, path, timeout=10.0):
-    """Returns True only if the component was found and clicked."""
     try:
         r = bus.send("click", path, timeout=timeout) or {}
     except Exception as e:
@@ -47,7 +50,6 @@ def _find(bus, path, timeout=8.0):
 
 
 def engine_click(bus, component_id):
-    """Click a component by id, resolved recursively from RootComponent."""
     lua = ('common.call_context_command([[RootComponent.ChildContext("%s").SimulateLClick]]) '
            'return "sent"' % component_id)
     try:
@@ -58,7 +60,6 @@ def engine_click(bus, component_id):
 
 
 def _until(pred, cap, step=0.2):
-    """True as soon as `pred` holds; `cap` is a ceiling, not a sleep."""
     deadline = time.time() + cap
     while time.time() < deadline:
         try:
@@ -71,7 +72,6 @@ def _until(pred, cap, step=0.2):
 
 
 def clear_screen(bus):
-    """Close open panels, then leftover popups; returns the number of popups closed."""
     import nav
     try:
         _ev(bus, 'common.call_context_command([[CloseAllPanels]]) return "sent"', timeout=15.0)
@@ -111,11 +111,6 @@ def select_character(bus, cqi):
 
 
 def prepare(bus, kind, entity_id, expect_root=None, timeout=6.0):
-    """Clear the screen, select the subject ("settlement"|"lord"), await expect_root; -> (ok, reason).
-
-    The snapshot and the execute of one action both call this; when the second call would
-    rebuild a state that is still standing, it returns immediately instead of closing the
-    panel it is about to reopen."""
     import nav
     if (expect_root and is_selected(bus, kind, entity_id) is True
             and expect_root in (nav.visible_roots(bus) or [])):
@@ -143,10 +138,6 @@ def prepare(bus, kind, entity_id, expect_root=None, timeout=6.0):
 
 
 def is_selected(bus, kind, entity_id):
-    """Is this exact character/settlement the one currently selected? None when unreadable.
-
-    IsSelected is validated: it answers true/false on a real context and nil on a wrong
-    property name, so nil is treated as unknown and never as 'no'."""
     ctor = ("cco('CcoCampaignCharacter','%s')" % entity_id if kind == "lord"
             else "cco('CcoCampaignSettlement','settlement:%s')" % entity_id)
     try:
@@ -175,7 +166,6 @@ _STANCE_PREFIX = "button_"
 
 
 def stance_options(bus):
-    """{stance_key: state}; an empty dict means the stack could not be read."""
     _res, kids = _find(bus, STANCE_STACK, timeout=12.0)
     out = {}
     for k in kids:
@@ -197,7 +187,6 @@ def _selected_edict(bus, region):
 
 
 def edict_options(bus, region):
-    """The edict keys available to this settlement's province."""
     raw = _ev(bus, _G + "local s=cco('CcoCampaignSettlement','settlement:%s');"
                         "local m=g(s,'FactionProvinceManagerContext'); if not m then return '' end "
                         "local l=g(m,'InitiativeList'); if type(l)~='table' then return '' end local o={} "
@@ -221,7 +210,6 @@ def _edict_gate(bus, ctx, pick, before):
 
 
 def _edict_execute(bus, ctx, pick, before):
-    """Click this province's edict button in the incentives stack."""
     ok, why = prepare(bus, "settlement", ctx["entity_id"])
     if not ok:
         sys.stderr.write("click_actions: edict refused, not a known state -> %s" % why + chr(10))
@@ -250,7 +238,6 @@ register("edict", {
 
 
 def _pending_recruits(bus, cqi):
-    """Unit keys currently queued on this force, as a sorted comma string."""
     return _ev(bus, "local c=cm:get_character_by_cqi(%s) "
                     "if not c or not c:has_military_force() then return '' end "
                     "local ok,it=pcall(function() return c:military_force():recruitment_items() end) "
@@ -265,9 +252,6 @@ QUEUE_SEP = "@"
 
 
 def split_key(pick):
-    """(unit_key, queue) from a recruit pick. The offer key is `<unit>@<queue>` so local and
-    global recruitment of the same unit are different recommendations; `params['queue']` wins
-    when both are present."""
     raw = str(pick.get("key") or "")
     unit, _, suffix = raw.partition(QUEUE_SEP)
     queue = str((pick.get("params") or {}).get("queue") or suffix or "").lower() or None
@@ -275,13 +259,6 @@ def split_key(pick):
 
 
 def card_queue(path):
-    """Which recruitment pool a card belongs to, read STRUCTURALLY: the path segment directly
-    before `unit_list`, whatever it is called.
-
-    Verified live: |global|unit_list| and |local1|unit_list|. There are more pools than those
-    two (mercenary, allied/outpost, horde variants), so the name is never matched against a
-    list -- an unrecognised pool must arrive tagged with its real name, not as None.
-    """
     segs = str(path or "").split("|")
     try:
         i = segs.index(POOL_ANCHOR)
@@ -295,10 +272,6 @@ POOL_LIST = ("units_panel|main_units_panel|recruitment_docker|recruitment_option
 
 
 def recruitable_units(bus):
-    """The recruitment cards on screen: pool, cost, upkeep and turns per card.
-
-    Cost and turns are per POOL, not per unit -- the same unit is dearer and slower globally
-    (measured: peasant spearmen 350g/1t local vs 629g/2t global), so they belong to the card."""
     try:
         tr = bus.send("tree", "units_panel 30 9000", timeout=20) or {}
     except Exception:
@@ -337,10 +310,6 @@ def recruitable_units(bus):
 
 
 def recruitment_capacity(bus):
-    """{pool: {"total", "used", "free"}} from each pool's capacity strip.
-
-    Global slots are shared by every army in the faction; local slots are contested only
-    inside the province, so the two numbers drive very different decisions."""
     out = {}
     _res, pools = _find(bus, POOL_LIST, timeout=12.0)
     for pool in pools or []:
@@ -377,7 +346,6 @@ def _recruit_gate(bus, ctx, pick, before):
 
 
 def _recruit_execute(bus, ctx, pick, before):
-    """Run the recruit click, always closing the panel afterwards."""
     try:
         return _recruit_execute_inner(bus, ctx, pick, before)
     finally:
@@ -425,7 +393,6 @@ def _recruit_execute_inner(bus, ctx, pick, before):
 
 
 def _recruit_confirm(bus, ctx, pick, before):
-    """True when the requested unit appears in the force's recruitment queue."""
     t = _treasury(bus)
     after = str(_pending_recruits(bus, ctx["entity_id"]) or "")
     prior = str(before.get("pending") or "")
@@ -445,7 +412,6 @@ register("recruit_unit", {
 
 
 def _character_count(bus):
-    """Number of characters in the faction, or None when unreadable."""
     for attempt in range(1):
         v = _ev(bus, "local f=cm:get_local_faction(true) return f:character_list():num_items()",
                 timeout=20.0)
@@ -467,16 +433,11 @@ def _character_cqis(bus):
 
 
 def lord_types(bus):
-    """Lord-type button ids in the raise-army panel."""
     _res, kids = _find(bus, LORD_TYPE_LIST)
     return [k for k in kids if not k.startswith("button_template")]
 
 
 def lore_tabs(bus):
-    """[(lore_id, path)] of the magic lores offered for the selected type, in panel order.
-
-    A caster type has a lore level between the type and its candidates: each lore keeps its
-    own roster, so the lore decides WHO can be recruited, not just what they cast."""
     try:
         t = bus.send("tree", "%s 6 4000" % LORE_LIST, timeout=20) or {}
     except Exception as e:
@@ -492,11 +453,6 @@ def lore_tabs(bus):
 
 
 def split_lord_key(bus, key, types):
-    """(type_id, lore_hint) for a recruit_lord key against the panel's real type ids.
-
-    Longest matching type id wins and whatever remains is the lore hint, so both key shapes
-    work: an explicit `type@lore`, and the engine subtypes that bake the lore into the name
-    (wh3_dlc23_chd_sorcerer_prophet_fire -> chd_sorcerer_prophet + fire)."""
     want, _, explicit = str(key).partition("@")
     hits = [t for t in types if want == t or want.endswith("_" + t) or ("_" + t + "_") in want]
     if not hits:
@@ -507,10 +463,6 @@ def split_lord_key(bus, key, types):
 
 
 def lord_candidates(bus):
-    """`general_candidate_<n>_` rows of the SELECTED type only, top row first.
-
-    Every type's roster lives in the tree at once, stacked on the same coordinates; picking
-    a type only changes which rows are visible. Child ids alone therefore span all types."""
     try:
         t = bus.send("tree", "%s 6 4000" % CANDIDATE_LIST, timeout=20) or {}
     except Exception as e:
@@ -530,8 +482,28 @@ def _lord_snapshot(bus, ctx, pick):
     return {"treasury": _treasury(bus), "n_chars": n}
 
 
+def _panel_mode(bus):
+    r, _ = _find(bus, PANEL_TITLE)
+    if not r.get("found") or not r.get("visible"):
+        return None
+    return str(r.get("state") or "")
+
+
+def _open_panel_mode(bus, mode):
+    if _panel_mode(bus) == mode:
+        return True
+    btn = AGENTS_BTN if mode == AGENT_MODE else CREATE_ARMY_BTN
+    if not _click(bus, btn):
+        return False
+    if _until(lambda: _panel_mode(bus) == mode, 3.0):
+        return True
+    sys.stderr.write("click_actions: %s left the panel in mode %r, wanted %r -- refusing to click "
+                     "a list the panel is not showing\n"
+                     % (btn.rsplit("|", 1)[-1], _panel_mode(bus), mode))
+    return False
+
+
 def _lord_execute(bus, ctx, pick, before):
-    """Run the raise-army sequence, always closing the panel afterwards."""
     try:
         return _lord_execute_inner(bus, ctx, pick, before)
     finally:
@@ -544,29 +516,37 @@ def _lord_execute_inner(bus, ctx, pick, before):
         sys.stderr.write("click_actions: %s refused, not a known state -> %s"
                          % (pick.get("action_type") or "recruit", why) + chr(10))
         return False
-    r = _roots(bus)
-    if not (r and "character_panel" in r):
-        if not _click(bus, CREATE_ARMY_BTN):
-            return False
-        _until(lambda: "character_panel" in (_roots(bus) or []), 1.8)
     want = str(pick["key"])
-
-    lord_list = [k for k in _find(bus, LORD_TYPE_LIST)[1] if not k.startswith("button_template")]
-    agent_list = [k for k in _find(bus, AGENT_TYPE_LIST)[1] if not k.startswith("button_template")]
     params = pick.get("params") or {}
-    agent_type = params.get("agent_type") if pick.get("action_type") == "recruit_hero" else None
-    if agent_type and agent_type in agent_list:
-        btn, lore_hint = agent_type, None
-        type_path, commit_id = AGENT_TYPE_LIST, "button_confirm"
-    else:
-        btn, lore_hint = split_lord_key(bus, want, lord_list)
-        type_path, commit_id = LORD_TYPE_LIST, "button_raise"
-        if btn is None:
+    is_hero = pick.get("action_type") == "recruit_hero"
+    if not _open_panel_mode(bus, AGENT_MODE if is_hero else LORD_MODE):
+        return False
+
+    if is_hero:
+        agent_list = [k for k in _find(bus, AGENT_TYPE_LIST)[1]
+                      if not k.startswith("button_template")]
+        agent_type = params.get("agent_type")
+        if agent_type and agent_type in agent_list:
+            btn, lore_hint = agent_type, None
+        else:
             btn, lore_hint = split_lord_key(bus, want, agent_list)
-            type_path, commit_id = AGENT_TYPE_LIST, "button_confirm"
+        type_path, commit_id, offered = AGENT_TYPE_LIST, "button_confirm", agent_list
+    else:
+        lord_list = [k for k in _find(bus, LORD_TYPE_LIST)[1]
+                     if not k.startswith("button_template")]
+        btn, lore_hint = split_lord_key(bus, want, lord_list)
+        type_path, commit_id, offered = LORD_TYPE_LIST, "button_raise", lord_list
+        if btn is None:
+            if not _open_panel_mode(bus, AGENT_MODE):
+                return False
+            agent_list = [k for k in _find(bus, AGENT_TYPE_LIST)[1]
+                          if not k.startswith("button_template")]
+            btn, lore_hint = split_lord_key(bus, want, agent_list)
+            type_path, commit_id, offered = AGENT_TYPE_LIST, "button_confirm", agent_list
     if btn is None:
-        sys.stderr.write("click_actions: %r is neither a lord type %s nor a hero type %s"
-                         % (want, lord_list, agent_list) + chr(10))
+        sys.stderr.write("click_actions: %r is not in the panel's %s list %s"
+                         % (want, "hero" if type_path == AGENT_TYPE_LIST else "lord", offered)
+                         + chr(10))
         return False
     if not _click(bus, "%s|%s" % (type_path, btn)):
         return False
@@ -602,7 +582,6 @@ def _lord_execute_inner(bus, ctx, pick, before):
 
 
 def _lord_confirm(bus, ctx, pick, before):
-    """True when the faction's character count grew."""
     n = _character_count(bus)
     t = _treasury(bus)
     before_n = before.get("n_chars")

@@ -1,4 +1,3 @@
-r"""vision.py -- read the screen without the bus: is the picture moving?"""
 from __future__ import annotations
 
 import os
@@ -23,7 +22,6 @@ FRAME_BUSY_MIN = 2.5
 
 
 def is_game_frame(f):
-    """True if the frame's stats fall inside the game-content bounds."""
     return (f is not None
             and f["luma"] >= FRAME_LUMA_MIN
             and FRAME_SAT_MIN <= f["sat"] <= FRAME_SAT_MAX
@@ -31,7 +29,6 @@ def is_game_frame(f):
 
 
 def frame(path=None, timeout=40):
-    """One capture. Returns {luma,sat,busy,top,mid,bot,png} or None if the capture failed."""
     png = path or os.path.join(tempfile.gettempdir(), "twvision_%d.png" % int(time.time() * 1000))
     try:
         r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
@@ -54,7 +51,6 @@ def frame(path=None, timeout=40):
 
 
 def moving(samples=3, gap=1.0):
-    """(bool|None, [frames]). None means the capture was unusable, not "not moving"."""
     frames = []
     for i in range(samples):
         f = frame()
@@ -71,7 +67,6 @@ def moving(samples=3, gap=1.0):
 
 
 def verdict(samples=3, gap=1.0):
-    """A one-line, log-safe summary for the stuck record."""
     mv, frames = moving(samples, gap)
     if not frames:
         return {"picture": "uncapturable"}
