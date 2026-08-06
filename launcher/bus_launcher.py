@@ -260,7 +260,7 @@ class BusLauncher:
             time.sleep(2.0)
         raise TWError("cm:quit() dispatched but the main menu never appeared within %ds" % timeout)
 
-    def start_campaign(self, faction, campaign="Immortal Empires", load_timeout=150):
+    def start_campaign(self, faction, campaign="Immortal Empires", load_timeout=120):
         ckey = self.CAMPAIGN_KEYS.get(campaign, campaign)
         faction = str(faction or "").strip()
         if not faction:
@@ -280,11 +280,11 @@ class BusLauncher:
         _log("CAMPAIGN PLAYABLE: %s / %s" % (ckey, faction))
         return started
 
-    def restart_campaign(self, faction, campaign="Immortal Empires", load_timeout=150):
+    def restart_campaign(self, faction, campaign="Immortal Empires", load_timeout=120):
         self.quit_to_main_menu()
         return self.start_campaign(faction, campaign, load_timeout)
 
-    def launch(self, faction, campaign="Immortal Empires", boot_timeout=90, load_timeout=150):
+    def launch(self, faction, campaign="Immortal Empires", boot_timeout=90, load_timeout=120):
         if not str(faction or "").strip():
             raise TWError("launch() needs a faction key -- none given")
         self.ensure_pack()
