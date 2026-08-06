@@ -9,6 +9,8 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 HUD_MISS_BUDGET = 12
 HUD_MISS_PAUSE = 5.0
 POST_ATTACK_ROW_WAIT = 1.0
+POST_ATTACK_HUD_TRIES = 3
+POST_ATTACK_HUD_PAUSE = 0.6
 _last_beat_turn = [None]
 sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.join(r"D:\tw_stack", "decisions"))
@@ -41,6 +43,20 @@ GROWTH_FIRST_CHECK_TURN = 4
 
 GROWTH_METRICS = (("settlements", "settlements", GROWTH_WINDOW),
                   ("lord_level", "legendary lord level", GROWTH_LORD_WINDOW))
+
+
+def _await_post_attack_hud(executor, log, tries=POST_ATTACK_HUD_TRIES,
+                           pause=POST_ATTACK_HUD_PAUSE):
+    alive = None
+    for i in range(tries):
+        alive = executor.campaign_ui_alive()
+        if alive is not False:
+            if i:
+                log("   post-attack HUD settled after %d checks" % (i + 1))
+            return alive
+        if i + 1 < tries:
+            time.sleep(pause)
+    return alive
 
 
 def _growth_verdict(hist, turn):
@@ -451,9 +467,20 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None, act_hist
             continue
         if str(pick.get("action_type", "")).startswith("attack"):
             _t = time.time()
-            executor.bus.wait_row(("panel", "battle_completed", "dilemma_issued"),
-                                  timeout=POST_ATTACK_ROW_WAIT, offset=pre_off,
-                                  pred=lambda r: r.get("cmd") != "panel" or bool(r.get("opened")))
+            row = executor.bus.wait_row(
+                ("panel", "battle_completed", "dilemma_issued"),
+                timeout=POST_ATTACK_ROW_WAIT, offset=pre_off,
+                pred=lambda r: r.get("cmd") != "panel" or bool(r.get("opened")))
+            if row is None:
+                settled = _await_post_attack_hud(executor, log)
+                if settled is False:
+                    log("   !! HUD gone after %s with no interrupt row -- restoring before the "
+                        "next action" % pick["action_type"])
+                    try:
+                        log("   post-attack UI restore: %s" % executor.force_ui_restore())
+                    except Exception as e:
+                        log("   !! post-attack force_ui_restore failed: %s" % repr(e)[:100])
+                    wd.beat("post_attack_hud_restore")
             pre = executor.resolve_interrupts()
             _hk_parts[0]["post_attack"] = int((time.time() - _t) * 1000)
             if pre:
