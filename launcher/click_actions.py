@@ -71,8 +71,38 @@ def _until(pred, cap, step=0.2):
     return False
 
 
+_CLEAR_TRACE = r"D:\twdata\runs\human\run\clear_screen_trace.jsonl"
+_BATTLE_ROOTS = ("popup_pre_battle", "popup_battle_results", "settlement_captured")
+_LUA_PENDING_SHORT = (
+    "local function g(c,p) local ok,v=pcall(function() return c:Call(p) end) "
+    "if ok and v~=nil then return tostring(v) end return 'nil' end "
+    "local r=cco('CcoCampaignRoot','') local pa=nil "
+    "pcall(function() pa=r:Call('PendingActionContext') end) "
+    "if not pa then return 'none' end "
+    "return g(pa,'IsActive')..'|'..g(pa,'ActionType')")
+
+
+def _pending_short(bus):
+    try:
+        r = bus.send("eval", _LUA_PENDING_SHORT, timeout=8.0) or {}
+        return r.get("result")
+    except Exception:
+        return None
+
+
+def _clear_trace(row):
+    import json
+    try:
+        with open(_CLEAR_TRACE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(row, default=str) + chr(10))
+    except OSError:
+        pass
+
+
 def clear_screen(bus):
     import nav
+    pending_before = _pending_short(bus)
+    roots_before = nav.visible_roots(bus) or []
     try:
         _ev(bus, 'common.call_context_command([[CloseAllPanels]]) return "sent"', timeout=15.0)
         _until(lambda: not [r for r in (nav.visible_roots(bus) or [])
@@ -80,10 +110,21 @@ def clear_screen(bus):
     except Exception as e:
         sys.stderr.write("click_actions: CloseAllPanels -> %s" % repr(e)[:80] + chr(10))
     n = 0
+    closed = []
     try:
-        n = len(nav.close_popups(bus))
+        closed = nav.close_popups(bus) or []
+        n = len(closed)
     except Exception as e:
         sys.stderr.write("click_actions: close_popups -> %s" % repr(e)[:80] + chr(10))
+    hit = [p for p in closed if any(b in str(p) for b in _BATTLE_ROOTS)]
+    battle_root_before = [r for r in roots_before if r in _BATTLE_ROOTS]
+    pending_after = _pending_short(bus)
+    if hit or battle_root_before or str(pending_before or "").startswith("true") \
+            or pending_before != pending_after:
+        _clear_trace({"ts": time.time(), "pending_before": pending_before,
+                      "pending_after": pending_after, "battle_root_before": battle_root_before,
+                      "closed_battle_paths": hit, "closed_n": n,
+                      "roots_before": roots_before[:14]})
     try:
         if any(r not in nav.BASE_ROOTS for r in (nav.visible_roots(bus) or [])):
             nav.deselect(bus)
