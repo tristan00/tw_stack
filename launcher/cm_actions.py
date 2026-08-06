@@ -66,10 +66,25 @@ def _attack_army_confirm(bus, ctx, pick, before):
     return landed, {"pre_battle": pb, "acted": acted, "acted_before": before.get("acted")}
 
 
+def _attack_army_doomed(bus, ctx, pick, before, after):
+    if not after or after.get("pre_battle") is True:
+        before["doom_streak"] = 0
+        return None
+    if after.get("acted") != before.get("acted"):
+        before["doom_streak"] = 0
+        return None
+    before["doom_streak"] = before.get("doom_streak", 0) + 1
+    if before["doom_streak"] < 2:
+        return None
+    return ("no pre-battle and acted still %r after %d polls -- the attack never landed"
+            % (after.get("acted"), before["doom_streak"]))
+
+
 register("attack_army", {
     "layer": "cm", "signal": "pre_battle_popup",
     "snapshot": _attack_army_snapshot, "gates": [_attack_army_gate],
     "execute": _attack_army_execute, "confirm": _attack_army_confirm,
+    "doomed": _attack_army_doomed,
     "timeout_s": 20.0, "poll_s": 2.0, "retryable": False,
 })
 
