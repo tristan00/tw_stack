@@ -3,6 +3,7 @@ from __future__ import annotations
 import glob
 import html
 import json
+from urllib.parse import parse_qs, urlparse
 import os
 import re
 import sqlite3
@@ -13,6 +14,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "advisor"))
 
 RUNS_ROOT = "D:/twdata/runs/human"
+SEQ_PAGE = 50
+TIMELINE_ROWS = 200
 
 
 def newest_run():
@@ -49,7 +52,7 @@ def _num(v, nd=4):
     return "-" if v is None else ("%%.%df" % nd) % float(v)
 
 
-def sequence(con, limit=300):
+def sequence(con, limit=SEQ_PAGE, offset=0):
     return [dict(r) for r in con.execute(
         "SELECT d.decision_id, d.turn, d.decision_seq, d.n_entities, d.n_offers,"
         " t.context_kind, t.context_id, t.action_type, t.action_key, t.counted, t.refusal, t.policy,"
@@ -59,7 +62,14 @@ def sequence(con, limit=300):
         "   (SELECT MIN(o2.rowid) FROM action_offers o2 WHERE o2.decision_id=t.decision_id"
         "    AND o2.context_kind=t.context_kind AND o2.context_id=t.context_id"
         "    AND o2.action_type=t.action_type AND o2.action_key=t.action_key)"
-        " ORDER BY d.decision_id DESC LIMIT ?", (limit,))]
+        " ORDER BY d.decision_id DESC LIMIT ? OFFSET ?", (limit, offset))]
+
+
+def sequence_total(con):
+    try:
+        return con.execute("SELECT COUNT(*) FROM decision_points").fetchone()[0]
+    except Exception:
+        return 0
 
 
 def ranking(con, did, limit=80):
@@ -87,7 +97,9 @@ def timeline(con):
     rows = [dict(r) for r in con.execute(
         "SELECT d.decision_id, d.turn, d.ts, d.timings, t.context_kind, t.context_id, t.action_type,"
         " t.action_key, t.counted, t.refusal, t.latency_ms FROM decision_points d"
-        " LEFT JOIN action_taken t ON t.decision_id=d.decision_id ORDER BY d.decision_id")]
+        " LEFT JOIN action_taken t ON t.decision_id=d.decision_id"
+        " ORDER BY d.decision_id DESC LIMIT ?", (TIMELINE_ROWS,))]
+    rows.reverse()
     out, prev = [], None
     for r in rows:
         r["gap"] = (round(r["ts"] - prev, 1) if prev and r["ts"] else None)
@@ -803,7 +815,7 @@ def render_starts():
             % (len(rows), sum(a["n"] for a in rows), "".join(tr)))
 
 
-def render_index(con, run_dir):
+def render_index(con, run_dir, seq_offset=0):
     s = summary(con)
     cards = "".join("<div class=card><div class=k>%s</div><div class=v>%s</div></div>"
                     % (k, v) for k, v in
@@ -833,7 +845,13 @@ def render_index(con, run_dir):
               "<tr><th>turn<th>income<th>settlements<th>allies<th>vassals<th>power rank</tr>%s"
               "</table></div>" % (trows or "<tr><td class=dim colspan=6>no turns recorded</td></tr>"))
     seq = []
-    for r in sequence(con):
+    seq_total = sequence_total(con)
+    try:
+        seq_offset = int(seq_offset or 0)
+    except (TypeError, ValueError):
+        seq_offset = 0
+    seq_offset = max(0, min(seq_offset, max(0, seq_total - 1)))
+    for r in sequence(con, SEQ_PAGE, seq_offset):
         if r["action_type"] is None:
             mark, cls = "-", "dim"
         elif r["refusal"] == "awaiting_execution":
@@ -855,11 +873,22 @@ def render_index(con, run_dir):
                       _num(r.get("score")), _num(r.get("exploit")),
                       _num(r.get("pct_global")), pl_cell, _num(r.get("explore")),
                       _esc(r["refusal"]), _esc(r["policy"])))
-    seqtbl = ("<h2>sequence of picked decisions (newest first)</h2><div class=scroll><table>"
+    _first = seq_offset + 1 if seq else 0
+    _last = seq_offset + len(seq)
+    _prev = max(0, seq_offset - SEQ_PAGE)
+    _next = seq_offset + SEQ_PAGE
+    _pager = ("<div class=dim style='margin:6px 0'>%d-%d of %d &nbsp; "
+              "<a class=btn href='/?seq=%d'>newer</a> "
+              "<a class=btn href='/?seq=%d'>older</a> "
+              "<a class=btn href='/?seq=0'>newest</a></div>"
+              % (_first, _last, seq_total, _prev,
+                 _next if _next < seq_total else seq_offset))
+    seqtbl = ("<h2>sequence of picked decisions (newest first)</h2>" + _pager +
+              "<div class=scroll><table>"
               "<tr><th>#<th>turn<th>offers<th>entity<th>action<th>key<th>result"
               "<th title='score = exploit (value percentile); rank = value order. Rows recorded before 50082a9 (2026-08-02 20:32) hold the retired 0.9*exploit+0.1*explore blend'>score<th>exploit<th>&nbsp;&nbsp;global<th>&nbsp;&nbsp;local<th>explore"
               "<th>refusal<th>policy</tr>"
-              "%s</table></div>" % "".join(seq))
+              "%s</table></div>" % "".join(seq)) + _pager
     head = ("<h1>advisor v7</h1><div class=dim>%s</div>" % _esc(run_dir)) + "<div class=cards>%s</div>" % cards
     panels = [("live", render_live(run_dir)),
               ("overview", render_endings() + render_leaders(con) + render_history(con)),
@@ -1553,7 +1582,9 @@ def serve(run_dir, port=8777, follow=False):
                         body = json.dumps({"summary": summary(con), "sequence": sequence(con)},
                                           default=str)
                     else:
-                        body = render_index(con, active)
+                        _q = parse_qs(urlparse(self.path).query or "")
+                        body = render_index(con, active,
+                                            _q.get("seq", ["0"])[0])
                 finally:
                     con.close()
             except Exception as e:
