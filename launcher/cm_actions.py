@@ -130,6 +130,14 @@ register("attack_settlement", {
 })
 
 
+register("colonize", {
+    "layer": "cm", "signal": "pre_battle_or_is_besieging",
+    "snapshot": _attack_sett_snapshot, "gates": [_attack_sett_gate],
+    "execute": _attack_sett_execute, "confirm": _attack_sett_confirm,
+    "timeout_s": 20.0, "poll_s": 2.0, "retryable": False,
+})
+
+
 def _garrison_snapshot(bus, ctx, pick):
     return {"in_settlement": _char_scalar(bus, ctx["entity_id"], "c:in_settlement()"),
             "acted": _char_scalar(bus, ctx["entity_id"], "c:performed_action_this_turn()")}

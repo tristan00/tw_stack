@@ -13,7 +13,7 @@ NEAR_K_DEFAULT = 2
 
 ACTION_TYPES = ("stance", "building", "research", "skills", "items", "item_unequip", "rites",
                 "recruit_unit", "recruit_lord", "edict", "attack_army", "attack_settlement",
-                "garrison", "leave_garrison", "end_turn", "noop",
+                "colonize", "horde_building", "garrison", "leave_garrison", "end_turn", "noop",
                 "move", "diplomacy", "hero_action", "recruit_hero",
                 "building_repair", "building_cancel", "building_dismantle")
 
@@ -159,6 +159,14 @@ def lord_block(state):
             "lord_x": _f(state.get("x")), "lord_y": _f(state.get("y")),
             "lord_has_army": (1.0 if state.get("units") is not None else 0.0),
             "lord_hp": _f(state.get("hp")), "lord_present": 1.0}
+
+
+def lord_territory_block(state, world):
+    cqi = str((state or {}).get("cqi") or "")
+    for a in ((world or {}).get("armies") or []):
+        if str(a.get("cqi")) == cqi:
+            return {"lord_in_own_territory": _f(a.get("in_own_territory"))}
+    return {"lord_in_own_territory": None}
 
 
 _EMPTY_PROV = {"prov_province": None, "prov_complete": None, "prov_max_slots": None,
@@ -413,7 +421,25 @@ DIPLO_TERM_FEATS = ("nonaggression_pact", "trade_agreement", "defensive_alliance
 DIPLO_GIFT_RANK = {"small": 1, "medium": 2, "large": 3}
 
 
-def _diplomacy_feats(atype, params):
+DIPLO_ARMY_KINDS = ("army", "neutral_army")
+
+
+def _target_army_dist(world, faction):
+    if not faction:
+        return None
+    best = None
+    for h in ((world or {}).get("hostiles") or []):
+        if h.get("faction") != faction or h.get("kind") not in DIPLO_ARMY_KINDS:
+            continue
+        if h.get("is_armed_citizenry") is True:
+            continue
+        d = _f(h.get("dist"))
+        if d is not None and (best is None or d < best):
+            best = d
+    return best
+
+
+def _diplomacy_feats(atype, params, world=None):
     if atype != "diplomacy":
         return {}
     terms = list(params.get("terms") or [])
@@ -432,6 +458,7 @@ def _diplomacy_feats(atype, params):
                                       ("allied", "trade", "their_vassal")) else 0.0,
         "dip_n_terms": float(len(terms)),
         "dip_is_pair": 1.0 if len(terms) > 1 else 0.0,
+        "dip_target_army_dist": _target_army_dist(world, params.get("faction")),
     }
     for t in DIPLO_TERM_FEATS:
         out["dip_term_%s" % t] = 1.0 if t in terms else 0.0
@@ -550,7 +577,7 @@ def action_block(offer, locus, treasury, world=None, self_units=None, self_hp=No
     out = {"opt_type": atype, "opt_key": key,
            "opt_available": 1.0 if offer.get("available") else 0.0,
            "opt_gate": offer.get("gate") or "none"}
-    out.update(_diplomacy_feats(atype, params))
+    out.update(_diplomacy_feats(atype, params, world))
     out.update(_hero_action_feats(atype, params, locus, world))
     out.update(_recruit_hero_feats(atype, params))
     out["opt_recruit_queue"] = (str(params.get("queue") or key.partition("@")[2] or "none")
@@ -627,6 +654,7 @@ def state_row(record, entity):
     if ck in ("lord", "hero"):
         here = provinces.get(st.get("region"))
         row.update(lord_block(st))
+        row.update(lord_territory_block(st, world))
         row.update(lord_recruit_block(st))
         row.update(province_block(here))
         row.update(province_buildings_block(provinces, here))
@@ -685,6 +713,8 @@ MODEL_COLUMNS = frozenset((
     "opt_target_dir_sin", "opt_target_dir_cos",
     "lord_subtype", "lord_hp", "lord_stance", "lord_units", "lord_rank", "lord_skill_points",
     "lord_ap_pct", "lord_acted", "lord_has_army",
+    "lord_pending_recruits", "lord_garrisoned", "lord_besieging", "lord_is_leader",
+    "lord_in_own_territory",
     "near_friend_1_dist", "near_friend_1_dir_sin", "near_friend_1_dir_cos",
     "near_enemy_1_dist", "near_enemy_1_stance", "near_enemy_1_faction",
     "near_enemy_1_dir_sin", "near_enemy_1_dir_cos",
@@ -699,7 +729,7 @@ MODEL_COLUMNS = frozenset((
     "camp_prev_action_1", "camp_prev_action_2", "camp_prev_action_3",
     "camp_prev_action_4", "camp_prev_action_5",
     "dip_target", "dip_target_race", "dip_at_war", "dip_allied", "dip_has_any_tie",
-    "dip_gift_tier", "dip_gift_rank",
+    "dip_gift_tier", "dip_gift_rank", "dip_standing", "dip_trade", "dip_target_army_dist",
     "pos_exposed", "pos_support_ratio", "agg_enemy_n", "agg_enemy_mean_dist",
     "isc_screen", "isc_n_options", "isc_option", "isc_fc_result", "isc_fc_casualties",
     "isc_dilemma_id", "isc_option_id", "isc_option_label", "isc_payload", "isc_n_payload",
