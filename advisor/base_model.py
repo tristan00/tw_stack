@@ -10,7 +10,10 @@ sys.path.insert(0, os.path.join(r"D:\tw_stack", "decisions"))
 import features as F
 
 RUNS_ROOT = "D:/twdata/runs/human"
-TARGET_PARTS = ("settlements", "lord_level", "survival")
+GAIN_PARTS = ("settlements", "lord_level", "allies", "vassals")
+TARGET_PARTS = GAIN_PARTS + ("survival",)
+TARGET_WEIGHTS = {"settlements": 1.0, "lord_level": 1.0, "allies": 1.0, "vassals": 3.0,
+                  "survival": 1.0}
 SHORT_HORIZON = 3
 SHORT_WEIGHT = 0.5
 
@@ -157,7 +160,7 @@ def decision_deltas(campaign, turns, turn):
     camp = campaign or {}
     turn = int(turn or 0)
     out = {}
-    for p in ("settlements", "lord_level"):
+    for p in GAIN_PARTS:
         b = F._f(camp.get(p))
         far, far_t = future_best_at(turns, turn, p)
         if b is None or far is None:
@@ -169,7 +172,7 @@ def decision_deltas(campaign, turns, turn):
 
 
 def target(deltas):
-    parts = [v for v in deltas.values() if v is not None]
+    parts = [TARGET_WEIGHTS.get(k, 1.0) * v for k, v in deltas.items() if v is not None]
     if not parts:
         return None
     return float(sum(parts))
