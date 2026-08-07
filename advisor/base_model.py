@@ -18,19 +18,26 @@ SHORT_HORIZON = 3
 SHORT_WEIGHT = 0.5
 
 CB_ITERATIONS = 5000
-CB_DEPTH = 6
-CB_LEARNING_RATE = 0.1478899287340784
-CB_L2_LEAF_REG = 12.529350398247741
-CB_GROW_POLICY = "Depthwise"
-CB_BOOTSTRAP_TYPE = "Bernoulli"
-CB_SUBSAMPLE = 0.8090077144994208
-CB_RSM = 0.6572612205674597
-CB_RANDOM_STRENGTH = 2.9743695085513364
-CB_BORDER_COUNT = 128
-CB_MIN_DATA_IN_LEAF = 54
-CB_ONE_HOT_MAX_SIZE = 255
-CB_LEAF_ESTIMATION_ITERATIONS = 7
 CB_LOSS = "RMSE"
+
+CB_TUNED_FROM = "catboost_fast_k3 rank1 cv_rmse 1.9633 vs 2.0098, paired -0.0465, 3/3 folds"
+
+CB_PARAMS = {
+    "depth": 8,
+    "learning_rate": 0.2300722223623931,
+    "l2_leaf_reg": 46.37104999411925,
+    "grow_policy": "SymmetricTree",
+    "bootstrap_type": "Bayesian",
+    "bagging_temperature": 5.877401523314926,
+    "random_strength": 8.097101176470794,
+    "border_count": 32,
+    "min_data_in_leaf": 1,
+    "one_hot_max_size": 255,
+    "leaf_estimation_iterations": 2,
+}
+
+CB_DEPTH = CB_PARAMS["depth"]
+CB_LEARNING_RATE = CB_PARAMS["learning_rate"]
 CB_TRAIN_DIR = r"D:\twdata\tmp\catboost"
 CB_EARLY_STOPPING = 50
 VAL_FRACTION = 0.15
@@ -61,32 +68,21 @@ ISO_SEED = 0
 
 
 def params(iterations=None, learning_rate=None):
-    return {"learning_rate": float(learning_rate or CB_LEARNING_RATE),
-            "early_stopping_rounds": CB_EARLY_STOPPING,
-            "iteration_cap": int(iterations or CB_ITERATIONS),
-            "depth": CB_DEPTH, "loss": CB_LOSS, "val_fraction": VAL_FRACTION,
-            "l2_leaf_reg": CB_L2_LEAF_REG, "grow_policy": CB_GROW_POLICY,
-            "bootstrap_type": CB_BOOTSTRAP_TYPE, "subsample": CB_SUBSAMPLE,
-            "rsm": CB_RSM, "random_strength": CB_RANDOM_STRENGTH,
-            "border_count": CB_BORDER_COUNT, "min_data_in_leaf": CB_MIN_DATA_IN_LEAF,
-            "one_hot_max_size": CB_ONE_HOT_MAX_SIZE,
-            "leaf_estimation_iterations": CB_LEAF_ESTIMATION_ITERATIONS,
-            "tuned_from": "catboost_full_k5 rank3 cv_rmse 1.8837 vs 1.9804, 5/5 folds"}
+    return dict(CB_PARAMS,
+                learning_rate=float(learning_rate or CB_LEARNING_RATE),
+                early_stopping_rounds=CB_EARLY_STOPPING,
+                iteration_cap=int(iterations or CB_ITERATIONS),
+                loss=CB_LOSS, val_fraction=VAL_FRACTION,
+                tuned_from=CB_TUNED_FROM)
 
 
 def regressor(iterations=None, learning_rate=None):
     from catboost import CatBoostRegressor
-    return CatBoostRegressor(iterations=int(iterations or CB_ITERATIONS), depth=CB_DEPTH,
-                             learning_rate=float(learning_rate or CB_LEARNING_RATE),
-                             loss_function=CB_LOSS,
-                             l2_leaf_reg=CB_L2_LEAF_REG, grow_policy=CB_GROW_POLICY,
-                             bootstrap_type=CB_BOOTSTRAP_TYPE, subsample=CB_SUBSAMPLE,
-                             rsm=CB_RSM, random_strength=CB_RANDOM_STRENGTH,
-                             border_count=CB_BORDER_COUNT,
-                             min_data_in_leaf=CB_MIN_DATA_IN_LEAF,
-                             one_hot_max_size=CB_ONE_HOT_MAX_SIZE,
-                             leaf_estimation_iterations=CB_LEAF_ESTIMATION_ITERATIONS,
-                             verbose=0, train_dir=CB_TRAIN_DIR)
+    p = dict(CB_PARAMS)
+    if learning_rate:
+        p["learning_rate"] = float(learning_rate)
+    return CatBoostRegressor(iterations=int(iterations or CB_ITERATIONS),
+                             loss_function=CB_LOSS, verbose=0, train_dir=CB_TRAIN_DIR, **p)
 
 
 def isolation_forest():

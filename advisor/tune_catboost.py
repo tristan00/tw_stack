@@ -255,6 +255,8 @@ def main():
               "cv_rmse": s["cv_rmse"], "cv_rmse_sd": s["cv_rmse_sd"],
               "fold_rmse": s["fold_rmse"], "folds_run": s["folds"],
               "best_iteration_mean": s["best_iteration_mean"],
+              "fit_s_mean": s.get("fit_s_mean"), "fit_s_max": s.get("fit_s_max"),
+              "est_train_s": s.get("est_train_s"), "stopped": stopped,
               "vs_production": round(s["cv_rmse"] - base["cv_rmse"], 6),
               "running_best": state["best"], "running_best_params": state["best_params"]})
         flag = "" if not pruned else "  (%s after %d folds)" % (stopped or "pruned", s["folds"])
