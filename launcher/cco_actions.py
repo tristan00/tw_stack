@@ -360,6 +360,82 @@ def _building_execute(bus, ctx, pick, before):
     return True
 
 
+_LUA_HORDE_CONSTRUCT = (_G +
+    "local x=cco('CcoCampaignBuildingSlot','%(slot)s');"
+    "if not x then return 'NO-CTX' end "
+    "local p=g(x,'PossibleUpgradeWithoutConversionsList');"
+    "if type(p)~='table' then return 'NO-POSSIBLES' end "
+    "for j=0,#p-1 do "
+    "  if ts(g(x,'PossibleUpgradeWithoutConversionsList['..j..'].Key'))=='%(key)s' then "
+    "    if g(x,'BuildingRequirementsMet(PossibleUpgradeWithoutConversionsList['..j..'])')~=true then "
+    "      return 'REQ-NOT-MET' end "
+    "    pcall(function() x:Call('Construct(PossibleUpgradeWithoutConversionsList['..j..'])') end);"
+    "    return 'called' end end return 'KEY-NOT-IN-SLOT'")
+
+
+_LUA_HORDE_SLOT_STATE = (_G +
+    "local x=cco('CcoCampaignBuildingSlot','%(slot)s');"
+    "if not x then return 'NO-CTX' end "
+    "local ci=g(x,'ConstructionItemContext');"
+    "local cl=ci and g(ci,'BuildingLevelRecordContext');"
+    "return ts(g(x,'IsEmpty'))..'|'..ts(ci~=nil)..'|'..ts(cl and g(cl,'Key'))")
+
+
+def _horde_parts(pick):
+    p = pick.get("params") or {}
+    slot = p.get("slot_id")
+    key = p.get("building_key")
+    if not slot or not key:
+        raw = str(pick.get("key") or "")
+        slot, _, key = raw.partition("@")
+    return slot, key
+
+
+def _horde_build_snapshot(bus, ctx, pick):
+    slot, _key = _horde_parts(pick)
+    return {"slot": slot, "state": _ev(bus, _LUA_HORDE_SLOT_STATE % {"slot": slot}, timeout=12.0),
+            "treasury": _treasury(bus)}
+
+
+def _horde_build_gate(bus, ctx, pick, before):
+    slot, key = _horde_parts(pick)
+    if not slot or not key:
+        return False, "unparseable_horde_key"
+    st = str(before.get("state") or "")
+    if st.startswith("NO-CTX"):
+        return False, "slot_context_missing"
+    if st.split("|")[1:2] == ["true"]:
+        return False, "slot_already_constructing"
+    return True, None
+
+
+def _horde_build_execute(bus, ctx, pick, before):
+    slot, key = _horde_parts(pick)
+    res = _ev(bus, _LUA_HORDE_CONSTRUCT % {"slot": slot, "key": key}, timeout=25.0)
+    if res != "called":
+        sys.stderr.write("cco_actions: horde construct %s %r -> %s\n" % (slot, key, res))
+        return False
+    return True
+
+
+def _horde_build_confirm(bus, ctx, pick, before):
+    slot, key = _horde_parts(pick)
+    st = str(_ev(bus, _LUA_HORDE_SLOT_STATE % {"slot": slot}, timeout=12.0) or "")
+    parts = st.split("|")
+    after = {"slot": slot, "state": st, "treasury": _treasury(bus)}
+    if len(parts) != 3:
+        return False, dict(after, unreadable=True)
+    return (parts[1] == "true" and parts[2] == key), after
+
+
+register("horde_building", {
+    "layer": "cco", "signal": "force_slot_construction_queued",
+    "snapshot": _horde_build_snapshot, "gates": [_horde_build_gate],
+    "execute": _horde_build_execute, "confirm": _horde_build_confirm,
+    "timeout_s": 10.0, "poll_s": 1.5, "spends_gold": True,
+})
+
+
 def _building_confirm(bus, ctx, pick, before):
     slot = int((pick.get("params") or {}).get("slot_index"))
     t1 = _treasury(bus)

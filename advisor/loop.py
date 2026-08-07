@@ -11,6 +11,7 @@ HUD_MISS_PAUSE = 5.0
 POST_ATTACK_ROW_WAIT = 40.0
 POST_ATTACK_HUD_TRIES = 3
 ATTACK_LOCOMOTION_CAP = 20.0
+LOCOMOTION_ACTIONS = frozenset(("attack_army", "attack_settlement", "colonize"))
 POST_ATTACK_HUD_PAUSE = 0.6
 _last_beat_turn = [None]
 sys.path.insert(0, _HERE)
@@ -161,7 +162,7 @@ def _verify_action_catalogues(log):
 
 
 def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
-                 stuck_seconds=None, on_stuck=None, cold=False):
+                 stuck_seconds=None, on_stuck=None, cold=False, on_turn=None):
     pol = pol or P.Policy()
     TR.set_run_dir(run_dir)
     import diplo_stream as DS
@@ -234,6 +235,11 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
             log("== turn %s done: %d actions (%d confirmed), ended by %s =="
                 % (row["turn"], row["actions"], row["confirmed"], row["ended_by"]))
             _turn_trail(run_dir, executor, row, len(rows), log)
+            if on_turn is not None:
+                try:
+                    on_turn(rows)
+                except Exception as e:
+                    log("!! on_turn hook failed: %s" % repr(e)[:140])
             if row["ended_by"] == "defeated":
                 raise CampaignLost("faction destroyed at turn %s after %d turns played"
                                    % (row["turn"], len(rows)))
@@ -506,7 +512,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None, act_hist
             ended_by = "end_turn_failed"
             active = _active_from(record, pol)
             continue
-        if str(pick.get("action_type", "")).startswith("attack"):
+        if pick.get("action_type") in LOCOMOTION_ACTIONS:
             _t = time.time()
             moved_s, loco = _await_locomotion(executor, log, run_dir, pick)
             if moved_s >= 0.5:

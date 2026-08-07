@@ -330,14 +330,25 @@ def _tstage(prof, name, fn, *a, **k):
         prof[name] = prof.get(name, 0) + int((time.time() - t) * 1000)
 
 
+RUIN_OWNER = "ruins"
+
+
+def _mask_ruin_owners(rows, ruin_keys):
+    for r in rows or ():
+        if str(r.get("region")) in ruin_keys:
+            r["region_owner"] = RUIN_OWNER
+    return rows
+
+
 def world_state(bus, prof=None):
     rs = _tstage(prof, "world_state/ruins", ruins, bus)
     ruin_keys = {r["region"] for r in rs}
     hostiles = [h for h in _tstage(prof, "world_state/hostiles", _chan, bus, "hostiles", "hostiles")
                 if not (h.get("kind") == "settlement" and str(h.get("region")) in ruin_keys)]
-    return {"armies": _tstage(prof, "world_state/chars", _chan, bus, "chars", "chars"),
+    return {"armies": _mask_ruin_owners(
+                _tstage(prof, "world_state/chars", _chan, bus, "chars", "chars"), ruin_keys),
             "settlements": _tstage(prof, "world_state/setts", _chan, bus, "setts", "setts"),
-            "hostiles": hostiles,
+            "hostiles": _mask_ruin_owners(hostiles, ruin_keys),
             "enemy_agents": _tstage(prof, "world_state/enemy_agents", enemy_agents, bus),
             "ruins": rs}
 
@@ -721,6 +732,54 @@ def settlement_forces(bus):
     return _parse_stationed(_ev(bus, _LUA_STATIONED, timeout=25.0, allow_nil=True))
 
 
+HORDE_SLOT_SCAN = 1200
+
+
+_LUA_HORDE_SLOTS = (_G +
+    "local c=cco('CcoCampaignCharacter','%(cqi)s') "
+    "local f=c and g(c,'MilitaryForceContext') "
+    "if not f or g(f,'IsHorde')~=true then return 'not_horde' end "
+    "local me=ts(g(c,'Name')) local o={} "
+    "for i=0,%(cap)d do local s=cco('CcoCampaignBuildingSlot','force_slot_'..i) "
+    "if s~=nil and g(s,'IsActive')~=nil then local ch=g(s,'CharacterContext') "
+    "if ch and ts(g(ch,'Name'))==me then "
+    "local p=g(s,'PossibleUpgradeWithoutConversionsList') "
+    "if type(p)=='table' then for j=0,#p-1 do "
+    "o[#o+1]=i..'~'..ts(g(s,'Index'))..'~'..ts(g(s,'IsEmpty'))..'~'"
+    "..ts(g(s,'PossibleUpgradeWithoutConversionsList['..j..'].Key'))..'~'"
+    "..ts(g(s,'PossibleUpgradeWithoutConversionsList['..j..'].IsActiveForBuildingBrowser(this)')) "
+    "end end end end end return 'horde||'..table.concat(o,',')")
+
+
+def _horde_slots_lua(cqi):
+    return _LUA_HORDE_SLOTS % {"cqi": cqi, "cap": HORDE_SLOT_SCAN}
+
+
+def _parse_horde_slots(raw):
+    raw = str(raw or "")
+    if not raw.startswith("horde||"):
+        return None
+    out = []
+    for row in raw[len("horde||"):].split(","):
+        p = row.split("~")
+        if len(p) != 5 or not p[0]:
+            continue
+        out.append({"slot_id": "force_slot_%s" % p[0], "slot_index": _num(p[1]),
+                    "empty": p[2] == "true", "key": p[3], "available": p[4] == "true"})
+    return out
+
+
+def _horde_building_offers(slots):
+    offers = []
+    for s in slots or []:
+        ok = bool(s["available"])
+        offers.append(_offer("horde_building", "%s@%s" % (s["slot_id"], s["key"]), ok,
+                             None if ok else "requirements_not_met",
+                             slot_id=s["slot_id"], slot_index=s["slot_index"],
+                             building_key=s["key"], slot_empty=s["empty"]))
+    return offers
+
+
 def _lord_targets(world):
     armies = [h for h in world["hostiles"] if h.get("kind") == "army" and h.get("cqi")]
     esetts = [h for h in world["hostiles"] if h.get("kind") == "settlement" and h.get("region")]
@@ -739,13 +798,15 @@ def lord_offers(bus, cqi, state, world, stationed=None, prof=None):
                                [s["region"] for s in esetts] + [s["region"] for s in osetts]
                                + [s["region"] for s in rsetts])
     moves = _move_offers(bus, cqi, state)
+    horde = _parse_horde_slots(_tstage(prof, "lord_offers/horde", _ev, bus,
+                                       _horde_slots_lua(cqi), timeout=30.0, allow_nil=True))
     return _lord_offers_assemble(cqi, state, world, stationed, ev_raw, recruit_rows,
-                                 reach_c, reach_s, moves)
+                                 reach_c, reach_s, moves, horde_slots=horde)
 
 
 def _lord_offers_assemble(cqi, state, world, stationed, ev_raw, recruit_rows,
                           reach_c, reach_s, moves, anc_pool=None, equipped=None,
-                          equipped_anywhere=None):
+                          equipped_anywhere=None, horde_slots=None):
     offers = []
     acted = state.get("acted")
     raw = str(ev_raw or "")
@@ -788,6 +849,12 @@ def _lord_offers_assemble(cqi, state, world, stationed, ev_raw, recruit_rows,
                              None if ok else ("movement_stance" if marching else
                                               "recruiting" if recruiting else "cannot_reach"),
                              target_faction=s.get("faction"), x=s.get("x"), y=s.get("y")))
+    for s in rsetts:
+        ok = bool(reach_s.get(s["region"])) and not marching and not recruiting
+        offers.append(_offer("colonize", s["region"], ok,
+                             None if ok else ("movement_stance" if marching else
+                                              "recruiting" if recruiting else "cannot_reach"),
+                             x=s.get("x"), y=s.get("y")))
     garrisoned = state.get("garrisoned")
     occ = stationed or {}
     for s in osetts:
@@ -799,6 +866,7 @@ def _lord_offers_assemble(cqi, state, world, stationed, ev_raw, recruit_rows,
         offers.append(_offer("garrison", "settlement:%s" % s["region"], ok, gate,
                              x=s.get("x"), y=s.get("y")))
     offers.extend(_item_offers(anc_pool, equipped, equipped_anywhere))
+    offers.extend(_horde_building_offers(horde_slots))
     offers.extend(moves or [])
     offers.append(_offer("noop", "noop", True))
     return offers
@@ -1483,6 +1551,8 @@ def _campaign_offers_assemble(raw, diplo_offers):
     return offers
 
 
+DIPLO_SCHEMA = 2
+
 DIPLO_TERMS = ("nonaggression_pact", "trade_agreement", "defensive_alliance", "soft_access",
                "military_alliance", "vassal", "confederation")
 DIPLO_DECLARE_WAR = "declare_war"
@@ -1493,25 +1563,26 @@ _LUA_DIPLO_TARGETS = (
     "local me=cm:get_local_faction(true) "
     "if not me or me:is_null_interface() then return '' end "
     "local out={} "
-    "local ok,fl=pcall(function() return cm:model():world():faction_list() end) "
-    "if not ok or not fl then return '' end "
+    "local ok,fl=pcall(function() return me:factions_met() end) "
+    "if not ok or not fl then return 'READ_FAILED' end "
     "local myname='' pcall(function() myname=me:name() end) "
+    "local function b(g) local o,v=pcall(g) if o and v then return 1 else return 0 end end "
     "for i=0,fl:num_items()-1 do "
     "  local okf,f=pcall(function() return fl:item_at(i) end) "
-    "  local nm=nil local dead=false "
-    "  if okf and f then pcall(function() nm=f:name() end) "
-    "                    pcall(function() dead=f:is_dead() end) end "
-    "  if okf and f and nm and nm~=myname and not dead "
-    "     and not f:is_null_interface() then "
-    "    local function b(g) local o,v=pcall(g) if o and v then return 1 else return 0 end end "
-    "    local war=b(function() return me:at_war_with(f) end) "
-    "    local ally=b(function() return me:allied_with(f) end) "
-    "    local trade=b(function() return me:trade_agreement_with(f) end) "
-    "    local vas=b(function() return f:is_vassal_of(me) end) "
-    "    local st=0 local o2,v2=pcall(function() return me:diplomatic_standing_with(f) end) "
-    "    if o2 and v2 then st=v2 end "
-    "    if war+ally+trade+vas>0 or st~=0 then "
-    "      out[#out+1]=nm..'~'..war..'~'..ally..'~'..trade..'~'..vas..'~'..st "
+    "  if okf and f and not f:is_null_interface() then "
+    "    local nm=nil pcall(function() nm=f:name() end) "
+    "    if nm and nm~=myname then "
+    "      local excl=0 "
+    "      if b(function() return f:is_dead() end)==1 "
+    "         or b(function() return f:is_rebel() end)==1 "
+    "         or b(function() return f:is_quest_battle_faction() end)==1 then excl=1 end "
+    "      local war=b(function() return me:at_war_with(f) end) "
+    "      local ally=b(function() return me:allied_with(f) end) "
+    "      local trade=b(function() return me:trade_agreement_with(f) end) "
+    "      local vas=b(function() return f:is_vassal_of(me) end) "
+    "      local st=0 local o2,v2=pcall(function() return me:diplomatic_standing_with(nm) end) "
+    "      if o2 and type(v2)=='number' then st=v2 end "
+    "      out[#out+1]=nm..'~'..war..'~'..ally..'~'..trade..'~'..vas..'~'..st..'~'..excl "
     "    end "
     "  end "
     "end "
@@ -1540,7 +1611,7 @@ def diplomacy_offers(bus, turn=None, epoch=None):
 
 
 def _parse_diplo_targets(raw):
-    if raw is None or str(raw) in ("nil", "None"):
+    if raw is None or str(raw) in ("nil", "None", "READ_FAILED"):
         return None
     targets = []
     for row in str(raw).split(","):
@@ -1552,8 +1623,21 @@ def _parse_diplo_targets(raw):
         except (TypeError, ValueError):
             standing = 0.0
         targets.append({"faction": p[0], "at_war": p[1] == "1", "allied": p[2] == "1",
-                        "trade": p[3] == "1", "their_vassal": p[4] == "1", "standing": standing})
+                        "trade": p[3] == "1", "their_vassal": p[4] == "1", "standing": standing,
+                        "excluded": len(p) > 6 and p[6] == "1"})
     return targets
+
+
+def diplo_unseen_check(targets, world):
+    if targets is None:
+        return None
+    seen = set()
+    for h in ((world or {}).get("hostiles") or []):
+        f = h.get("faction")
+        if f:
+            seen.add(f)
+    known = set(t["faction"] for t in targets)
+    return sorted(seen - known)
 
 
 def _diplo_offers_build(bus, turn, epoch, raw):
@@ -1563,9 +1647,11 @@ def _diplo_offers_build(bus, turn, epoch, raw):
                          "snapshot. This is a broken read, NOT an empty world.\n")
         return []
     if not targets:
-        sys.stderr.write("collect: diplomacy targets EMPTY from the cm proxy -- 0 diplomacy offers "
-                         "this snapshot. The panel is never opened to check; under-reporting is "
-                         "accepted over scraping a screen.\n")
+        sys.stderr.write("collect: diplomacy targets EMPTY from factions_met -- 0 diplomacy offers "
+                         "this snapshot.\n")
+        return []
+    targets = [t for t in targets if not t.get("excluded")]
+    if not targets:
         return []
     targets.sort(key=lambda t: -abs(t["standing"]))
     offers = []
@@ -1616,15 +1702,24 @@ def snapshot(bus, active=None, diplo_epoch=None):
     camp["resources"] = _parse_resources(_bres(ra[1], "faction_resources", allow_nil=True))
     rs = _parse_ruins(_bres(ra[2], "ruins", allow_nil=True))
     ruin_keys = {r["region"] for r in rs}
-    world = {"armies": ra[3].get("chars") or [],
+    world = {"armies": _mask_ruin_owners(ra[3].get("chars") or [], ruin_keys),
              "settlements": ra[4].get("setts") or [],
-             "hostiles": [h for h in (ra[5].get("hostiles") or [])
-                          if not (h.get("kind") == "settlement"
-                                  and str(h.get("region")) in ruin_keys)],
+             "hostiles": _mask_ruin_owners(
+                 [h for h in (ra[5].get("hostiles") or [])
+                  if not (h.get("kind") == "settlement"
+                          and str(h.get("region")) in ruin_keys)], ruin_keys),
              "ruins": rs,
              "enemy_agents": _parse_enemy_agents(_bres(ra[8], "enemy_agents", allow_nil=True))}
     diplo_raw = _bres(ra[7], "diplo_targets", allow_nil=True)
     world["relations"] = _parse_diplo_targets(diplo_raw)
+    world["diplo_schema"] = DIPLO_SCHEMA
+    world["diplo_unseen"] = diplo_unseen_check(world["relations"], world)
+    world["diplo_hostile_rows"] = len(world["hostiles"])
+    if world["diplo_unseen"]:
+        sys.stderr.write("collect: DIPLO MET-SET DISCREPANCY -- %d faction(s) on the map but absent "
+                         "from factions_met (%d hostiles rows, channel caps at 60): %s\n"
+                         % (len(world["diplo_unseen"]), len(world["hostiles"]),
+                            ",".join(world["diplo_unseen"])))
     sf = _parse_stationed(_bres(ra[6], "settlement_forces", allow_nil=True))
     stationed, citizenry = sf["stationed"], sf["citizenry"]
     world["citizenry"] = sorted(citizenry)
@@ -1663,7 +1758,8 @@ def snapshot(bus, active=None, diplo_epoch=None):
                    ("eval", _LUA_LORD_OFFERS % {"cqi": cqi}),
                    ("eval", _LUA_RECRUITABLE % {"cqi": cqi}),
                    ("eval", _reach_lua(cqi, reach_cqis, reach_regions)),
-                   ("eval", _LUA_EQUIPPED % {"cqi": cqi})]
+                   ("eval", _LUA_EQUIPPED % {"cqi": cqi}),
+                   ("eval", _horde_slots_lua(cqi))]
     for cqi in heroes:
         h_c, h_r = _hero_action_reach_targets(world, cqi)
         wave_b += [("eval", _LUA_LORD % {"cqi": cqi}),
@@ -1692,8 +1788,10 @@ def snapshot(bus, active=None, diplo_epoch=None):
                           _bres(rb[i + 1], "lord_offers:%s" % cqi, allow_nil=True),
                           _parse_recruitable(_bres(rb[i + 2], "recruitable:%s" % cqi, allow_nil=True)),
                           _parse_reach(_bres(rb[i + 3], "reach:%s" % cqi, allow_nil=True)),
-                          _parse_ancillaries(_bres(rb[i + 4], "equipped:%s" % cqi, allow_nil=True)))
-        i += 5
+                          _parse_ancillaries(_bres(rb[i + 4], "equipped:%s" % cqi, allow_nil=True)),
+                          _parse_horde_slots(_bres(rb[i + 5], "horde_slots:%s" % cqi,
+                                                   allow_nil=True)))
+        i += 6
     for cqi in heroes:
         hero_data[cqi] = (_parse_lord(_bres(rb[i], "hero_state:%s" % cqi), cqi),
                           _bres(rb[i + 1], "hero_offers:%s" % cqi, allow_nil=True),
@@ -1725,11 +1823,12 @@ def snapshot(bus, active=None, diplo_epoch=None):
 
     ents = []
     for cqi in lords:
-        st, ev, rec, (rch_c, rch_s), equipped = lord_data[cqi]
+        st, ev, rec, (rch_c, rch_s), equipped, horde = lord_data[cqi]
         ents.append({"context_kind": "lord", "context_id": str(cqi), "state": st,
                      "offers": _lord_offers_assemble(cqi, st, world, stationed, ev, rec,
                                                      rch_c, rch_s, moves.get(cqi),
-                                                     anc_pool, equipped, equipped_all)})
+                                                     anc_pool, equipped, equipped_all,
+                                                     horde)})
     for cqi in heroes:
         st, ev, (rch_c, rch_s), equipped = hero_data[cqi]
         ents.append({"context_kind": "hero", "context_id": str(cqi), "state": st,
