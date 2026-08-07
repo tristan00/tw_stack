@@ -10,6 +10,7 @@ HUD_MISS_BUDGET = 12
 HUD_MISS_PAUSE = 5.0
 POST_ATTACK_ROW_WAIT = 1.0
 POST_ATTACK_HUD_TRIES = 3
+ATTACK_LOCOMOTION_CAP = 12.0
 POST_ATTACK_HUD_PAUSE = 0.6
 _last_beat_turn = [None]
 sys.path.insert(0, _HERE)
@@ -43,6 +44,19 @@ GROWTH_FIRST_CHECK_TURN = 4
 
 GROWTH_METRICS = (("settlements", "settlements", GROWTH_WINDOW),
                   ("lord_level", "legendary lord level", GROWTH_LORD_WINDOW))
+
+
+def _await_locomotion(executor, log, cap=ATTACK_LOCOMOTION_CAP, step=0.3):
+    t0 = time.time()
+    last = None
+    while time.time() - t0 < cap:
+        probe = executor.transition_probe() or {}
+        last = probe.get("locomotion_done")
+        if last != "false":
+            return time.time() - t0, last
+        time.sleep(step)
+    log("   attack: locomotion still running after %.1fs -- proceeding" % cap)
+    return time.time() - t0, last
 
 
 def _trace_post_attack(executor, log, run_dir, pick, tries=POST_ATTACK_HUD_TRIES,
@@ -484,6 +498,10 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None, act_hist
             continue
         if str(pick.get("action_type", "")).startswith("attack"):
             _t = time.time()
+            moved_s, loco = _await_locomotion(executor, log)
+            if moved_s >= 0.5:
+                log("   attack: lord moved for %.1fs (locomotion_done=%s) -- timeout starts now"
+                    % (moved_s, loco))
             row = executor.bus.wait_row(
                 ("panel", "battle_completed", "dilemma_issued"),
                 timeout=POST_ATTACK_ROW_WAIT, offset=pre_off,
