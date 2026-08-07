@@ -19,7 +19,17 @@ SHORT_WEIGHT = 0.5
 
 CB_ITERATIONS = 5000
 CB_DEPTH = 6
-CB_LEARNING_RATE = 0.01
+CB_LEARNING_RATE = 0.1478899287340784
+CB_L2_LEAF_REG = 12.529350398247741
+CB_GROW_POLICY = "Depthwise"
+CB_BOOTSTRAP_TYPE = "Bernoulli"
+CB_SUBSAMPLE = 0.8090077144994208
+CB_RSM = 0.6572612205674597
+CB_RANDOM_STRENGTH = 2.9743695085513364
+CB_BORDER_COUNT = 128
+CB_MIN_DATA_IN_LEAF = 54
+CB_ONE_HOT_MAX_SIZE = 255
+CB_LEAF_ESTIMATION_ITERATIONS = 7
 CB_LOSS = "RMSE"
 CB_TRAIN_DIR = r"D:\twdata\tmp\catboost"
 CB_EARLY_STOPPING = 50
@@ -54,7 +64,14 @@ def params(iterations=None, learning_rate=None):
     return {"learning_rate": float(learning_rate or CB_LEARNING_RATE),
             "early_stopping_rounds": CB_EARLY_STOPPING,
             "iteration_cap": int(iterations or CB_ITERATIONS),
-            "depth": CB_DEPTH, "loss": CB_LOSS, "val_fraction": VAL_FRACTION}
+            "depth": CB_DEPTH, "loss": CB_LOSS, "val_fraction": VAL_FRACTION,
+            "l2_leaf_reg": CB_L2_LEAF_REG, "grow_policy": CB_GROW_POLICY,
+            "bootstrap_type": CB_BOOTSTRAP_TYPE, "subsample": CB_SUBSAMPLE,
+            "rsm": CB_RSM, "random_strength": CB_RANDOM_STRENGTH,
+            "border_count": CB_BORDER_COUNT, "min_data_in_leaf": CB_MIN_DATA_IN_LEAF,
+            "one_hot_max_size": CB_ONE_HOT_MAX_SIZE,
+            "leaf_estimation_iterations": CB_LEAF_ESTIMATION_ITERATIONS,
+            "tuned_from": "catboost_full_k5 rank3 cv_rmse 1.8837 vs 1.9804, 5/5 folds"}
 
 
 def regressor(iterations=None, learning_rate=None):
@@ -62,6 +79,13 @@ def regressor(iterations=None, learning_rate=None):
     return CatBoostRegressor(iterations=int(iterations or CB_ITERATIONS), depth=CB_DEPTH,
                              learning_rate=float(learning_rate or CB_LEARNING_RATE),
                              loss_function=CB_LOSS,
+                             l2_leaf_reg=CB_L2_LEAF_REG, grow_policy=CB_GROW_POLICY,
+                             bootstrap_type=CB_BOOTSTRAP_TYPE, subsample=CB_SUBSAMPLE,
+                             rsm=CB_RSM, random_strength=CB_RANDOM_STRENGTH,
+                             border_count=CB_BORDER_COUNT,
+                             min_data_in_leaf=CB_MIN_DATA_IN_LEAF,
+                             one_hot_max_size=CB_ONE_HOT_MAX_SIZE,
+                             leaf_estimation_iterations=CB_LEAF_ESTIMATION_ITERATIONS,
                              verbose=0, train_dir=CB_TRAIN_DIR)
 
 
