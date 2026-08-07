@@ -177,7 +177,7 @@ font:inherit;text-transform:uppercase;letter-spacing:.08em;padding:8px 14px;curs
 .tab.on{color:var(--fg);border-bottom-color:var(--ok)}
 .panel[hidden]{display:none}
 .panel>h2:first-child{margin-top:16px}
-.wrap{max-width:1180px;margin:0 auto;padding:20px}
+.wrap{max-width:min(2600px,98vw);margin:0 auto;padding:20px 16px}
 .cards{display:flex;flex-wrap:wrap;gap:10px;margin:12px 0}
 .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 14px;min-width:104px}
 .card .v{font-size:20px}.card .k{color:var(--dim);font-size:11px;text-transform:uppercase}
