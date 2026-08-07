@@ -685,6 +685,7 @@ MODEL_COLUMNS = frozenset((
     "opt_target_dir_sin", "opt_target_dir_cos",
     "lord_subtype", "lord_hp", "lord_stance", "lord_units", "lord_rank", "lord_skill_points",
     "lord_ap_pct", "lord_acted", "lord_has_army",
+    "near_friend_1_dist", "near_friend_1_dir_sin", "near_friend_1_dir_cos",
     "near_enemy_1_dist", "near_enemy_1_stance", "near_enemy_1_faction",
     "near_enemy_1_dir_sin", "near_enemy_1_dir_cos",
     "near_enemysett_1_dist", "near_enemysett_1_faction",
