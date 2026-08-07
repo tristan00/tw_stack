@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.join(r"D:\tw_stack", "decisions"))
 import features as F
 import policy as P
 from base_model import (RUNS_ROOT, TARGET_PARTS, target, decision_deltas, fit_es,
-                        isolation_forest, regressor, _encode, _mm0, _ranks, _sd)
+                        isolation_forest, params, regressor, _encode, _mm0, _ranks, _sd)
 from store import DecisionStore, IncompatibleStore
 
 MODEL_DIR = r"D:\twdata\models\interrupt"
@@ -136,7 +136,7 @@ def train(runs_root=RUNS_ROOT):
         os.replace(legacy, legacy + ".superseded")
     mae = sum(abs(a - b) for a, b in zip(preds, y)) / len(y)
     return {"trained": True, "rows": len(rows), "mae_in_sample": round(mae, 5),
-            "fit": fit_report,
+            "fit": fit_report, "params": params(),
             "sd_global": round(sd_global, 6), "screens": meta["screens"],
             "beta": P.BETA, "epsilon": P.EPSILON, "runs": data["runs"]}
 

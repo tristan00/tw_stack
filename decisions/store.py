@@ -68,6 +68,8 @@ CREATE TABLE IF NOT EXISTS action_taken(
 CREATE INDEX IF NOT EXISTS ix_dp ON decision_points(campaign_id, turn);
 CREATE INDEX IF NOT EXISTS ix_snap_dp ON entity_snapshots(decision_id);
 CREATE INDEX IF NOT EXISTS ix_offer_dp ON action_offers(decision_id);
+CREATE INDEX IF NOT EXISTS ix_offer_key ON action_offers(
+  decision_id, context_kind, context_id, action_type, action_key);
 CREATE INDEX IF NOT EXISTS ix_taken_dp ON action_taken(decision_id);
 """
 

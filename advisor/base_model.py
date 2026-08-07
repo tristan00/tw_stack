@@ -16,7 +16,7 @@ SHORT_WEIGHT = 0.5
 
 CB_ITERATIONS = 5000
 CB_DEPTH = 6
-CB_LEARNING_RATE = 0.002
+CB_LEARNING_RATE = 0.01
 CB_LOSS = "RMSE"
 CB_TRAIN_DIR = r"D:\twdata\tmp\catboost"
 CB_EARLY_STOPPING = 50
@@ -45,6 +45,13 @@ def grouped_split(n, groups, frac=VAL_FRACTION, seed=SPLIT_SEED):
 
 ISO_ESTIMATORS = 200
 ISO_SEED = 0
+
+
+def params(iterations=None, learning_rate=None):
+    return {"learning_rate": float(learning_rate or CB_LEARNING_RATE),
+            "early_stopping_rounds": CB_EARLY_STOPPING,
+            "iteration_cap": int(iterations or CB_ITERATIONS),
+            "depth": CB_DEPTH, "loss": CB_LOSS, "val_fraction": VAL_FRACTION}
 
 
 def regressor(iterations=None, learning_rate=None):

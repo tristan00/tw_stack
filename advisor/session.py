@@ -304,6 +304,8 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                 trained = entry["retrain"]
                 log("!! retrain before run %d failed (continuing on the previous model): %s"
                     % (i + 1, repr(e)[:180]))
+            entry.setdefault("outcome", "in_progress")
+            _write(out_path, dict(report, campaigns=report["campaigns"] + [entry]))
         try:
             if hard_restart_next:
                 log("previous campaign ended %s -- killing the game rather than asking it to quit"
@@ -324,11 +326,20 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                                "trained(%d rows)" % (ranker.meta or {}).get("rows", 0)
                                if ranker.ready else "cold_random")
             log("policy: %s" % entry["policy"])
-            rows = L.run_campaign(run_dir, ex, pol, turns=this_turns, log=log, cold=cold)
+            def _flush_turn(so_far, _e=entry):
+                _e.update(outcome="in_progress", turns_played=len(so_far),
+                          actions=sum(r["actions"] for r in so_far),
+                          confirmed=sum(r["confirmed"] for r in so_far),
+                          ended_by=[r["ended_by"] for r in so_far])
+                _write(out_path, dict(report, campaigns=report["campaigns"] + [_e]))
+
+            rows = L.run_campaign(run_dir, ex, pol, turns=this_turns, log=log, cold=cold,
+                                  on_turn=_flush_turn)
             entry.update(outcome="completed", turns_played=len(rows),
                          actions=sum(r["actions"] for r in rows),
                          confirmed=sum(r["confirmed"] for r in rows),
-                         ended_by=[r["ended_by"] for r in rows], **_growth_stats(rows))
+                         ended_by=[r["ended_by"] for r in rows],
+                         campaign_uuid=_uuid_of(rows))
         except L.CampaignLost as e:
             entry.update(outcome="defeated", error=str(e)[:300], **_played(e))
             log("== campaign %d LOST (faction destroyed): %s" % (i + 1, str(e)[:200]))
@@ -393,17 +404,172 @@ METRICS_DIR = r"D:\twdata\metrics"
 EXPERIMENTS = os.path.join(METRICS_DIR, "experiments.jsonl")
 
 
-def _growth_stats(rows):
-    out = {}
-    for part in ("settlements", "lord_level"):
-        vals = [(r.get("state") or {}).get(part) for r in rows]
-        vals = [float(v) for v in vals if v is not None]
-        if not vals:
+TARGET_PARTS = ("settlements", "lord_level")
+
+
+def _uuid_of(rows):
+    for r in rows or ():
+        u = (r.get("target") or {}).get("campaign_uuid")
+        if u:
+            return u
+    return None
+
+
+def _db(run_dir):
+    import sqlite3
+    p = os.path.join(run_dir or journal.RUN_DIR, journal.DB_NAME).replace("\\", "/")
+    return sqlite3.connect("file:%s?mode=ro" % p, uri=True, timeout=10.0)
+
+
+_TURNS_CACHE = {}
+
+
+def _loop_turns(run_dir):
+    path = os.path.join(run_dir, "loop_report.jsonl")
+    try:
+        stamp = os.path.getmtime(path)
+    except OSError:
+        return {}
+    hit = _TURNS_CACHE.get(path)
+    if hit and hit[0] == stamp:
+        return hit[1]
+    by_uuid = {}
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                try:
+                    o = json.loads(line)
+                except ValueError:
+                    continue
+                if o.get("kind") != "turn":
+                    continue
+                u = (o.get("target") or {}).get("campaign_uuid")
+                if u:
+                    by_uuid.setdefault(u, []).append(o)
+    except OSError:
+        return {}
+    _TURNS_CACHE[path] = (stamp, by_uuid)
+    return by_uuid
+
+
+def _resolve_uuid(con, c):
+    if c.get("campaign_uuid"):
+        return c["campaign_uuid"]
+    plan, t0 = c.get("plan"), float(c.get("started") or 0)
+    if not plan or not t0:
+        return None
+    t1 = t0 + float(c.get("seconds") or 0) + 60
+    hits = [cid for cid, first in con.execute(
+        "SELECT campaign_id, MIN(ts) FROM decision_points GROUP BY campaign_id"
+        " HAVING MIN(ts) BETWEEN ? AND ?", (t0, t1))
+        if str(cid).startswith(plan + "_")]
+    return hits[0] if len(hits) == 1 else None
+
+
+def _campaign_growth(con, uuid):
+    row = con.execute("SELECT campaign FROM decision_points WHERE campaign_id=?"
+                      " ORDER BY decision_id LIMIT 1", (uuid,)).fetchone()
+    if not row:
+        return None
+    try:
+        base = json.loads(row[0]) or {}
+    except (TypeError, ValueError):
+        return None
+    peak = con.execute("SELECT MAX(settlements), MAX(lord_level), COUNT(*)"
+                       " FROM target_rows WHERE campaign_id=?", (uuid,)).fetchone() or (None, None, 0)
+    out = {"campaign_uuid": uuid, "turns_recorded": peak[2] or 0}
+    for part, top in zip(TARGET_PARTS, peak[:2]):
+        start = base.get(part)
+        if start is None:
             continue
-        out[part + "_start"] = vals[0]
-        out[part + "_peak"] = max(vals)
-        out[part + "_gained"] = max(vals) - vals[0]
+        best = max([float(start)] + ([float(top)] if top is not None else []))
+        out[part + "_start"] = float(start)
+        out[part + "_peak"] = best
+        out[part + "_gained"] = best - float(start)
     return out
+
+
+def _campaign_timing(con, uuid, c, turns_by_uuid):
+    n, t0, t1, roundtrip = con.execute(
+        "SELECT COUNT(*), MIN(ts), MAX(ts), SUM(COALESCE(json_extract(timings,'$.roundtrip_ms'),0))"
+        " FROM decision_points WHERE campaign_id=?", (uuid,)).fetchone() or (0, None, None, 0)
+    act_ms, wasted_ms, acts = con.execute(
+        "SELECT SUM(COALESCE(json_extract(a.timing,'$.total_ms'),0)),"
+        " SUM(COALESCE(json_extract(a.timing,'$.confirm_wasted_ms'),0)), COUNT(*)"
+        " FROM action_taken a JOIN decision_points d ON d.decision_id=a.decision_id"
+        " WHERE d.campaign_id=?", (uuid,)).fetchone() or (0, 0, 0)
+    turns = turns_by_uuid.get(uuid) or []
+    ends = [float(t.get("ts") or 0) for t in turns] + [float(t1 or 0)]
+    play = max(0.0, max(ends) - float(t0 or max(ends)))
+    wall = float(c.get("seconds") or 0)
+    return {"wall_s": round(wall, 1), "play_s": round(play, 1),
+            "overhead_s": round(max(0.0, wall - play), 1),
+            "turns": len(turns) or int(c.get("turns_played") or 0),
+            "decisions": n, "actions": acts or 0,
+            "decision_s": round((roundtrip or 0) / 1000.0, 1),
+            "action_s": round((act_ms or 0) / 1000.0, 1),
+            "wasted_confirm_s": round((wasted_ms or 0) / 1000.0, 1),
+            "inter_turn_s": round(sum(float((t.get("inter_turn") or {}).get("waited_s") or 0)
+                                      for t in turns), 1)}
+
+
+def _measure(stretch, log):
+    cons, out, unmeasured = {}, [], []
+    for c in stretch:
+        rd = c.get("run_dir") or journal.RUN_DIR
+        if rd not in cons:
+            try:
+                cons[rd] = (_db(rd), _loop_turns(rd))
+            except Exception as e:
+                cons[rd] = None
+                log("!! %s/%s unreadable -- campaigns there stay UNMEASURED: %s"
+                    % (rd, journal.DB_NAME, repr(e)[:90]))
+        e = {k: v for k, v in c.items()
+             if k not in ("settlements_start", "settlements_peak", "settlements_gained",
+                          "lord_level_start", "lord_level_peak", "lord_level_gained")}
+        pair = cons.get(rd)
+        uuid = _resolve_uuid(pair[0], c) if pair else None
+        growth = _campaign_growth(pair[0], uuid) if uuid else None
+        if growth:
+            e.update(growth, growth_source="decisions_db",
+                     timing=_campaign_timing(pair[0], uuid, c, pair[1]))
+        else:
+            unmeasured.append("%s#%s" % (c.get("plan"), c.get("index")))
+        out.append(e)
+    if unmeasured:
+        log("   %d campaign(s) UNMEASURED (no decision rows to baseline against): %s"
+            % (len(unmeasured), ", ".join(unmeasured[:8])))
+    for con, _ in (v for v in cons.values() if v):
+        try:
+            con.close()
+        except Exception:
+            pass
+    return out
+
+
+def _timing_stats(campaigns):
+    rows = [c["timing"] for c in campaigns if c.get("timing")]
+    if not rows:
+        return None
+    n = len(rows)
+    turns = sum(int(r.get("turns") or 0) for r in rows)
+    tot = lambda k: sum(float(r.get(k) or 0) for r in rows)
+    per_turn = lambda k: round(tot(k) / turns, 1) if turns else None
+    return {"campaigns_timed": n, "turns": turns,
+            "wall_s": round(tot("wall_s"), 1), "play_s": round(tot("play_s"), 1),
+            "s_per_campaign": round(tot("wall_s") / n, 1),
+            "s_per_turn": per_turn("play_s"),
+            "overhead_s_per_campaign": round(tot("overhead_s") / n, 1),
+            "inter_turn_s_per_turn": per_turn("inter_turn_s"),
+            "action_s_per_turn": per_turn("action_s"),
+            "decision_s_per_turn": per_turn("decision_s"),
+            "wasted_confirm_s_per_turn": per_turn("wasted_confirm_s"),
+            "decisions_per_turn": round(sum(int(r.get("decisions") or 0) for r in rows) / turns, 1)
+            if turns else None}
+
+
+def _turns_of(c):
+    return int(c.get("turns_played") or c.get("turns_recorded") or 0)
 
 
 def _gain_stats(stretch, part):
@@ -412,7 +578,7 @@ def _gain_stats(stretch, part):
         return {"total": None, "mean": None, "per_turn": None, "campaigns_measured": 0,
                 "campaigns_that_gained": None, "hist": {}}
     vals = [float(c[part + "_gained"]) for c in measured]
-    turns = sum(int(c.get("turns_played") or 0) for c in measured)
+    turns = sum(_turns_of(c) for c in measured)
     return {"total": round(sum(vals), 2),
             "mean": round(sum(vals) / len(vals), 3),
             "per_turn": round(sum(vals) / turns, 4) if turns else None,
@@ -421,14 +587,16 @@ def _gain_stats(stretch, part):
             "hist": {str(int(v)): vals.count(v) for v in sorted(set(vals))}}
 
 
-def _flush_generation(stretch, backend, backend_cfg, gen_n, report, trained, log):
+def _trial_row(stretch, backend, backend_cfg, gen_n, report, trained, log):
     if not stretch:
         return None
+    stretch = _measure(stretch, log)
     first, last = stretch[0], stretch[-1]
     secs = sum(float(c.get("seconds") or 0.0) for c in stretch)
     outcomes, policies = {}, {}
     for c in stretch:
-        outcomes[c.get("outcome")] = outcomes.get(c.get("outcome"), 0) + 1
+        oc = c.get("outcome") or "in_progress"
+        outcomes[oc] = outcomes.get(oc, 0) + 1
         policies[c.get("policy")] = policies.get(c.get("policy"), 0) + 1
     session = str(report.get("session") or "")
     trial = os.path.basename(session).replace("session_", "").replace(".json", "")
@@ -447,20 +615,29 @@ def _flush_generation(stretch, backend, backend_cfg, gen_n, report, trained, log
            "settlements": _gain_stats(stretch, "settlements"),
            "lord_level": _gain_stats(stretch, "lord_level"),
            "outcomes": outcomes,
-           "turns_total": sum(int(c.get("turns_played") or 0) for c in stretch),
-           "turns_per_campaign": round(float(sum(int(c.get("turns_played") or 0)
-                                                 for c in stretch)) / len(stretch), 2),
+           "turns_total": sum(_turns_of(c) for c in stretch),
+           "turns_per_campaign": round(float(sum(_turns_of(c) for c in stretch))
+                                       / len(stretch), 2),
            "campaigns_per_hour": (round(len(stretch) / (secs / 3600.0), 2) if secs else None),
            "campaign_hours": round(secs / 3600.0, 2),
+           "timing": _timing_stats(stretch),
+           "baseline": "pre_decision",
+           "campaign_uuids": [c["campaign_uuid"] for c in stretch if c.get("campaign_uuid")],
            "run_dirs": sorted({c["run_dir"] for c in stretch if c.get("run_dir")})}
-    recovered = sum(1 for c in stretch if c.get("growth_source") == "run_dir")
-    if recovered:
-        row["growth_recovered"] = recovered
-    if report.get("backfilled"):
-        row["backfilled"] = True
-        row["backfilled_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    if report.get("rescored"):
+        row["rescored"] = True
+        row["rescored_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
     if report.get("stopped_short"):
         row["stopped_short"] = True
+    if report.get("running"):
+        row["running"] = True
+    return row
+
+
+def _flush_generation(stretch, backend, backend_cfg, gen_n, report, trained, log):
+    row = _trial_row(stretch, backend, backend_cfg, gen_n, report, trained, log)
+    if row is None:
+        return None
     _write_trial(row, log)
     report.setdefault("trials", []).append(row)
     return row
@@ -474,75 +651,15 @@ def _write_trial(row, log):
     except OSError as e:
         raise RuntimeError("trial %s NOT written to %s -- refusing to run unrecorded "
                            "experiments: %s" % (row.get("trial"), EXPERIMENTS, repr(e)[:120]))
-    s, l = row["settlements"], row["lord_level"]
+    s, l, t = row["settlements"], row["lord_level"], row.get("timing") or {}
     num = lambda v, f="%+.2f": "unmeasured" if v is None else f % v
     log("   trial %s logged: %d campaigns (%s), settlements %s total / %s mean / %s campaigns"
-        " grew, lord level %s total, %.2f turns per campaign -> %s"
+        " grew, lord level %s total, %.2f turns per campaign, %ss per campaign / %ss per turn -> %s"
         % (row["trial"], row["campaigns"],
            ", ".join(sorted(str(p) for p in row["policies"])) or "?",
            num(s["total"]), num(s["mean"], "%.3f"), num(s["campaigns_that_gained"], "%d"),
-           num(l["total"]), row["turns_per_campaign"], EXPERIMENTS))
-
-
-def _campaign_blocks(run_dir):
-    rows = []
-    path = os.path.join(run_dir, "loop_report.jsonl")
-    try:
-        with open(path, encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                try:
-                    o = json.loads(line)
-                except ValueError:
-                    continue
-                if o.get("kind") == "turn":
-                    rows.append(o)
-    except OSError:
-        return []
-    blocks, cur, prev_id, prev_turn = [], [], None, None
-    for r in rows:
-        tg, st = r.get("target") or {}, r.get("state") or {}
-        ident = tg.get("campaign_uuid") or tg.get("campaign_id") or st.get("faction")
-        turn = float(r.get("turn") or 0)
-        if cur and ((ident is not None and prev_id is not None and ident != prev_id)
-                    or turn <= (prev_turn or 0)):
-            blocks.append(cur)
-            cur = []
-        cur.append(r)
-        prev_id = ident if ident is not None else prev_id
-        prev_turn = turn
-    if cur:
-        blocks.append(cur)
-    return [{"faction": ((b[0].get("target") or {}).get("campaign_id")
-                         or (b[0].get("state") or {}).get("faction")),
-             "rows": b} for b in blocks]
-
-
-def _recover_growth(campaigns, log):
-    missing = [c for c in campaigns
-               if c.get("settlements_gained") is None and c.get("run_dir")]
-    by_dir, filled = {}, 0
-    for c in missing:
-        by_dir.setdefault(c["run_dir"], None)
-    for rd in by_dir:
-        by_dir[rd] = _campaign_blocks(rd)
-    for rd, blocks in by_dir.items():
-        pending = [c for c in missing if c.get("run_dir") == rd]
-        cursor = 0
-        for c in pending:
-            while cursor < len(blocks) and blocks[cursor]["faction"] != c.get("plan"):
-                cursor += 1
-            if cursor >= len(blocks):
-                break
-            stats = _growth_stats(blocks[cursor]["rows"])
-            if stats:
-                c.update(stats)
-                c.setdefault("turns_played", len(blocks[cursor]["rows"]))
-                c["growth_source"] = "run_dir"
-                filled += 1
-            cursor += 1
-    if filled:
-        log("   recovered growth for %d campaigns from their run dirs" % filled)
-    return filled
+           num(l["total"]), row["turns_per_campaign"],
+           t.get("s_per_campaign", "?"), t.get("s_per_turn", "?"), EXPERIMENTS))
 
 
 def _stretches(campaigns):
@@ -559,71 +676,230 @@ def _stretches(campaigns):
     return out
 
 
-LIVE_SESSION_S = 1800
-
-
-def _still_running(path, rep):
-    if rep.get("totals"):
-        return False
-    try:
-        return (time.time() - os.path.getmtime(path)) < LIVE_SESSION_S
-    except OSError:
-        return False
-
-
-def backfill(runs_root=RUNS_ROOT, log=print, include_live=False):
+def _session_reports(runs_root):
     import glob
-    seen = set()
-    try:
-        with open(EXPERIMENTS, encoding="utf-8") as fh:
-            for line in fh:
-                try:
-                    seen.add(json.loads(line).get("trial"))
-                except ValueError:
-                    continue
-    except OSError:
-        pass
-    written, skipped = [], 0
     for path in sorted(glob.glob(os.path.join(runs_root, "session_*.json"))):
         try:
             with open(path, encoding="utf-8") as fh:
                 rep = json.load(fh)
-        except (OSError, ValueError) as e:
-            log("!! %s unreadable, no trials recovered: %s" % (os.path.basename(path), repr(e)[:90]))
+        except (OSError, ValueError):
             continue
-        campaigns = rep.get("campaigns") or []
-        if not campaigns:
-            continue
-        _recover_growth(campaigns, log)
-        req = rep.get("requested") or {}
-        stretches = _stretches(campaigns)
-        cut_short = None
-        if _still_running(path, rep) and stretches:
-            if include_live:
-                cut_short = stretches[-1][0]
-                log("   %s looks live -- recording generation %d anyway as stopped_short"
-                    % (os.path.basename(path), cut_short))
-            else:
-                gen, stretch = stretches.pop()
-                log("   %s is LIVE -- generation %d (%d campaigns so far) left for the session to "
-                    "record when it finishes" % (os.path.basename(path), gen, len(stretch)))
+        if rep.get("campaigns"):
+            yield path, rep
+
+
+def _stretch_context(path, rep, gen, stretch, extra):
+    trained = stretch[0].get("retrain")
+    corpus = ({k: trained.get(k) for k in ("rows", "runs", "campaigns", "n_decisions")}
+              if trained and not trained.get("error") else None)
+    req = rep.get("requested") or {}
+    shadow = dict(extra, session=path, _corpus=corpus)
+    return (req.get("backend") or stretch[0].get("backend"), req.get("backend_cfg") or {},
+            shadow, trained)
+
+
+ARCHIVE_DIR = r"D:\twdata\archive"
+
+
+def rescore(runs_root=RUNS_ROOT, log=print):
+    import shutil
+    rows = []
+    for path, rep in _session_reports(runs_root):
+        stretches = _stretches(rep["campaigns"])
+        cut_short = stretches[-1][0] if stretches and not rep.get("totals") else None
         for gen, stretch in stretches:
-            stamp = os.path.basename(path).replace("session_", "").replace(".json", "")
-            if "%s-g%d" % (stamp, gen) in seen:
-                skipped += 1
+            backend, cfg, shadow, trained = _stretch_context(
+                path, rep, gen, stretch, {"rescored": True, "stopped_short": gen == cut_short})
+            row = _trial_row(stretch, backend, cfg, gen, shadow, trained, log)
+            if not row:
                 continue
-            trained = stretch[0].get("retrain")
-            corpus = ({k: trained.get(k) for k in ("rows", "runs", "campaigns", "n_decisions")}
-                      if trained and not trained.get("error") else None)
-            shadow = {"session": path, "_corpus": corpus, "backfilled": True,
-                      "stopped_short": gen == cut_short}
-            row = _flush_generation(stretch, req.get("backend") or stretch[0].get("backend"),
-                                    req.get("backend_cfg") or {}, gen, shadow, trained, log)
-            if row:
-                written.append(row)
-    log("backfill: %d trials written, %d already in the ledger -> %s"
-        % (len(written), skipped, EXPERIMENTS))
-    return written
+            if not row["settlements"]["campaigns_measured"]:
+                log("   dropped %s: no campaign in it could be tied to decision rows"
+                    % row["trial"])
+                continue
+            rows.append(row)
+    if not rows:
+        raise RuntimeError("rescore produced no trials -- refusing to replace %s with nothing"
+                           % EXPERIMENTS)
+    rows.sort(key=lambda r: r.get("started") or r.get("ts") or 0)
+    os.makedirs(METRICS_DIR, exist_ok=True)
+    tmp = EXPERIMENTS + ".new"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r, default=str) + "\n")
+    if os.path.isfile(EXPERIMENTS):
+        dst = os.path.join(ARCHIVE_DIR, "experiments_%s" % time.strftime("%Y%m%d_%H%M%S"))
+        os.makedirs(dst, exist_ok=True)
+        shutil.move(EXPERIMENTS, os.path.join(dst, "experiments.jsonl"))
+        log("   previous ledger archived -> %s" % dst)
+    os.replace(tmp, EXPERIMENTS)
+    log("rescore: %d trials rebuilt from campaign data -> %s" % (len(rows), EXPERIMENTS))
+    return rows
+
+
+IN_FLIGHT_S = 600
+LIVE_LOG_S = 1800
+CURRENT_SESSION_LOG = r"D:\twdata\logs\advisor\CURRENT_SESSION_LOG.txt"
+
+
+def _live_log():
+    try:
+        path = open(CURRENT_SESSION_LOG, encoding="utf-8-sig").read().strip()
+        if time.time() - os.path.getmtime(path) > LIVE_LOG_S:
+            return None
+    except OSError:
+        return None
+    return path
+
+
+def _live_session(runs_root):
+    import re
+    path = _live_log()
+    if not path:
+        return None
+    name = os.path.basename(path)
+    stamp = re.search(r"(\d{8}_\d{6})", name)
+    if not stamp:
+        return None
+    stamp = stamp.group(1)
+    try:
+        started = time.mktime(time.strptime(stamp, "%Y%m%d_%H%M%S"))
+    except ValueError:
+        return None
+    backend = re.search(r"session_(?:cold_)?([A-Za-z0-9]+)_\d+x", name)
+    report = os.path.join(runs_root, "session_%s.json" % stamp)
+    try:
+        with open(report, encoding="utf-8") as fh:
+            rep = json.load(fh)
+    except (OSError, ValueError):
+        gen = 0
+        try:
+            gen = 1 if "retrained before run 1:" in open(path, encoding="utf-8",
+                                                         errors="replace").read() else 0
+        except OSError:
+            pass
+        rep = {"campaigns": [], "requested": {"backend": backend.group(1) if backend else None},
+               "_first_gen": gen}
+    return report, rep, started
+
+
+def _in_flight(stretch, since, log):
+    rd = journal.RUN_DIR
+    try:
+        con = _db(rd)
+    except Exception as e:
+        log("   in-flight campaign not read: %s" % repr(e)[:90])
+        return None
+    try:
+        done = {c.get("campaign_uuid") for c in stretch if c.get("campaign_uuid")}
+        done |= {u for u in (_resolve_uuid(con, c) for c in stretch) if u}
+        newest = con.execute("SELECT campaign_id, MIN(ts), MAX(ts) FROM decision_points"
+                             " GROUP BY campaign_id ORDER BY MIN(decision_id) DESC"
+                             " LIMIT 1").fetchone()
+    finally:
+        con.close()
+    if not newest or newest[0] in done:
+        return None
+    uuid, first, last = newest
+    if float(first or 0) < since or time.time() - float(last or 0) > IN_FLIGHT_S:
+        return None
+    prev = stretch[-1] if stretch else {}
+    return {"index": (prev.get("index") or len(stretch)) + 1,
+            "plan": str(uuid).rsplit("_", 1)[0], "campaign_uuid": uuid, "started": first,
+            "seconds": round(time.time() - float(first or 0), 1), "outcome": "in_flight",
+            "policy": prev.get("policy"), "backend": prev.get("backend"), "run_dir": rd}
+
+
+def live_trial(runs_root=RUNS_ROOT, log=lambda m: None, with_in_flight=True):
+    found = _live_session(runs_root)
+    if not found:
+        return None
+    path, rep, started = found
+    if rep.get("totals"):
+        return None
+    stretches = _stretches(rep["campaigns"])
+    gen, stretch = stretches[-1] if stretches else (rep.get("_first_gen", 0), [])
+    if with_in_flight:
+        flying = _in_flight(stretch, started, log)
+        if flying:
+            stretch = stretch + [flying]
+    if not stretch:
+        return None
+    backend, cfg, shadow, trained = _stretch_context(path, rep, gen, stretch, {"running": True})
+    return _trial_row(stretch, backend, cfg, gen, shadow, trained, log)
+
+
+def _fit_pair(report, prefix=""):
+    fit = (report or {}).get("fit") or {}
+    out = {}
+    for slot in ("e1", "e2"):
+        f = fit.get(prefix + slot) or {}
+        out[slot] = {"val_rmse": f.get("val_rmse"), "best_iteration": f.get("best_iteration"),
+                     "iterations": f.get("iterations"), "val_rows": f.get("val_rows"),
+                     "train_rows": f.get("train_rows"),
+                     "early_stopping": f.get("early_stopping"),
+                     "reason": f.get("reason")}
+    return out
+
+
+def train_events(runs_root=RUNS_ROOT):
+    ledger = {}
+    try:
+        with open(EXPERIMENTS, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                ledger[r.get("trial")] = r
+    except OSError:
+        pass
+    live = live_trial()
+    if live:
+        ledger[live["trial"]] = live
+    out = []
+    for path, rep in _session_reports(runs_root):
+        stamp = os.path.basename(path).replace("session_", "").replace(".json", "")
+        gen = 0
+        for c in rep["campaigns"]:
+            rt = c.get("retrain")
+            if not rt:
+                continue
+            gen += 1
+            irt = c.get("retrain_interrupt") or {}
+            trial = ledger.get("%s-g%d" % (stamp, gen)) or {}
+            local = rt.get("local") or {}
+            out.append({
+                "when": time.strftime("%Y-%m-%d %H:%M:%S",
+                                      time.localtime(float(c.get("started") or 0))),
+                "ts": float(c.get("started") or 0),
+                "trial": "%s-g%d" % (stamp, gen), "session": path,
+                "backend": rt.get("backend") or c.get("backend"),
+                "trained": rt.get("trained"), "error": rt.get("error"),
+                "seconds": rt.get("seconds"),
+                "params": rt.get("params"),
+                "rows": rt.get("rows"), "campaigns": rt.get("campaigns"),
+                "n_decisions": rt.get("n_decisions"), "runs": rt.get("runs"),
+                "skipped_unlabelled": rt.get("skipped_unlabelled"),
+                "mae_in_sample": rt.get("mae_in_sample"),
+                "global": _fit_pair(rt),
+                "local": dict(_fit_pair(local, "local_"), rows=local.get("rows"),
+                              sd_local=local.get("sd_local"), sd_global=local.get("sd_global"),
+                              trained=local.get("trained")),
+                "interrupt": dict(_fit_pair(irt), rows=irt.get("rows"),
+                                  mae_in_sample=irt.get("mae_in_sample"),
+                                  trained=irt.get("trained"),
+                                  screens=irt.get("screens")),
+                "played": {"campaigns": trial.get("campaigns"),
+                           "sett_per_campaign": (trial.get("settlements") or {}).get("mean"),
+                           "sett_total": (trial.get("settlements") or {}).get("total"),
+                           "grew": (trial.get("settlements") or {}).get("campaigns_that_gained"),
+                           "measured": (trial.get("settlements") or {}).get("campaigns_measured"),
+                           "lord_total": (trial.get("lord_level") or {}).get("total"),
+                           "turns_per_campaign": trial.get("turns_per_campaign"),
+                           "running": trial.get("running")}})
+    out.sort(key=lambda e: e["ts"], reverse=True)
+    return out
 
 
 def _feature_version():
@@ -647,11 +923,11 @@ def _played(exc):
     rows = getattr(exc, "rows", None)
     if not rows:
         return {}
-    return dict(_growth_stats(rows),
-                turns_played=len(rows),
-                actions=sum(int(r.get("actions") or 0) for r in rows),
-                confirmed=sum(int(r.get("confirmed") or 0) for r in rows),
-                ended_by=[r.get("ended_by") for r in rows])
+    return {"campaign_uuid": _uuid_of(rows),
+            "turns_played": len(rows),
+            "actions": sum(int(r.get("actions") or 0) for r in rows),
+            "confirmed": sum(int(r.get("confirmed") or 0) for r in rows),
+            "ended_by": [r.get("ended_by") for r in rows]}
 
 
 def _throughput(campaigns):
@@ -700,16 +976,16 @@ def _parse_turns(arg):
 
 def main():
     sys.path.insert(0, _HERE)
-    if "--backfill" in sys.argv:
-        return 0 if backfill(include_live="--include-live" in sys.argv) else 1
+    if "--rescore" in sys.argv:
+        return 0 if rescore() else 1
     n = int(sys.argv[1]) if len(sys.argv) > 1 else 3
     turns = _parse_turns(sys.argv[2]) if len(sys.argv) > 2 else 20
     import backends as B
     if "--factions" not in sys.argv:
         raise SystemExit("usage: session.py <campaigns> <turns|min-max> --factions "
                          "all|<key,key,...> [--retrain] [--model %s] [--nn-KEY VALUE ...]\n"
-                         "       session.py --backfill   -- write the trial rows for sessions "
-                         "that finished before the ledger recorded any\n"
+                         "       session.py --rescore    -- rebuild every trial row from the "
+                         "campaigns' own decision rows (archives the old ledger)\n"
                          "  --model     -- which ranker to play on (default %s):\n%s\n"
                          "  --nn-KEY V  -- backend hyperparameter, e.g. --nn-bottleneck 64\n"
                          % ("|".join(B.names()), B.DEFAULT,

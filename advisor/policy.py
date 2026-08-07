@@ -14,14 +14,14 @@ FORBIDDEN_KEYS = frozenset({"button_attack", "button_spectate"})
 MAX_ACTIONS_PER_TURN = 10
 MAX_ACTIONS_PER_ENTITY = 6
 
-EPSILON = 0.40
+EPSILON = 0.10
 BETA = 0.10
 
 FACTION_WIDE_CAPS = frozenset(("recruit_lord", "recruit_hero", "research", "rites",
                                "building_dismantle"))
 PER_TURN_CAPS = {"recruit_lord": 1, "recruit_hero": 1, "recruit_unit": 4, "edict": 1,
                  "research": 1, "rites": 1,
-                 "diplomacy": 1,
+                 "diplomacy": 3, "noop": 0,
                  "stance": 1, "hero_action": 3, "building_dismantle": 1}
 
 

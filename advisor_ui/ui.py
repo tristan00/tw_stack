@@ -11,6 +11,7 @@ import sys
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "advisor"))
 
 RUNS_ROOT = "D:/twdata/runs/human"
@@ -900,6 +901,7 @@ def render_index(con, run_dir, seq_offset=0):
               ("actions", per_type + seqtbl),
               ("timeline", render_timeline(con)),
               ("reward", reward),
+              ("models", render_models()),
               ("infrastructure", render_infra(run_dir))]
     nav = "".join("<button class='tab%s' data-t='%s'>%s</button>"
                   % (" on" if i == 0 else "", name, name) for i, (name, _) in enumerate(panels))
@@ -1277,7 +1279,7 @@ def render_infra(run_dir):
            "retrains.</div>"
            "<form action='/ctl/coldstart' method='get' onsubmit='return launchCold(this)' "
            "style='display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0'>"
-           "<label>campaigns <input name=campaigns type=number min=1 max=999 value=10 "
+           "<label>campaigns <input name=campaigns type=number min=1 max=9999 value=10 "
            "style='width:70px'></label>"
            "<label>max turns <input name=turns_max type=number min=1 max=999 value=40 "
            "style='width:70px'></label>"
@@ -1331,11 +1333,9 @@ def _kill_session():
 def _bank_trials():
     import session as S
     try:
-        rows = S.backfill(log=lambda m: None, include_live=True)
+        rows = S.rescore(log=lambda m: None)
     except Exception as e:
         return "!! TRIALS NOT BANKED: %s" % repr(e)[:140]
-    if not rows:
-        return "trials: already recorded"
     return "trials banked: %s" % ", ".join(r["trial"] for r in rows)
 
 
@@ -1356,56 +1356,156 @@ def _kill_recorder():
 SERVICES_LOG_DIR = r"D:\twdata\logs\services"
 
 
+def _trial_row_html(r, live=False):
+    s = r.get("settlements") or {}
+    l = r.get("lord_level") or {}
+    t = r.get("timing") or {}
+    cfg = r.get("backend_cfg") or {}
+    corpus = (r.get("corpus_at_train") or {}).get("rows")
+    flags = []
+    if live:
+        flags.append("<span class=warn>RUNNING</span>")
+    if r.get("stopped_short") and not live:
+        flags.append("<span class=warn>cut short</span>")
+    if r.get("baseline") != "pre_decision":
+        flags.append("<span class=bad>end-of-turn</span>")
+    outcomes = ", ".join("%s %s" % (v, k) for k, v in
+                         sorted((r.get("outcomes") or {}).items(), key=lambda kv: str(kv[0])))
+    sm, meas = s.get("mean"), s.get("campaigns_measured") or 0
+    cls = ""
+    n = r.get("campaigns", 0)
+    return ("<tr><td%s>%s<td>%s<td class=dim>%s<td>%s<td class=dim>%s<td%s>%s"
+            "<td>%s<td>%s<td>%s<td>%s<td>%s<td>%s<td class=dim>%s</tr>"
+            % (" class=warn" if live else "", _esc(r.get("trial", "?")),
+               _esc(str(r.get("backend") or "-")),
+               _esc(", ".join("%s=%s" % kv for kv in sorted(cfg.items())) or "-"), n,
+               corpus if corpus else "-",
+               cls, "-" if sm is None else "%.3f" % sm,
+               "-" if s.get("total") is None else "%g" % s["total"],
+               "-" if s.get("campaigns_that_gained") is None
+               else "%s/%s" % (s["campaigns_that_gained"], meas),
+               "-" if l.get("total") is None else "%g" % l["total"],
+               r.get("turns_per_campaign", "-"),
+               t.get("s_per_campaign") if t.get("s_per_campaign") else "-",
+               t.get("s_per_turn") if t.get("s_per_turn") else "-",
+               "%s %s" % (" ".join(flags), _esc(outcomes))))
+
+
 def _trials_table():
     import session as S
     try:
         with open(S.EXPERIMENTS, encoding="utf-8") as fh:
             rows = [json.loads(ln) for ln in fh if ln.strip()]
     except OSError:
-        return ("<h2>experiment ledger</h2><div class=dim>no trials yet &mdash; %s does not exist. "
-                "Every session writes one row per retrain stretch; <code>python advisor/session.py "
-                "--backfill</code> reconstructs rows for sessions that predate the ledger.</div>"
-                % _esc(S.EXPERIMENTS))
+        rows = []
     except ValueError as e:
         return "<h2>experiment ledger</h2><div class=bad>ledger unreadable: %s</div>" % _esc(repr(e)[:160])
+    latest = {}
+    for r in sorted(rows, key=lambda x: (x.get("baseline") == "pre_decision", x.get("ts") or 0)):
+        latest[r.get("trial")] = r
+    rows = list(latest.values())
+    try:
+        live = S.live_trial()
+    except Exception as e:
+        live = None
+        rows = rows or []
+        note = "<div class=bad>live trial not readable: %s</div>" % _esc(repr(e)[:160])
+    else:
+        note = ""
+    if live:
+        rows = [r for r in rows if r.get("trial") != live.get("trial")]
+    if not rows and not live:
+        return ("<h2>experiment ledger</h2>%s<div class=dim>no trials in %s</div>"
+                % (note, _esc(S.EXPERIMENTS)))
     rows.sort(key=lambda r: r.get("started") or r.get("ts") or 0, reverse=True)
-    best = max((r["settlements"]["mean"] for r in rows
-                if (r.get("settlements") or {}).get("mean") is not None), default=None)
-    out = []
-    for r in rows:
-        s = r.get("settlements") or {}
-        l = r.get("lord_level") or {}
-        cfg = r.get("backend_cfg") or {}
-        corpus = (r.get("corpus_at_train") or {}).get("rows")
-        flags = []
-        if r.get("backfilled"):
-            flags.append("<span class=dim title='reconstructed from the session report, not "
-                         "written live'>backfilled</span>")
-        if r.get("stopped_short"):
-            flags.append("<span class=warn title='the session was killed mid-stretch'>cut short</span>")
-        if r.get("growth_recovered"):
-            flags.append("<span class=dim title='campaigns whose growth was re-derived from the "
-                         "run dir'>+%d recovered</span>" % r["growth_recovered"])
-        sm = s.get("mean")
-        cls = " class=ok" if (sm is not None and best and sm >= best) else ""
-        out.append("<tr><td>%s<td>%s<td class=dim>%s<td>%s<td class=dim>%s<td%s>%s<td>%s<td>%s"
-                   "<td>%s<td>%s<td class=dim>%s</tr>"
-                   % (_esc(r.get("trial", "?")), _esc(str(r.get("backend") or "-")),
-                      _esc(", ".join("%s=%s" % kv for kv in sorted(cfg.items())) or "-"),
-                      r.get("campaigns", 0), corpus if corpus else "-",
-                      cls, "-" if sm is None else "%.3f" % sm,
-                      "-" if s.get("total") is None else "%g" % s["total"],
-                      "-" if s.get("campaigns_that_gained") is None
-                      else "%s/%s" % (s["campaigns_that_gained"], s.get("campaigns_measured", "?")),
-                      "-" if l.get("total") is None else "%g" % l["total"],
-                      r.get("turns_per_campaign", "-"),
-                      " ".join(flags) or _esc(", ".join(sorted(r.get("outcomes") or {})))))
-    return ("<h2>experiment ledger <span class=dim style='font-weight:normal'>&mdash; one row per "
-            "trial (the campaigns one fitted model played); settlements/campaign is the score"
-            "</span></h2><div class=scroll><table>"
+    out = ([_trial_row_html(live, live=True)] if live else []) \
+        + [_trial_row_html(r) for r in rows]
+    return ("<h2>experiment ledger</h2>%s<div class=scroll><table>"
             "<tr><th>trial<th>backend<th>cfg<th>campaigns<th>corpus<th>sett/camp<th>sett total"
-            "<th>grew<th>lord total<th>turns/camp<th>notes</tr>%s</table></div>"
-            % "".join(out))
+            "<th>grew<th>lord total<th>turns/camp<th>s/camp<th>s/turn<th>notes</tr>%s</table></div>"
+            % (note, "".join(out)))
+
+
+def _fmt(v, nd=3):
+    if v is None:
+        return "-"
+    try:
+        return ("%%.%df" % nd) % float(v)
+    except (TypeError, ValueError):
+        return _esc(str(v))
+
+
+def _lift(e2_rmse, e1_rmse):
+    if e2_rmse is None or e1_rmse is None:
+        return "<td class=dim>-"
+    d = float(e2_rmse) - float(e1_rmse)
+    return "<td class=%s>%+.4f" % ("ok" if d > 0.02 else "bad" if d <= 0 else "warn", d)
+
+
+def render_models():
+    import session as S
+    try:
+        import base_model as BM
+        cfg = ("learning_rate <b>%s</b> &nbsp; early_stopping_rounds <b>%s</b> &nbsp; "
+               "iteration cap %s &nbsp; depth %s &nbsp; loss %s &nbsp; holdout %.0f%% of campaigns"
+               % (BM.CB_LEARNING_RATE, BM.CB_EARLY_STOPPING, BM.CB_ITERATIONS, BM.CB_DEPTH,
+                  BM.CB_LOSS, 100 * BM.VAL_FRACTION))
+    except Exception as e:
+        cfg = "unreadable: %s" % _esc(repr(e)[:90])
+    disk = []
+    for name, path in (("global", r"D:\twdata\models\global\meta.json"),
+                       ("local", r"D:\twdata\models\local\meta.json"),
+                       ("interrupt", r"D:\twdata\models\interrupt\meta.json")):
+        m = _meta(path)
+        secs, when = _age(path)
+        disk.append("<tr><td>%s<td>%s<td>%s<td class=dim>%s</tr>"
+                    % (_esc(name), _esc(str(m.get("rows", "-"))), _esc(when),
+                       _esc("sd=%s" % (m.get("sd_global") or m.get("sd_local") or "-"))))
+    try:
+        events = S.train_events()
+    except Exception as e:
+        return ("<h2>models</h2><div class=bad>training history unreadable: %s</div>"
+                % _esc(repr(e)[:160]))
+    out = []
+    for e in events:
+        g, l, i, p = e["global"], e["local"], e["interrupt"], e["played"]
+        par = e.get("params") or {}
+        badge = ""
+        if p.get("running"):
+            badge = " <span class=warn>RUNNING</span>"
+        if e.get("error"):
+            badge = " <span class=bad>FAILED</span>"
+        out.append(
+            "<tr><td class=dim>%s<td>%s%s<td>%s<td>%s<td class=dim>%s<td>%s<td>%s<td>%s"
+            "<td>%s<td>%s<td>%s%s<td class=dim>%s<td>%s<td>%s<td>%s<td>%s<td>%s"
+            "<td>%s<td>%s<td>%s</tr>"
+            % (_esc(e["when"][5:16]), _esc(e["trial"]), badge,
+               _esc(str(e.get("rows", "-"))), _esc(str(e.get("campaigns", "-"))),
+               _esc(str(e.get("n_decisions", "-"))),
+               _esc(str(par.get("learning_rate", "?"))),
+               _esc(str(par.get("early_stopping_rounds", "?"))),
+               _esc(str(e.get("seconds", "-"))),
+               _esc(str(g["e1"].get("val_rows", "-"))),
+               _fmt(g["e1"].get("val_rmse"), 4), _fmt(g["e2"].get("val_rmse"), 4),
+               _lift(g["e2"].get("val_rmse"), g["e1"].get("val_rmse")),
+               _esc(str(g["e1"].get("best_iteration", "-"))),
+               _fmt(e.get("mae_in_sample"), 4),
+               _esc(str(l.get("rows", "-"))), _fmt(l["e1"].get("val_rmse"), 4),
+               _esc(str(i.get("rows", "-"))), _fmt(i["e1"].get("val_rmse"), 4),
+               _esc(str(p.get("campaigns") if p.get("campaigns") is not None else "-")),
+               _fmt(p.get("sett_per_campaign")),
+               "-" if p.get("grew") is None else "%s/%s" % (p["grew"], p.get("measured", "?"))))
+    if not out:
+        out = ["<tr><td colspan=20 class=dim>no training runs recorded</tr>"]
+    return ("<h2>fit configuration</h2><div>%s</div>"
+            "<h2>models on disk</h2><div class=scroll><table>"
+            "<tr><th>model<th>rows<th>trained at<th></tr>%s</table></div>"
+            "<h2>training history</h2><div class=scroll><table>"
+            "<tr><th>when<th>trial<th>rows<th>camps<th>decisions<th>lr<th>ES<th>secs<th>val rows"
+            "<th>global e1 rmse<th>global e2 rmse<th>lift<th>best iter<th>MAE in-sample"
+            "<th>local rows<th>local e1 rmse<th>int rows<th>int e1 rmse"
+            "<th>played<th>sett/camp<th>grew</tr>%s</table></div>"
+            % (cfg, "".join(disk), "".join(out)))
 
 
 def _model_select():
@@ -1417,49 +1517,19 @@ def _model_select():
 
 
 def _start_recorder(shots=60, dev=False):
-    import subprocess
-    import time
-    ts = time.strftime("%Y%m%d_%H%M%S")
-    log = os.path.join(SERVICES_LOG_DIR, "manager_%s.log" % ts)
+    import runctl
     try:
-        os.makedirs(SERVICES_LOG_DIR, exist_ok=True)
-        fo = open(log, "w", encoding="utf-8")
-        subprocess.Popen([VENV_PY, "-u", "manager/manager.py", "--shots", str(shots)]
-                         + (["--dev"] if dev else []),
-                         cwd=TW_STACK, stdout=fo, stderr=subprocess.STDOUT,
-                         creationflags=getattr(subprocess, "DETACHED_PROCESS", 0)
-                         | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
-        return "recorder started -> %s" % os.path.basename(log)
+        return runctl.start_recorder(shots=shots, dev=dev)
     except Exception as e:
         return "recorder start failed: %s" % repr(e)[:160]
 
 
 def _start_session(retrain=True, campaigns=10, turns=40, retrain_every=0, cold=False, dev=False,
                    model=None, cfg=None):
-    import subprocess
-    import time
-    ts = time.strftime("%Y%m%d_%H%M%S")
-    log = os.path.join(LOG_DIR, "session_%s%s%dx%s_%s.log"
-                       % ("cold_" if cold else "", ("%s_" % model) if model else "",
-                          campaigns, turns, ts))
-    err = log[:-4] + ".err"
-    cfg_args = []
-    for k, v in sorted((cfg or {}).items()):
-        cfg_args += ["--nn-%s" % k, str(v)]
-    args = ([VENV_PY, "-u", "advisor/session.py", str(campaigns), str(turns),
-             "--factions", "all"] + (["--model", model] if model else [])
-            + cfg_args + (["--cold"] if cold else [])
-            + (["--retrain"] if retrain and not cold else [])
-            + (["--retrain-every", str(retrain_every)] if retrain_every and not cold else [])
-            + (["--dev"] if dev else []))
+    import runctl
     try:
-        os.makedirs(LOG_DIR, exist_ok=True)
-        fo, fe = open(log, "w", encoding="utf-8"), open(err, "w", encoding="utf-8")
-        subprocess.Popen(args, cwd=TW_STACK, stdout=fo, stderr=fe,
-                         creationflags=getattr(subprocess, "DETACHED_PROCESS", 0)
-                         | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
-        with open(CURRENT_LOG, "w", encoding="utf-8") as fh:
-            fh.write(log)
+        log = runctl.start_session(campaigns, turns, model=model, cfg=cfg, retrain=retrain,
+                                   retrain_every=retrain_every, cold=cold, dev=dev)
         return "started %s on %s%s -> %s" % (
             "COLD (no model, cold_random throughout)" if cold else
             "with retrain" if retrain else "no retrain",
@@ -1510,8 +1580,8 @@ def _control_steps(path):
             return ("invalid cold start: campaigns=%r turns_max=%r -- both must be integers, "
                     "nothing was killed or started"
                     % (q.get("campaigns"), q.get("turns_max")))
-        if not (1 <= campaigns <= 999 and 1 <= tmax <= 999):
-            return ("invalid cold start: campaigns=%d turns_max=%d -- need 1 <= campaigns <= 999 "
+        if not (1 <= campaigns <= 9999 and 1 <= tmax <= 999):
+            return ("invalid cold start: campaigns=%d turns_max=%d -- need 1 <= campaigns <= 9999 "
                     "and 1 <= turns_max <= 999, nothing was killed or started"
                     % (campaigns, tmax))
         dev = (q.get("dev", ["0"])[0] not in ("0", ""))

@@ -13,8 +13,8 @@ sys.path.insert(0, os.path.join(r"D:\tw_stack", "decisions"))
 
 import features as F
 from base_model import (RUNS_ROOT, TARGET_PARTS, target, SHORT_HORIZON, SHORT_WEIGHT,
-                        decision_deltas, fit_es, future_best,
-                        isolation_forest, regressor, _encode, _mm, _mm0, _pct, _ranks, _sd)
+                        decision_deltas, fit_es, future_best, isolation_forest, params,
+                        regressor, _encode, _mm, _mm0, _pct, _ranks, _sd)
 from store import DecisionStore, IncompatibleStore
 
 MODEL_DIR = r"D:\twdata\models\global"
@@ -168,7 +168,7 @@ def train(runs_root=RUNS_ROOT):
     mae = sum(abs(a - b) for a, b in zip(preds, y)) / len(y)
     local = _train_local(data, num, cat, snum, scat, sd_global)
     return {"trained": True, "rows": len(rows), "mae_in_sample": round(mae, 5),
-            "fit": fit_report, "local": local, **_counts(data)}
+            "fit": fit_report, "local": local, "params": params(), **_counts(data)}
 
 
 def _train_local(data, num, cat, snum, scat, sd_global):

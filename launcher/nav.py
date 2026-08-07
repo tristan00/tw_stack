@@ -30,7 +30,8 @@ PERSISTENT_ROOTS = frozenset((
 
 _CLICKABLE_STATES = frozenset(("active", "default", "NewState", "selected", "hover", "down"))
 
-BENIGN_PANELS = frozenset(("units_panel", "settlement_panel", "recruitment_options"))
+BENIGN_PANELS = frozenset(("units_panel", "settlement_panel", "recruitment_options",
+                           "influence_gained", "province_publicorder_tooltip"))
 
 DECISION_ROOTS = frozenset(("diplomacy_dropdown", "ally_attacked"))
 
