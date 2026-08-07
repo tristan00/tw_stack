@@ -85,13 +85,14 @@ def suggest(trial):
     return p
 
 
-def cv_rmse(X, y, cat_idx, folds, params, cap, log=None, prune=None):
+def cv_rmse(X, y, cat_idx, folds, params, cap, log=None, prune=None, threads=None):
     from catboost import CatBoostRegressor, Pool
     scores, iters = [], []
+    extra = {} if not threads else {"thread_count": int(threads)}
     for fi, (val, trn) in enumerate(folds):
         m = CatBoostRegressor(iterations=cap, loss_function=CB_LOSS, random_seed=0,
                               verbose=0, train_dir=TRAIN_DIR, allow_writing_files=False,
-                              **params)
+                              **extra, **params)
         m.fit(Pool([X[i] for i in trn], [y[i] for i in trn], cat_features=cat_idx),
               eval_set=Pool([X[i] for i in val], [y[i] for i in val], cat_features=cat_idx),
               early_stopping_rounds=CB_EARLY_STOPPING, use_best_model=True, verbose=0)
@@ -120,6 +121,7 @@ def main():
     seed = int(_arg("--seed", "0"))
     runs_root = _arg("--runs-root", RUNS_ROOT)
     study_name = _arg("--study", "catboost_%s_k%d" % (which, k))
+    threads = int(_arg("--threads", "0"))
     log = print
 
     import warnings
@@ -146,11 +148,12 @@ def main():
     log("columns: %d numeric + %d categorical" % (len(num), len(cat)))
     log("cv: %d-fold grouped by campaign (%d campaigns, ~%d val campaigns per fold)"
         % (len(folds), ncamp, ncamp // len(folds)))
+    log("threads: %s" % (threads if threads else "all cores (catboost default)"))
     log("")
 
     log("baseline: production config over the same folds ...")
     t0 = time.time()
-    bs, bi = cv_rmse(X, y, cat_idx, folds, dict(PRODUCTION), cap)
+    bs, bi = cv_rmse(X, y, cat_idx, folds, dict(PRODUCTION), cap, threads=threads)
     base = summarise(bs, bi)
     log("  production cv_rmse %.4f +/- %.4f  folds=%s  best_iter %.0f  (%.0fs)"
         % (base["cv_rmse"], base["cv_rmse_sd"], base["fold_rmse"],
@@ -178,7 +181,7 @@ def main():
             return fold_i >= 1 and mean_so_far > cut
 
         t1 = time.time()
-        scores, iters = cv_rmse(X, y, cat_idx, folds, params, cap, prune=prune)
+        scores, iters = cv_rmse(X, y, cat_idx, folds, params, cap, prune=prune, threads=threads)
         s = summarise(scores, iters)
         trial.set_user_attr("summary", s)
         trial.set_user_attr("params_full", params)
