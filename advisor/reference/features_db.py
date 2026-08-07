@@ -18,11 +18,19 @@ def _connect():
     return _con
 
 
+_lookup_cache = {}
+
+
 def _lookup(table, key_col, key):
-    row = _connect().execute(
-        "SELECT * FROM %s WHERE %s=?" % (table, key_col), (key,)
-    ).fetchone()
-    return dict(row) if row is not None else {}
+    ck = (table, key_col, key)
+    hit = _lookup_cache.get(ck)
+    if hit is None:
+        row = _connect().execute(
+            "SELECT * FROM %s WHERE %s=?" % (table, key_col), (key,)
+        ).fetchone()
+        hit = dict(row) if row is not None else {}
+        _lookup_cache[ck] = hit
+    return dict(hit)
 
 
 def building_features(key):
