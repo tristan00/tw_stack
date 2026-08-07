@@ -49,19 +49,20 @@ def gather(runs_root=RUNS_ROOT):
     for db in dbs:
         run_dir = os.path.dirname(db)
         try:
-            s = DecisionStore(run_dir)
+            s = DecisionStore(run_dir, readonly=True)
         except IncompatibleStore as e:
             skipped_dbs.append(os.path.basename(run_dir))
             sys.stderr.write("model: skipping %s -> %s\n" % (run_dir, str(e)[:120]))
             continue
         try:
-            for rec, taken, counted in s.labelled_decisions():
-                decisions.append((rec, taken, counted))
-            for camp, turns in s.target_series().items():
-                series.setdefault(camp, {}).update(turns)
-            for camp, ents in s.entity_series().items():
-                for k, tv in ents.items():
-                    eseries.setdefault(camp, {}).setdefault(k, {}).update(tv)
+            with s.snapshot_read():
+                for rec, taken, counted in s.labelled_decisions():
+                    decisions.append((rec, taken, counted))
+                for camp, turns in s.target_series().items():
+                    series.setdefault(camp, {}).update(turns)
+                for camp, ents in s.entity_series().items():
+                    for k, tv in ents.items():
+                        eseries.setdefault(camp, {}).setdefault(k, {}).update(tv)
         finally:
             s.close()
     full, state, ys, groups, confirmed = [], [], [], [], []
@@ -102,12 +103,13 @@ def gather(runs_root=RUNS_ROOT):
         if y is None:
             skipped += 1
             continue
-        for ent, offer, row in F.decision_rows(rec):
+        bases = {}
+        for ent, offer, row in F.decision_rows(rec, base_sink=bases):
             if (ent["context_kind"], str(ent["context_id"]),
                     offer["action_type"], str(offer["key"])) != taken:
                 continue
             full.append(row)
-            state.append(F.state_row(rec, ent))
+            state.append(bases.get(str(ent["context_id"])) or F.state_row(rec, ent))
             ys.append(y)
             ylocal.append(_pct(ld, ldist.get(taken[0]) or []) if ld is not None else None)
             groups.append(rec.get("campaign_id"))

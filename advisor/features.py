@@ -548,28 +548,6 @@ AFTER_CHANNELS = ("friend", "enemy", "enemysett", "ownsett")
 AFTER_FIELDS = ("dist", "dir_sin", "dir_cos")
 
 
-def _after_move_keys():
-    out = []
-    for name in AFTER_CHANNELS:
-        for k in range(NEAR_K.get(name, NEAR_K_DEFAULT)):
-            for f in AFTER_FIELDS:
-                out.append("near_%s_%d_%s" % (name, k + 1, f))
-    return out
-
-
-def _after_move_block(world, dest, near_before):
-    after = near_block(world, dest) if (world is not None and dest is not None) else {}
-    before = near_before or {}
-    out = {}
-    for k in _after_move_keys():
-        a, b = after.get(k), before.get(k)
-        a = a if isinstance(a, (int, float)) else None
-        b = b if isinstance(b, (int, float)) else None
-        out["opt_after_" + k] = a
-        out["opt_delta_" + k] = None if (a is None or b is None) else round(a - b, 2)
-    return out
-
-
 def action_block(offer, locus, treasury, world=None, self_units=None, self_hp=None,
                  near_before=None):
     atype, key = offer.get("action_type"), str(offer.get("key"))
@@ -590,10 +568,6 @@ def action_block(offer, locus, treasury, world=None, self_units=None, self_hp=No
     else:
         out["opt_target_dist"] = None
         out["opt_target_dir_sin"] = out["opt_target_dir_cos"] = None
-    if atype == "move" and tx is not None and ty is not None:
-        out.update(_after_move_block(world, (tx, ty), near_before))
-    else:
-        out.update(_after_move_block(None, None, near_before))
     tgt_units = _target_units(atype, params, key, world)
     out["opt_self_units"] = _f(self_units)
     out["opt_target_units"] = tgt_units
@@ -677,7 +651,7 @@ def state_row(record, entity):
     return row
 
 
-def offer_rows(record, entity):
+def offer_rows(record, entity, base_sink=None):
     world = record.get("world") or {}
     provinces = {e["context_id"]: e.get("state") or {} for e in record.get("entities") or []
                  if e.get("context_kind") == "province"}
@@ -694,13 +668,15 @@ def offer_rows(record, entity):
         row.update(action_block(o, locus, treasury, world=world, self_units=self_units,
                                 self_hp=self_hp, near_before=near_before))
         out.append((o, row))
+    if base_sink is not None:
+        base_sink[str(entity.get("context_id"))] = base
     return out
 
 
-def decision_rows(record):
+def decision_rows(record, base_sink=None):
     out = []
     for e in record.get("entities") or []:
-        for offer, row in offer_rows(record, e):
+        for offer, row in offer_rows(record, e, base_sink=base_sink):
             out.append((e, offer, row))
     return out
 

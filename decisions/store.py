@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import sys
 import time
 
 DB_NAME = "decisions.sqlite"
@@ -74,6 +75,30 @@ CREATE INDEX IF NOT EXISTS ix_taken_dp ON action_taken(decision_id);
 """
 
 
+class _SnapshotRead:
+
+    def __init__(self, con):
+        self.con = con
+        self.entered = False
+
+    def __enter__(self):
+        try:
+            self.con.execute("BEGIN DEFERRED")
+            self.entered = True
+        except sqlite3.OperationalError as e:
+            sys.stderr.write("store: could not open a read snapshot (%s) -- reads may be torn\n"
+                             % repr(e)[:100])
+        return self
+
+    def __exit__(self, *exc):
+        if self.entered:
+            try:
+                self.con.execute("COMMIT")
+            except sqlite3.OperationalError:
+                pass
+        return False
+
+
 class DecisionStore:
     _MIGRATIONS = (("decision_points", "campaign", "TEXT"),
                    ("decision_points", "world", "TEXT"),
@@ -111,15 +136,30 @@ class DecisionStore:
                     "have a different shape and cannot be read by the current queries."
                     % (self.path, table, col))
 
-    def __init__(self, run_dir):
+    def __init__(self, run_dir, readonly=False):
         self.run_id = os.path.basename(str(run_dir).rstrip("/\\"))
         self.path = os.path.join(run_dir, DB_NAME)
+        self.readonly = bool(readonly)
+        if self.readonly:
+            if not os.path.exists(self.path):
+                raise IncompatibleStore("no %s in %s" % (DB_NAME, run_dir))
+            self.con = sqlite3.connect("file:%s?mode=ro" % self.path.replace("\\", "/"),
+                                       uri=True, timeout=10.0)
+            self._assert_compatible()
+            return
         self.con = sqlite3.connect(self.path, timeout=10.0)
         self.con.execute("PRAGMA journal_mode=WAL")
         self._assert_compatible()
         self.con.executescript(_DDL)
         self._migrate()
         self.con.commit()
+
+    def snapshot_read(self):
+        return _SnapshotRead(self.con)
+
+    def _assert_writable(self, what):
+        if self.readonly:
+            raise IncompatibleStore("%s called on a read-only store (%s)" % (what, self.path))
 
     def _migrate(self):
         for table, col, typ in self._MIGRATIONS:
@@ -233,13 +273,12 @@ class DecisionStore:
                 "unconfirmed": q("SELECT COUNT(*) FROM action_taken WHERE executed=1 AND confirmed=0")}
 
     def read_decision(self, decision_id):
-        dp = self.con.execute("SELECT * FROM decision_points WHERE decision_id=?",
-                              (decision_id,)).fetchone()
+        cur = self.con.execute("SELECT * FROM decision_points WHERE decision_id=?",
+                               (decision_id,))
+        dp = cur.fetchone()
         if dp is None:
             raise KeyError("decision %s not in the store" % decision_id)
-        cols = [d[0] for d in self.con.execute(
-            "SELECT * FROM decision_points WHERE decision_id=?", (decision_id,)).description]
-        dp = dict(zip(cols, dp))
+        dp = dict(zip([d[0] for d in cur.description], dp))
         ents, by_snap = [], {}
         for sid, ck, cid, feats in self.con.execute(
                 "SELECT snapshot_id,context_kind,context_id,features FROM entity_snapshots"
