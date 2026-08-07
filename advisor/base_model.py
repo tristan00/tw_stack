@@ -20,20 +20,21 @@ SHORT_WEIGHT = 0.5
 CB_ITERATIONS = 5000
 CB_LOSS = "RMSE"
 
-CB_TUNED_FROM = "catboost_fast_k3 rank1 cv_rmse 1.9633 vs 2.0098, paired -0.0465, 3/3 folds"
+CB_TUNED_FROM = ("catboost_fast_k3 rank1 of 107 trials: cv_rmse 1.9575 vs 2.0098, "
+                 "paired -0.0523, 3/3 folds, 23.5s")
 
 CB_PARAMS = {
-    "depth": 8,
-    "learning_rate": 0.2300722223623931,
-    "l2_leaf_reg": 46.37104999411925,
+    "depth": 7,
+    "learning_rate": 0.12882996489398976,
+    "l2_leaf_reg": 23.38853026720648,
     "grow_policy": "SymmetricTree",
-    "bootstrap_type": "Bayesian",
-    "bagging_temperature": 5.877401523314926,
-    "random_strength": 8.097101176470794,
-    "border_count": 32,
+    "bootstrap_type": "Bernoulli",
+    "subsample": 0.8956008103406774,
+    "random_strength": 9.475469909298225,
+    "border_count": 64,
     "min_data_in_leaf": 1,
     "one_hot_max_size": 255,
-    "leaf_estimation_iterations": 2,
+    "leaf_estimation_iterations": 1,
 }
 
 CB_DEPTH = CB_PARAMS["depth"]

@@ -300,11 +300,18 @@ def main():
         % (best.value, base["cv_rmse"], -gain,
            100.0 * gain / base["cv_rmse"] if base["cv_rmse"] else 0.0))
     bf, pf = bsum.get("fold_rmse") or [], base.get("fold_rmse") or []
+    noise = max(bsum.get("cv_rmse_sd", 0.0), base["cv_rmse_sd"]) / math.sqrt(max(1, len(folds)))
+    paired = None
     if len(bf) == len(pf) and len(bf) > 1:
         d = [a - b for a, b in zip(bf, pf)]
         md = statistics.fmean(d)
         se = statistics.pstdev(d) / math.sqrt(len(d))
         wins = sum(1 for x in d if x < 0)
+        noise = se
+        paired = {"per_fold_delta": [round(x, 6) for x in d], "mean": round(md, 6),
+                  "paired_se": round(se, 6), "wins": wins, "folds": len(d),
+                  "verdict": ("real" if (md < 0 and se > 0 and abs(md) > 2 * se)
+                              else "within_noise")}
         log("PAIRED comparison on identical folds (the correct test -- fold difficulty is "
             "common-mode and cancels):")
         log("   per-fold deltas %s" % [round(x, 4) for x in d])
@@ -315,7 +322,6 @@ def main():
         else:
             log("   -> within paired noise; treat as no improvement")
     else:
-        noise = max(bsum.get("cv_rmse_sd", 0.0), base["cv_rmse_sd"]) / math.sqrt(max(1, len(folds)))
         log("fold standard error ~%.4f (unpaired fallback -- fold counts differ)" % noise)
         if gain <= noise:
             log("!! the gain does NOT exceed fold standard error -- treat as no improvement")
@@ -351,7 +357,9 @@ def main():
           "production": base, "best_value": best.value,
           "best_params": best.user_attrs.get("params_full"), "best_summary": bsum,
           "gain_vs_production": round(gain, 6), "fold_standard_error": round(noise, 6),
-          "verdict": "improvement" if gain > noise else "within_noise", "report": out})
+          "paired": paired,
+          "verdict": (paired or {}).get("verdict")
+          or ("improvement" if gain > noise else "within_noise"), "report": out})
     log("")
     log("wrote %s" % out)
     log("per-trial log: %s" % progress)
