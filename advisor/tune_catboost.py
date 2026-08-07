@@ -255,13 +255,26 @@ def main():
     log("cv_rmse %.4f vs production %.4f -> %+.4f (%.1f%%)"
         % (best.value, base["cv_rmse"], -gain,
            100.0 * gain / base["cv_rmse"] if base["cv_rmse"] else 0.0))
-    noise = max(bsum.get("cv_rmse_sd", 0.0), base["cv_rmse_sd"]) / math.sqrt(max(1, len(folds)))
-    log("fold standard error ~%.4f" % noise)
-    if gain <= noise:
-        log("!! the gain does NOT exceed fold standard error -- treat as no improvement")
+    bf, pf = bsum.get("fold_rmse") or [], base.get("fold_rmse") or []
+    if len(bf) == len(pf) and len(bf) > 1:
+        d = [a - b for a, b in zip(bf, pf)]
+        md = statistics.fmean(d)
+        se = statistics.pstdev(d) / math.sqrt(len(d))
+        wins = sum(1 for x in d if x < 0)
+        log("PAIRED comparison on identical folds (the correct test -- fold difficulty is "
+            "common-mode and cancels):")
+        log("   per-fold deltas %s" % [round(x, 4) for x in d])
+        log("   mean %+.4f, paired SE %.4f, wins %d/%d folds" % (md, se, wins, len(d)))
+        if md < 0 and se > 0 and abs(md) > 2 * se:
+            log("   -> REAL improvement (%.1f x paired SE, %d/%d folds)"
+                % (abs(md) / se, wins, len(d)))
+        else:
+            log("   -> within paired noise; treat as no improvement")
     else:
-        log("gain exceeds fold standard error -- plausible, confirm with --folds %d --seed 1"
-            % (k + 2))
+        noise = max(bsum.get("cv_rmse_sd", 0.0), base["cv_rmse_sd"]) / math.sqrt(max(1, len(folds)))
+        log("fold standard error ~%.4f (unpaired fallback -- fold counts differ)" % noise)
+        if gain <= noise:
+            log("!! the gain does NOT exceed fold standard error -- treat as no improvement")
 
     try:
         imp = optuna.importance.get_param_importances(study)
