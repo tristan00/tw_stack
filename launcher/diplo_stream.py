@@ -25,7 +25,7 @@ def reset(run_dir):
     TURN[0] = None
 
 
-TRACK_CAP = 12
+TRACK_CAP = 128
 
 
 def track(faction_key):

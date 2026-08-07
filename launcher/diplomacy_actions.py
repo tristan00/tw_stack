@@ -19,7 +19,7 @@ _LUA_TREATY = (
     "b(function() return me:trade_agreement_with(o) end)..'||'.."
     "b(function() return me:is_vassal_of(o) end)..'||'.."
     "b(function() return o:is_vassal_of(me) end)..'||'.."
-    "b(function() return me:diplomatic_standing_with(o) end)")
+    "b(function() return me:diplomatic_standing_with('%(key)s') end)")
 
 
 def _treaty(bus, faction_key):
