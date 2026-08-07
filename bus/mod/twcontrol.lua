@@ -1267,31 +1267,6 @@ local function arm_event_recorder()
   log({ cmd = "event_recorder", armed = ok })
 end
 
-local EVENT_FEED_KEEP = {
-  { "faction_event_dilemma", "event_feed_target_dilemma_faction" },
-  { "faction_event_incident", "event_feed_target_incident_faction" },
-  { "faction_event_region_incident", "event_feed_target_incident_faction" },
-  { "faction_event_character_incident", "event_feed_target_incident_faction" },
-}
-
-local function arm_event_feed_filter()
-  if not (cm and cm.suppress_all_event_feed_messages and cm.whitelist_event_feed_event_type) then
-    log({ cmd = "event_feed_filter", armed = false, reason = "api_unavailable" })
-    return
-  end
-  local kept, failed = {}, {}
-  for _, pair in ipairs(EVENT_FEED_KEEP) do
-    local ok = pcall(function() cm:whitelist_event_feed_event_type(pair[1], pair[2]) end)
-    if ok then kept[#kept + 1] = pair[1] else failed[#failed + 1] = pair[1] end
-  end
-  if #failed > 0 then
-    log({ cmd = "event_feed_filter", armed = false, reason = "whitelist_failed",
-          failed = table.concat(failed, ","), kept = table.concat(kept, ",") })
-    return
-  end
-  local ok = pcall(function() cm:suppress_all_event_feed_messages(true) end)
-  log({ cmd = "event_feed_filter", armed = ok, kept = table.concat(kept, ",") })
-end
 
 
 local started = false
@@ -1301,7 +1276,7 @@ local function start()
     started = true
     pcall(arm_defeat_listener)
     pcall(arm_event_recorder)
-    pcall(arm_event_feed_filter)
+    log({ cmd = "event_feed_filter", armed = false, reason = "suppression_removed" })
     last_seq = saved or max_seq_in_file()
     pcall(function() cm:callback(poll, POLL_SECONDS) end)
     say("controller running, last_seq=" .. last_seq .. " -> polling " .. CMD_PATH)
