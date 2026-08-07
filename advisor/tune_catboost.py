@@ -17,17 +17,32 @@ sys.path.insert(0, os.path.join(r"D:\tw_stack", "decisions"))
 import features as F
 from base_model import (CB_DEPTH, CB_EARLY_STOPPING, CB_ITERATIONS, CB_LEARNING_RATE, CB_LOSS,
                         VAL_FRACTION)
+from base_model import params as BM_PARAMS
 from model import MIN_ROWS, RUNS_ROOT, gather
 
 TRAIN_DIR = r"D:\twdata\tmp\catboost_tune"
 OUT_DIR = r"D:\twdata\metrics"
 STUDY_DIR = r"D:\twdata\metrics\optuna"
 
-PRODUCTION = {"depth": CB_DEPTH, "learning_rate": CB_LEARNING_RATE, "l2_leaf_reg": 3.0,
-              "bootstrap_type": "Bayesian", "bagging_temperature": 1.0,
-              "random_strength": 1.0, "border_count": 254, "min_data_in_leaf": 1,
-              "grow_policy": "SymmetricTree", "one_hot_max_size": 2,
-              "leaf_estimation_iterations": 1, "rsm": 1.0}
+TRAIN_FITS = 4
+FAST_ITERATIONS = 200
+FAST_MAX_FIT_S = 12.0
+
+_NOT_CATBOOST = ("early_stopping_rounds", "iteration_cap", "loss", "val_fraction", "tuned_from")
+
+
+def production_params():
+    p = {k: v for k, v in BM_PARAMS().items() if k not in _NOT_CATBOOST}
+    if p.get("grow_policy") == "SymmetricTree":
+        p.pop("rsm", None)
+    if p.get("bootstrap_type") == "Bayesian":
+        p.pop("subsample", None)
+    else:
+        p.pop("bagging_temperature", None)
+    return p
+
+
+PRODUCTION = production_params()
 
 
 def _arg(name, default=None):
@@ -58,16 +73,19 @@ def group_folds(groups, k, seed):
     return folds or None
 
 
-def suggest(trial):
+def suggest(trial, fast=True):
+    lr_lo, depth_hi, leaf_hi = (0.04, 8, 5) if fast else (0.003, 10, 10)
+    borders = [32, 64, 128] if fast else [32, 64, 128, 254]
     p = {
-        "depth": trial.suggest_int("depth", 3, 10),
-        "learning_rate": trial.suggest_float("learning_rate", 0.003, 0.3, log=True),
+        "depth": trial.suggest_int("depth", 3, depth_hi),
+        "learning_rate": trial.suggest_float("learning_rate", lr_lo, 0.3, log=True),
         "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 0.5, 50.0, log=True),
         "random_strength": trial.suggest_float("random_strength", 0.0, 10.0),
-        "border_count": trial.suggest_categorical("border_count", [32, 64, 128, 254]),
+        "border_count": trial.suggest_categorical("border_count", borders),
         "min_data_in_leaf": trial.suggest_int("min_data_in_leaf", 1, 100, log=True),
         "one_hot_max_size": trial.suggest_categorical("one_hot_max_size", [2, 10, 50, 255]),
-        "leaf_estimation_iterations": trial.suggest_int("leaf_estimation_iterations", 1, 10),
+        "leaf_estimation_iterations": trial.suggest_int(
+            "leaf_estimation_iterations", 1, leaf_hi),
         "grow_policy": trial.suggest_categorical(
             "grow_policy", ["SymmetricTree", "Depthwise", "Lossguide"]),
         "bootstrap_type": trial.suggest_categorical(
@@ -78,37 +96,49 @@ def suggest(trial):
     else:
         p["subsample"] = trial.suggest_float("subsample", 0.5, 1.0)
     if p["grow_policy"] == "Lossguide":
-        p["max_leaves"] = trial.suggest_int("max_leaves", 8, 64, log=True)
+        p["max_leaves"] = trial.suggest_int("max_leaves", 8, 48, log=True)
         p["depth"] = min(p["depth"], 8)
     if p["grow_policy"] != "SymmetricTree":
         p["rsm"] = trial.suggest_float("rsm", 0.4, 1.0)
     return p
 
 
-def cv_rmse(X, y, cat_idx, folds, params, cap, log=None, prune=None, threads=None):
+def cv_rmse(X, y, cat_idx, folds, params, cap, log=None, prune=None, threads=None,
+            max_fit_s=None):
     from catboost import CatBoostRegressor, Pool
-    scores, iters = [], []
+    scores, iters, secs = [], [], []
     extra = {} if not threads else {"thread_count": int(threads)}
     for fi, (val, trn) in enumerate(folds):
         m = CatBoostRegressor(iterations=cap, loss_function=CB_LOSS, random_seed=0,
                               verbose=0, train_dir=TRAIN_DIR, allow_writing_files=False,
                               **extra, **params)
+        t0 = time.time()
         m.fit(Pool([X[i] for i in trn], [y[i] for i in trn], cat_features=cat_idx),
               eval_set=Pool([X[i] for i in val], [y[i] for i in val], cat_features=cat_idx),
               early_stopping_rounds=CB_EARLY_STOPPING, use_best_model=True, verbose=0)
+        secs.append(round(time.time() - t0, 2))
         best = m.get_best_score() or {}
         scores.append(float((best.get("validation") or {}).get("RMSE", float("nan"))))
         iters.append(int(m.get_best_iteration() or 0))
+        if max_fit_s and secs[-1] > max_fit_s:
+            return scores, iters, secs, "too_slow"
         if prune is not None and prune(statistics.fmean(scores), fi):
-            break
-    return scores, iters
+            return scores, iters, secs, "worse_than_production"
+    return scores, iters, secs, None
 
 
-def summarise(scores, iters):
-    return {"cv_rmse": round(statistics.fmean(scores), 6),
-            "cv_rmse_sd": round(statistics.pstdev(scores), 6) if len(scores) > 1 else 0.0,
-            "folds": len(scores), "fold_rmse": [round(s, 4) for s in scores],
-            "best_iteration_mean": round(statistics.fmean(iters), 1) if iters else None}
+def summarise(scores, iters, secs=None, stopped=None):
+    out = {"cv_rmse": round(statistics.fmean(scores), 6),
+           "cv_rmse_sd": round(statistics.pstdev(scores), 6) if len(scores) > 1 else 0.0,
+           "folds": len(scores), "fold_rmse": [round(s, 4) for s in scores],
+           "best_iteration_mean": round(statistics.fmean(iters), 1) if iters else None}
+    if secs:
+        out["fit_s_mean"] = round(statistics.fmean(secs), 2)
+        out["fit_s_max"] = round(max(secs), 2)
+        out["est_train_s"] = round(statistics.fmean(secs) * TRAIN_FITS, 1)
+    if stopped:
+        out["stopped"] = stopped
+    return out
 
 
 def main():
@@ -117,7 +147,9 @@ def main():
         raise SystemExit("--target must be full or state")
     k = int(_arg("--folds", "5"))
     trials = int(_arg("--trials", "60"))
-    cap = int(_arg("--iterations", CB_ITERATIONS))
+    fast = "--wide" not in sys.argv
+    cap = int(_arg("--iterations", FAST_ITERATIONS if fast else CB_ITERATIONS))
+    max_fit_s = float(_arg("--max-fit-s", FAST_MAX_FIT_S if fast else 0)) or None
     seed = int(_arg("--seed", "0"))
     runs_root = _arg("--runs-root", RUNS_ROOT)
     study_name = _arg("--study", "catboost_%s_k%d" % (which, k))
@@ -152,16 +184,22 @@ def main():
     log("cv: %d-fold grouped by campaign (%d campaigns, ~%d val campaigns per fold)"
         % (len(folds), ncamp, ncamp // len(folds)))
     log("threads: %s" % (threads if threads else "all cores (catboost default)"))
+    log("space: %s | iteration cap %d | per-fold fit budget %s"
+        % ("FAST (lr>=0.04, depth<=8, border<=128, leaf_est<=5)" if fast else "WIDE",
+           cap, ("%.0fs" % max_fit_s) if max_fit_s else "none"))
+    log("production config under test: %s" % json.dumps(PRODUCTION, sort_keys=True))
     log("progress log: %s" % progress)
     log("")
 
     log("baseline: production config over the same folds ...")
     t0 = time.time()
-    bs, bi = cv_rmse(X, y, cat_idx, folds, dict(PRODUCTION), cap, threads=threads)
-    base = summarise(bs, bi)
+    bs, bi, bsec, _ = cv_rmse(X, y, cat_idx, folds, dict(PRODUCTION), cap, threads=threads)
+    base = summarise(bs, bi, bsec)
     log("  production cv_rmse %.4f +/- %.4f  folds=%s  best_iter %.0f  (%.0fs)"
         % (base["cv_rmse"], base["cv_rmse_sd"], base["fold_rmse"],
            base["best_iteration_mean"], time.time() - t0))
+    log("  production fit %.2fs/fold -> est %.0fs for a full train (%d fits)"
+        % (base["fit_s_mean"], base["est_train_s"], TRAIN_FITS))
     log("")
 
     os.makedirs(STUDY_DIR, exist_ok=True)
@@ -191,15 +229,18 @@ def main():
           "production_config": PRODUCTION, "production": base})
 
     def objective(trial):
-        params = suggest(trial)
+        params = suggest(trial, fast=fast)
         cut = base["cv_rmse"] * 1.6
 
         def prune(mean_so_far, fold_i):
             return fold_i >= 1 and mean_so_far > cut
 
         t1 = time.time()
-        scores, iters = cv_rmse(X, y, cat_idx, folds, params, cap, prune=prune, threads=threads)
-        s = summarise(scores, iters)
+        scores, iters, fsec, stopped = cv_rmse(X, y, cat_idx, folds, params, cap, prune=prune,
+                                               threads=threads, max_fit_s=max_fit_s)
+        s = summarise(scores, iters, fsec, stopped)
+        if stopped == "too_slow":
+            raise optuna.TrialPruned()
         trial.set_user_attr("summary", s)
         trial.set_user_attr("params_full", params)
         state["n"] += 1
@@ -216,13 +257,14 @@ def main():
               "best_iteration_mean": s["best_iteration_mean"],
               "vs_production": round(s["cv_rmse"] - base["cv_rmse"], 6),
               "running_best": state["best"], "running_best_params": state["best_params"]})
-        flag = "" if not pruned else "  (pruned after %d folds)" % s["folds"]
+        flag = "" if not pruned else "  (%s after %d folds)" % (stopped or "pruned", s["folds"])
         log("  trial %3d/%-3d  cv_rmse %8.4f +/- %-7.4f  %+.4f vs prod  best %7.4f  "
-            "depth=%-2s lr=%-6.4f l2=%-6.2f %-14s %-9s %4.0fs%s"
+            "depth=%-2s lr=%-6.4f l2=%-6.2f %-14s %-9s fit %5.2fs/fold est_train %4.0fs%s"
             % (state["n"], trials, s["cv_rmse"], s["cv_rmse_sd"],
                s["cv_rmse"] - base["cv_rmse"], state["best"], params["depth"],
                params["learning_rate"], params["l2_leaf_reg"], params["grow_policy"],
-               params["bootstrap_type"], secs, flag))
+               params["bootstrap_type"], s.get("fit_s_mean") or 0.0,
+               s.get("est_train_s") or 0.0, flag))
         sys.stdout.flush()
         return s["cv_rmse"]
 
