@@ -122,6 +122,9 @@ def main():
     runs_root = _arg("--runs-root", RUNS_ROOT)
     study_name = _arg("--study", "catboost_%s_k%d" % (which, k))
     threads = int(_arg("--threads", "0"))
+    os.makedirs(OUT_DIR, exist_ok=True)
+    progress = _arg("--progress", os.path.join(
+        OUT_DIR, "tune_progress_%s_%s.jsonl" % (which, time.strftime("%Y%m%d_%H%M%S"))))
     log = print
 
     import warnings
@@ -149,6 +152,7 @@ def main():
     log("cv: %d-fold grouped by campaign (%d campaigns, ~%d val campaigns per fold)"
         % (len(folds), ncamp, ncamp // len(folds)))
     log("threads: %s" % (threads if threads else "all cores (catboost default)"))
+    log("progress log: %s" % progress)
     log("")
 
     log("baseline: production config over the same folds ...")
@@ -171,7 +175,20 @@ def main():
     if done:
         log("resuming study %r with %d finished trials" % (study_name, done))
 
-    state = {"n": 0, "t0": time.time()}
+    state = {"n": 0, "t0": time.time(), "best": None, "best_params": None}
+
+    def emit(row):
+        try:
+            with open(progress, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(row, default=str) + "\n")
+                fh.flush()
+        except OSError as e:
+            log("!! progress log write failed: %s" % repr(e)[:100])
+
+    emit({"kind": "run", "when": time.strftime("%Y-%m-%d %H:%M:%S"), "study": study_name,
+          "target": which, "folds": len(folds), "trials_requested": trials, "threads": threads,
+          "rows": len(rows), "campaigns": ncamp, "iteration_cap": cap,
+          "production_config": PRODUCTION, "production": base})
 
     def objective(trial):
         params = suggest(trial)
@@ -186,11 +203,27 @@ def main():
         trial.set_user_attr("summary", s)
         trial.set_user_attr("params_full", params)
         state["n"] += 1
-        flag = "" if s["folds"] == len(folds) else "  (pruned after %d folds)" % s["folds"]
-        log("  trial %3d  cv_rmse %8.4f +/- %-7.4f  depth=%-2s lr=%-6.4f l2=%-6.2f %-14s %-13s %4.0fs%s"
-            % (state["n"], s["cv_rmse"], s["cv_rmse_sd"], params["depth"],
+        secs = round(time.time() - t1, 1)
+        pruned = s["folds"] != len(folds)
+        if state["best"] is None or s["cv_rmse"] < state["best"]:
+            state["best"] = s["cv_rmse"]
+            state["best_params"] = dict(params)
+        emit({"kind": "trial", "trial": state["n"], "number": trial.number,
+              "when": time.strftime("%H:%M:%S"), "elapsed_s": round(time.time() - state["t0"], 1),
+              "seconds": secs, "pruned": pruned, "params": params,
+              "cv_rmse": s["cv_rmse"], "cv_rmse_sd": s["cv_rmse_sd"],
+              "fold_rmse": s["fold_rmse"], "folds_run": s["folds"],
+              "best_iteration_mean": s["best_iteration_mean"],
+              "vs_production": round(s["cv_rmse"] - base["cv_rmse"], 6),
+              "running_best": state["best"], "running_best_params": state["best_params"]})
+        flag = "" if not pruned else "  (pruned after %d folds)" % s["folds"]
+        log("  trial %3d/%-3d  cv_rmse %8.4f +/- %-7.4f  %+.4f vs prod  best %7.4f  "
+            "depth=%-2s lr=%-6.4f l2=%-6.2f %-14s %-9s %4.0fs%s"
+            % (state["n"], trials, s["cv_rmse"], s["cv_rmse_sd"],
+               s["cv_rmse"] - base["cv_rmse"], state["best"], params["depth"],
                params["learning_rate"], params["l2_leaf_reg"], params["grow_policy"],
-               params["bootstrap_type"], time.time() - t1, flag))
+               params["bootstrap_type"], secs, flag))
+        sys.stdout.flush()
         return s["cv_rmse"]
 
     log("optuna TPE: %d trials, pruning any config 1.6x worse than production after 2 folds"
@@ -256,8 +289,15 @@ def main():
                                       "params": t.user_attrs.get("params_full"),
                                       "summary": t.user_attrs.get("summary")}
                                      for t in complete]}, fh, indent=1, default=str)
+    emit({"kind": "final", "when": time.strftime("%Y-%m-%d %H:%M:%S"),
+          "elapsed_s": round(time.time() - state["t0"], 1), "trials_completed": len(complete),
+          "production": base, "best_value": best.value,
+          "best_params": best.user_attrs.get("params_full"), "best_summary": bsum,
+          "gain_vs_production": round(gain, 6), "fold_standard_error": round(noise, 6),
+          "verdict": "improvement" if gain > noise else "within_noise", "report": out})
     log("")
     log("wrote %s" % out)
+    log("per-trial log: %s" % progress)
     log("study persisted to %s (rerun with --study %s to add trials)" % (storage, study_name))
     log("nothing in D:\\twdata\\models was touched -- apply a winner by editing CB_* in "
         "advisor/base_model.py")
