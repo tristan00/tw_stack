@@ -198,7 +198,11 @@ _LUA_CAMPAIGN = (_G + "local okc,t0=pcall(os.clock) "
                  "..'|'..allies..'|'..vassals..'|'..ts(g(fc,'StrengthRank'))"
                  "..'|'..(function() if okc and t0 then "
                  "local ok2,t1=pcall(os.clock) if ok2 and t1 then "
-                 "return math.floor((t1-t0)*1000) end end return -1 end)()")
+                 "return math.floor((t1-t0)*1000) end end return -1 end)()"
+                 "..'|'..(function() local l=f:faction_leader() "
+                 "if not l or l:is_null_interface() then return 'nil' end "
+                 "local ok,v=pcall(function() return l:is_wounded() end) "
+                 "return ts(ok and v or nil) end)()")
 
 
 _GAME_VERSION = ["unread"]
@@ -253,6 +257,7 @@ def _parse_campaign(raw):
             "vassals": _num(p[11]) if len(p) > 11 else None,
             "power_rank": (-_num(p[12]) if len(p) > 12 and _num(p[12]) is not None else None),
             "_eval_ms": _num(p[13]) if len(p) > 13 else None,
+            "ll_wounded": (p[14] == "true") if len(p) > 14 and p[14] in ("true", "false") else None,
             "game_version": _game_version(),
             "defeated": False}
 
