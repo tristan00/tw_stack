@@ -234,7 +234,7 @@ NO_MODEL_DIR = r"D:\twdata\models\__cold_start__"
 
 def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                   log=print, runs_root=RUNS_ROOT, retrain=False, retrain_every=0, seed=None,
-                  cold=False, backend=None, backend_cfg=None):
+                  cold=False, backend=None, backend_cfg=None, epsilon=None):
     from bus import Bus
     from executor import Executor
 
@@ -245,12 +245,17 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
     backend = backend or B.DEFAULT
     backend_cfg = backend_cfg or {}
     MB = B.resolve(backend)
+    if epsilon is not None:
+        import policy as _P
+        _P.EPSILON = float(epsilon)
+        log("policy EPSILON overridden -> %.2f" % _P.EPSILON)
     log("model backend: %s -- %s%s"
         % (backend, B.label(backend),
            ("  cfg=%s" % json.dumps(backend_cfg)) if backend_cfg else ""))
     report = {"started": time.time(), "requested": {"campaigns": n, "turns": turns, "plan": plan,
                                                     "backend": backend,
-                                                    "backend_cfg": backend_cfg},
+                                                    "backend_cfg": backend_cfg,
+                                                    "epsilon": epsilon},
               "campaigns": []}
     if isinstance(plan, (list, tuple, set)):
         log("sampling the start per campaign from: %s" % ", ".join(sorted(plan)))
@@ -608,6 +613,7 @@ def _trial_row(stretch, backend, backend_cfg, gen_n, report, trained, log):
            "campaign_index": [first.get("index"), last.get("index")],
            "campaigns": len(stretch),
            "backend": backend, "backend_cfg": backend_cfg,
+           "epsilon": (report.get("requested") or {}).get("epsilon"),
            "feature_version": _feature_version(),
            "corpus_at_train": report.get("_corpus"),
            "fit": trained,
@@ -1021,9 +1027,14 @@ def main():
                if "--model" in sys.argv else B.DEFAULT)
     B.resolve(backend)
     backend_cfg = B.parse_cfg(sys.argv)
+    epsilon = None
+    if "--epsilon" in sys.argv:
+        epsilon = float(sys.argv[sys.argv.index("--epsilon") + 1])
+        if not 0.0 <= epsilon <= 1.0:
+            raise SystemExit("--epsilon must be in [0, 1]")
     r = run_campaigns(n, turns, plan=keys, retrain="--retrain" in sys.argv,
                       retrain_every=every, cold=cold, backend=backend,
-                      backend_cfg=backend_cfg)
+                      backend_cfg=backend_cfg, epsilon=epsilon)
     return 0 if r["totals"]["completed"] else 2
 
 

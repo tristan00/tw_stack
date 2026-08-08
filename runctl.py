@@ -96,7 +96,7 @@ def start_ui(port=DEFAULT_PORT):
 
 
 def start_session(campaigns, turns, model=None, cfg=None, retrain=True, retrain_every=0,
-                  cold=False, dev=False):
+                  cold=False, dev=False, epsilon=None):
     ts = _stamp()
     log = os.path.join(LOG_DIR, "session_%s%s%sx%s_%s.log"
                        % ("cold_" if cold else "", ("%s_" % model) if model else "",
@@ -109,6 +109,7 @@ def start_session(campaigns, turns, model=None, cfg=None, retrain=True, retrain_
             + (["--cold"] if cold else [])
             + (["--retrain"] if retrain and not cold else [])
             + (["--retrain-every", str(retrain_every)] if retrain_every and not cold else [])
+            + (["--epsilon", str(epsilon)] if epsilon is not None else [])
             + (["--dev"] if dev else []))
     _spawn(args, log)
     os.makedirs(LOG_DIR, exist_ok=True)
@@ -118,7 +119,7 @@ def start_session(campaigns, turns, model=None, cfg=None, retrain=True, retrain_
 
 
 def up(campaigns, turns, model=None, cfg=None, retrain=True, retrain_every=0, cold=False,
-       dev=False, shots=DEFAULT_SHOTS, port=DEFAULT_PORT, with_ui=True):
+       dev=False, shots=DEFAULT_SHOTS, port=DEFAULT_PORT, with_ui=True, epsilon=None):
     steps = [kill_session(), kill_recorder()]
     if with_ui:
         steps.append(kill_ui())
@@ -130,7 +131,7 @@ def up(campaigns, turns, model=None, cfg=None, retrain=True, retrain_every=0, co
         time.sleep(2.0)
     steps.append("session -> %s" % start_session(campaigns, turns, model=model, cfg=cfg,
                                                  retrain=retrain, retrain_every=retrain_every,
-                                                 cold=cold, dev=dev))
+                                                 cold=cold, dev=dev, epsilon=epsilon))
     return steps
 
 
@@ -180,6 +181,7 @@ def main():
         s.add_argument("--cfg", action="append")
         s.add_argument("--no-retrain", action="store_true")
         s.add_argument("--retrain-every", type=int, default=0)
+        s.add_argument("--epsilon", type=float, default=None)
         s.add_argument("--cold", action="store_true")
         s.add_argument("--dev", action="store_true")
         if name == "up":
@@ -196,7 +198,7 @@ def main():
         print("\n".join(down()))
         return
     common = dict(model=a.model, cfg=_cfg(a.cfg), retrain=not a.no_retrain,
-                  retrain_every=a.retrain_every, cold=a.cold, dev=a.dev)
+                  retrain_every=a.retrain_every, cold=a.cold, dev=a.dev, epsilon=a.epsilon)
     if a.cmd == "session":
         print("session -> %s" % start_session(a.campaigns, a.turns, **common))
         return
