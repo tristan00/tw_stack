@@ -151,8 +151,29 @@ def select_character(bus, cqi):
     return r == "ok=true"
 
 
+def focus_settlement(bus, region):
+    r = _ev(bus, "local rg=cm:get_region('%s') "
+                 "if not rg or rg:is_null_interface() then return 'NO-REGION' end "
+                 "local s=rg:settlement() "
+                 "if not s or s:is_null_interface() then return 'NO-SETT' end "
+                 "local ok,x,y,d,b,h=pcall(function() return cm:get_camera_position() end) "
+                 "if not ok then return 'NO-CAMERA-API' end "
+                 "local ok2,px,py=pcall(function() "
+                 "return s:display_position_x(),s:display_position_y() end) "
+                 "if not ok2 then return 'NO-POSITION' end "
+                 "local ok3=pcall(function() cm:set_camera_position(px,py,d,b,h) end) "
+                 "if ok3 then return 'ok' end return 'SET-FAILED'" % region, timeout=12.0)
+    if r != "ok":
+        sys.stderr.write("click_actions: camera focus on settlement %s -> %s\n" % (region, r))
+    return r == "ok"
+
+
 def prepare(bus, kind, entity_id, expect_root=None, timeout=6.0):
     import nav
+    if kind == "settlement":
+        focus_settlement(bus, entity_id)
+    elif kind == "lord":
+        focus_character(bus, entity_id)
     if (expect_root and is_selected(bus, kind, entity_id) is True
             and expect_root in (nav.visible_roots(bus) or [])):
         return True, "already_ready"
@@ -388,7 +409,6 @@ def focus_character(bus, cqi):
 
 def _recruit_snapshot(bus, ctx, pick):
     prepare(bus, "lord", ctx["entity_id"], expect_root="units_panel")
-    focus_character(bus, ctx["entity_id"])
     r = _roots(bus)
     return {"treasury": _treasury(bus), "pending": _pending_recruits(bus, ctx["entity_id"]),
             "units_panel_open": (r is not None and "units_panel" in r),
@@ -545,7 +565,6 @@ def mercenary_units(bus):
 
 def _merc_snapshot(bus, ctx, pick):
     prepare(bus, "lord", ctx["entity_id"], expect_root="units_panel")
-    focus_character(bus, ctx["entity_id"])
     r = _roots(bus)
     units = _force_units(bus, ctx["entity_id"])
     return {"treasury": _treasury(bus), "force_units": units, "unit_count": len(units),
