@@ -455,6 +455,15 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None, act_hist
         F.stamp_action_counts(record["campaign"], act_counts)
         I.set_snapshot(record["campaign"], record.get("world"))
         last_record = record
+        if (record.get("campaign") or {}).get("ll_wounded"):
+            log("   legendary lord is WOUNDED -- no further actions, ending the turn now")
+            ended_by = "ll_wounded"
+            gate_failed[0] = _check_gate_before_end()
+            _force_end_turn(run_dir, executor, decision_id, None, log)
+            act_hist.append("end_turn")
+            del act_hist[:-F.PREV_ACTIONS]
+            F.bump_action_counts(act_counts, "end_turn")
+            break
         if turn is not None and turn != _last_beat_turn[0]:
             _last_beat_turn[0] = turn
             wd.beat("turn_advanced")
