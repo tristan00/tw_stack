@@ -16,9 +16,10 @@ ACTION_TYPES = ("stance", "building", "research", "skills", "items", "item_unequ
                 "colonize", "horde_building", "garrison", "leave_garrison", "end_turn", "noop",
                 "move", "diplomacy", "hero_action", "recruit_hero",
                 "building_repair", "building_cancel", "building_dismantle",
-                "raise_dead", "recruit_ror")
+                "raise_dead", "recruit_ror", "recruit_blessed", "recruit_imperial")
 
-UNIT_RECRUIT_TYPES = ("recruit_unit", "raise_dead", "recruit_ror")
+UNIT_RECRUIT_TYPES = ("recruit_unit", "raise_dead", "recruit_ror", "recruit_blessed",
+                      "recruit_imperial")
 
 PREV_ACTIONS = 5
 

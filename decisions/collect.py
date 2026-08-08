@@ -4,6 +4,7 @@ import collections
 import math
 import random
 import re
+import sqlite3
 import sys
 import time
 
@@ -456,18 +457,65 @@ _LUA_MERC_POOLS = (_G +
     "return table.concat(out,'|')")
 
 
+MERC_FLAVOR_ACTIONS = {"raise_dead": "raise_dead", "renown": "recruit_ror",
+                       "blessed_spawning": "recruit_blessed",
+                       "imperial_supply": "recruit_imperial"}
+
+_MERC_REFERENCE_DB = r"D:\twdata\reference\reference.sqlite"
+_merc_flavor_map = None
+_merc_drop_logged = set()
+
+
+def _merc_flavors():
+    global _merc_flavor_map
+    if _merc_flavor_map is None:
+        con = sqlite3.connect("file:%s?mode=ro" % _MERC_REFERENCE_DB.replace("\\", "/"), uri=True)
+        try:
+            rows = con.execute("SELECT DISTINCT unit, flavor FROM merc_units").fetchall()
+        finally:
+            con.close()
+        if not rows:
+            raise CollectError("reference merc_units is empty -- rebuild reference.sqlite "
+                               "(advisor/reference/build_reference.py)")
+        m = {}
+        for unit, flavor in rows:
+            m.setdefault(unit, set()).add(flavor)
+        _merc_flavor_map = m
+    return _merc_flavor_map
+
+
 def _parse_merc_pools(raw):
-    pools = {"recruit_ror": [], "raise_dead": []}
+    pools = {}
+    flavors = _merc_flavors()
+    dropped = {}
     for row in str(raw or "").split("|"):
         p = row.split("~")
         if len(p) < 4 or not p[1] or p[1] == "nil":
             continue
-        r = {"key": p[1], "avail": _num(p[2]) or 0.0, "cost": _num(p[3])}
-        if p[0] == "F":
+        origin, key = p[0], p[1]
+        fset = flavors.get(key)
+        if not fset:
+            dropped[key] = "unmapped"
+            continue
+        if origin == "P":
+            flavor = "raise_dead" if "raise_dead" in fset else sorted(fset)[0]
+        else:
+            non_rd = sorted(fset - {"raise_dead"})
+            flavor = non_rd[0] if non_rd else "raise_dead"
+        atype = MERC_FLAVOR_ACTIONS.get(flavor)
+        if atype is None:
+            dropped[key] = flavor
+            continue
+        r = {"key": key, "avail": _num(p[2]) or 0.0, "cost": _num(p[3])}
+        if origin == "F":
             r["can"] = len(p) > 4 and p[4] == "true"
-            pools["recruit_ror"].append(r)
-        elif p[0] == "P":
-            pools["raise_dead"].append(r)
+        pools.setdefault(atype, []).append(r)
+    new_drops = sorted(set(dropped.values()) - _merc_drop_logged)
+    if new_drops:
+        _merc_drop_logged.update(new_drops)
+        sys.stderr.write("collect: merc pool units dropped -- unsupported flavor(s) %s "
+                         "(first units: %s)\n"
+                         % (new_drops, sorted(dropped)[:5]))
     return pools
 
 
@@ -479,15 +527,16 @@ def mercenary_pools(bus, cqi):
 def _merc_offers(state, merc_pools):
     offers = []
     at_sea = not state.get("region")
-    for r in (merc_pools or {}).get("raise_dead") or []:
-        offers.append(_offer("raise_dead", r["key"], True, None,
-                             unit=r["key"], cost=r["cost"], pool_avail=r["avail"]))
-    for r in (merc_pools or {}).get("recruit_ror") or []:
-        ok = bool(r.get("can")) and r["avail"] > 0 and not at_sea
-        gate = None if ok else ("at_sea" if at_sea else
-                                "locked" if not r.get("can") else "pool_empty")
-        offers.append(_offer("recruit_ror", r["key"], ok, gate,
-                             unit=r["key"], cost=r["cost"], pool_avail=r["avail"]))
+    for atype in sorted(merc_pools or {}):
+        for r in merc_pools[atype]:
+            if "can" in r:
+                ok = bool(r.get("can")) and r["avail"] > 0 and not at_sea
+                gate = None if ok else ("at_sea" if at_sea else
+                                        "locked" if not r.get("can") else "pool_empty")
+            else:
+                ok, gate = True, None
+            offers.append(_offer(atype, r["key"], ok, gate,
+                                 unit=r["key"], cost=r["cost"], pool_avail=r["avail"]))
     return offers
 
 

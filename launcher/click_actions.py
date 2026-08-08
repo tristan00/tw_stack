@@ -471,6 +471,8 @@ MERC_SUFFIX = "_mercenary"
 MERC_POOL_BUTTONS = {
     "raise_dead": "button_mercenary_recruit_raise_dead",
     "recruit_ror": "button_mercenary_recruit_renown",
+    "recruit_blessed": "button_mercenary_recruit_blessed_spawning",
+    "recruit_imperial": "button_mercenary_recruit_imperial_supply",
 }
 
 MAX_FORCE_UNITS = 20

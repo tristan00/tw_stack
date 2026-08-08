@@ -23,7 +23,8 @@ PER_TURN_CAPS = {"recruit_lord": 1, "recruit_hero": 1, "recruit_unit": 4, "edict
                  "research": 1, "rites": 1,
                  "diplomacy": 3, "noop": 0,
                  "stance": 1, "hero_action": 3, "building_dismantle": 1,
-                 "raise_dead": 4, "recruit_ror": 1}
+                 "raise_dead": 4, "recruit_ror": 1,
+                 "recruit_blessed": 4, "recruit_imperial": 1}
 
 
 def _tally(values):
