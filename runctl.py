@@ -96,7 +96,9 @@ def start_ui(port=DEFAULT_PORT):
 
 
 def start_session(campaigns, turns, model=None, cfg=None, retrain=True, retrain_every=0,
-                  cold=False, dev=False, epsilon=None):
+                  cold=False, dev=False, epsilon=None, factions="all"):
+    if not str(factions or "").strip():
+        raise SystemExit("--factions must be 'all' or a comma-separated list of faction keys")
     ts = _stamp()
     log = os.path.join(LOG_DIR, "session_%s%s%sx%s_%s.log"
                        % ("cold_" if cold else "", ("%s_" % model) if model else "",
@@ -104,7 +106,8 @@ def start_session(campaigns, turns, model=None, cfg=None, retrain=True, retrain_
     cfg_args = []
     for k, v in sorted((cfg or {}).items()):
         cfg_args += ["--nn-%s" % k, str(v)]
-    args = ([VENV_PY, "-u", "advisor/session.py", str(campaigns), str(turns), "--factions", "all"]
+    args = ([VENV_PY, "-u", "advisor/session.py", str(campaigns), str(turns),
+             "--factions", str(factions).strip()]
             + (["--model", model] if model else []) + cfg_args
             + (["--cold"] if cold else [])
             + (["--retrain"] if retrain and not cold else [])
@@ -119,7 +122,8 @@ def start_session(campaigns, turns, model=None, cfg=None, retrain=True, retrain_
 
 
 def up(campaigns, turns, model=None, cfg=None, retrain=True, retrain_every=0, cold=False,
-       dev=False, shots=DEFAULT_SHOTS, port=DEFAULT_PORT, with_ui=True, epsilon=None):
+       dev=False, shots=DEFAULT_SHOTS, port=DEFAULT_PORT, with_ui=True, epsilon=None,
+       factions="all"):
     steps = [kill_session(), kill_recorder()]
     if with_ui:
         steps.append(kill_ui())
@@ -131,7 +135,8 @@ def up(campaigns, turns, model=None, cfg=None, retrain=True, retrain_every=0, co
         time.sleep(2.0)
     steps.append("session -> %s" % start_session(campaigns, turns, model=model, cfg=cfg,
                                                  retrain=retrain, retrain_every=retrain_every,
-                                                 cold=cold, dev=dev, epsilon=epsilon))
+                                                 cold=cold, dev=dev, epsilon=epsilon,
+                                                 factions=factions))
     return steps
 
 
@@ -178,6 +183,7 @@ def main():
         s.add_argument("campaigns", type=int)
         s.add_argument("turns")
         s.add_argument("--model", default="catboost")
+        s.add_argument("--factions", default="all")
         s.add_argument("--cfg", action="append")
         s.add_argument("--no-retrain", action="store_true")
         s.add_argument("--retrain-every", type=int, default=0)
@@ -198,7 +204,8 @@ def main():
         print("\n".join(down()))
         return
     common = dict(model=a.model, cfg=_cfg(a.cfg), retrain=not a.no_retrain,
-                  retrain_every=a.retrain_every, cold=a.cold, dev=a.dev, epsilon=a.epsilon)
+                  retrain_every=a.retrain_every, cold=a.cold, dev=a.dev, epsilon=a.epsilon,
+                  factions=a.factions)
     if a.cmd == "session":
         print("session -> %s" % start_session(a.campaigns, a.turns, **common))
         return
