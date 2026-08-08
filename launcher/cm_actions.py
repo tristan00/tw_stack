@@ -26,6 +26,13 @@ def _prebattle(bus):
     return "popup_pre_battle" in r
 
 
+def _captured(bus):
+    r = _roots(bus)
+    if r is None:
+        return "blocked"
+    return "settlement_captured" in r
+
+
 def _char_scalar(bus, cqi, expr):
     return _ev(bus, "local c=cm:get_character_by_cqi(%s); if c and not c:is_null_interface() "
                     "then return tostring(%s) end return 'no-char'" % (cqi, expr), timeout=8.0)
@@ -94,6 +101,7 @@ def _attack_sett_snapshot(bus, ctx, pick):
     return {"ap": _char_scalar(bus, cqi, "c:action_points_remaining_percent()"),
             "acted": _char_scalar(bus, cqi, "c:performed_action_this_turn()"),
             "besieging": _char_scalar(bus, cqi, "c:is_besieging()"),
+            "captured": _captured(bus),
             "can_reach": _ev(bus, "local c=cm:get_character_by_cqi(%s); local s=cm:get_region('%s'):settlement(); "
                                   "local ok,v=pcall(function() return cm:character_can_reach_settlement(c,s) end); "
                                   "return tostring(ok and v)" % (cqi, region), timeout=10.0)}
@@ -112,18 +120,22 @@ def _attack_sett_execute(bus, ctx, pick, before):
 
 
 def _attack_sett_confirm(bus, ctx, pick, before):
-    pb = _prebattle(bus)
+    r = _roots(bus)
+    pb = "blocked" if r is None else ("popup_pre_battle" in r)
+    cap = "blocked" if r is None else ("settlement_captured" in r)
     bes = _char_scalar(bus, ctx["entity_id"], "c:is_besieging()")
     acted = _char_scalar(bus, ctx["entity_id"], "c:performed_action_this_turn()")
     landed = ((pb is True)
+              or (cap is True and before.get("captured") is not True)
               or (bes == "true" and before.get("besieging") != "true")
               or (acted == "true" and before.get("acted") != "true"))
-    return landed, {"pre_battle": pb, "besieging": bes, "besieging_before": before.get("besieging"),
+    return landed, {"pre_battle": pb, "captured": cap, "captured_before": before.get("captured"),
+                    "besieging": bes, "besieging_before": before.get("besieging"),
                     "acted": acted, "acted_before": before.get("acted")}
 
 
 register("attack_settlement", {
-    "layer": "cm", "signal": "pre_battle_or_is_besieging",
+    "layer": "cm", "signal": "pre_battle_or_captured_or_is_besieging",
     "snapshot": _attack_sett_snapshot, "gates": [_attack_sett_gate],
     "execute": _attack_sett_execute, "confirm": _attack_sett_confirm,
     "timeout_s": 20.0, "poll_s": 2.0, "retryable": False,
@@ -131,7 +143,7 @@ register("attack_settlement", {
 
 
 register("colonize", {
-    "layer": "cm", "signal": "pre_battle_or_is_besieging",
+    "layer": "cm", "signal": "pre_battle_or_captured_or_is_besieging",
     "snapshot": _attack_sett_snapshot, "gates": [_attack_sett_gate],
     "execute": _attack_sett_execute, "confirm": _attack_sett_confirm,
     "timeout_s": 20.0, "poll_s": 2.0, "retryable": False,
