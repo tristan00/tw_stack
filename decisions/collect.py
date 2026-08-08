@@ -421,6 +421,76 @@ def recruitable_units(bus, cqi):
                                   timeout=30.0, allow_nil=True))
 
 
+_LUA_MERC_POOLS = (_G +
+    "local c=cco('CcoCampaignCharacter','%(cqi)s') if not c then return '' end "
+    "local ch=cm:get_character_by_cqi(%(cqi)s) local reg=nil "
+    "if ch and not ch:is_null_interface() then local r0=ch:region() "
+    "if r0 and not r0:is_null_interface() then reg=r0:name() end end "
+    "local function agg(list, canfn) "
+    "  local by={} local order={} "
+    "  for i=1,#list do local u=list[i] local rec=g(u,'MainUnitRecordContext') "
+    "    local k=rec and g(rec,'Key') "
+    "    if k then local a=tonumber(ts(g(u,'AvailableUnitCount'))) or 0 "
+    "      local cost=tonumber(ts(g(rec,'Cost'))) "
+    "      local e=by[k] if not e then e={a=0,c=cost,can=false} by[k]=e order[#order+1]=k end "
+    "      e.a=e.a+a if cost and (not e.c or cost<e.c) then e.c=cost end "
+    "      if canfn and canfn(i-1)==true then e.can=true end end end "
+    "  return by, order end "
+    "local out={} "
+    "local fl=g(c,'FactionContext.MercenaryPoolContext.MercenaryPoolUnitList') "
+    "if type(fl)=='table' then "
+    "  local by,order=agg(fl, function(i0) return g(c,"
+    "'FactionContext.MercenaryPoolContext.CanRecruitUnitForFaction(FactionContext, "
+    "FactionContext.MercenaryPoolContext.MercenaryPoolUnitList['..i0..'])') end) "
+    "  for _,k in ipairs(order) do local e=by[k] "
+    "    out[#out+1]='F~'..k..'~'..ts(e.a)..'~'..ts(e.c)..'~'..ts(e.can) end end "
+    "if reg then local s=cco('CcoCampaignSettlement','settlement:'..reg) "
+    "  local pl=s and g(s,'ProvinceContext.MercenaryPoolContext.MercenaryPoolUnitList') "
+    "  if type(pl)=='table' then "
+    "    local by,order=agg(pl, nil) "
+    "    for _,k in ipairs(order) do local e=by[k] "
+    "      if e.a>0 then "
+    "        local can=g(c,'FactionContext.FactionRecordContext.IsUnitPossibleToRecruit("
+    "DatabaseRecordContext(\"CcoMainUnitRecord\", \"'..k..'\"))') "
+    "        if can==true then out[#out+1]='P~'..k..'~'..ts(e.a)..'~'..ts(e.c) end end end end end "
+    "return table.concat(out,'|')")
+
+
+def _parse_merc_pools(raw):
+    pools = {"recruit_ror": [], "raise_dead": []}
+    for row in str(raw or "").split("|"):
+        p = row.split("~")
+        if len(p) < 4 or not p[1] or p[1] == "nil":
+            continue
+        r = {"key": p[1], "avail": _num(p[2]) or 0.0, "cost": _num(p[3])}
+        if p[0] == "F":
+            r["can"] = len(p) > 4 and p[4] == "true"
+            pools["recruit_ror"].append(r)
+        elif p[0] == "P":
+            pools["raise_dead"].append(r)
+    return pools
+
+
+def mercenary_pools(bus, cqi):
+    return _parse_merc_pools(_ev(bus, _LUA_MERC_POOLS % {"cqi": cqi},
+                                 timeout=40.0, allow_nil=True))
+
+
+def _merc_offers(state, merc_pools):
+    offers = []
+    at_sea = not state.get("region")
+    for r in (merc_pools or {}).get("raise_dead") or []:
+        offers.append(_offer("raise_dead", r["key"], True, None,
+                             unit=r["key"], cost=r["cost"], pool_avail=r["avail"]))
+    for r in (merc_pools or {}).get("recruit_ror") or []:
+        ok = bool(r.get("can")) and r["avail"] > 0 and not at_sea
+        gate = None if ok else ("at_sea" if at_sea else
+                                "locked" if not r.get("can") else "pool_empty")
+        offers.append(_offer("recruit_ror", r["key"], ok, gate,
+                             unit=r["key"], cost=r["cost"], pool_avail=r["avail"]))
+    return offers
+
+
 def edict_options(bus, region):
     raw = _ev(bus, _G + "local s=cco('CcoCampaignSettlement','settlement:%s');"
                         "local m=g(s,'FactionProvinceManagerContext'); if not m then return '' end "
@@ -800,13 +870,14 @@ def lord_offers(bus, cqi, state, world, stationed=None, prof=None):
     moves = _move_offers(bus, cqi, state)
     horde = _parse_horde_slots(_tstage(prof, "lord_offers/horde", _ev, bus,
                                        _horde_slots_lua(cqi), timeout=30.0, allow_nil=True))
+    merc = _tstage(prof, "lord_offers/mercenary", mercenary_pools, bus, cqi)
     return _lord_offers_assemble(cqi, state, world, stationed, ev_raw, recruit_rows,
-                                 reach_c, reach_s, moves, horde_slots=horde)
+                                 reach_c, reach_s, moves, horde_slots=horde, merc_pools=merc)
 
 
 def _lord_offers_assemble(cqi, state, world, stationed, ev_raw, recruit_rows,
                           reach_c, reach_s, moves, anc_pool=None, equipped=None,
-                          equipped_anywhere=None, horde_slots=None):
+                          equipped_anywhere=None, horde_slots=None, merc_pools=None):
     offers = []
     acted = state.get("acted")
     raw = str(ev_raw or "")
@@ -867,6 +938,7 @@ def _lord_offers_assemble(cqi, state, world, stationed, ev_raw, recruit_rows,
                              x=s.get("x"), y=s.get("y")))
     offers.extend(_item_offers(anc_pool, equipped, equipped_anywhere))
     offers.extend(_horde_building_offers(horde_slots))
+    offers.extend(_merc_offers(state, merc_pools))
     offers.extend(moves or [])
     offers.append(_offer("noop", "noop", True))
     return offers
@@ -1759,7 +1831,8 @@ def snapshot(bus, active=None, diplo_epoch=None):
                    ("eval", _LUA_RECRUITABLE % {"cqi": cqi}),
                    ("eval", _reach_lua(cqi, reach_cqis, reach_regions)),
                    ("eval", _LUA_EQUIPPED % {"cqi": cqi}),
-                   ("eval", _horde_slots_lua(cqi))]
+                   ("eval", _horde_slots_lua(cqi)),
+                   ("eval", _LUA_MERC_POOLS % {"cqi": cqi})]
     for cqi in heroes:
         h_c, h_r = _hero_action_reach_targets(world, cqi)
         wave_b += [("eval", _LUA_LORD % {"cqi": cqi}),
@@ -1790,8 +1863,10 @@ def snapshot(bus, active=None, diplo_epoch=None):
                           _parse_reach(_bres(rb[i + 3], "reach:%s" % cqi, allow_nil=True)),
                           _parse_ancillaries(_bres(rb[i + 4], "equipped:%s" % cqi, allow_nil=True)),
                           _parse_horde_slots(_bres(rb[i + 5], "horde_slots:%s" % cqi,
-                                                   allow_nil=True)))
-        i += 6
+                                                   allow_nil=True)),
+                          _parse_merc_pools(_bres(rb[i + 6], "merc_pools:%s" % cqi,
+                                                  allow_nil=True)))
+        i += 7
     for cqi in heroes:
         hero_data[cqi] = (_parse_lord(_bres(rb[i], "hero_state:%s" % cqi), cqi),
                           _bres(rb[i + 1], "hero_offers:%s" % cqi, allow_nil=True),
@@ -1823,12 +1898,12 @@ def snapshot(bus, active=None, diplo_epoch=None):
 
     ents = []
     for cqi in lords:
-        st, ev, rec, (rch_c, rch_s), equipped, horde = lord_data[cqi]
+        st, ev, rec, (rch_c, rch_s), equipped, horde, merc = lord_data[cqi]
         ents.append({"context_kind": "lord", "context_id": str(cqi), "state": st,
                      "offers": _lord_offers_assemble(cqi, st, world, stationed, ev, rec,
                                                      rch_c, rch_s, moves.get(cqi),
                                                      anc_pool, equipped, equipped_all,
-                                                     horde)})
+                                                     horde, merc)})
     for cqi in heroes:
         st, ev, (rch_c, rch_s), equipped = hero_data[cqi]
         ents.append({"context_kind": "hero", "context_id": str(cqi), "state": st,
