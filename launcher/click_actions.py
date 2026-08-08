@@ -371,8 +371,24 @@ def recruitment_capacity(bus):
     return out
 
 
+def focus_character(bus, cqi):
+    r = _ev(bus, "local c=cm:get_character_by_cqi(%s) "
+                 "if not c or c:is_null_interface() then return 'NO-CHAR' end "
+                 "local ok,x,y,d,b,h=pcall(function() return cm:get_camera_position() end) "
+                 "if not ok then return 'NO-CAMERA-API' end "
+                 "local ok2,px,py=pcall(function() "
+                 "return c:display_position_x(),c:display_position_y() end) "
+                 "if not ok2 then return 'NO-POSITION' end "
+                 "local ok3=pcall(function() cm:set_camera_position(px,py,d,b,h) end) "
+                 "if ok3 then return 'ok' end return 'SET-FAILED'" % cqi, timeout=12.0)
+    if r != "ok":
+        sys.stderr.write("click_actions: camera focus on %s -> %s\n" % (cqi, r))
+    return r == "ok"
+
+
 def _recruit_snapshot(bus, ctx, pick):
     prepare(bus, "lord", ctx["entity_id"], expect_root="units_panel")
+    focus_character(bus, ctx["entity_id"])
     r = _roots(bus)
     return {"treasury": _treasury(bus), "pending": _pending_recruits(bus, ctx["entity_id"]),
             "units_panel_open": (r is not None and "units_panel" in r),
@@ -529,6 +545,7 @@ def mercenary_units(bus):
 
 def _merc_snapshot(bus, ctx, pick):
     prepare(bus, "lord", ctx["entity_id"], expect_root="units_panel")
+    focus_character(bus, ctx["entity_id"])
     r = _roots(bus)
     units = _force_units(bus, ctx["entity_id"])
     return {"treasury": _treasury(bus), "force_units": units, "unit_count": len(units),
