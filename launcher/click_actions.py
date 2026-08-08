@@ -452,6 +452,162 @@ register("recruit_unit", {
 })
 
 
+MERC_BTN_CONTAINER = ("hud_campaign|hud_center_docker|hud_center|small_bar|button_subpanel_parent|"
+                      "button_subpanel|button_group_army|mercenary_recruitment_button_container")
+MERC_DISPLAY = ("units_panel|main_units_panel|recruitment_docker|recruitment_options|"
+                "mercenary_display")
+MERC_LIST = MERC_DISPLAY + "|frame|listview|list_clip|list_box"
+MERC_HIRE_BTN = MERC_DISPLAY + "|buttons_holder|button_hire_mercenary"
+MERC_SUFFIX = "_mercenary"
+
+MERC_POOL_BUTTONS = {
+    "raise_dead": "button_mercenary_recruit_raise_dead",
+    "recruit_ror": "button_mercenary_recruit_renown",
+}
+
+MAX_FORCE_UNITS = 20
+
+_LUA_FORCE_UNITS = (
+    "local c=cm:get_character_by_cqi(%s) "
+    "if not c or not c:has_military_force() then return '' end "
+    "local ul=c:military_force():unit_list() "
+    "local ks={} for i=0,ul:num_items()-1 do ks[#ks+1]=tostring(ul:item_at(i):unit_key()) end "
+    "table.sort(ks) return table.concat(ks,',')")
+
+
+def _force_units(bus, cqi):
+    raw = _ev(bus, _LUA_FORCE_UNITS % cqi, timeout=12.0)
+    return [k for k in str(raw or "").split(",") if k and k != "nil"]
+
+
+def mercenary_units(bus):
+    try:
+        tr = bus.send("tree", "units_panel 30 9000", timeout=20) or {}
+    except Exception:
+        return []
+    nodes = tr.get("nodes") or []
+    by_path = {}
+    for n in nodes:
+        by_path.setdefault(str(n.get("path") or ""), []).append(n)
+
+    def _child_text(card_path, *tail):
+        want = card_path + "|" + "|".join(tail)
+        for n in by_path.get(want, []):
+            t = str(n.get("text") or "").strip()
+            if t:
+                return t
+        return None
+
+    def _num(v):
+        try:
+            return float(str(v).replace(",", "").strip())
+        except (TypeError, ValueError):
+            return None
+
+    out = []
+    for n in nodes:
+        i = str(n.get("id") or "")
+        if not (i.endswith(MERC_SUFFIX) and n.get("visible")):
+            continue
+        path = str(n.get("path") or "")
+        if "|list_clip|list_box|" not in path:
+            continue
+        out.append({"key": i[:-len(MERC_SUFFIX)], "state": n.get("state"), "path": path,
+                    "cost": _num(_child_text(path, "external_holder", "RecruitmentCost", "Cost"))})
+    return out
+
+
+def _merc_snapshot(bus, ctx, pick):
+    prepare(bus, "lord", ctx["entity_id"], expect_root="units_panel")
+    r = _roots(bus)
+    units = _force_units(bus, ctx["entity_id"])
+    return {"treasury": _treasury(bus), "force_units": units, "unit_count": len(units),
+            "units_panel_open": (r is not None and "units_panel" in r)}
+
+
+def _merc_gate(bus, ctx, pick, before):
+    if not before.get("units_panel_open"):
+        return False, "units_panel_not_open_CTD_guard"
+    if (before.get("unit_count") or 0) >= MAX_FORCE_UNITS:
+        return False, "army_full"
+    return True, None
+
+
+def _merc_execute_for(pool_btn):
+    def _exec(bus, ctx, pick, before):
+        try:
+            return _merc_execute_inner(bus, ctx, pick, before, pool_btn)
+        finally:
+            clear_screen(bus)
+    return _exec
+
+
+def _merc_execute_inner(bus, ctx, pick, before, pool_btn):
+    ok, why = prepare(bus, "lord", ctx["entity_id"], expect_root="units_panel")
+    if not ok:
+        sys.stderr.write("click_actions: %s refused, not a known state -> %s\n"
+                         % (pick.get("action_type"), why))
+        return False
+    unit = str(pick.get("key") or "")
+
+    def _card():
+        return next((c for c in mercenary_units(bus) if c["key"] == unit), None)
+
+    card = _card()
+    if card is None:
+        if not _click(bus, "%s|%s" % (MERC_BTN_CONTAINER, pool_btn)):
+            return False
+        _until(lambda: bool(mercenary_units(bus)), 2.0)
+        card = _card()
+    if card is None:
+        sys.stderr.write("click_actions: unit %r not among mercenary cards for %s\n"
+                         % (unit, pool_btn))
+        return False
+    if card.get("state") == "locked":
+        sys.stderr.write("click_actions: mercenary card %s is locked\n" % unit)
+        return False
+    if not _click(bus, card["path"]):
+        return False
+    hire = {}
+
+    def _armed():
+        _res, kids = _find(bus, MERC_DISPLAY + "|buttons_holder")
+        for k in kids or []:
+            if not k.startswith("button_"):
+                continue
+            res, _kids = _find(bus, "%s|buttons_holder|%s" % (MERC_DISPLAY, k))
+            if res.get("visible") and res.get("state") == "active":
+                hire["path"] = "%s|buttons_holder|%s" % (MERC_DISPLAY, k)
+                return True
+        return False
+
+    if not _until(_armed, 2.0):
+        sys.stderr.write("click_actions: no hire button armed after selecting %s\n" % unit)
+        return False
+    return _click(bus, hire["path"])
+
+
+def _merc_confirm(bus, ctx, pick, before):
+    unit = str(pick.get("key") or "")
+    t = _treasury(bus)
+    after = _force_units(bus, ctx["entity_id"])
+    prior = before.get("force_units") or []
+    hired = after.count(unit) > prior.count(unit)
+    return hired, {"treasury": t, "unit_count": len(after),
+                   "unit_count_before": len(prior),
+                   "treasury_dropped": (t is not None and before.get("treasury") is not None
+                                        and t < before["treasury"])}
+
+
+for _merc_atype, _merc_btn in MERC_POOL_BUTTONS.items():
+    register(_merc_atype, {
+        "layer": "click", "signal": "force_unit_key_count_increased",
+        "snapshot": _merc_snapshot, "gates": [_merc_gate],
+        "execute": _merc_execute_for(_merc_btn), "confirm": _merc_confirm,
+        "timeout_s": 4.0, "poll_s": 1.0, "spends_gold": True,
+    })
+
+
 def _character_count(bus):
     for attempt in range(1):
         v = _ev(bus, "local f=cm:get_local_faction(true) return f:character_list():num_items()",
