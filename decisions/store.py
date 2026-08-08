@@ -220,18 +220,18 @@ class DecisionStore:
         return 1
 
     def attach_scores(self, decision_id, scores):
-        n = 0
-        for s in scores or []:
-            n += self.con.execute(
-                "UPDATE action_offers SET score=?,exploit=?,explore=?,rank=?,"
-                "pct_global=?,pct_local=? WHERE decision_id=? "
-                "AND context_kind=? AND context_id=? AND action_type=? AND action_key=?",
-                (s.get("score"), s.get("exploit"), s.get("explore"), s.get("rank"),
+        rows = [(s.get("score"), s.get("exploit"), s.get("explore"), s.get("rank"),
                  s.get("pct_global"), s.get("pct_local"), decision_id,
                  s.get("context_kind"), str(s.get("context_id")), s.get("action_type"),
-                 str(s.get("key")))).rowcount
+                 str(s.get("key"))) for s in (scores or [])]
+        if not rows:
+            return 0
+        cur = self.con.executemany(
+            "UPDATE action_offers SET score=?,exploit=?,explore=?,rank=?,"
+            "pct_global=?,pct_local=? WHERE decision_id=? "
+            "AND context_kind=? AND context_id=? AND action_type=? AND action_key=?", rows)
         self.con.commit()
-        return n
+        return cur.rowcount
 
     def attach_taken(self, decision_id, taken, policy=None):
         ck, cid = taken.get("context_kind"), str(taken.get("context_id"))
@@ -300,18 +300,52 @@ class DecisionStore:
                 "world": json.loads(dp["world"] or "{}"), "entities": ents}
 
     def labelled_decisions(self, confirmed_only=False):
+        taken = {}
+        for did, ck, cid, atype, akey, counted, refusal in self.con.execute(
+                "SELECT decision_id,context_kind,context_id,action_type,action_key,counted,"
+                "refusal FROM action_taken"):
+            if refusal == "awaiting_execution":
+                continue
+            if confirmed_only and not counted:
+                continue
+            taken[did] = ((ck, str(cid), atype, str(akey)), bool(counted))
+        if not taken:
+            return []
+
+        ents_by_dec, by_snap = {}, {}
+        for sid, did, ck, cid, feats in self.con.execute(
+                "SELECT snapshot_id,decision_id,context_kind,context_id,features"
+                " FROM entity_snapshots"):
+            if did not in taken:
+                continue
+            e = {"snapshot_id": sid, "context_kind": ck, "context_id": cid,
+                 "state": json.loads(feats), "offers": []}
+            by_snap[sid] = e
+            ents_by_dec.setdefault(did, []).append(e)
+
+        for sid, oid, atype, akey, avail, gate, params in self.con.execute(
+                "SELECT snapshot_id,offer_id,action_type,action_key,available,gate,params"
+                " FROM action_offers"):
+            e = by_snap.get(sid)
+            if e is not None:
+                e["offers"].append({"offer_id": oid, "action_type": atype, "key": akey,
+                                    "available": bool(avail), "gate": gate,
+                                    "params": json.loads(params or "{}")})
+
         out = []
-        for (did,) in self.con.execute("SELECT decision_id FROM decision_points").fetchall():
-            t = self.con.execute(
-                "SELECT context_kind,context_id,action_type,action_key,counted,refusal"
-                " FROM action_taken WHERE decision_id=?", (did,)).fetchone()
-            if t is None:
+        cur = self.con.execute("SELECT * FROM decision_points")
+        cols = [d[0] for d in cur.description]
+        for row in cur:
+            dp = dict(zip(cols, row))
+            did = dp["decision_id"]
+            hit = taken.get(did)
+            if hit is None:
                 continue
-            if t[5] == "awaiting_execution":
-                continue
-            if confirmed_only and not t[4]:
-                continue
-            out.append((self.read_decision(did), (t[0], str(t[1]), t[2], str(t[3])), bool(t[4])))
+            rec = {"decision_id": did, "turn": dp["turn"], "campaign_id": dp["campaign_id"],
+                   "campaign": json.loads(dp["campaign"] or "{}"),
+                   "world": json.loads(dp["world"] or "{}"),
+                   "entities": ents_by_dec.get(did, [])}
+            out.append((rec, hit[0], hit[1]))
         return out
 
     @staticmethod
