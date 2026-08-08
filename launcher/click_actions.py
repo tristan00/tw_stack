@@ -250,19 +250,27 @@ def _edict_gate(bus, ctx, pick, before):
     return True, None
 
 
+_LUA_EDICT_CLICK = (
+    "local E=getfenv(cm.get_local_faction) local core=rawget(E,'core') "
+    "local fuic=rawget(E,'find_uicomponent') "
+    "local root=core:get_ui_root() "
+    "local btn=fuic(root,'hud_campaign','BL_parent','stack_incentives','clip_parent',"
+    "'stack_background','%(btn)s') "
+    "if not btn then return 'NO-BTN' end "
+    "btn:SimulateLClick() return 'clicked'")
+
+
 def _edict_execute(bus, ctx, pick, before):
     ok, why = prepare(bus, "settlement", ctx["entity_id"])
     if not ok:
         sys.stderr.write("click_actions: edict refused, not a known state -> %s" % why + chr(10))
         return False
-    key = "button_%s" % pick["key"]
-    for path in ("%s|%s" % (EDICT_STACK, key),
-                 "%s|clip_parent|stack_background|%s" % (EDICT_STACK, key)):
-        res, _ = _find(bus, path)
-        if res.get("found"):
-            return _click(bus, path)
-    sys.stderr.write("click_actions: edict button %s not resolvable in the stack\n" % key)
-    return False
+    r = _ev(bus, _LUA_EDICT_CLICK % {"btn": "button_%s" % pick["key"]}, timeout=15.0)
+    if r != "clicked":
+        sys.stderr.write("click_actions: edict button button_%s not clickable in the stack -> %s\n"
+                         % (pick["key"], r))
+        return False
+    return True
 
 
 def _edict_confirm(bus, ctx, pick, before):
