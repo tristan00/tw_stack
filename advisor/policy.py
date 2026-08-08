@@ -11,7 +11,7 @@ import model as M
 
 FORBIDDEN_KEYS = frozenset({"button_attack", "button_spectate"})
 
-MAX_ACTIONS_PER_TURN = 10
+MAX_ACTIONS_PER_TURN = 16
 MAX_ACTIONS_PER_ENTITY = 6
 
 EPSILON = 0.10
