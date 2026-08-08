@@ -480,8 +480,55 @@ def decode_db_tables(con, files, d, schema, report):
 
     _captive_reference(cur, files, d, schema, report)
     _agent_reference(cur, files, d, schema, report)
+    _merc_reference(cur, files, d, schema, report)
 
     con.commit()
+
+
+def _merc_reference(cur, files, d, schema, report):
+    def src(table):
+        rows, meta = decode_db_table(files, d, table, schema)
+        report[table] = meta
+        return rows, meta
+
+    groups, gmeta = src("mercenary_unit_groups_tables")
+    junctions, jmeta = src("mercenary_pool_to_groups_junctions_tables")
+    pools, pmeta = src("mercenary_pools_tables")
+    if not (gmeta["ok"] and jmeta["ok"] and pmeta["ok"]):
+        print("  !! merc_units NOT built -- groups=%s junctions=%s pools=%s"
+              % (gmeta["reason"], jmeta["reason"], pmeta["reason"]))
+        return
+    group_by_key = {}
+    for g in groups:
+        group_by_key.setdefault(g["key"], []).append(g)
+    flavor_by_pool = {p["key"]: p.get("ui_recruitment_info") or "" for p in pools}
+    cur.execute("DROP TABLE IF EXISTS merc_units")
+    cur.execute("CREATE TABLE merc_units (unit TEXT, pool TEXT, flavor TEXT, subculture TEXT, "
+                "faction TEXT, tech TEXT, group_key TEXT, base_count INTEGER, max_count INTEGER, "
+                "replenish_chance REAL)")
+    n = 0
+    orphans = set()
+    for j in junctions:
+        gs = group_by_key.get(j["group"])
+        if not gs:
+            orphans.add(j["group"])
+            continue
+        flavor = flavor_by_pool.get(j["pool"])
+        if flavor is None:
+            orphans.add(j["pool"])
+            continue
+        for g in gs:
+            cur.execute("INSERT INTO merc_units VALUES (?,?,?,?,?,?,?,?,?,?)", (
+                g["unit_record"], j["pool"], flavor,
+                j.get("subculture_requirement") or "", j.get("faction_requirement") or "",
+                j.get("tech_requirement") or "", j["group"],
+                j.get("initial_unit_count"), g.get("max_count"), g.get("chance_to_replenish")))
+            n += 1
+    cur.execute("CREATE INDEX idx_merc_units_unit ON merc_units (unit)")
+    if orphans:
+        print("  !! merc_units: %d junction rows referenced missing groups/pools: %s"
+              % (len(orphans), sorted(orphans)[:8]))
+    report["_written"]["merc_units"] = n
 
 
 def build():
