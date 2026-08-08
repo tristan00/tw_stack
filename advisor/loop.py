@@ -103,6 +103,9 @@ def _trace_post_attack(executor, log, run_dir, pick, tries=POST_ATTACK_HUD_TRIES
 
 def _growth_verdict(hist, turn):
     t = int(turn or 0)
+    if (hist.get(t) or {}).get("ll_wounded"):
+        return True, {"reason": "legendary_lord_wounded", "turn": t, "grew": [],
+                      "evaluable": [], "min_gain": GROWTH_MIN_GAIN, "metrics": {}}
     if t < GROWTH_FIRST_CHECK_TURN:
         return False, {"reason": "before_first_check", "turn": t,
                        "first_check_turn": GROWTH_FIRST_CHECK_TURN}
@@ -133,6 +136,8 @@ def _growth_verdict(hist, turn):
 
 
 def _growth_line(detail):
+    if detail.get("reason") == "legendary_lord_wounded":
+        return "legendary lord WOUNDED -- automatic fail"
     return " | ".join(
         "%s %s over %d turns (%s -> %s)"
         % (m["label"], "?" if m["gain"] is None else "%+d" % m["gain"],
@@ -212,6 +217,12 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
     growth_hist = {}
     diplo_epoch = [0]
 
+    def _gate_would_fail(state, turn_no):
+        hist = dict(growth_hist)
+        hist[int(turn_no or 0)] = dict(state or {})
+        done, _v = _growth_verdict(hist, turn_no)
+        return done
+
     def _carry(exc):
         if getattr(exc, "rows", None) is None:
             exc.rows = list(rows)
@@ -229,7 +240,7 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
                                        "not a stall (%s)" % stuck["reason"])
                 raise GameStuck("%s: %s" % (stuck["reason"], stuck["detail"]))
             row = _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch,
-                            act_hist, act_counts)
+                            act_hist, act_counts, pre_settle=_gate_would_fail)
             rows.append(row)
             _append(report_path, row)
             log("== turn %s done: %d actions (%d confirmed), ended by %s =="
@@ -341,7 +352,7 @@ def _drain_interrupts(run_dir, log, diplo_epoch=None):
 
 
 def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None, act_hist=None,
-              act_counts=None):
+              act_counts=None, pre_settle=None):
     import diplo_stream as DS
     import interrupts as I
     diplo_epoch = diplo_epoch if diplo_epoch is not None else [0]
@@ -362,6 +373,23 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None, act_hist
     active = None
     no_hud = 0
     last_record = {}
+    gate_failed = [False]
+
+    def _check_gate_before_end():
+        if pre_settle is None:
+            return False
+        camp0 = (last_record.get("campaign") or {})
+        st = {"settlements": camp0.get("settlements"), "lord_level": camp0.get("lord_level"),
+              "ll_wounded": camp0.get("ll_wounded")}
+        try:
+            failing = bool(pre_settle(st, turn))
+        except Exception as e:
+            log("   !! pre-end-turn gate check failed: %s" % repr(e)[:120])
+            return False
+        if failing:
+            log("   growth gate: FAILING at end of turn %s -- ending the turn for the scoring "
+                "row, then skipping the inter-turn settle" % turn)
+        return failing
     while actions < pol.max_actions_per_turn:
         if stuck["fired"]:
             ended_by = "stuck"
@@ -457,6 +485,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None, act_hist
         if pick is None:
             log("   nothing eligible -> ending turn")
             ended_by = "no_eligible_actions"
+            gate_failed[0] = _check_gate_before_end()
             _force_end_turn(run_dir, executor, decision_id, ranked, log)
             act_hist.append("end_turn")
             del act_hist[:-F.PREV_ACTIONS]
@@ -482,6 +511,8 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None, act_hist
             _last_done_ts[0] = time.time()
             continue
 
+        if pick["action_type"] == "end_turn":
+            gate_failed[0] = _check_gate_before_end()
         pre_off = executor.bus.out_offset()
         result = executor.execute(pick)
         act_hist.append(pick["action_type"])
@@ -548,6 +579,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None, act_hist
         _last_done_ts[0] = time.time()
     else:
         ended_by = "action_cap"
+        gate_failed[0] = _check_gate_before_end()
         _force_end_turn(run_dir, executor, None, None, log)
 
     terminal = ended_by in ("stuck", "no_campaign_ui", "defeated")
@@ -561,6 +593,9 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None, act_hist
 
     if terminal:
         settle = {"turn": None, "steps": [], "waited_s": 0.0, "skipped": ended_by}
+    elif gate_failed[0]:
+        settle = {"turn": None, "steps": [], "waited_s": 0.0, "skipped": "growth_gate_failed"}
+        log("   inter-turn settle skipped: the growth gate failed, the campaign ends here")
     else:
         settle = executor.settle_between_turns(turn_before=turn,
                                                abort=lambda: bool(stuck.get("fired")))
@@ -570,7 +605,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None, act_hist
     if settle.get("defeated"):
         log("   !! faction destroyed during the AI phase -- defeat, not a stall")
         ended_by = "defeated"
-    elif settle["turn"] is None and not terminal:
+    elif settle["turn"] is None and not terminal and not settle.get("skipped"):
         log("   !! turn never advanced after %.0fs -- the watchdog decides from here"
             % settle["waited_s"])
     if (not terminal and not settle.get("defeated") and DS.tracked()
@@ -583,7 +618,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None, act_hist
     state = {"faction": camp.get("faction"), "settlements": camp.get("settlements"),
              "armies": camp.get("armies"), "treasury": camp.get("treasury"),
              "income": camp.get("income"), "lord_level": camp.get("lord_level"),
-             "campaign_turn": camp.get("turn")}
+             "ll_wounded": camp.get("ll_wounded"), "campaign_turn": camp.get("turn")}
     log("   state: turn=%s settlements=%s armies=%s treasury=%s income=%s lord_level=%s"
         % (state["campaign_turn"], state["settlements"], state["armies"],
            state["treasury"], state["income"], state["lord_level"]))
