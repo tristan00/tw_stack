@@ -942,7 +942,12 @@ def choose_dilemma(bus, open_roots):
         if (root in nav.BASE_ROOTS or root in DIPLOMACY_HUD_ROOTS or root in BENIGN_PANELS
                 or root in BATTLE_ROOTS):
             continue
-        found = _dilemma_options(bus, root) if _is_dilemma(bus, root) else {}
+        dilemma = _is_dilemma(bus, root)
+        if not dilemma and not (root == "events" and any(
+                str(n.get("text") or "").strip() == "Purification Chant"
+                for n in _tree(bus, root) if n.get("visible"))):
+            continue
+        found = _dilemma_options(bus, root) if dilemma else {}
         if not found:
             ctrls = _clickable_controls(bus, root)
             actionable = {i: p for i, p in ctrls.items()
@@ -960,17 +965,17 @@ def choose_dilemma(bus, open_roots):
                 opts = {i: {"context": None, "text": labels.get(i) or i,
                             "dilemma_id": root, "option_id": i,
                             "payload": [], "subtree": []} for i in ack}
-                key = _choose("dilemma", sorted(opts), _campaign_hint(), meta=opts)
+                key = _choose("event_ack", sorted(opts), _campaign_hint(), meta=opts)
                 t0 = time.time()
                 clicked = _click(bus, actionable[key], settle=2.0)
                 gone = _root_gone(bus, root)
-                _record_choice("dilemma", root, opts, key,
+                _record_choice("event_ack", root, opts, key,
                                extra={"tree": tree, "root_context": root, "dilemma_id": root},
                                executed=clicked, confirmed=gone,
                                refusal=_refusal(gone, clicked),
                                latency_ms=int((time.time() - t0) * 1000))
                 if clicked:
-                    steps.append("dilemma:%s:%s" % (root, key))
+                    steps.append("event_ack:%s:%s" % (root, key))
                 break
             _report_unhandled(bus, "dilemma", ["no %s choice records" % DILEMMA_LIST],
                               sorted(ctrls), root=root)
