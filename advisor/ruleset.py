@@ -391,11 +391,53 @@ def _row_matches(rule, row, ctx):
 
 
 @dataclass(frozen=True)
+class ScreenRule:
+    name: str
+    priority: int
+    screen: object
+    options: tuple
+
+    @classmethod
+    def from_dict(cls, raw, source):
+        if not isinstance(raw, dict):
+            raise ValueError("%s: screen rule must be an object" % source)
+        _require_keys(raw, frozenset(("name", "priority", "match", "action")),
+                      frozenset(("name", "priority", "match", "action")),
+                      "screen rule", source)
+        name = raw["name"]
+        if not isinstance(name, str) or not name:
+            raise ValueError("%s: screen rule name must be a non-empty string" % source)
+        if not isinstance(raw["priority"], int):
+            raise ValueError("%s: %s priority must be an int" % (source, name))
+        m = raw["match"]
+        if not isinstance(m, dict):
+            raise ValueError("%s: %s match must be an object" % (source, name))
+        _require_keys(m, frozenset(("screen",)), frozenset(("screen",)),
+                      "%s match" % name, source)
+        if not _pattern_wellformed(m["screen"]):
+            raise ValueError("%s: %s match.screen pattern %r malformed" % (source, name,
+                                                                           m["screen"]))
+        a = raw["action"]
+        if not isinstance(a, dict):
+            raise ValueError("%s: %s action must be an object" % (source, name))
+        _require_keys(a, frozenset(("options",)), frozenset(("options",)),
+                      "%s action" % name, source)
+        opts = a["options"]
+        if (not isinstance(opts, list) or not opts
+                or not all(isinstance(o, str) and o for o in opts)):
+            raise ValueError("%s: %s action.options must be a non-empty list of strings"
+                             % (source, name))
+        return cls(name=name, priority=raw["priority"], screen=m["screen"],
+                   options=tuple(opts))
+
+
+@dataclass(frozen=True)
 class RuleSet:
     name: str
     path: str
     sha256: str
     rules: tuple
+    screen_rules: tuple = ()
 
     @classmethod
     def load(cls, name):
@@ -408,18 +450,35 @@ class RuleSet:
         raw = json.loads(raw_bytes.decode("utf-8"))
         if not isinstance(raw, dict):
             raise ValueError('%s: top level must be {"rules": [...]}' % path)
-        _require_keys(raw, frozenset(("rules",)), frozenset(("rules",)), "top level", path)
+        _require_keys(raw, frozenset(("rules", "screens")), frozenset(("rules",)),
+                      "top level", path)
         if not isinstance(raw["rules"], list):
             raise ValueError('%s: "rules" must be a list' % path)
         rules = [Rule.from_dict(r, path) for r in raw["rules"]]
         if not rules:
             raise ValueError("%s: rule set is empty" % path)
-        names = [r.name for r in rules]
+        screens_raw = raw.get("screens") or []
+        if not isinstance(screens_raw, list):
+            raise ValueError('%s: "screens" must be a list' % path)
+        screen_rules = [ScreenRule.from_dict(r, path) for r in screens_raw]
+        names = ([r.name for r in rules] + [r.name for r in screen_rules])
         dupes = sorted({n for n in names if names.count(n) > 1})
         if dupes:
             raise ValueError("%s: duplicate rule name(s) %s" % (path, dupes))
         rules.sort(key=lambda r: -r.priority)
-        return cls(name=str(name), path=path, sha256=digest, rules=tuple(rules))
+        screen_rules.sort(key=lambda r: -r.priority)
+        return cls(name=str(name), path=path, sha256=digest, rules=tuple(rules),
+                   screen_rules=tuple(screen_rules))
+
+    def match_screen(self, screen, options):
+        offered = list(options or [])
+        for rule in self.screen_rules:
+            if not _match_pattern(rule.screen, str(screen)):
+                continue
+            for want in rule.options:
+                if want in offered:
+                    return want, rule.name
+        return None
 
     def match(self, elig_rows, record):
         ctx = _Ctx(record)
@@ -453,12 +512,16 @@ def main(argv):
     if len(argv) < 3 or argv[1] != "check":
         raise SystemExit("usage: ruleset.py check <name>")
     rs = RuleSet.load(argv[2])
-    print("loaded %s: %d rule(s) from %s" % (rs.name, len(rs.rules), rs.path))
+    print("loaded %s: %d rule(s), %d screen rule(s) from %s"
+          % (rs.name, len(rs.rules), len(rs.screen_rules), rs.path))
     print("sha256 %s" % rs.sha256)
     for r in rs.rules:
         pref = " prefer %s %s" % (r.prefer["order"], r.prefer["field"]) if r.prefer else ""
         print("  %4d  %-32s -> %s %s%s" % (r.priority, r.name, r.action["action_type"],
                                            r.action.get("key", "*"), pref))
+    for r in rs.screen_rules:
+        print("  %4d  %-32s -> screen %s :: %s"
+              % (r.priority, r.name, r.screen, " | ".join(r.options)))
     return 0
 
 
