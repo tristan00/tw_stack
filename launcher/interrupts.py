@@ -1029,17 +1029,15 @@ def answer_incoming_proposal(bus):
     if "button_ok_war_declared" in clickable:
         return steps + _acknowledge_war_on_proposal(bus, tree, clickable)
     if "button_ok_declare" in clickable or "button_cancel_declare" in clickable:
-        got = _cancel_declare_root(bus, PROPOSAL_ROOT, tree)
-        if got:
-            return steps + got
         offered = sorted(clickable)
-        _report_unhandled(bus, "declare_war_cancel",
-                          ["declare-war confirm with no cancellable control"],
+        _report_unhandled(bus, "declare_war_confirm",
+                          ["declare-war confirm escaped the diplomacy driver"],
                           offered, root=PROPOSAL_ROOT)
         raise UnhandledScreen(
-            "declare-war confirmation on %s offers no cancel control -- refusing to confirm "
-            "a war declaration the policy never ordered or to leave the screen unowned. "
-            "clickable=%s" % (PROPOSAL_ROOT, offered))
+            "declare-war confirmation on %s outside the declare flow -- the diplomacy driver "
+            "owns this screen end to end (declare_war_flow approves it one screen after the "
+            "term click); refusing to confirm or cancel a war here. clickable=%s"
+            % (PROPOSAL_ROOT, offered))
     try:
         opts = proposal_options(tree)
     except UnhandledScreen:

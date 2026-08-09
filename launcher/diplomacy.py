@@ -538,11 +538,79 @@ def send(bus):
     return True
 
 
+def _clickable_node(bus, node_id):
+    n = _node(bus, node_id)
+    if n and n.get("visible") and str(n.get("state")) in _CLICKABLE and _path(n):
+        return n
+    return None
+
+
+def approve_declare(bus):
+    walk = {"confirm_appeared": False, "confirm_clicked": False, "confirm_gone": False,
+            "receipt_appeared": False, "receipt_clicked": False, "receipt_gone": False}
+    if not _wait(lambda: _clickable_node(bus, "button_ok_declare") is not None, 6.0, step=0.2):
+        return walk
+    walk["confirm_appeared"] = True
+    n = _clickable_node(bus, "button_ok_declare")
+    if n is None:
+        return walk
+    nav.bus_click(bus, _path(n))
+    walk["confirm_clicked"] = True
+    walk["confirm_gone"] = _wait(
+        lambda: not _find(bus, "button_ok_declare").get("visible"), 5.0, step=0.2)
+    if _wait(lambda: _clickable_node(bus, "button_ok_war_declared") is not None, 5.0, step=0.2):
+        walk["receipt_appeared"] = True
+        n = _clickable_node(bus, "button_ok_war_declared")
+        if n is not None:
+            nav.bus_click(bus, _path(n))
+            walk["receipt_clicked"] = True
+            walk["receipt_gone"] = _wait(
+                lambda: not _find(bus, "button_ok_war_declared").get("visible"), 5.0, step=0.2)
+    return walk
+
+
+def declare_war_flow(bus):
+    offered = offered_terms(bus)
+    state = offered.get(DECLARE_WAR)
+    out = {"staged": [], "unavailable": [], "gift": None, "success_chance": None,
+           "chance_carried_in": None, "sendable": False, "sent": False, "declared": False,
+           "declare_walk": None, "failed_at": None}
+    if state is None or state == "inactive":
+        out["unavailable"] = [DECLARE_WAR]
+        out["failed_at"] = "declare_not_offered"
+        _trace("declare_war refused: state=%r -- panel offers %s", state,
+               {k: v for k, v in sorted(offered.items())})
+        return out
+    n = _node(bus, "diplomatic_option_%s" % DECLARE_WAR)
+    if n is None or not n.get("visible") or not _path(n):
+        out["unavailable"] = [DECLARE_WAR]
+        out["failed_at"] = "declare_row_unreachable"
+        return out
+    nav.bus_click(bus, _path(n))
+    walk = approve_declare(bus)
+    out["declare_walk"] = walk
+    if walk["confirm_clicked"] and walk["confirm_gone"]:
+        out.update(staged=[DECLARE_WAR], sent=True, declared=True, ok=True, accepted=True)
+        _trace("declare_war confirmed -- walk=%s", walk)
+    else:
+        out["unavailable"] = [DECLARE_WAR]
+        out["failed_at"] = ("declare_confirm_never_appeared" if not walk["confirm_appeared"]
+                           else "declare_confirm_unresolved")
+        _trace("declare_war FAILED at %s -- walk=%s", out["failed_at"], walk)
+    return out
+
+
 def propose(bus, faction_key, terms, gift=None):
     out = {"faction": faction_key, "requested": list(terms)[:MAX_TERMS],
            "stage": "open", "ok": False, "failed_at": None}
     try:
         out["stage"] = "prepare"
+        if DECLARE_WAR in out["requested"]:
+            open_panel(bus)
+            select_faction(bus, faction_key)
+            out["stage"] = "declare"
+            out.update(declare_war_flow(bus))
+            return out
         out.update(prepare(bus, faction_key, terms, gift=gift))
         if not out["staged"] and not out.get("sendable"):
             out["failed_at"] = "deal_selection"
