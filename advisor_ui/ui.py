@@ -9,7 +9,7 @@ import re
 import sqlite3
 import sys
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "advisor"))
@@ -220,7 +220,6 @@ tr:last-child td{border-bottom:none}
 
 def _page(body, title="advisor v7"):
     return ("<!doctype html><meta charset=utf-8><title>%s</title>"
-            "<meta http-equiv=refresh content=10>"
             "<style>%s</style><div class=wrap>%s</div>"
             % (html.escape(title), _CSS, body))
 
@@ -322,8 +321,7 @@ def render_interrupts(runs_root=RUNS_ROOT):
         return "_".join(parts[2:]) if len(parts) > 3 else str(fac or "?")
 
     rec_rows = []
-    shown = [r for r in recent if len(r[2] or {}) > 1]
-    for ts, kind, opts, pick, counted, ref, lat, p, fac in shown[:40]:
+    for ts, kind, opts, pick, counted, ref, lat, p, fac in recent[:40]:
         def _pred(k, field):
             v = opts.get(k) if isinstance(opts.get(k), dict) else {}
             x = v.get(field)
@@ -346,7 +344,7 @@ def render_interrupts(runs_root=RUNS_ROOT):
             % (time.strftime("%H:%M:%S", time.localtime(ts or 0)), _esc(kind),
                _esc(_shortfac(fac)[:24]), res, pick_lbl, len(opts),
                _esc(p or "-"), ("%.1fs" % (lat / 1000.0)) if lat else "-"))
-    recent_tbl = ("<h2>recent interrupt decisions <span class=dim>(single-option acks omitted; "
+    recent_tbl = ("<h2>recent interrupt decisions <span class=dim>("
                   "hover chosen for all options and scores)</span></h2><div class=scroll><table>"
                   "<tr><th>time<th>screen<th>faction<th>result<th>chosen<th>n opts"
                   "<th>policy<th>latency</tr>%s</table></div>"
@@ -514,14 +512,22 @@ def _matrix_tables(data, title):
 def _tail_jsonl(path, n=400):
     rows = []
     try:
-        with open(path, encoding="utf-8", errors="replace") as fh:
-            for ln in fh.readlines()[-n:]:
-                try:
-                    rows.append(json.loads(ln))
-                except ValueError:
-                    pass
+        with open(path, "rb") as fh:
+            fh.seek(0, 2)
+            pos = fh.tell()
+            data = b""
+            while pos > 0 and data.count(b"\n") <= n and len(data) < (64 << 20):
+                step = min(4 << 20, pos)
+                pos -= step
+                fh.seek(pos)
+                data = fh.read(step) + data
     except OSError:
-        pass
+        return rows
+    for ln in data.splitlines()[-n:]:
+        try:
+            rows.append(json.loads(ln.decode("utf-8", "replace")))
+        except ValueError:
+            pass
     return rows
 
 
@@ -816,7 +822,7 @@ def render_starts():
             % (len(rows), sum(a["n"] for a in rows), "".join(tr)))
 
 
-def render_index(con, run_dir, seq_offset=0):
+def render_head(con, run_dir):
     s = summary(con)
     cards = "".join("<div class=card><div class=k>%s</div><div class=v>%s</div></div>"
                     % (k, v) for k, v in
@@ -826,6 +832,11 @@ def render_index(con, run_dir, seq_offset=0):
                      ("turns", s["turns"]), ("decisions", s["decisions"]), ("offers", s["offers"]),
                      ("taken", s["taken"]), ("confirmed", s["counted"]),
                      ("confirm %", s["confirm_rate"])))
+    return ("<h1>advisor v7</h1><div class=dim>%s</div><div class=cards>%s</div>"
+            % (_esc(run_dir), cards))
+
+
+def render_actions(con, q):
     rows = []
     for r in by_action_type(con):
         pct = (100.0 * (r["ok"] or 0) / r["n"]) if r["n"] else 0
@@ -838,17 +849,10 @@ def render_index(con, run_dir, seq_offset=0):
     per_type = ("<h2>confirm rate by action type</h2><div class=scroll><table>"
                 "<tr><th>action<th>tried<th>confirmed<th>rate<th>refusals seen</tr>%s</table></div>"
                 % "".join(rows))
-    trows = "".join("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
-                    % (_esc(t["turn"]), _esc(t["income"]), _esc(t["settlements"]),
-                       _esc(t["allies"]), _esc(t["vassals"]), _esc(t["power_rank"]))
-                    for t in turns(con))
-    reward = ("<h2>reward inputs per turn</h2><div class=scroll><table>"
-              "<tr><th>turn<th>income<th>settlements<th>allies<th>vassals<th>power rank</tr>%s"
-              "</table></div>" % (trows or "<tr><td class=dim colspan=6>no turns recorded</td></tr>"))
     seq = []
     seq_total = sequence_total(con)
     try:
-        seq_offset = int(seq_offset or 0)
+        seq_offset = int(q.get("seq", ["0"])[0] or 0)
     except (TypeError, ValueError):
         seq_offset = 0
     seq_offset = max(0, min(seq_offset, max(0, seq_total - 1)))
@@ -879,9 +883,9 @@ def render_index(con, run_dir, seq_offset=0):
     _prev = max(0, seq_offset - SEQ_PAGE)
     _next = seq_offset + SEQ_PAGE
     _pager = ("<div class=dim style='margin:6px 0'>%d-%d of %d &nbsp; "
-              "<a class=btn href='/?seq=%d'>newer</a> "
-              "<a class=btn href='/?seq=%d'>older</a> "
-              "<a class=btn href='/?seq=0'>newest</a></div>"
+              "<a class='btn pg' href='#' data-seq=%d>newer</a> "
+              "<a class='btn pg' href='#' data-seq=%d>older</a> "
+              "<a class='btn pg' href='#' data-seq=0>newest</a></div>"
               % (_first, _last, seq_total, _prev,
                  _next if _next < seq_total else seq_offset))
     seqtbl = ("<h2>sequence of picked decisions (newest first)</h2>" + _pager +
@@ -890,25 +894,46 @@ def render_index(con, run_dir, seq_offset=0):
               "<th title='score = exploit (value percentile); rank = value order. Rows recorded before 50082a9 (2026-08-02 20:32) hold the retired 0.9*exploit+0.1*explore blend'>score<th>exploit<th>&nbsp;&nbsp;global<th>&nbsp;&nbsp;local<th>explore"
               "<th>refusal<th>policy</tr>"
               "%s</table></div>" % "".join(seq)) + _pager
-    head = ("<h1>advisor v7</h1><div class=dim>%s</div>" % _esc(run_dir)) + "<div class=cards>%s</div>" % cards
-    panels = [("live", render_live(run_dir)),
-              ("overview", render_endings() + render_leaders(con) + render_history(con)),
-              ("starts", render_starts()),
-              ("action x faction", render_faction_matrix()),
-              ("blocking menus", render_interrupts()),
-              ("diplomacy", render_diplomacy(run_dir)),
-              ("timing", render_timing(run_dir)),
-              ("actions", per_type + seqtbl),
-              ("timeline", render_timeline(con)),
-              ("reward", reward),
-              ("models", render_models()),
-              ("infrastructure", render_infra(run_dir))]
-    nav = "".join("<button class='tab%s' data-t='%s'>%s</button>"
-                  % (" on" if i == 0 else "", name, name) for i, (name, _) in enumerate(panels))
-    bodies = "".join("<div class=panel id='p-%s'%s>%s</div>"
-                     % (name, "" if i == 0 else " hidden", htmlpart)
-                     for i, (name, htmlpart) in enumerate(panels))
-    return _page(head + "<div class=tabs>%s</div>%s%s" % (nav, bodies, _TABS_JS))
+    return per_type + seqtbl
+
+
+def render_reward(con):
+    trows = "".join("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
+                    % (_esc(t["turn"]), _esc(t["income"]), _esc(t["settlements"]),
+                       _esc(t["allies"]), _esc(t["vassals"]), _esc(t["power_rank"]))
+                    for t in turns(con))
+    return ("<h2>reward inputs per turn</h2><div class=scroll><table>"
+            "<tr><th>turn<th>income<th>settlements<th>allies<th>vassals<th>power rank</tr>%s"
+            "</table></div>" % (trows or "<tr><td class=dim colspan=6>no turns recorded</td></tr>"))
+
+
+PANELS = (
+    ("live", "live", lambda con, run, q: render_live(run)),
+    ("overview", "overview",
+     lambda con, run, q: render_endings() + render_leaders(con) + render_history(con)),
+    ("starts", "starts", lambda con, run, q: render_starts()),
+    ("matrix", "action x faction", lambda con, run, q: render_faction_matrix()),
+    ("interrupts", "blocking menus", lambda con, run, q: render_interrupts()),
+    ("diplomacy", "diplomacy", lambda con, run, q: render_diplomacy(run)),
+    ("timing", "timing", lambda con, run, q: render_timing(run)),
+    ("actions", "actions", lambda con, run, q: render_actions(con, q)),
+    ("timeline", "timeline", lambda con, run, q: render_timeline(con)),
+    ("reward", "reward", lambda con, run, q: render_reward(con)),
+    ("models", "models", lambda con, run, q: render_models()),
+    ("infra", "infrastructure", lambda con, run, q: render_infra(run)),
+)
+
+PANEL_MAP = {s: f for s, _t, f in PANELS}
+
+
+def render_index(con, run_dir):
+    nav = "".join("<button class=tab data-t='%s'>%s</button>" % (s, _esc(t))
+                  for s, t, _f in PANELS)
+    bodies = "".join("<div class=panel id='p-%s' hidden><p class=dim>loading&hellip;</p></div>" % s
+                     for s, _t, _f in PANELS)
+    return _page("<div id=head>%s</div><div class=tabs>%s</div>%s%s"
+                 % (render_head(con, run_dir), nav, bodies,
+                    _TABS_JS % json.dumps([s for s, _t, _f in PANELS])))
 
 
 def render_leaders(con):
@@ -942,16 +967,45 @@ def render_leaders(con):
 
 _TABS_JS = """<script>
 (function(){
-  var key='v7tab', want=sessionStorage.getItem(key);
-  function show(n){
-    document.querySelectorAll('.panel').forEach(function(p){p.hidden = (p.id !== 'p-'+n);});
-    document.querySelectorAll('.tab').forEach(function(b){b.classList.toggle('on', b.dataset.t===n);});
-    sessionStorage.setItem(key,n);
+  var slugs=%s, key='v7tab', cur=sessionStorage.getItem(key), pq={};
+  if(slugs.indexOf(cur)<0)cur=slugs[0];
+  function paint(){
+    document.querySelectorAll('.panel').forEach(function(p){p.hidden=(p.id!=='p-'+cur);});
+    document.querySelectorAll('.tab').forEach(function(b){b.classList.toggle('on',b.dataset.t===cur);});
+  }
+  function swap(el,t){
+    el.innerHTML=t;
+    el.querySelectorAll('script').forEach(function(s){
+      var n=document.createElement('script');n.textContent=s.textContent;
+      s.parentNode.replaceChild(n,s);});
+  }
+  function editing(el){
+    var a=document.activeElement;
+    return a&&el.contains(a)&&/^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName);
+  }
+  function load(name){
+    var el=document.getElementById('p-'+name);
+    if(editing(el))return;
+    fetch('/panel/'+name+(pq[name]?'?'+pq[name]:''),{cache:'no-store'})
+      .then(function(r){return r.text()})
+      .then(function(t){swap(el,t);})
+      .catch(function(e){el.innerHTML='<p class=bad>panel '+name+' fetch failed: '+e+'</p>';});
+    fetch('/panel/head',{cache:'no-store'})
+      .then(function(r){return r.text()})
+      .then(function(t){document.getElementById('head').innerHTML=t;})
+      .catch(function(e){document.getElementById('head').innerHTML=
+        '<p class=bad>head fetch failed: '+e+'</p>';});
   }
   document.querySelectorAll('.tab').forEach(function(b){
-    b.addEventListener('click', function(){ show(b.dataset.t); });
+    b.addEventListener('click',function(){
+      cur=b.dataset.t;sessionStorage.setItem(key,cur);paint();load(cur);});
   });
-  if (want && document.getElementById('p-'+want)) show(want);
+  document.addEventListener('click',function(e){
+    var a=e.target.closest('a.pg');if(!a)return;e.preventDefault();
+    pq[cur]='seq='+a.dataset.seq;load(cur);
+  });
+  paint();load(cur);
+  setInterval(function(){load(cur);},10000);
 })();
 </script>"""
 
@@ -1137,6 +1191,27 @@ def _meta(path):
         return json.load(open(path, encoding="utf-8"))
     except Exception:
         return {}
+
+
+_BASE_MODEL_MTIME = [0.0]
+
+
+def _live_base_model():
+    import base_model as BM
+    try:
+        mt = os.stat(BM.__file__.replace(".pyc", ".py")).st_mtime
+    except OSError:
+        return BM
+    if mt != _BASE_MODEL_MTIME[0]:
+        import importlib
+        BM = importlib.reload(BM)
+        _BASE_MODEL_MTIME[0] = mt
+    return BM
+
+
+def _session_alive():
+    procs, _wh3 = _ps()
+    return any("session.py" in p[2] for p in procs)
 
 
 def render_infra(run_dir):
@@ -1445,11 +1520,14 @@ def _lift(e2_rmse, e1_rmse):
 def render_models():
     import session as S
     try:
-        import base_model as BM
+        BM = _live_base_model()
         cfg = ("learning_rate <b>%s</b> &nbsp; early_stopping_rounds <b>%s</b> &nbsp; "
-               "iteration cap %s &nbsp; depth %s &nbsp; loss %s &nbsp; holdout %.0f%% of campaigns"
+               "iteration cap %s &nbsp; depth %s &nbsp; grow_policy %s &nbsp; bootstrap %s &nbsp; "
+               "loss %s &nbsp; holdout %.0f%% of campaigns<br><span class=dim>%s</span>"
                % (BM.CB_LEARNING_RATE, BM.CB_EARLY_STOPPING, BM.CB_ITERATIONS, BM.CB_DEPTH,
-                  BM.CB_LOSS, 100 * BM.VAL_FRACTION))
+                  _esc(str(BM.CB_PARAMS.get("grow_policy"))),
+                  _esc(str(BM.CB_PARAMS.get("bootstrap_type"))),
+                  BM.CB_LOSS, 100 * BM.VAL_FRACTION, _esc(str(BM.CB_TUNED_FROM))))
     except Exception as e:
         cfg = "unreadable: %s" % _esc(repr(e)[:90])
     disk = []
@@ -1467,12 +1545,16 @@ def render_models():
         return ("<h2>models</h2><div class=bad>training history unreadable: %s</div>"
                 % _esc(repr(e)[:160]))
     out = []
+    alive = _session_alive()
     for e in events:
         g, l, i, p = e["global"], e["local"], e["interrupt"], e["played"]
         par = e.get("params") or {}
         badge = ""
         if p.get("running"):
             badge = " <span class=warn>RUNNING</span>"
+            if not alive:
+                badge += (" <span class=bad>STALE: flagged running, no session.py process "
+                          "alive -- this generation was never flushed</span>")
         if e.get("error"):
             badge = " <span class=bad>FAILED</span>"
         out.append(
@@ -1640,31 +1722,56 @@ def serve(run_dir, port=8777, follow=False):
 
         def do_GET(self):
             active = newest_run() if follow else run_dir
+            u = urlparse(self.path)
+            status, ctype = 200, "text/html; charset=utf-8"
             try:
-                con = _con(active)
-                try:
-                    if self.path.startswith("/ctl/"):
-                        body = (_control_steps(self.path) if "ajax=1" in self.path
-                                else _page(_control(self.path)))
-                    elif self.path.startswith("/d/"):
-                        body = render_decision(con, int(self.path[3:]))
-                    elif self.path.startswith("/api/"):
-                        body = json.dumps({"summary": summary(con), "sequence": sequence(con)},
-                                          default=str)
+                if u.path.startswith("/ctl/"):
+                    if "ajax=1" in self.path:
+                        body, ctype = _control_steps(self.path), "text/plain; charset=utf-8"
                     else:
-                        _q = parse_qs(urlparse(self.path).query or "")
-                        body = render_index(con, active,
-                                            _q.get("seq", ["0"])[0])
-                finally:
-                    con.close()
-            except Exception as e:
-                body = _page("<h1>error</h1><pre>%s</pre>" % _esc(repr(e)))
+                        body = _page(_control(self.path))
+                elif u.path.startswith("/panel/"):
+                    name = u.path[len("/panel/"):]
+                    q = parse_qs(u.query or "")
+                    con = _con(active)
+                    try:
+                        if name == "head":
+                            body = render_head(con, active)
+                        elif name in PANEL_MAP:
+                            body = PANEL_MAP[name](con, active, q)
+                        else:
+                            status, body = 404, "<p class=bad>unknown panel: %s</p>" % _esc(name)
+                    finally:
+                        con.close()
+                elif u.path.startswith("/d/"):
+                    con = _con(active)
+                    try:
+                        body = render_decision(con, int(u.path[3:]))
+                    finally:
+                        con.close()
+                elif u.path.startswith("/api/"):
+                    con = _con(active)
+                    try:
+                        body, ctype = json.dumps(
+                            {"summary": summary(con), "sequence": sequence(con)},
+                            default=str), "application/json"
+                    finally:
+                        con.close()
+                else:
+                    con = _con(active)
+                    try:
+                        body = render_index(con, active)
+                    finally:
+                        con.close()
+            except Exception:
+                import traceback
+                tb = traceback.format_exc()
+                if u.path.startswith("/panel/"):
+                    status, body = 500, "<pre class=bad>%s</pre>" % _esc(tb)
+                else:
+                    status, body = 500, _page("<h1>error</h1><pre>%s</pre>" % _esc(tb))
             data = body.encode("utf-8")
-            self.send_response(200)
-            ctype = ("application/json" if self.path.startswith("/api/")
-                     else "text/plain; charset=utf-8"
-                     if (self.path.startswith("/ctl/") and "ajax=1" in self.path)
-                     else "text/html; charset=utf-8")
+            self.send_response(status)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
@@ -1672,7 +1779,7 @@ def serve(run_dir, port=8777, follow=False):
 
     print("advisor v7 UI -> http://127.0.0.1:%d  (also http://localhost:%d)   run=%s"
           % (port, port, run_dir), flush=True)
-    HTTPServer(("0.0.0.0", port), H).serve_forever()
+    ThreadingHTTPServer(("0.0.0.0", port), H).serve_forever()
 
 
 if __name__ == "__main__":
