@@ -143,13 +143,14 @@ def train(runs_root=RUNS_ROOT):
 
 class InterruptRanker:
 
-    def __init__(self, model_dir=MODEL_DIR, seed=None):
+    def __init__(self, model_dir=MODEL_DIR, seed=None, strategies=None):
         self.ready = False
         self.meta = {}
         self.e1 = self.e2 = None
         self._iso = None
         self._cat_maps = None
         self.rng = random.Random(seed)
+        self.strategies = P.normalize_strategies(strategies)
         try:
             from catboost import CatBoostRegressor
             p1 = os.path.join(model_dir, "e1.cbm")
@@ -212,10 +213,25 @@ class InterruptRanker:
             sys.stderr.write("interrupt_model: scoring failed -> %s\n" % repr(e)[:140])
             return {}, {}
 
+    def _draw(self):
+        roll = self.rng.random()
+        acc = 0.0
+        names = sorted(self.strategies)
+        for name in names:
+            acc += self.strategies[name]
+            if roll < acc:
+                return name
+        return names[-1]
+
     def choose(self, screen, options, campaign, panel=None, world=None, meta=None):
         opts = sorted(options)
         if not opts:
             return None, "none", {}
+        drawn = self._draw()
+        if drawn == "random":
+            return self.rng.choice(opts), "random", {}
+        if drawn == "ruleset":
+            return self.rng.choice(opts), "ruleset_random_fallback", {}
         sr = self.meta.get("screen_rows")
         if sr is not None:
             seen = int(sr.get(str(screen), 0))
@@ -225,27 +241,14 @@ class InterruptRanker:
             why = "screen not in the fitted set (meta predates screen_rows)"
         if seen < MIN_ROWS:
             pick = self.rng.choice(opts)
-            sys.stderr.write("interrupt_model: %s -> %r (cold_random, %s)\n" % (screen, pick, why))
-            return pick, "cold_random", {}
+            sys.stderr.write("interrupt_model: %s -> %r (exploit_tree_random_fallback, %s)\n"
+                             % (screen, pick, why))
+            return pick, "exploit_tree_random_fallback", {}
         exploit, explore = self.score(screen, options, campaign, panel, world, meta)
         if not exploit:
-            return self.rng.choice(opts), "cold_random", {}
+            return self.rng.choice(opts), "exploit_tree_random_fallback", {}
         rich = {o: {"exploit": exploit.get(o), "explore": explore.get(o)} for o in exploit}
-        roll = self.rng.random()
-        if P.EPSILON > 0.0 and roll < P.EPSILON:
-            pick = self.rng.choice(sorted(exploit))
-            sys.stderr.write("interrupt_model: %s -> %r (epsilon_random, exploit preferred %r)\n"
-                             % (screen, pick, max(exploit, key=exploit.get)))
-            return pick, "epsilon_random", rich
-        if roll < P.EPSILON + P.BETA:
-            if not explore:
-                raise RuntimeError(
-                    "interrupt_model: the explore branch was drawn but no explore model is "
-                    "loaded (iso.pkl missing from %s) -- refusing to answer an explore draw "
-                    "with an exploit pick" % MODEL_DIR)
-            pick = max(explore, key=explore.get)
-            return pick, "interrupt_explore", rich
-        return max(exploit, key=exploit.get), "interrupt_exploit", rich
+        return max(exploit, key=exploit.get), "exploit_tree", rich
 
 
 def main():

@@ -162,7 +162,7 @@ class Policy:
         member = self.members[drawn]
         best = member.pick(elig, record) if member.ready else None
         if best is None:
-            mode = "%s->random" % drawn
+            mode = "%s_random_fallback" % drawn
             best = self.fallback.pick(elig, record)
         elif drawn == "ruleset":
             mode = "ruleset(%s)" % member.last_rule
