@@ -262,31 +262,61 @@ def _parse_campaign(raw):
             "defeated": False}
 
 
-_LUA_RUINS = (_G +
-    "local out={} local rl=cm:model():world():region_manager():region_list() "
+_LUA_REGIONS = (_G +
+    "local function t(fn) local ok,v=pcall(fn) if ok then return v end return nil end "
+    "local rl=cm:model():world():region_manager():region_list() "
+    "local vis={} local seen={} "
     "for i=0,rl:num_items()-1 do local r=rl:item_at(i) "
-    "  local cs=cco('CcoCampaignSettlement','settlement:'..r:name()) "
-    "  local ab=cs and g(cs,'IsAbandoned') "
-    "  if ts(ab)=='true' then "
-    "    local sh=cs and g(cs,'IsShrouded') "
-    "    if ts(sh)=='false' then local s=r:settlement() "
-    "      local x=s and ts(s:logical_position_x()) or 'nil' "
-    "      local y=s and ts(s:logical_position_y()) or 'nil' "
-    "      out[#out+1]=r:name()..'~'..x..'~'..y end end end "
+    "  local nm=t(function() return r:name() end) "
+    "  if nm then local cs=cco('CcoCampaignSettlement','settlement:'..nm) "
+    "    if ts(cs and g(cs,'IsShrouded'))=='false' then "
+    "      vis[#vis+1]=r seen[nm]=true end end end "
+    "local out={} "
+    "for i=1,#vis do local r=vis[i] local nm=r:name() "
+    "  local cs=cco('CcoCampaignSettlement','settlement:'..nm) "
+    "  local s=t(function() return r:settlement() end) "
+    "  local x=s and ts(t(function() return s:logical_position_x() end)) or 'nil' "
+    "  local y=s and ts(t(function() return s:logical_position_y() end)) or 'nil' "
+    "  local ow='' local of=t(function() return r:owning_faction() end) "
+    "  if of and t(function() return of:is_null_interface() end)==false then "
+    "    ow=ts(t(function() return of:name() end)) end "
+    "  local pv=ts(t(function() return r:province_name() end)) "
+    "  local cap=ts(t(function() return r:is_province_capital() end)) "
+    "  local ab=ts(g(cs,'IsAbandoned')) "
+    "  local adj={} local al=t(function() return r:adjacent_region_list() end) "
+    "  if al then for j=0,al:num_items()-1 do "
+    "    local an=t(function() return al:item_at(j):name() end) "
+    "    if an and seen[an] then adj[#adj+1]=an end end end "
+    "  out[#out+1]=nm..'~'..x..'~'..y..'~'..pv..'~'..ow..'~'..cap..'~'..ab"
+    "..'~'..table.concat(adj,'|') end "
     "return table.concat(out,',')")
 
 
-def _parse_ruins(raw):
+def _key(v):
+    s = str(v or "")
+    return None if s in ("", "nil", "None") else s
+
+
+def _parse_regions(raw):
     out = []
     for row in str(raw or "").split(","):
         p = row.split("~")
-        if len(p) == 3 and p[0]:
-            out.append({"region": p[0], "x": _num(p[1]), "y": _num(p[2])})
+        if len(p) < 8 or not p[0]:
+            continue
+        out.append({"region": p[0], "x": _num(p[1]), "y": _num(p[2]),
+                    "province": _key(p[3]), "owner": _key(p[4]),
+                    "capital": p[5] == "true", "abandoned": p[6] == "true",
+                    "adjacent": [a for a in p[7].split("|") if a]})
     return out
 
 
-def ruins(bus):
-    return _parse_ruins(_ev(bus, _LUA_RUINS, timeout=30.0, allow_nil=True))
+def _ruins_of(regs):
+    return [{"region": r["region"], "x": r["x"], "y": r["y"]}
+            for r in (regs or ()) if r.get("abandoned")]
+
+
+def regions(bus):
+    return _parse_regions(_ev(bus, _LUA_REGIONS, timeout=30.0, allow_nil=True))
 
 
 _LUA_ENEMY_AGENTS = (
@@ -347,7 +377,8 @@ def _mask_ruin_owners(rows, ruin_keys):
 
 
 def world_state(bus, prof=None):
-    rs = _tstage(prof, "world_state/ruins", ruins, bus)
+    regs = _tstage(prof, "world_state/regions", regions, bus)
+    rs = _ruins_of(regs)
     ruin_keys = {r["region"] for r in rs}
     hostiles = [h for h in _tstage(prof, "world_state/hostiles", _chan, bus, "hostiles", "hostiles")
                 if not (h.get("kind") == "settlement" and str(h.get("region")) in ruin_keys)]
@@ -356,7 +387,8 @@ def world_state(bus, prof=None):
             "settlements": _tstage(prof, "world_state/setts", _chan, bus, "setts", "setts"),
             "hostiles": _mask_ruin_owners(hostiles, ruin_keys),
             "enemy_agents": _tstage(prof, "world_state/enemy_agents", enemy_agents, bus),
-            "ruins": rs}
+            "ruins": rs,
+            "regions": regs}
 
 
 _LUA_HASH = (_G +
@@ -1819,14 +1851,15 @@ def snapshot(bus, active=None, diplo_epoch=None):
     prof = {}
     t0 = time.time()
     ra = bus.send_batch([("eval", _LUA_CAMPAIGN), ("eval", _LUA_FACTION_RESOURCES),
-                         ("eval", _LUA_RUINS), ("chars", ""), ("setts", ""), ("hostiles", ""),
+                         ("eval", _LUA_REGIONS), ("chars", ""), ("setts", ""), ("hostiles", ""),
                          ("eval", _LUA_STATIONED), ("eval", _LUA_DIPLO_TARGETS),
                          ("eval", _LUA_ENEMY_AGENTS), ("eval", _LUA_AP_ALL)], timeout=40.0)
     prof["wave_a_ms"] = int((time.time() - t0) * 1000)
     camp = _parse_campaign(_bres(ra[0], "campaign_state"))
     prof["campaign_state_engine_ms"] = camp.pop("_eval_ms", None)
     camp["resources"] = _parse_resources(_bres(ra[1], "faction_resources", allow_nil=True))
-    rs = _parse_ruins(_bres(ra[2], "ruins", allow_nil=True))
+    regs = _parse_regions(_bres(ra[2], "regions", allow_nil=True))
+    rs = _ruins_of(regs)
     ruin_keys = {r["region"] for r in rs}
     world = {"armies": _mask_ruin_owners(ra[3].get("chars") or [], ruin_keys),
              "settlements": ra[4].get("setts") or [],
@@ -1835,6 +1868,7 @@ def snapshot(bus, active=None, diplo_epoch=None):
                   if not (h.get("kind") == "settlement"
                           and str(h.get("region")) in ruin_keys)], ruin_keys),
              "ruins": rs,
+             "regions": regs,
              "enemy_agents": _parse_enemy_agents(_bres(ra[8], "enemy_agents", allow_nil=True))}
     diplo_raw = _bres(ra[7], "diplo_targets", allow_nil=True)
     world["relations"] = _parse_diplo_targets(diplo_raw)
