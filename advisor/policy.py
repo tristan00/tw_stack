@@ -57,6 +57,11 @@ PER_TURN_CAPS = {"recruit_lord": 1, "recruit_hero": 1, "recruit_unit": 4, "edict
 ATTACK_PAIR_TYPES = frozenset(("attack_army", "attack_settlement"))
 ATTACK_PAIR_CAP = 1
 DIPLO_TARGET_CAP = 1
+DIPLO_GIFT_CAP = 0
+
+
+def _is_gift(key):
+    return str(key).split(":", 1)[-1].startswith("gift_")
 
 
 def _pair_key(context_kind, context_id, action_type, key):
@@ -99,6 +104,7 @@ class Policy:
         self.entity_actions = {}
         self.type_actions = {}
         self.pair_actions = {}
+        self.gift_actions = 0
         self.last_drops = []
         self.last_choice = {}
 
@@ -109,6 +115,7 @@ class Policy:
         self.entity_actions.clear()
         self.type_actions.clear()
         self.pair_actions.clear()
+        self.gift_actions = 0
 
     def retire(self, context_kind, context_id):
         self.retired.add((context_kind, str(context_id)))
@@ -120,6 +127,8 @@ class Policy:
         if pick["action_type"] in ATTACK_PAIR_TYPES or pick["action_type"] == "diplomacy":
             pk = _pair_key(k[0], k[1], pick["action_type"], pick["key"])
             self.pair_actions[pk] = self.pair_actions.get(pk, 0) + 1
+        if pick["action_type"] == "diplomacy" and _is_gift(pick["key"]):
+            self.gift_actions += 1
         if counted:
             n = self.entity_actions.get(k, 0) + 1
             self.entity_actions[k] = n
@@ -151,6 +160,9 @@ class Policy:
             elif r["action_type"] in ATTACK_PAIR_TYPES and self.pair_actions.get(
                     _pair_key(k[0], k[1], r["action_type"], r["key"]), 0) >= ATTACK_PAIR_CAP:
                 reason = "attack_pair_cap:%d" % ATTACK_PAIR_CAP
+            elif (r["action_type"] == "diplomacy" and _is_gift(r.get("key"))
+                  and self.gift_actions >= DIPLO_GIFT_CAP):
+                reason = "diplo_gift_cap:%d" % DIPLO_GIFT_CAP
             elif r["action_type"] == "diplomacy" and self.pair_actions.get(
                     _pair_key(k[0], k[1], r["action_type"], r["key"]), 0) >= DIPLO_TARGET_CAP:
                 reason = "diplo_target_cap:%d" % DIPLO_TARGET_CAP
