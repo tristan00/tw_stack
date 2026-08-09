@@ -176,7 +176,7 @@ def lord_territory_block(state, world):
 _EMPTY_PROV = {"prov_province": None, "prov_complete": None, "prov_max_slots": None,
                "prov_free_slots": None, "prov_can_set_edict": None, "prov_selected_edict": None,
                "prov_active_edict": None, "prov_public_order": None, "prov_buildings": None,
-               "prov_is_capital": None, "prov_present": 0.0}
+               "prov_is_capital": None, "prov_settlement_level": None, "prov_present": 0.0}
 
 
 def province_block(state):
@@ -189,7 +189,8 @@ def province_block(state):
             "prov_active_edict": state.get("active_edict"),
             "prov_public_order": _f(state.get("public_order")),
             "prov_buildings": _f(state.get("buildings")),
-            "prov_is_capital": _f(state.get("is_capital")), "prov_present": 1.0,
+            "prov_is_capital": _f(state.get("is_capital")),
+            "prov_settlement_level": _f(state.get("settlement_level")), "prov_present": 1.0,
             **_corruption_feats(state.get("corruption"))}
 
 
@@ -548,12 +549,38 @@ def _target_hp(atype, params, world):
     return None
 
 
-AFTER_CHANNELS = ("friend", "enemy", "enemysett", "ownsett")
-AFTER_FIELDS = ("dist", "dir_sin", "dir_cos")
+DELTA_CHANNELS = ("friend", "enemy", "enemysett", "ownsett", "neutral")
+
+
+def _channel_items(world, name, self_cqi=None):
+    w = world or {}
+    if name == "friend":
+        items = [a for a in (w.get("armies") or []) if a.get("has_army")]
+        if self_cqi is not None:
+            items = [a for a in items if str(a.get("cqi")) != str(self_cqi)]
+        return items
+    if name == "enemy":
+        return [h for h in (w.get("hostiles") or []) if h.get("kind") == "army"]
+    if name == "neutral":
+        return [h for h in (w.get("hostiles") or []) if h.get("kind") == "neutral_army"]
+    if name == "enemysett":
+        return [h for h in (w.get("hostiles") or []) if h.get("kind") == "settlement"]
+    return list(w.get("settlements") or [])
+
+
+def _nearest_dist(items, x, y):
+    best = None
+    for i in items:
+        if i.get("x") is None or i.get("y") is None:
+            continue
+        d = math.hypot(float(i["x"]) - x, float(i["y"]) - y)
+        if best is None or d < best:
+            best = d
+    return round(best, 2) if best is not None else None
 
 
 def action_block(offer, locus, treasury, world=None, self_units=None, self_hp=None,
-                 near_before=None):
+                 near_before=None, self_cqi=None):
     atype, key = offer.get("action_type"), str(offer.get("key"))
     params = offer.get("params") or {}
     out = {"opt_type": atype, "opt_key": key,
@@ -572,6 +599,16 @@ def action_block(offer, locus, treasury, world=None, self_units=None, self_hp=No
     else:
         out["opt_target_dist"] = None
         out["opt_target_dir_sin"] = out["opt_target_dir_cos"] = None
+    for ch in DELTA_CHANNELS:
+        out["opt_delta_%s_dist" % ch] = None
+    if tx is not None and ty is not None and near_before:
+        ax, ay = float(tx), float(ty)
+        for ch in DELTA_CHANNELS:
+            before = _f(near_before.get("near_%s_1_dist" % ch))
+            after = _nearest_dist(_channel_items(world, ch, self_cqi), ax, ay)
+            out["opt_delta_%s_dist" % ch] = (round(after - before, 2)
+                                             if after is not None and before is not None
+                                             else None)
     tgt_units = _target_units(atype, params, key, world)
     out["opt_self_units"] = _f(self_units)
     out["opt_target_units"] = tgt_units
@@ -607,6 +644,19 @@ def action_block(offer, locus, treasury, world=None, self_units=None, self_hp=No
             cost = n
     out["opt_cost"] = cost
     out["opt_cost_vs_treasury"] = (cost / treasury) if (cost and treasury) else None
+    if atype == "research":
+        rc, rp = _f(params.get("cost")), _f(params.get("points_available"))
+        out["opt_research_turns"] = (rc / max(rp, 1.0)) if rc is not None else None
+    else:
+        out["opt_research_turns"] = None
+    if atype == "recruit_unit":
+        ct = _f(out.get("opt_db_create_time"))
+        out["opt_recruit_turns_effective"] = ((ct * 2.0 if key.partition("@")[2] == "global"
+                                               else ct) if ct is not None else None)
+    elif atype in UNIT_RECRUIT_TYPES:
+        out["opt_recruit_turns_effective"] = 0.0
+    else:
+        out["opt_recruit_turns_effective"] = None
     return out
 
 
@@ -670,7 +720,8 @@ def offer_rows(record, entity, base_sink=None):
     for o in entity.get("offers") or []:
         row = dict(base)
         row.update(action_block(o, locus, treasury, world=world, self_units=self_units,
-                                self_hp=self_hp, near_before=near_before))
+                                self_hp=self_hp, near_before=near_before,
+                                self_cqi=st.get("cqi")))
         out.append((o, row))
     if base_sink is not None:
         base_sink[str(entity.get("context_id"))] = base
@@ -690,21 +741,26 @@ MODEL_COLUMNS = frozenset((
     "opt_hp_ratio", "opt_hp_diff", "opt_self_hp", "opt_self_units",
     "opt_strength_ratio", "opt_strength_diff",
     "opt_target_faction", "opt_target_race", "opt_target_dist", "opt_is_active", "ctx_kind",
-    "opt_target_dir_sin", "opt_target_dir_cos",
+    "opt_research_turns", "opt_recruit_turns_effective",
+    "opt_db_chain_chain_category", "opt_db_upkeep_cost",
+    "opt_delta_friend_dist", "opt_delta_enemy_dist", "opt_delta_enemysett_dist",
+    "opt_delta_ownsett_dist", "opt_delta_neutral_dist",
     "lord_subtype", "lord_hp", "lord_stance", "lord_units", "lord_rank", "lord_skill_points",
     "lord_ap_pct", "lord_acted", "lord_has_army",
     "lord_pending_recruits", "lord_garrisoned", "lord_besieging", "lord_is_leader",
     "lord_in_own_territory",
-    "near_friend_1_dist", "near_friend_1_dir_sin", "near_friend_1_dir_cos",
+    "near_friend_1_dist",
     "near_enemy_1_dist", "near_enemy_1_stance", "near_enemy_1_faction",
-    "near_enemy_1_dir_sin", "near_enemy_1_dir_cos",
+    "near_enemy_1_strength",
     "near_enemysett_1_dist", "near_enemysett_1_faction",
-    "near_enemysett_1_dir_sin", "near_enemysett_1_dir_cos",
+    "near_enemysett_1_strength", "near_ownsett_1_dist",
     "near_neutral_1_faction", "near_neutral_1_race",
     "near_enemy_total", "near_enemysett_total",
     "prov_province", "prov_active_edict", "prov_is_capital", "prov_buildings", "prov_free_slots",
+    "prov_public_order", "prov_settlement_level",
     "camp_faction", "camp_race", "camp_turn", "camp_lord_level", "camp_power_rank",
     "camp_settlements", "camp_enemy_settlements", "camp_income", "camp_treasury", "camp_armies",
+    "camp_is_researching",
     "camp_taken_total", "camp_taken_diplomacy", "camp_act_index",
     "camp_prev_action_1", "camp_prev_action_2", "camp_prev_action_3",
     "camp_prev_action_4", "camp_prev_action_5",
