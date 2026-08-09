@@ -831,13 +831,31 @@ def _clickable_ids(tree):
     return out
 
 
+def _deal_row(path):
+    side = ("demands" if "|your_offers|" in path
+            else "offers" if "|their_offers|" in path
+            else "treaties" if "|current_treaties|" in path else None)
+    key = next((seg[len("diplomatic_option_"):] for seg in path.split("|")
+                if seg.startswith("diplomatic_option_")), None)
+    return side, key
+
+
+def _amount(t):
+    try:
+        return float(str(t).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _diplo_panel(tree):
     facts = _screen_facts(tree)
     p = {"strength_ranks": [_strip_markup(x) for x in facts["strength_ranks"]],
          "reliability": [_strip_markup(x) for x in facts["reliability"]],
          "settlements": _strip_markup(facts["settlements"]) or None,
          "attitude": None, "attitude_label": None, "race": None,
-         "terms": [], "amounts": [], "sections": []}
+         "terms": [], "amounts": [], "sections": [],
+         "demands": [], "offers": [], "treaties": [],
+         "amount_demanded": 0.0, "amount_offered": 0.0}
     for n in tree:
         if not n.get("visible"):
             continue
@@ -845,6 +863,7 @@ def _diplo_panel(tree):
         t = _strip_markup(n.get("text"))
         if not t:
             continue
+        path = str(n.get("path") or "")
         if nid == "dy_value" and p["attitude"] is None:
             p["attitude"] = t
         elif nid == "dy_attitude" and p["attitude_label"] is None:
@@ -853,8 +872,16 @@ def _diplo_panel(tree):
             p["race"] = t
         elif nid == "button_tx":
             p["terms"].append(t)
+            side, key = _deal_row(path)
+            if side and key:
+                p[side].append(key)
         elif nid == "amount":
             p["amounts"].append(t)
+            side, _key = _deal_row(path)
+            if side == "demands":
+                p["amount_demanded"] += _amount(t)
+            elif side == "offers":
+                p["amount_offered"] += _amount(t)
         elif nid == "subtitle_tx":
             p["sections"].append(t)
     return p
