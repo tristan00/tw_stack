@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import math
@@ -127,6 +127,18 @@ def cv_rmse(X, y, cat_idx, folds, params, cap, log=None, prune=None, threads=Non
     return scores, iters, secs, None
 
 
+def cv_lift(X, y, cat_idx, Xs, scat_idx, folds, params, cap, threads=None, max_fit_s=None):
+    e1s, e1i, e1sec, stop = cv_rmse(X, y, cat_idx, folds, params, cap,
+                                    threads=threads, max_fit_s=max_fit_s)
+    if stop or len(e1s) != len(folds):
+        return e1s, e1i, e1sec, None, stop or "e1_short"
+    e2s, _e2i, e2sec, stop2 = cv_rmse(Xs, y, scat_idx, folds, params, cap,
+                                      threads=threads, max_fit_s=max_fit_s)
+    if stop2 or len(e2s) != len(folds):
+        return e1s, e1i, e1sec, None, stop2 or "e2_short"
+    return e1s, e1i, [a + b for a, b in zip(e1sec, e2sec)], e2s, None
+
+
 def summarise(scores, iters, secs=None, stopped=None):
     out = {"cv_rmse": round(statistics.fmean(scores), 6),
            "cv_rmse_sd": round(statistics.pstdev(scores), 6) if len(scores) > 1 else 0.0,
@@ -154,6 +166,11 @@ def main():
     runs_root = _arg("--runs-root", RUNS_ROOT)
     study_name = _arg("--study", "catboost_%s_k%d" % (which, k))
     threads = int(_arg("--threads", "0"))
+    objective_kind = _arg("--objective", "rmse")
+    if objective_kind not in ("rmse", "lift", "combined"):
+        raise SystemExit("--objective must be rmse, lift or combined")
+    lift_w = float(_arg("--lift-weight", "1.0"))
+    wants_lift = objective_kind in ("lift", "combined")
     os.makedirs(OUT_DIR, exist_ok=True)
     progress = _arg("--progress", os.path.join(
         OUT_DIR, "tune_progress_%s_%s.jsonl" % (which, time.strftime("%Y%m%d_%H%M%S"))))
@@ -177,6 +194,10 @@ def main():
     num, cat = F.split_columns(rows)
     X = F.matrix(rows, num, cat)
     cat_idx = list(range(len(num), len(num) + len(cat)))
+    srows = data["state"]
+    snum, scat = F.split_columns(srows)
+    Xs = F.matrix(srows, snum, scat)
+    scat_idx = list(range(len(snum), len(snum) + len(scat)))
     folds = group_folds(groups, k, seed)
     if folds is None:
         raise SystemExit("cannot build %d campaign folds from %d campaigns" % (k, ncamp))
@@ -193,8 +214,16 @@ def main():
 
     log("baseline: production config over the same folds ...")
     t0 = time.time()
-    bs, bi, bsec, _ = cv_rmse(X, y, cat_idx, folds, dict(PRODUCTION), cap, threads=threads)
-    base = summarise(bs, bi, bsec)
+    if objective_kind == "lift":
+        bs, bi, bsec, b_e2, _ = cv_lift(X, y, cat_idx, Xs, scat_idx, folds,
+                                        dict(PRODUCTION), cap, threads=threads)
+        base = summarise(bs, bi, bsec)
+        base["e2_rmse"] = round(statistics.fmean(b_e2), 6)
+        base["lift"] = round(base["e2_rmse"] - base["cv_rmse"], 6)
+        base["fold_lift"] = [round(b - a, 4) for a, b in zip(bs, b_e2)]
+    else:
+        bs, bi, bsec, _ = cv_rmse(X, y, cat_idx, folds, dict(PRODUCTION), cap, threads=threads)
+        base = summarise(bs, bi, bsec)
     log("  production cv_rmse %.4f +/- %.4f  folds=%s  best_iter %.0f  (%.0fs)"
         % (base["cv_rmse"], base["cv_rmse_sd"], base["fold_rmse"],
            base["best_iteration_mean"], time.time() - t0))
@@ -236,18 +265,38 @@ def main():
             return fold_i >= 1 and mean_so_far > cut
 
         t1 = time.time()
-        scores, iters, fsec, stopped = cv_rmse(X, y, cat_idx, folds, params, cap, prune=prune,
-                                               threads=threads, max_fit_s=max_fit_s)
+        e2 = None
+        if wants_lift:
+            scores, iters, fsec, e2, stopped = cv_lift(
+                X, y, cat_idx, Xs, scat_idx, folds, params, cap,
+                threads=threads, max_fit_s=max_fit_s)
+        else:
+            scores, iters, fsec, stopped = cv_rmse(X, y, cat_idx, folds, params, cap,
+                                                   prune=prune, threads=threads,
+                                                   max_fit_s=max_fit_s)
         s = summarise(scores, iters, fsec, stopped)
         if stopped == "too_slow":
             raise optuna.TrialPruned()
+        if wants_lift:
+            if e2 is None:
+                raise optuna.TrialPruned()
+            s["e2_rmse"] = round(statistics.fmean(e2), 6)
+            s["lift"] = round(s["e2_rmse"] - s["cv_rmse"], 6)
+            s["fold_lift"] = [round(b - a, 4) for a, b in zip(scores, e2)]
+            s["lift_sd"] = round(statistics.pstdev(s["fold_lift"]), 6)
         trial.set_user_attr("summary", s)
         trial.set_user_attr("params_full", params)
         state["n"] += 1
         secs = round(time.time() - t1, 1)
         pruned = s["folds"] != len(folds)
-        if state["best"] is None or s["cv_rmse"] < state["best"]:
-            state["best"] = s["cv_rmse"]
+        if objective_kind == "lift":
+            score = -s["lift"]
+        elif objective_kind == "combined":
+            score = s["cv_rmse"] - lift_w * s["lift"]
+        else:
+            score = s["cv_rmse"]
+        if state["best"] is None or score < state["best"]:
+            state["best"] = score
             state["best_params"] = dict(params)
         emit({"kind": "trial", "trial": state["n"], "number": trial.number,
               "when": time.strftime("%H:%M:%S"), "elapsed_s": round(time.time() - state["t0"], 1),
@@ -258,17 +307,39 @@ def main():
               "fit_s_mean": s.get("fit_s_mean"), "fit_s_max": s.get("fit_s_max"),
               "est_train_s": s.get("est_train_s"), "stopped": stopped,
               "vs_production": round(s["cv_rmse"] - base["cv_rmse"], 6),
+              "e2_rmse": s.get("e2_rmse"), "lift": s.get("lift"),
+              "fold_lift": s.get("fold_lift"), "lift_sd": s.get("lift_sd"),
+              "lift_vs_production": (None if s.get("lift") is None
+                                     else round(s["lift"] - base.get("lift", 0.0), 6)),
+              "objective": objective_kind, "score": score,
               "running_best": state["best"], "running_best_params": state["best_params"]})
         flag = "" if not pruned else "  (%s after %d folds)" % (stopped or "pruned", s["folds"])
-        log("  trial %3d/%-3d  cv_rmse %8.4f +/- %-7.4f  %+.4f vs prod  best %7.4f  "
-            "depth=%-2s lr=%-6.4f l2=%-6.2f %-14s %-9s fit %5.2fs/fold est_train %4.0fs%s"
-            % (state["n"], trials, s["cv_rmse"], s["cv_rmse_sd"],
-               s["cv_rmse"] - base["cv_rmse"], state["best"], params["depth"],
-               params["learning_rate"], params["l2_leaf_reg"], params["grow_policy"],
-               params["bootstrap_type"], s.get("fit_s_mean") or 0.0,
-               s.get("est_train_s") or 0.0, flag))
+        if objective_kind == "lift":
+            log("  trial %3d/%-3d  lift %+7.4f (e2 %7.4f - e1 %7.4f) sd %6.4f  "
+                "%+7.4f vs prod  best lift %+7.4f  d=%-2s lr=%-6.4f %-14s %-9s %4.1fs%s"
+                % (state["n"], trials, s["lift"], s["e2_rmse"], s["cv_rmse"],
+                   s.get("lift_sd") or 0.0, s["lift"] - base.get("lift", 0.0),
+                   -state["best"], params["depth"], params["learning_rate"],
+                   params["grow_policy"], params["bootstrap_type"],
+                   s.get("fit_s_mean") or 0.0, flag))
+        elif objective_kind == "combined":
+            log("  trial %3d/%-3d  score %8.4f (cv_rmse %7.4f - %.2fx lift %+7.4f)  "
+                "cv_rmse %+.4f vs prod  best score %8.4f  depth=%-2s lr=%-6.4f l2=%-6.2f "
+                "%-14s %-9s fit %5.2fs/fold%s"
+                % (state["n"], trials, score, s["cv_rmse"], lift_w, s["lift"],
+                   s["cv_rmse"] - base["cv_rmse"], state["best"], params["depth"],
+                   params["learning_rate"], params["l2_leaf_reg"], params["grow_policy"],
+                   params["bootstrap_type"], s.get("fit_s_mean") or 0.0, flag))
+        else:
+            log("  trial %3d/%-3d  cv_rmse %8.4f +/- %-7.4f  %+.4f vs prod  best %7.4f  "
+                "depth=%-2s lr=%-6.4f l2=%-6.2f %-14s %-9s fit %5.2fs/fold est_train %4.0fs%s"
+                % (state["n"], trials, s["cv_rmse"], s["cv_rmse_sd"],
+                   s["cv_rmse"] - base["cv_rmse"], state["best"], params["depth"],
+                   params["learning_rate"], params["l2_leaf_reg"], params["grow_policy"],
+                   params["bootstrap_type"], s.get("fit_s_mean") or 0.0,
+                   s.get("est_train_s") or 0.0, flag))
         sys.stdout.flush()
-        return s["cv_rmse"]
+        return score
 
     log("optuna TPE: %d trials, pruning any config 1.6x worse than production after 2 folds"
         % trials)
@@ -277,16 +348,45 @@ def main():
 
     complete = [t for t in study.trials if t.value is not None]
     complete.sort(key=lambda t: t.value)
-    log("=" * 92)
-    log("TOP 10 (cv_rmse, lower is better; production %.4f +/- %.4f)"
-        % (base["cv_rmse"], base["cv_rmse_sd"]))
-    for i, t in enumerate(complete[:10]):
-        s = t.user_attrs.get("summary") or {}
-        p = t.user_attrs.get("params_full") or {}
-        log("  %2d. %8.4f +/- %-7.4f  depth=%-2s lr=%-7.4f l2=%-6.2f %-14s %-10s folds=%s  %+.4f"
-            % (i + 1, t.value, s.get("cv_rmse_sd", 0.0), p.get("depth"),
-               p.get("learning_rate", 0), p.get("l2_leaf_reg", 0), p.get("grow_policy"),
-               p.get("bootstrap_type"), s.get("folds"), t.value - base["cv_rmse"]))
+    log("=" * 100)
+    if objective_kind == "lift":
+        log("TOP 10 BY LIFT (e2_rmse - e1_rmse, HIGHER is better; production %+.4f)"
+            % base.get("lift", 0.0))
+        log("     %-9s %-9s %-9s %-9s %-8s %-14s %-10s %s"
+            % ("lift", "vs prod", "e1_rmse", "e2_rmse", "lift_sd", "grow_policy",
+               "bootstrap", "depth/lr"))
+        for i, t in enumerate(complete[:10]):
+            s = t.user_attrs.get("summary") or {}
+            p = t.user_attrs.get("params_full") or {}
+            log("  %2d. %-+9.4f %-+9.4f %-9.4f %-9.4f %-8.4f %-14s %-10s d=%s lr=%.4f"
+                % (i + 1, s.get("lift", 0.0), s.get("lift", 0.0) - base.get("lift", 0.0),
+                   s.get("cv_rmse", 0.0), s.get("e2_rmse", 0.0), s.get("lift_sd", 0.0),
+                   p.get("grow_policy"), p.get("bootstrap_type"),
+                   p.get("depth"), p.get("learning_rate", 0)))
+    elif objective_kind == "combined":
+        log("TOP 10 BY SCORE (cv_rmse - %.2f x lift, lower is better; production cv_rmse "
+            "%.4f +/- %.4f, lift %+.4f)"
+            % (lift_w, base["cv_rmse"], base["cv_rmse_sd"], base.get("lift", 0.0)))
+        log("     %-10s %-10s %-10s %-9s %-14s %-10s %s"
+            % ("score", "cv_rmse", "lift", "folds", "grow_policy", "bootstrap", "depth/lr"))
+        for i, t in enumerate(complete[:10]):
+            s = t.user_attrs.get("summary") or {}
+            p = t.user_attrs.get("params_full") or {}
+            log("  %2d. %-10.4f %-10.4f %-+10.4f %-9s %-14s %-10s d=%s lr=%.4f"
+                % (i + 1, t.value, s.get("cv_rmse", 0.0), s.get("lift", 0.0),
+                   s.get("folds"), p.get("grow_policy"), p.get("bootstrap_type"),
+                   p.get("depth"), p.get("learning_rate", 0)))
+    else:
+        log("TOP 10 (cv_rmse, lower is better; production %.4f +/- %.4f)"
+            % (base["cv_rmse"], base["cv_rmse_sd"]))
+        for i, t in enumerate(complete[:10]):
+            s = t.user_attrs.get("summary") or {}
+            p = t.user_attrs.get("params_full") or {}
+            log("  %2d. %8.4f +/- %-7.4f  depth=%-2s lr=%-7.4f l2=%-6.2f %-14s %-10s folds=%s"
+                "  %+.4f"
+                % (i + 1, t.value, s.get("cv_rmse_sd", 0.0), p.get("depth"),
+                   p.get("learning_rate", 0), p.get("l2_leaf_reg", 0), p.get("grow_policy"),
+                   p.get("bootstrap_type"), s.get("folds"), t.value - base["cv_rmse"]))
 
     best = complete[0] if complete else None
     log("")
@@ -294,11 +394,25 @@ def main():
         log("no completed trials")
         return 1
     bsum = best.user_attrs.get("summary") or {}
-    gain = base["cv_rmse"] - best.value
     log("best params: %s" % json.dumps(best.user_attrs.get("params_full"), sort_keys=True))
-    log("cv_rmse %.4f vs production %.4f -> %+.4f (%.1f%%)"
-        % (best.value, base["cv_rmse"], -gain,
-           100.0 * gain / base["cv_rmse"] if base["cv_rmse"] else 0.0))
+    if objective_kind == "lift":
+        gain = bsum.get("lift", 0.0) - base.get("lift", 0.0)
+        log("lift %+.4f vs production %+.4f -> %+.4f   (e1 %.4f, e2 %.4f)"
+            % (bsum.get("lift", 0.0), base.get("lift", 0.0), gain,
+               bsum.get("cv_rmse", 0.0), bsum.get("e2_rmse", 0.0)))
+        log("per-fold lift %s  (production %s)"
+            % (bsum.get("fold_lift"), base.get("fold_lift")))
+    elif objective_kind == "combined":
+        base_score = base["cv_rmse"] - lift_w * base.get("lift", 0.0)
+        log("score %.4f vs production %.4f -> %+.4f   (cv_rmse %.4f vs %.4f, lift %+.4f vs %+.4f)"
+            % (best.value, base_score, best.value - base_score,
+               bsum.get("cv_rmse", 0.0), base["cv_rmse"],
+               bsum.get("lift", 0.0), base.get("lift", 0.0)))
+    else:
+        gain = base["cv_rmse"] - best.value
+        log("cv_rmse %.4f vs production %.4f -> %+.4f (%.1f%%)"
+            % (best.value, base["cv_rmse"], -gain,
+               100.0 * gain / base["cv_rmse"] if base["cv_rmse"] else 0.0))
     bf, pf = bsum.get("fold_rmse") or [], base.get("fold_rmse") or []
     noise = max(bsum.get("cv_rmse_sd", 0.0), base["cv_rmse_sd"]) / math.sqrt(max(1, len(folds)))
     paired = None
