@@ -20,8 +20,10 @@ SHORT_WEIGHT = 0.5
 CB_ITERATIONS = 5000
 CB_LOSS = "RMSE"
 
-CB_TUNED_FROM = ("catboost_fast_k3 rank1 of 107 trials: cv_rmse 1.9575 vs 2.0098, "
-                 "paired -0.0523, 3/3 folds, 23.5s")
+CB_TUNED_FROM = ("catboost_fast_k3 rank1 of 170 finished trials: cv_rmse 1.9575 +/- 0.1623, "
+                 "folds [2.1335, 1.7418, 1.9971]; vs combined100-trial-81 production 2.2276 "
+                 "+/- 0.4676 on 20260808 corpus (7339 rows, 209 campaigns), paired mean "
+                 "-0.2701 SE 0.2827 within noise")
 
 CB_PARAMS = {
     "depth": 7,
