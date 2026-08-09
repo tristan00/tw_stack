@@ -784,6 +784,7 @@ function handlers.chars(seq)
           is_leader = or_null(try(function() return c:is_faction_leader() end)),
           has_army = or_null(try(function() return c:has_military_force() end)),
           is_general = or_null(try(function() return c:character_type("general") end)),
+          rank = or_null(try(function() return c:rank() end)),
           x = or_null(try(function() return c:logical_position_x() end)),
           y = or_null(try(function() return c:logical_position_y() end)),
           ap_pct = or_null(try(function() return c:action_points_remaining_percent() end)),
