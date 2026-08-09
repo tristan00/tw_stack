@@ -228,11 +228,70 @@ def _esc(v):
     return html.escape("" if v is None else str(v))
 
 
+def _mix_str(mix, epsilon=None):
+    if isinstance(mix, str):
+        try:
+            mix = json.loads(mix)
+        except ValueError:
+            return mix
+    if isinstance(mix, dict) and mix:
+        return ",".join("%s=%.2f" % (k, float(v)) for k, v in sorted(mix.items()))
+    if epsilon is not None:
+        return "epsilon=%g" % float(epsilon)
+    return None
+
+
+def _ruleset_str(rs):
+    if isinstance(rs, dict) and rs.get("name"):
+        return "%s@%s" % (rs["name"], str(rs.get("sha256") or "")[:8] or "?")
+    if rs:
+        return str(rs)
+    return None
+
+
+def _policy_tally(counts):
+    agg, rules = {}, {}
+    for p, n in counts.items():
+        s = str(p) if p else "-"
+        if s.startswith("ruleset(") and s.endswith(")"):
+            agg["ruleset"] = agg.get("ruleset", 0) + n
+            rule = s[len("ruleset("):-1]
+            rules[rule] = rules.get(rule, 0) + n
+        else:
+            agg[s] = agg.get(s, 0) + n
+    return agg, rules
+
+
+def _policy_tally_html(title, counts):
+    agg, rules = _policy_tally(counts)
+    if not agg:
+        return ""
+    total = sum(agg.values())
+    rows = []
+    for p, n in sorted(agg.items(), key=lambda kv: -kv[1]):
+        extra = ""
+        if p == "ruleset" and rules:
+            extra = " <span class=dim>(%s)</span>" % _esc(
+                ", ".join("%s %d" % (r, c)
+                          for r, c in sorted(rules.items(), key=lambda kv: -kv[1])))
+        rows.append("<tr><td>%s%s</td><td class=num>%d</td><td class=dim>%.1f%%</td></tr>"
+                    % (_esc(p), extra, n, 100.0 * n / total))
+    return ("<h2>%s</h2>"
+            "<p class=muted>ruleset(rule) picks are aggregated under <b>ruleset</b> with the "
+            "per-rule split alongside. Older campaigns carry the retired epsilon-era strings "
+            "(cold_random, epsilon_random, explore, exploit, interrupt_exploit, "
+            "interrupt_explore); newer ones carry the strategy-portfolio strings (random, "
+            "exploit_tree, ruleset(rule), *_random_fallback).</p>"
+            "<div class=scroll><table><tr><th>policy<th>picks<th>share</tr>%s</table></div>"
+            % (_esc(title), "".join(rows)))
+
+
 def render_interrupts(runs_root=RUNS_ROOT):
     import collections
     per_screen = collections.OrderedDict()
     chosen = collections.Counter()
     offered = collections.Counter()
+    policies = collections.Counter()
     total = 0
     for db in sorted(glob.glob(os.path.join(runs_root, "*", "decisions.sqlite")),
                      key=os.path.getmtime):
@@ -241,10 +300,13 @@ def render_interrupts(runs_root=RUNS_ROOT):
         except sqlite3.Error:
             continue
         try:
-            for kind, opts_json, pick in c.execute(
-                    "SELECT kind, options_json, chosen FROM interrupt_decisions"):
+            cols = {r[1] for r in c.execute("PRAGMA table_info(interrupt_decisions)")}
+            pol = "policy" if "policy" in cols else "NULL"
+            for kind, opts_json, pick, p in c.execute(
+                    "SELECT kind, options_json, chosen, %s FROM interrupt_decisions" % pol):
                 total += 1
                 per_screen[kind] = per_screen.get(kind, 0) + 1
+                policies[p or "-"] += 1
                 if pick:
                     chosen[(kind, pick)] += 1
                 try:
@@ -259,23 +321,28 @@ def render_interrupts(runs_root=RUNS_ROOT):
 
     try:
         import interrupt_model as IM
+        import strategies as ST
+        mix_note = ("the sampler draws each pick from the run's strategy mix over %s "
+                    "(--strategies, recorded on the trial)" % "/".join(ST.NAMES))
         r = IM.InterruptRanker()
         if r.ready:
             sr = (r.meta or {}).get("screen_rows") or {}
             per = ", ".join("%s %s(%s)" % (s, "hot" if sr.get(s, 0) >= IM.MIN_ROWS
                                            else "cold", sr.get(s, "?"))
                             for s in sorted((r.meta or {}).get("screens") or []))
-            state = ("<b>model</b> &mdash; fitted on %s rows; per-screen gate (hot &ge; %d rows): %s"
-                     % ((r.meta or {}).get("rows", "?"), IM.MIN_ROWS, per or "&mdash;"))
+            state = ("%s; <b>model</b> &mdash; fitted on %s rows, exploit_tree draws use it "
+                     "per screen (hot &ge; %d rows, cold screens fall back to random): %s"
+                     % (mix_note, (r.meta or {}).get("rows", "?"), IM.MIN_ROWS, per or "&mdash;"))
         else:
-            state = ("<b>cold_random</b> &mdash; no interrupt model fitted yet (needs %d labelled "
-                     "rows per screen; a decision is only labelled once its campaign plays on "
-                     "past it)" % IM.MIN_ROWS)
+            state = ("%s; <b>no interrupt model fitted</b> &mdash; exploit_tree draws fall back "
+                     "to random (provenance exploit_tree_random_fallback) until %d labelled rows "
+                     "per screen exist; a decision is only labelled once its campaign plays on "
+                     "past it" % (mix_note, IM.MIN_ROWS))
     except Exception as e:
         state = "unavailable: %s" % _esc(repr(e)[:120])
 
     if not total:
-        return ("<h2>blocking menus</h2><p class=muted>policy: %s</p>"
+        return ("<h2>blocking menus</h2><p class=muted>sampler: %s</p>"
                 "<p class=muted>no interrupt decisions recorded yet</p>" % state)
 
     recent = []
@@ -360,14 +427,15 @@ def render_interrupts(runs_root=RUNS_ROOT):
                        "&mdash;" if rate is None else "%.0f%%" % rate))
     screens = " &middot; ".join("%s <b>%d</b>" % (_esc(k), v) for k, v in per_screen.items())
     head = ("<h2>blocking menus <span class=dim>(%d decisions)</span></h2>"
-            "<p class=muted>policy: %s</p>"
+            "<p class=muted>sampler: %s</p>"
             "<p class=muted>%s</p>" % (total, state, screens))
+    prov = _policy_tally_html("interrupt provenance (all runs)", policies)
     agg = ("<p class=muted>Dilemmas, pre-battle, post-battle and occupation. <b>taken</b> is how "
            "often we picked that option; <b>offered</b> is how often the screen showed it, so the "
            "rate exposes whether a choice is genuinely being explored or never gets picked.</p>"
            "<div class=scroll><table><tr><th>screen<th>option<th>taken<th>offered<th>rate</tr>"
            "%s</table></div>" % "".join(rows))
-    return head + recent_tbl + agg
+    return head + prov + recent_tbl + agg
 
 
 def starts_summary(runs_root=RUNS_ROOT):
@@ -653,7 +721,7 @@ def _throughput_from_log(lines):
 def _session_state():
     st = {"log": None, "campaign": None, "faction": None, "turn": None,
           "outcomes": [], "session": None, "tail": [], "batch_timeouts": 0,
-          "rate": {}}
+          "rate": {}, "mix": None, "ruleset": None}
     try:
         lp = open(CURRENT_LOG, encoding="utf-8-sig").read().strip()
         if os.path.isfile(lp):
@@ -662,6 +730,11 @@ def _session_state():
             st["tail"] = lines[-22:]
             st["batch_timeouts"] = sum(1 for ln in lines if "batch timeout" in ln)
             st["rate"] = _throughput_from_log(lines)
+            for ln in lines:
+                if st["mix"] is None and ln.startswith("strategy mix: "):
+                    st["mix"] = ln[len("strategy mix: "):].strip()
+                if st["ruleset"] is None and ln.startswith("ruleset: "):
+                    st["ruleset"] = ln[len("ruleset: "):].strip()
             for ln in reversed(lines):
                 if st["campaign"] is None and ln.startswith("CAMPAIGN "):
                     m = re.match(r"CAMPAIGN (\d+/\d+)\s+\(up to (\d+) turns, faction=(\S+)\)", ln)
@@ -678,6 +751,15 @@ def _session_state():
     except OSError:
         pass
     return st
+
+
+def _live_ruleset(raw):
+    if not raw:
+        return "-"
+    m = re.match(r"(\S+) \(\d+ rules, sha256 ([0-9a-f]+)\)", raw)
+    if m:
+        return "%s@%s" % (m.group(1), m.group(2)[:8])
+    return raw[:32]
 
 
 def render_live(run_dir):
@@ -703,6 +785,8 @@ def render_live(run_dir):
         card("campaign", _esc(st["campaign"] or "-")),
         card("faction", _esc((st["faction"] or "-")[:24])),
         card("turn", _esc(st["turn"] or "-")),
+        card("mix", _esc((_mix_str(st["mix"]) or "-")[:48])),
+        card("ruleset", _esc(_live_ruleset(st["ruleset"]))),
     ] + [
         card(k, "&mdash;" if (st["rate"] or {}).get(v) is None
              else "<span class=ok>%s</span>" % st["rate"][v])
@@ -849,6 +933,10 @@ def render_actions(con, q):
     per_type = ("<h2>confirm rate by action type</h2><div class=scroll><table>"
                 "<tr><th>action<th>tried<th>confirmed<th>rate<th>refusals seen</tr>%s</table></div>"
                 % "".join(rows))
+    prov = _policy_tally_html(
+        "decision provenance (this run)",
+        dict(con.execute("SELECT policy, COUNT(*) FROM action_taken"
+                         " WHERE refusal IS NOT 'awaiting_execution' GROUP BY policy")))
     seq = []
     seq_total = sequence_total(con)
     try:
@@ -894,7 +982,7 @@ def render_actions(con, q):
               "<th title='score = exploit (value percentile); rank = value order. Rows recorded before 50082a9 (2026-08-02 20:32) hold the retired 0.9*exploit+0.1*explore blend'>score<th>exploit<th>&nbsp;&nbsp;global<th>&nbsp;&nbsp;local<th>explore"
               "<th>refusal<th>policy</tr>"
               "%s</table></div>" % "".join(seq)) + _pager
-    return per_type + seqtbl
+    return per_type + prov + seqtbl
 
 
 def render_reward(con):
@@ -1261,9 +1349,11 @@ def render_infra(run_dir):
 
     try:
         import policy as _P
-        pol_cfg = ("random %.0f%% / explore %.0f%% / exploit %.0f%% (policy.py, live; both "
-                   "the action policy and the interrupt policy)"
-                   % (100 * _P.EPSILON, 100 * _P.BETA, 100 * (1 - _P.EPSILON - _P.BETA)))
+        pol_cfg = ("strategy portfolio; default mix %s (policy.py DEFAULT_STRATEGIES) -- a "
+                   "run's own mix comes from --strategies, is recorded on its trial, and "
+                   "drives both the action sampler and the interrupt sampler"
+                   % ", ".join("%s=%.2f" % kv
+                               for kv in sorted(_P.normalize_strategies(None).items())))
     except Exception as e:
         pol_cfg = "unreadable: %s" % repr(e)[:60]
     mrows = [
@@ -1321,8 +1411,8 @@ def render_infra(run_dir):
 
     ctl = ("<h2>control</h2>"
            "<div class=dim style='margin-bottom:8px'>launch kills session + game + recorder, "
-           "starts a fresh recorder (bus reset, new run dir), then the session; each campaign's "
-           "turn cap is drawn uniformly from [min, max]</div>"
+           "starts a fresh recorder (bus reset, fixed run dir D:/twdata/runs/human/run), then "
+           "the session; each campaign's turn cap is drawn uniformly from [min, max]</div>"
            "<div style='display:flex;gap:16px;flex-wrap:wrap;align-items:center'>"
            "<a class=btn href='/ctl/kill' "
            "onclick=\"return ctl(this.href,'Kill the session and the game?')\">"
@@ -1345,13 +1435,21 @@ def render_infra(run_dir):
            "<label title='backend hyperparameters as KEY=VALUE pairs, e.g. bottleneck=64 lr=0.01"
            " -- recorded on the trial as backend_cfg'>cfg <input name=cfg type=text value='' "
            "placeholder='bottleneck=64 lr=0.01' style='width:170px'></label>"
+           "<label title='per-decision strategy mix as name=weight pairs over random, "
+           "exploit_tree, ruleset; weights are normalized; blank = policy.py default'>"
+           "strategies <input name=strategies type=text value='' "
+           "placeholder='exploit_tree=0.8,random=0.2' style='width:190px'></label>"
+           "<label title='rule file D:\\twdata\\rules\\NAME.json; required when ruleset is in "
+           "the mix, forbidden otherwise'>ruleset <input name=ruleset type=text value='' "
+           "placeholder='v1' style='width:70px'></label>"
            "<label title='firehose script-log tail + UI tree scrapes; gigabytes per run'><input type=checkbox name=dev value=1> dev logging</label>"
            "<button class=btn>launch run</button>"
            "</form></div>"
            "<div class=dim style='margin:14px 0 8px'>cold start: same kill+recorder sequence, but "
-           "the session runs with NO model &mdash; both the main policy and the interrupt policy "
-           "are forced to cold_random, so the run generates data from an untrained agent. Never "
-           "retrains.</div>"
+           "the session runs with NO model (--cold) &mdash; the exploit_tree strategy can never "
+           "fire, so every action and interrupt pick lands on random (provenance random / "
+           "exploit_tree_random_fallback; the ledger labels the campaigns cold_random(forced)). "
+           "Never retrains.</div>"
            "<form action='/ctl/coldstart' method='get' onsubmit='return launchCold(this)' "
            "style='display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0'>"
            "<label>campaigns <input name=campaigns type=number min=1 max=9999 value=10 "
@@ -1374,7 +1472,7 @@ def render_infra(run_dir):
            "return ctl('/ctl/restart?'+q,'Kill everything and launch this run?')}"
            "function launchCold(f){var q=new URLSearchParams(new FormData(f)).toString();"
            "return ctl('/ctl/coldstart?'+q,'Kill everything and launch a COLD START "
-           "(no model, cold_random throughout)?')}"
+           "(no model, every pick random)?')}"
            "(function(){[['/ctl/restart','launch.'],['/ctl/coldstart','cold.']]"
            ".forEach(function(p){"
            "var f=document.querySelector(\"form[action='\"+p[0]+\"']\");if(!f)return;"
@@ -1449,11 +1547,13 @@ def _trial_row_html(r, live=False):
     sm, meas = s.get("mean"), s.get("campaigns_measured") or 0
     cls = ""
     n = r.get("campaigns", 0)
-    return ("<tr><td%s>%s<td>%s<td class=dim>%s<td>%s<td class=dim>%s<td%s>%s"
+    return ("<tr><td%s>%s<td>%s<td class=dim>%s<td>%s<td class=dim>%s<td>%s<td class=dim>%s<td%s>%s"
             "<td>%s<td>%s<td>%s<td>%s<td>%s<td>%s<td class=dim>%s</tr>"
             % (" class=warn" if live else "", _esc(r.get("trial", "?")),
                _esc(str(r.get("backend") or "-")),
-               _esc(", ".join("%s=%s" % kv for kv in sorted(cfg.items())) or "-"), n,
+               _esc(", ".join("%s=%s" % kv for kv in sorted(cfg.items())) or "-"),
+               _esc(_mix_str(r.get("strategies"), r.get("epsilon")) or "-"),
+               _esc(_ruleset_str(r.get("ruleset")) or "-"), n,
                corpus if corpus else "-",
                cls, "-" if sm is None else "%.3f" % sm,
                "-" if s.get("total") is None else "%g" % s["total"],
@@ -1487,6 +1587,16 @@ def _trials_table():
         note = "<div class=bad>live trial not readable: %s</div>" % _esc(repr(e)[:160])
     else:
         note = ""
+    if live and not live.get("strategies") and live.get("session"):
+        try:
+            with open(live["session"], encoding="utf-8") as fh:
+                req = (json.load(fh) or {}).get("requested") or {}
+            live["strategies"] = req.get("strategies")
+            live["ruleset"] = live.get("ruleset") or req.get("ruleset")
+            if live.get("epsilon") is None:
+                live["epsilon"] = req.get("epsilon")
+        except (OSError, ValueError):
+            pass
     if live:
         rows = [r for r in rows if r.get("trial") != live.get("trial")]
     if not rows and not live:
@@ -1496,7 +1606,11 @@ def _trials_table():
     out = ([_trial_row_html(live, live=True)] if live else []) \
         + [_trial_row_html(r) for r in rows]
     return ("<h2>experiment ledger</h2>%s<div class=scroll><table>"
-            "<tr><th>trial<th>backend<th>cfg<th>campaigns<th>corpus<th>sett/camp<th>sett total"
+            "<tr><th>trial<th>backend<th>cfg"
+            "<th title='per-decision strategy mix; legacy trials that only recorded --epsilon "
+            "show epsilon=E'>mix"
+            "<th title='rule set name@sha256 prefix'>ruleset"
+            "<th>campaigns<th>corpus<th>sett/camp<th>sett total"
             "<th>grew<th>lord total<th>turns/camp<th>s/camp<th>s/turn<th>notes</tr>%s</table></div>"
             % (note, "".join(out)))
 
@@ -1607,16 +1721,19 @@ def _start_recorder(shots=60, dev=False):
 
 
 def _start_session(retrain=True, campaigns=10, turns=40, retrain_every=0, cold=False, dev=False,
-                   model=None, cfg=None):
+                   model=None, cfg=None, strategies=None, ruleset=None):
     import runctl
     try:
         log = runctl.start_session(campaigns, turns, model=model, cfg=cfg, retrain=retrain,
-                                   retrain_every=retrain_every, cold=cold, dev=dev)
-        return "started %s on %s%s -> %s" % (
-            "COLD (no model, cold_random throughout)" if cold else
+                                   retrain_every=retrain_every, cold=cold, dev=dev,
+                                   strategies=strategies, ruleset=ruleset)
+        return "started %s on %s%s%s%s -> %s" % (
+            "COLD (no model; exploit_tree can never fire, every pick lands random)" if cold else
             "with retrain" if retrain else "no retrain",
             model or "default backend",
             (" cfg=%s" % json.dumps(cfg)) if cfg else "",
+            (" strategies=%s" % strategies) if strategies else " strategies=default",
+            (" ruleset=%s" % ruleset) if ruleset else "",
             os.path.basename(log))
     except Exception as e:
         return "start failed: %s" % repr(e)[:160]
@@ -1645,6 +1762,47 @@ def _trial_params(q):
             except ValueError:
                 cfg[k] = v.strip()
     return (model or None), (cfg or None), None
+
+
+def _strategy_params(q):
+    import policy as P
+    raw = (q.get("strategies", [""])[0] or "").strip()
+    name = (q.get("ruleset", [""])[0] or "").strip()
+    mix = None
+    if raw:
+        parsed = {}
+        for tok in raw.split(","):
+            k, sep, v = tok.partition("=")
+            k, v = k.strip(), v.strip()
+            if not sep or not k or not v:
+                return None, None, ("bad strategies %r -- want name=weight[,name=weight...], "
+                                    "e.g. exploit_tree=0.8,random=0.2, nothing was killed or "
+                                    "started" % tok)
+            if k in parsed:
+                return None, None, ("strategies names %r twice, nothing was killed or started" % k)
+            try:
+                parsed[k] = float(v)
+            except ValueError:
+                return None, None, ("strategies weight for %r is not a number: %r, nothing was "
+                                    "killed or started" % (k, v))
+        try:
+            mix = P.normalize_strategies(parsed)
+        except ValueError as e:
+            return None, None, "%s, nothing was killed or started" % e
+    if mix and "ruleset" in mix and not name:
+        return None, None, ("strategy mix includes 'ruleset' but no ruleset name was given, "
+                            "nothing was killed or started")
+    if name and (not mix or "ruleset" not in mix):
+        return None, None, ("ruleset %r given but 'ruleset' is not in the strategy mix, "
+                            "nothing was killed or started" % name)
+    if name:
+        import ruleset as RS
+        try:
+            RS.RuleSet.load(name)
+        except Exception as e:
+            return None, None, ("ruleset %r not loadable: %s, nothing was killed or started"
+                                % (name, str(e)[:200]))
+    return (raw or None), (name or None), None
 
 
 def _control_steps(path):
@@ -1699,12 +1857,16 @@ def _control_steps(path):
         model, cfg, err = _trial_params(q)
         if err:
             return "invalid launch: %s" % err
+        strategies, ruleset, err = _strategy_params(q)
+        if err:
+            return "invalid launch: %s" % err
         steps = [_kill_session(), _kill_recorder()]
         time.sleep(1.5)
         steps.append(_start_recorder(dev=dev))
         time.sleep(3.0)
         steps.append(_start_session(retrain=retrain, campaigns=campaigns, turns=turns,
-                                    retrain_every=every, dev=dev, model=model, cfg=cfg))
+                                    retrain_every=every, dev=dev, model=model, cfg=cfg,
+                                    strategies=strategies, ruleset=ruleset))
         steps.append("give the recorder + session ~20s to appear in the tables above")
         return "\n".join(steps)
     return "unknown control: %s" % u.path
