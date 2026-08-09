@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 import time
 
@@ -349,39 +350,41 @@ def live_option_texts(bus, root):
     return out
 
 
+def _cancel_declare_root(bus, root, tree):
+    targets = {}
+    for n in tree:
+        nid = str(n.get("id") or "")
+        txt = str(n.get("text") or "").strip().lower()
+        if not n.get("visible") or str(n.get("state")) not in _CLICKABLE:
+            continue
+        if (txt in ("cancel move", "cancel") or "cancel_move" in nid.lower()
+                or "button_cancel" in nid.lower()) and nid not in targets:
+            targets[nid] = n.get("path")
+    if not targets:
+        return []
+    labels = _control_labels(tree, targets)
+    opts = {k: {"context": None, "text": labels.get(k) or k,
+                "dilemma_id": root, "option_id": k, "payload": [], "subtree": []}
+            for k in targets}
+    key = _choose("declare_war_cancel", sorted(opts), _campaign_hint(), meta=opts,
+                  live=lambda: live_control_ids(bus, root))
+    t0 = time.time()
+    clicked = _click(bus, targets[key], settle=2.0)
+    gone = _root_gone(bus, root)
+    _record_choice("declare_war_cancel", root, opts, key,
+                   extra={"tree": tree, "root_context": root},
+                   executed=clicked, confirmed=gone,
+                   refusal=_refusal(gone, clicked),
+                   latency_ms=int((time.time() - t0) * 1000))
+    return ["declare_war_cancelled:%s" % root] if clicked else []
+
+
 def cancel_declare_war(bus):
     steps = []
     for root in [x for x in roots(bus)
                  if x not in nav.BASE_ROOTS and x not in DIPLOMACY_HUD_ROOTS
                  and x not in BENIGN_PANELS]:
-        tree = _tree(bus, root)
-        targets = {}
-        for n in tree:
-            nid = str(n.get("id") or "")
-            txt = str(n.get("text") or "").strip().lower()
-            if not n.get("visible") or str(n.get("state")) not in _CLICKABLE:
-                continue
-            if (txt in ("cancel move", "cancel") or "cancel_move" in nid.lower()
-                    or "button_cancel" in nid.lower()) and nid not in targets:
-                targets[nid] = n.get("path")
-        if not targets:
-            continue
-        labels = _control_labels(tree, targets)
-        opts = {k: {"context": None, "text": labels.get(k) or k,
-                    "dilemma_id": root, "option_id": k, "payload": [], "subtree": []}
-                for k in targets}
-        key = _choose("declare_war_cancel", sorted(opts), _campaign_hint(), meta=opts,
-                      live=lambda: live_control_ids(bus, root))
-        t0 = time.time()
-        clicked = _click(bus, targets[key], settle=2.0)
-        gone = _root_gone(bus, root)
-        _record_choice("declare_war_cancel", root, opts, key,
-                       extra={"tree": tree, "root_context": root},
-                       executed=clicked, confirmed=gone,
-                       refusal=_refusal(gone, clicked),
-                       latency_ms=int((time.time() - t0) * 1000))
-        if clicked:
-            steps.append("declare_war_cancelled:%s" % root)
+        steps.extend(_cancel_declare_root(bus, root, _tree(bus, root)))
     return steps
 
 
@@ -723,13 +726,17 @@ def answer_diplomacy(bus):
             if kind and nid not in answers:
                 answers[nid] = (n.get("path"), kind)
         if not answers:
-            sys.stderr.write("interrupts: no clickable answer control in %s\n" % root)
-            steps.append("diplomacy_stuck:%s" % root)
-            continue
+            offered = sorted(_clickable_controls(bus, root))
+            _report_unhandled(bus, "diplomacy", ["no clickable answer control"],
+                              offered, root=root)
+            raise UnhandledScreen(
+                "diplomacy screen %s offers no clickable answer control -- refusing to leave "
+                "a diplomatic event unhandled. clickable=%s" % (root, offered))
         detail = _options_of(bus, root, sorted(answers))
+        panel = _diplo_panel(tree)
         for k, (_path, kind) in answers.items():
-            detail[k] = dict(detail.get(k) or {}, answer=kind)
-        want = _choose("diplomacy", sorted(answers), _campaign_hint(),
+            detail[k] = dict(detail.get(k) or {}, answer=kind, dilemma_id=root, option_id=k)
+        want = _choose("diplomacy", sorted(answers), _campaign_hint(), panel, meta=detail,
                        live=lambda: live_control_ids(bus, root))
         target, kind = answers[want]
         sys.stderr.write("interrupts: diplomacy %s -- %d answer(s) %s -> %r (%s)\n"
@@ -744,7 +751,7 @@ def answer_diplomacy(bus):
         if not clicked or not gone:
             steps.append("diplomacy_stuck:%s" % root)
         _record_choice("diplomacy", root, detail, want,
-                       extra={"answer": kind, "tree": tree},
+                       extra={"answer": kind, "tree": tree, "panel": panel},
                        executed=clicked, confirmed=gone,
                        refusal=_refusal(gone, clicked),
                        latency_ms=int((time.time() - t0) * 1000))
@@ -776,12 +783,12 @@ def reset_answers():
     _ANSWER_MEMO.clear()
 
 
-def _sticky_choice(screen, root, options, panel=None, live=None):
+def _sticky_choice(screen, root, options, panel=None, live=None, meta=None):
     m = _ANSWER_MEMO.get(root)
     if m and m.get("want") in options and time.time() - m.get("ts", 0) <= _ANSWER_TTL:
         m["tries"] += 1
         return m
-    m = {"want": _choose(screen, sorted(options), _campaign_hint(), panel, live=live),
+    m = {"want": _choose(screen, sorted(options), _campaign_hint(), panel, meta, live=live),
          "policy": _LAST_POLICY[0], "scores": dict(_LAST_SCORES[0] or {}),
          "tries": 1, "ts": time.time()}
     _ANSWER_MEMO[root] = m
@@ -811,15 +818,79 @@ def _screen_facts(tree):
     return facts
 
 
-def _drive_decision(bus, root, kind, opts, detail, extra):
+def _strip_markup(s):
+    return re.sub(r"\[\[[^\]]*\]\]", "", str(s or "")).strip()
+
+
+def _clickable_ids(tree):
+    out = {}
+    for n in tree:
+        nid = str(n.get("id") or "")
+        if nid and n.get("visible") and str(n.get("state")) in _CLICKABLE and nid not in out:
+            out[nid] = str(n.get("path") or "")
+    return out
+
+
+def _diplo_panel(tree):
+    facts = _screen_facts(tree)
+    p = {"strength_ranks": [_strip_markup(x) for x in facts["strength_ranks"]],
+         "reliability": [_strip_markup(x) for x in facts["reliability"]],
+         "settlements": _strip_markup(facts["settlements"]) or None,
+         "attitude": None, "attitude_label": None, "race": None,
+         "terms": [], "amounts": [], "sections": []}
+    for n in tree:
+        if not n.get("visible"):
+            continue
+        nid = str(n.get("id") or "")
+        t = _strip_markup(n.get("text"))
+        if not t:
+            continue
+        if nid == "dy_value" and p["attitude"] is None:
+            p["attitude"] = t
+        elif nid == "dy_attitude" and p["attitude_label"] is None:
+            p["attitude_label"] = t
+        elif nid == "dy_race_or_player_name" and p["race"] is None:
+            p["race"] = t
+        elif nid == "button_tx":
+            p["terms"].append(t)
+        elif nid == "amount":
+            p["amounts"].append(t)
+        elif nid == "subtitle_tx":
+            p["sections"].append(t)
+    return p
+
+
+def _emit_deal(bus, kind, want, detail, extra, options, clicked, gone):
+    try:
+        import diplo_stream as DS
+        tree = extra.get("tree") or []
+        keys = DS.faction_keys_in(tree)
+        for k in keys:
+            DS.track(k)
+        DS.emit("deal", channel=kind, chosen=want, answer=detail[want]["answer"],
+                options=sorted(options), executed=clicked, confirmed=gone,
+                policy=_LAST_POLICY[0],
+                proposer=extra.get("proposer"), speech=extra.get("speech"),
+                attitude=extra.get("attitude"), variant=extra.get("variant"),
+                facts=_screen_facts(tree), faction_keys=keys,
+                pair=({k: DS.pair_relations(bus, k) for k in keys[:4]}
+                      if gone else None))
+    except Exception as e:
+        sys.stderr.write("interrupts: diplo_stream emit failed -> %s\n" % repr(e)[:90])
+
+
+def _drive_decision(bus, root, kind, opts, detail, extra, panel=None):
     steps = []
-    m = _sticky_choice(kind, root, opts, live=lambda: live_control_ids(bus, root))
+    m = _sticky_choice(kind, root, opts, panel,
+                       live=lambda: live_control_ids(bus, root), meta=detail)
+    m.update(kind=kind, opts=dict(opts), detail=detail, extra=extra)
     if m["tries"] > _ANSWER_TRIES:
         steps.append("%s_gave_up:%s" % (kind, root))
         return steps
     want = m["want"]
     t0 = time.time()
     clicked = _click(bus, opts[want], settle=2.0)
+    m["clicked"] = bool(m.get("clicked")) or clicked
     gone = _await_root_gone(bus, root)
     if clicked:
         steps.append("%s_%s:%s" % (kind, detail[want]["answer"], want))
@@ -832,22 +903,38 @@ def _drive_decision(bus, root, kind, opts, detail, extra):
                        executed=clicked, confirmed=gone,
                        refusal=_refusal(gone, clicked),
                        latency_ms=int((time.time() - t0) * 1000))
-        try:
-            import diplo_stream as DS
-            tree = extra.get("tree") or []
-            keys = DS.faction_keys_in(tree)
-            for k in keys:
-                DS.track(k)
-            DS.emit("deal", channel=kind, chosen=want, answer=detail[want]["answer"],
-                    options=sorted(opts), executed=clicked, confirmed=gone,
-                    policy=_LAST_POLICY[0],
-                    proposer=extra.get("proposer"), speech=extra.get("speech"),
-                    attitude=extra.get("attitude"), variant=extra.get("variant"),
-                    facts=_screen_facts(tree), faction_keys=keys,
-                    pair=({k: DS.pair_relations(bus, k) for k in keys[:4]}
-                          if gone else None))
-        except Exception as e:
-            sys.stderr.write("interrupts: diplo_stream emit failed -> %s\n" % repr(e)[:90])
+        m["recorded"] = True
+        _emit_deal(bus, kind, want, detail, extra, opts, clicked, gone)
+    if gone:
+        _ANSWER_MEMO.pop(root, None)
+    return steps
+
+
+def _settle_answered(bus, root, tree):
+    m = _ANSWER_MEMO.get(root)
+    kind, want = m["kind"], m["want"]
+    detail = m.get("detail") or {}
+    clicked = bool(m.get("clicked"))
+    closer = next((str(n.get("path") or "") for n in tree
+                   if str(n.get("id") or "") in ("button_cancel", "button_close")
+                   and n.get("visible") and str(n.get("state")) in _CLICKABLE), None)
+    if closer:
+        _click(bus, closer, settle=2.0)
+    else:
+        nav.close_panel(bus, root)
+    gone = _await_root_gone(bus, root)
+    steps = ["%s_settled:%s" % (kind, root) if gone else "%s_stuck:%s" % (kind, root)]
+    if not m.get("recorded"):
+        _LAST_POLICY[0], _LAST_SCORES[0] = m["policy"], dict(m["scores"] or {})
+        _record_choice(kind, root, detail, want,
+                       extra=dict(m.get("extra") or {},
+                                  answer=(detail.get(want) or {}).get("answer"),
+                                  settled_shell=True),
+                       executed=clicked, confirmed=gone,
+                       refusal=_refusal(gone, clicked))
+        m["recorded"] = True
+        _emit_deal(bus, kind, want, detail, m.get("extra") or {},
+                   m.get("opts") or {want: None}, clicked, gone)
     if gone:
         _ANSWER_MEMO.pop(root, None)
     return steps
@@ -895,33 +982,103 @@ def proposal_options(nodes):
     return out
 
 
+def _acknowledge_war_on_proposal(bus, tree, clickable):
+    targets = {nid: path for nid, path in clickable.items()
+               if any(t in nid.lower() for t in ACCEPT_TOKENS)}
+    labels = _control_labels(tree, targets)
+    panel = _diplo_panel(tree)
+    opts = {k: {"context": None, "text": labels.get(k) or k,
+                "dilemma_id": PROPOSAL_ROOT, "option_id": k, "payload": [], "subtree": []}
+            for k in targets}
+    key = _choose("war_declared", sorted(opts), _campaign_hint(), panel, meta=opts,
+                  live=lambda: live_control_ids(bus, PROPOSAL_ROOT))
+    t0 = time.time()
+    clicked = _click(bus, targets[key], settle=2.0)
+    gone = _await_root_gone(bus, PROPOSAL_ROOT)
+    _record_choice("war_declared", PROPOSAL_ROOT, opts, key,
+                   extra={"tree": tree, "root_context": PROPOSAL_ROOT, "panel": panel},
+                   executed=clicked, confirmed=gone,
+                   refusal=_refusal(gone, clicked),
+                   latency_ms=int((time.time() - t0) * 1000))
+    return (["war_declared_acknowledged:%s" % PROPOSAL_ROOT] if clicked
+            else ["war_declared_stuck:%s" % PROPOSAL_ROOT])
+
+
+def _proposal_buttons(tree):
+    return sorted({str(n.get("id")) for n in tree
+                   if n.get("visible") and str(n.get("state")) in _CLICKABLE
+                   and str(n.get("id") or "").startswith("button_")})
+
+
 def answer_incoming_proposal(bus):
     if PROPOSAL_ROOT not in roots(bus):
         return []
     tree = _tree(bus, PROPOSAL_ROOT)
+    if not tree:
+        tree = _read_tree_or_die(bus, PROPOSAL_ROOT)
+    steps = []
+    clickable = _clickable_ids(tree)
+    if ("button_skip" in clickable and not (PROPOSAL_ANSWER_IDS & set(clickable))
+            and not (set(PROPOSAL_KNOWN_NONANSWERS) & set(clickable))):
+        if _click(bus, clickable["button_skip"], settle=2.0):
+            steps.append("diplomacy_dialogue_skipped:%s" % PROPOSAL_ROOT)
+        if PROPOSAL_ROOT not in roots(bus):
+            return steps
+        tree = _read_tree_or_die(bus, PROPOSAL_ROOT)
+        clickable = _clickable_ids(tree)
+    if "button_ok_war_declared" in clickable:
+        return steps + _acknowledge_war_on_proposal(bus, tree, clickable)
+    if "button_ok_declare" in clickable or "button_cancel_declare" in clickable:
+        got = _cancel_declare_root(bus, PROPOSAL_ROOT, tree)
+        if got:
+            return steps + got
+        offered = sorted(clickable)
+        _report_unhandled(bus, "declare_war_cancel",
+                          ["declare-war confirm with no cancellable control"],
+                          offered, root=PROPOSAL_ROOT)
+        raise UnhandledScreen(
+            "declare-war confirmation on %s offers no cancel control -- refusing to confirm "
+            "a war declaration the policy never ordered or to leave the screen unowned. "
+            "clickable=%s" % (PROPOSAL_ROOT, offered))
     try:
         opts = proposal_options(tree)
     except UnhandledScreen:
-        _report_unhandled(bus, "diplomacy_proposal",
-                          sorted({str(n.get("id")) for n in tree
-                                  if n.get("visible") and str(n.get("state")) in _CLICKABLE
-                                  and str(n.get("id") or "").startswith("button_")}),
+        _report_unhandled(bus, "diplomacy_proposal", _proposal_buttons(tree),
                           sorted(PROPOSAL_ANSWER_IDS), root=PROPOSAL_ROOT)
         raise
     if not opts:
-        return []
+        m = _ANSWER_MEMO.get(PROPOSAL_ROOT)
+        if m and m.get("kind"):
+            return steps + _settle_answered(bus, PROPOSAL_ROOT, tree)
+        tree = _read_tree_or_die(bus, PROPOSAL_ROOT)
+        try:
+            opts = proposal_options(tree)
+        except UnhandledScreen:
+            _report_unhandled(bus, "diplomacy_proposal", _proposal_buttons(tree),
+                              sorted(PROPOSAL_ANSWER_IDS), root=PROPOSAL_ROOT)
+            raise
+        if not opts:
+            offered = _proposal_buttons(tree)
+            _report_unhandled(bus, "diplomacy_proposal",
+                              ["no answer control and no prior answer on this root"],
+                              offered, root=PROPOSAL_ROOT)
+            raise UnhandledScreen(
+                "incoming diplomacy screen %s offers no answer control and was never answered "
+                "by the interrupt policy -- refusing to blind-close, skip, or guess at a "
+                "diplomatic event. clickable=%s" % (PROPOSAL_ROOT, offered))
     kind = "diplomacy_proposal" if "button_cancel" in opts else "diplomacy_notice"
+    panel = _diplo_panel(tree)
     detail = _options_of(bus, PROPOSAL_ROOT, sorted(opts))
     for k in detail:
-        detail[k] = dict(detail[k],
+        detail[k] = dict(detail[k], dilemma_id=PROPOSAL_ROOT, option_id=k, payload=[],
                          answer=("decline" if k == "button_cancel"
                                  else "accept" if kind == "diplomacy_proposal"
                                  else "acknowledge"))
-    extra = {"tree": tree,
+    extra = {"tree": tree, "panel": panel,
              "proposer": _first_text(tree, "faction_title", "faction_right_status_panel"),
              "speech": _first_text(tree, "dy_text", "speech_bubble"),
              "attitude": _first_text(tree, "dy_value")}
-    return _drive_decision(bus, PROPOSAL_ROOT, kind, opts, detail, extra)
+    return steps + _drive_decision(bus, PROPOSAL_ROOT, kind, opts, detail, extra, panel=panel)
 
 
 ALLY_ATTACKED_ROOT = "ally_attacked"

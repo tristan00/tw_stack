@@ -769,6 +769,9 @@ MODEL_COLUMNS = frozenset((
     "pos_exposed", "pos_support_ratio", "agg_enemy_n", "agg_enemy_mean_dist",
     "isc_screen", "isc_n_options", "isc_option", "isc_fc_result", "isc_fc_casualties",
     "isc_dilemma_id", "isc_option_id", "isc_option_label", "isc_payload", "isc_n_payload",
+    "isc_dip_attitude", "isc_dip_attitude_label", "isc_dip_race", "isc_dip_reliability",
+    "isc_dip_strength_them", "isc_dip_strength_us", "isc_dip_settlements",
+    "isc_dip_terms", "isc_dip_n_terms", "isc_dip_sections",
 ))
 
 MODEL_COLUMNS_ENABLED = True

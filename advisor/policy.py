@@ -54,6 +54,16 @@ PER_TURN_CAPS = {"recruit_lord": 1, "recruit_hero": 1, "recruit_unit": 4, "edict
                  "raise_dead": 4, "recruit_ror": 1,
                  "recruit_blessed": 4, "recruit_imperial": 1}
 
+ATTACK_PAIR_TYPES = frozenset(("attack_army", "attack_settlement"))
+ATTACK_PAIR_CAP = 1
+DIPLO_TARGET_CAP = 1
+
+
+def _pair_key(context_kind, context_id, action_type, key):
+    if action_type == "diplomacy":
+        return ("diplomacy", str(key).split(":", 1)[0])
+    return (context_kind, str(context_id), action_type, str(key))
+
 
 def _tally(values):
     out = {}
@@ -88,6 +98,7 @@ class Policy:
         self.failed_types = set()
         self.entity_actions = {}
         self.type_actions = {}
+        self.pair_actions = {}
         self.last_drops = []
         self.last_choice = {}
 
@@ -97,6 +108,7 @@ class Policy:
         self.failed_types.clear()
         self.entity_actions.clear()
         self.type_actions.clear()
+        self.pair_actions.clear()
 
     def retire(self, context_kind, context_id):
         self.retired.add((context_kind, str(context_id)))
@@ -105,6 +117,9 @@ class Policy:
         k = (pick["context_kind"], str(pick["context_id"]))
         tk = _cap_key(k[0], k[1], pick["action_type"])
         self.type_actions[tk] = self.type_actions.get(tk, 0) + 1
+        if pick["action_type"] in ATTACK_PAIR_TYPES or pick["action_type"] == "diplomacy":
+            pk = _pair_key(k[0], k[1], pick["action_type"], pick["key"])
+            self.pair_actions[pk] = self.pair_actions.get(pk, 0) + 1
         if counted:
             n = self.entity_actions.get(k, 0) + 1
             self.entity_actions[k] = n
@@ -133,6 +148,12 @@ class Policy:
                 reason = "type_failed_this_turn"
             elif (k[0], k[1], r["action_type"], str(r["key"])) in self.blacklist:
                 reason = "blacklisted_this_turn"
+            elif r["action_type"] in ATTACK_PAIR_TYPES and self.pair_actions.get(
+                    _pair_key(k[0], k[1], r["action_type"], r["key"]), 0) >= ATTACK_PAIR_CAP:
+                reason = "attack_pair_cap:%d" % ATTACK_PAIR_CAP
+            elif r["action_type"] == "diplomacy" and self.pair_actions.get(
+                    _pair_key(k[0], k[1], r["action_type"], r["key"]), 0) >= DIPLO_TARGET_CAP:
+                reason = "diplo_target_cap:%d" % DIPLO_TARGET_CAP
             elif cap is not None and self.type_actions.get(
                     _cap_key(k[0], k[1], r["action_type"]), 0) >= cap:
                 reason = "per_turn_cap:%d" % cap
