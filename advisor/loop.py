@@ -640,16 +640,18 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None, act_hist
 
 
 def _active_from(record, pol):
-    lords, regions = [], []
+    lords, heroes, regions = [], [], []
     for e in record.get("entities") or []:
         k = (e["context_kind"], str(e["context_id"]))
         if k in pol.retired:
             continue
         if e["context_kind"] == "lord":
             lords.append(e["context_id"])
+        elif e["context_kind"] == "hero":
+            heroes.append(e["context_id"])
         elif e["context_kind"] == "province":
             regions.append(e["context_id"])
-    return {"lords": lords, "regions": regions, "campaign": True}
+    return {"lords": lords, "heroes": heroes, "regions": regions, "campaign": True}
 
 
 def _noop_record(pick):
