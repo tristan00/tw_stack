@@ -143,7 +143,7 @@ def train(runs_root=RUNS_ROOT):
 
 class InterruptRanker:
 
-    def __init__(self, model_dir=MODEL_DIR, seed=None, strategies=None):
+    def __init__(self, model_dir=MODEL_DIR, seed=None, strategies=None, ruleset=None):
         self.ready = False
         self.meta = {}
         self.e1 = self.e2 = None
@@ -151,6 +151,7 @@ class InterruptRanker:
         self._cat_maps = None
         self.rng = random.Random(seed)
         self.strategies = P.normalize_strategies(strategies)
+        self.ruleset = ruleset
         try:
             from catboost import CatBoostRegressor
             p1 = os.path.join(model_dir, "e1.cbm")
@@ -231,6 +232,9 @@ class InterruptRanker:
         if drawn == "random":
             return self.rng.choice(opts), "random", {}
         if drawn == "ruleset":
+            hit = self.ruleset.match_screen(str(screen), opts) if self.ruleset else None
+            if hit:
+                return hit[0], "ruleset(%s)" % hit[1], {}
             return self.rng.choice(opts), "ruleset_random_fallback", {}
         sr = self.meta.get("screen_rows")
         if sr is not None:
