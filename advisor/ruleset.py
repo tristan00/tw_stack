@@ -53,6 +53,8 @@ class _Ctx:
         self.hostile_armies = {str(h.get("cqi")): h for h in world.get("hostiles") or []
                                if h.get("kind") == "army" and h.get("cqi") is not None}
         self.hostiles = world.get("hostiles") or []
+        self.at_war = {r.get("faction") for r in world.get("relations") or []
+                       if r.get("at_war") and r.get("faction")}
         self._memo = {}
 
     def entity_of(self, row):
@@ -126,6 +128,19 @@ def _in_own_territory(row, ctx):
     return a.get("in_own_territory") if a else None
 
 
+def _in_enemy_territory(row, ctx):
+    cqi = (((ctx.entity_of(row) or {}).get("state")) or {}).get("cqi")
+    if cqi is None:
+        return None
+    a = ctx.armies.get(str(cqi))
+    if not a:
+        return None
+    owner = a.get("region_owner")
+    if owner is None:
+        return None
+    return owner in ctx.at_war
+
+
 def _target_army_units(row, ctx):
     if row.get("action_type") != "hero_action":
         return None
@@ -157,6 +172,7 @@ DERIVED = {"target_units": _target_units,
            "chain_key": _chain_key,
            "move_dist_to_smaller_enemy": _move_dist_to_smaller_enemy,
            "in_own_territory": _in_own_territory,
+           "in_enemy_territory": _in_enemy_territory,
            "target_army_units": _target_army_units,
            "target_army_rank": _target_army_rank}
 
