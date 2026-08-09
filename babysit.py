@@ -20,7 +20,7 @@ RELAUNCH_COOLDOWN_S = 1800
 RUN = {"campaigns": 100, "turns": 20, "model": "catboost", "retrain_every": 10,
        "strategies": "exploit_tree=0.7,random=0.2,ruleset=0.1", "ruleset": "v1",
        "factions": ("wh2_main_hef_nagarythe,wh3_main_cth_the_northern_provinces,"
-                    "wh3_dlc27_sla_masque_of_slaanesh,wh_main_vmp_vampire_counts,"
+                    "wh3_dlc27_sla_masque_of_slaanesh,wh_main_vmp_schwartzhafen,"
                     "wh2_main_def_cult_of_pleasure")}
 
 
