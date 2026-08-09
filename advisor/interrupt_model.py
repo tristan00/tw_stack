@@ -27,6 +27,13 @@ def _state_row(screen, n_options, campaign, world=None):
     return row
 
 
+def _num(v):
+    try:
+        return float(str(v).strip())
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _row(screen, option, n_options, campaign, world=None, panel=None, meta=None):
     row = _state_row(screen, n_options, campaign, world)
     row["isc_option"] = str(option)
@@ -39,6 +46,19 @@ def _row(screen, option, n_options, campaign, world=None, panel=None, meta=None)
     p = panel or {}
     row["isc_fc_result"] = str((p.get("result") or {}).get("state") or "none")
     row["isc_fc_casualties"] = str((p.get("casualties") or {}).get("state") or "none")
+    row["isc_dip_attitude"] = _num(p.get("attitude"))
+    row["isc_dip_attitude_label"] = str(p.get("attitude_label") or "none")
+    row["isc_dip_race"] = str(p.get("race") or "none")
+    rel = p.get("reliability") or []
+    row["isc_dip_reliability"] = str(rel[0]) if rel else "none"
+    ranks = [_num(x) for x in (p.get("strength_ranks") or [])]
+    row["isc_dip_strength_them"] = ranks[0] if ranks else 0.0
+    row["isc_dip_strength_us"] = ranks[1] if len(ranks) > 1 else 0.0
+    row["isc_dip_settlements"] = _num(p.get("settlements"))
+    terms = [str(x) for x in (p.get("terms") or [])]
+    row["isc_dip_terms"] = " | ".join(sorted(terms)) or "none"
+    row["isc_dip_n_terms"] = float(len(terms))
+    row["isc_dip_sections"] = " | ".join(str(x) for x in (p.get("sections") or [])) or "none"
     return row
 
 

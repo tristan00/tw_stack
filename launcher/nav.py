@@ -143,16 +143,20 @@ def close_panel(bus, root, settle=0.7):
     return root not in visible_roots(bus)
 
 
+def diplomacy_owned(root):
+    return root in DECISION_ROOTS or "diplo" in str(root).lower()
+
+
 def close_popups(bus, max_rounds=8, settle=0.7):
     clicked_paths = []
     for _ in range(max_rounds):
         clicked_this_round = False
         for root in _open_roots(bus):
+            if diplomacy_owned(root):
+                continue
             if root not in BASE_ROOTS and root not in BENIGN_PANELS:
                 dump_screen(bus, root, "predismiss")
             for btn in find_dismiss_buttons(bus, root):
-                if root in DECISION_ROOTS and btn.rsplit("|", 1)[-1] == "button_accept":
-                    continue
                 res = bus.send("click", btn, timeout=_FIND_T) or {}
                 if res.get("clicked"):
                     clicked_paths.append(btn)
@@ -163,7 +167,7 @@ def close_popups(bus, max_rounds=8, settle=0.7):
         if not clicked_this_round:
             break
     for root in _open_roots(bus):
-        if root in BASE_ROOTS or root in BENIGN_PANELS or root in DECISION_ROOTS:
+        if root in BASE_ROOTS or root in BENIGN_PANELS or diplomacy_owned(root):
             continue
         if close_panel(bus, root, settle=settle):
             clicked_paths.append("ClosePanel(%s)" % root)
