@@ -136,12 +136,29 @@ def _target_army_units(row, ctx):
     return a.get("units") if a else None
 
 
+def _target_army_rank(row, ctx):
+    if row.get("action_type") != "hero_action":
+        return None
+    tc = (row.get("params") or {}).get("target_cqi")
+    if tc is None:
+        return None
+    a = ctx.armies.get(str(tc))
+    if not a:
+        return None
+    r = a.get("rank")
+    if r is not None:
+        return float(r)
+    u = a.get("units")
+    return None if u is None else float(u) * 0.001
+
+
 DERIVED = {"target_units": _target_units,
            "units_advantage": _units_advantage,
            "chain_key": _chain_key,
            "move_dist_to_smaller_enemy": _move_dist_to_smaller_enemy,
            "in_own_territory": _in_own_territory,
-           "target_army_units": _target_army_units}
+           "target_army_units": _target_army_units,
+           "target_army_rank": _target_army_rank}
 
 PREFER_FIELDS = frozenset(DERIVED) | PARAMS_FIELDS
 
