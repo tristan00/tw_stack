@@ -1197,7 +1197,18 @@ def _hero_action_execute(bus, ctx, pick, before):
         return _hero_action_execute_inner(bus, ctx, pick, before)
     finally:
         if before.get("panel_opened"):
-            _ev(bus, 'common.call_context_command([[CloseAllPanels]]) return "sent"', timeout=8.0)
+            import interrupts
+            inflight = sys.exc_info()[1]
+            try:
+                g = interrupts.claim_screen(bus, "hero_action_close")
+            except BaseException:
+                if inflight is not None:
+                    sys.stderr.write("cco_actions: hero_action guard raised over in-flight %r\n"
+                                     % (inflight,))
+                raise
+            if not g.get("left"):
+                _ev(bus, 'common.call_context_command([[CloseAllPanels]]) return "sent"',
+                    timeout=8.0)
 
 
 def _hero_action_execute_inner(bus, ctx, pick, before):
@@ -1349,6 +1360,7 @@ def _end_turn_tooltip(bus):
 
 def _clear_end_turn_blockers(bus):
     import nav
+    import interrupts
     t0 = time.time()
     out = {"notifications_empty": _ev(bus, _LUA_NOTIF_EMPTY, timeout=8.0)}
     if str(out["notifications_empty"]).lower() != "true":
@@ -1359,6 +1371,12 @@ def _clear_end_turn_blockers(bus):
     for _ in range(6):
         if "events" not in nav.visible_roots(bus):
             break
+        g = interrupts.claim_screen(bus, "end_turn_blockers")
+        if g.get("fired"):
+            out.setdefault("guards", []).append(g.get("steps"))
+            if g.get("left"):
+                break
+            continue
         btns = nav.find_dismiss_buttons(bus, "events")
         if not btns:
             sys.stderr.write("cco_actions: end_turn blocked -- events panel open with no dismiss "
@@ -1383,7 +1401,7 @@ def _clear_end_turn_blockers(bus):
 def _endturn_execute(bus, ctx, pick, before):
     try:
         import click_actions
-        click_actions.clear_screen(bus)
+        click_actions.clear_screen(bus, "end_turn")
     except Exception as e:
         sys.stderr.write("cco_actions: end_turn clear_screen -> %s\n" % repr(e)[:100])
     before["blockers"] = _clear_end_turn_blockers(bus)
