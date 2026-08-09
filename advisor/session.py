@@ -727,7 +727,7 @@ def _stretch_context(path, rep, gen, stretch, extra):
     corpus = ({k: trained.get(k) for k in ("rows", "runs", "campaigns", "n_decisions")}
               if trained and not trained.get("error") else None)
     req = rep.get("requested") or {}
-    shadow = dict(extra, session=path, _corpus=corpus)
+    shadow = dict(extra, session=path, _corpus=corpus, requested=req)
     return (req.get("backend") or stretch[0].get("backend"), req.get("backend_cfg") or {},
             shadow, trained)
 
