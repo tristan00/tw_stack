@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -182,7 +183,8 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
     import interrupt_model as IM
     import interrupts as I
     _verify_action_catalogues(log)
-    ranker = IM.InterruptRanker(NO_MODEL_DIR) if cold else IM.InterruptRanker()
+    ranker = (IM.InterruptRanker(NO_MODEL_DIR, strategies=pol.strategies) if cold
+              else IM.InterruptRanker(strategies=pol.strategies))
     act_hist = []
     act_counts = {}
     I.reset_answers()
@@ -191,13 +193,13 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
                       F.stamp_prev_actions(dict(campaign or {}), act_hist), act_counts),
                       panel, world, meta))
     if ranker.ready:
-        log("interrupt policy: trained(%d rows, screens=%s)"
-            % ((ranker.meta or {}).get("rows", 0),
+        log("interrupt policy: mix %s, trained(%d rows, screens=%s)"
+            % (json.dumps(ranker.strategies), (ranker.meta or {}).get("rows", 0),
                ",".join((ranker.meta or {}).get("screens") or [])))
-    elif cold:
-        log("interrupt policy: cold_random (FORCED -- cold start, the fitted model is ignored)")
     else:
-        log("interrupt policy: cold_random (advisor-hosted; no interrupt model fitted yet)")
+        log("interrupt policy: mix %s, exploit_tree unready -> random fallback%s"
+            % (json.dumps(ranker.strategies),
+               " (FORCED -- cold start)" if cold else ""))
 
     def _stuck(reason, detail):
         stuck.update(fired=True, reason=reason, detail=detail)
