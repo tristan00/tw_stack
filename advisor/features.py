@@ -753,7 +753,7 @@ MODEL_COLUMNS = frozenset((
     "near_enemy_1_dist", "near_enemy_1_stance", "near_enemy_1_faction",
     "near_enemy_1_strength",
     "near_enemysett_1_dist", "near_enemysett_1_faction",
-    "near_enemysett_1_strength", "near_ownsett_1_dist",
+    "near_ownsett_1_dist",
     "near_neutral_1_faction", "near_neutral_1_race",
     "near_enemy_total", "near_enemysett_total",
     "prov_province", "prov_active_edict", "prov_is_capital", "prov_buildings", "prov_free_slots",
