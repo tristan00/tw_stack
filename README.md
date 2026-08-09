@@ -113,10 +113,17 @@ not an error to fix.
 ## 2. Start everything — `runctl.py`
 
 `runctl.py` is the only supported way to start or stop a run. It owns the log paths, the
-`CURRENT_SESSION_LOG.txt` pointer and the recorder/session start order. Never launch
-`session.py` or `manager.py` by hand and never redirect their output yourself — a session
-cannot record where its own stdout went, so a hand-rolled launch is invisible to the UI
-and to `train_events`.
+`CURRENT_SESSION_LOG.txt` pointer and the recorder/session start order.
+
+> **BANNED: launching `advisor/session.py` or `manager/manager.py` directly, or redirecting
+> their output. No exceptions.** Copying the command line off a running process is not research
+> into how runs are started.
+>
+> `runctl.start_session()` is the only writer of `CURRENT_SESSION_LOG.txt`; `session.py` never
+> writes it. `_live_log()` -> `_live_session()` -> `live_trial()` reads only that pointer and
+> hardcodes `running: True`, with no liveness check. A direct launch therefore leaves the pointer
+> on the **previous** session: the UI and `train_events` report that dead run as RUNNING and the
+> real one is invisible. Nothing errors.
 
 ```powershell
 cd D:\tw_stack
