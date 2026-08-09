@@ -771,7 +771,17 @@ MODEL_COLUMNS = frozenset((
     "isc_dilemma_id", "isc_option_id", "isc_option_label", "isc_payload", "isc_n_payload",
     "isc_dip_attitude", "isc_dip_attitude_label", "isc_dip_race", "isc_dip_reliability",
     "isc_dip_strength_them", "isc_dip_strength_us", "isc_dip_settlements",
-    "isc_dip_terms", "isc_dip_n_terms", "isc_dip_sections",
+    "isc_dip_dem_confederation", "isc_dip_dem_defensive_alliance",
+    "isc_dip_dem_military_alliance", "isc_dip_dem_nonaggression_pact",
+    "isc_dip_dem_payment", "isc_dip_dem_peace", "isc_dip_dem_soft_access",
+    "isc_dip_dem_state_gift", "isc_dip_dem_trade_agreement", "isc_dip_dem_vassal",
+    "isc_dip_off_confederation", "isc_dip_off_defensive_alliance",
+    "isc_dip_off_military_alliance", "isc_dip_off_nonaggression_pact",
+    "isc_dip_off_payment", "isc_dip_off_peace", "isc_dip_off_soft_access",
+    "isc_dip_off_state_gift", "isc_dip_off_trade_agreement", "isc_dip_off_vassal",
+    "isc_dip_dem_other", "isc_dip_off_other",
+    "isc_dip_n_demanded", "isc_dip_n_offered", "isc_dip_n_treaties",
+    "isc_dip_amount_demanded", "isc_dip_amount_offered",
 ))
 
 MODEL_COLUMNS_ENABLED = True

@@ -27,6 +27,11 @@ def _state_row(screen, n_options, campaign, world=None):
     return row
 
 
+DEAL_ITEMS = ("confederation", "defensive_alliance", "military_alliance",
+              "nonaggression_pact", "payment", "peace", "soft_access",
+              "state_gift", "trade_agreement", "vassal")
+
+
 def _num(v):
     try:
         return float(str(v).strip())
@@ -55,10 +60,18 @@ def _row(screen, option, n_options, campaign, world=None, panel=None, meta=None)
     row["isc_dip_strength_them"] = ranks[0] if ranks else 0.0
     row["isc_dip_strength_us"] = ranks[1] if len(ranks) > 1 else 0.0
     row["isc_dip_settlements"] = _num(p.get("settlements"))
-    terms = [str(x) for x in (p.get("terms") or [])]
-    row["isc_dip_terms"] = " | ".join(sorted(terms)) or "none"
-    row["isc_dip_n_terms"] = float(len(terms))
-    row["isc_dip_sections"] = " | ".join(str(x) for x in (p.get("sections") or [])) or "none"
+    dem = [str(x) for x in (p.get("demands") or [])]
+    off = [str(x) for x in (p.get("offers") or [])]
+    for item in DEAL_ITEMS:
+        row["isc_dip_dem_%s" % item] = float(dem.count(item))
+        row["isc_dip_off_%s" % item] = float(off.count(item))
+    row["isc_dip_dem_other"] = float(sum(1 for x in dem if x not in DEAL_ITEMS))
+    row["isc_dip_off_other"] = float(sum(1 for x in off if x not in DEAL_ITEMS))
+    row["isc_dip_n_demanded"] = float(len(dem))
+    row["isc_dip_n_offered"] = float(len(off))
+    row["isc_dip_n_treaties"] = float(len(p.get("treaties") or []))
+    row["isc_dip_amount_demanded"] = _num(p.get("amount_demanded"))
+    row["isc_dip_amount_offered"] = _num(p.get("amount_offered"))
     return row
 
 
