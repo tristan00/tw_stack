@@ -105,7 +105,7 @@ def _world_hint():
     return _WORLD[0]
 
 
-def _choose(screen, options, campaign=None, panel=None, meta=None):
+def _choose(screen, options, campaign=None, panel=None, meta=None, live=None):
     opts = sorted(options)
     if not opts:
         return None
@@ -115,11 +115,25 @@ def _choose(screen, options, campaign=None, panel=None, meta=None):
             "no interrupt chooser installed -- the advisor owns this decision and must call "
             "interrupts.set_chooser() before driving any screen. Refusing to invent a policy in "
             "the launcher (screen=%s, offered=%s)" % (screen, opts))
+    if live is None:
+        raise RuntimeError(
+            "interrupt screen %s called _choose() with no live-option reader. Every interrupt "
+            "screen must be able to re-read what it is offering at pick time, otherwise a "
+            "recommendation cannot be checked against the panel and phantom options enter the "
+            "corpus as confirmed actions (offered=%s)" % (screen, opts))
     got, policy, scores = fn(screen, opts, campaign, panel, _world_hint(), meta)
     if got not in options:
         raise RuntimeError(
             "chooser returned %r which is NOT among the legal options %s for %s. Taking it anyway "
             "is how button_attack eventually gets clicked." % (got, opts, screen))
+    present = live()
+    if got not in present:
+        raise PhantomOption(
+            "PHANTOM OPTION on %s: the advisor recommended %r but the panel that is open does NOT "
+            "offer it. offered_to_advisor=%s live_on_panel=%s -- the option list did not come from "
+            "the screen currently up, so the pick, the click and the recorded outcome would all be "
+            "fiction. Refusing to click it or record it."
+            % (screen, got, opts, sorted(present)))
     _LAST_POLICY[0] = policy
     _LAST_SCORES[0] = dict(scores or {})
     sys.stderr.write("interrupts: SCREEN %s offered=%s -> %r (%s) scores=%s\n"
@@ -179,6 +193,10 @@ def _report_unhandled(bus, screen, unknown, offered, root=None):
 
 
 class UnhandledScreen(BaseException):
+    pass
+
+
+class PhantomOption(UnhandledScreen):
     pass
 ACCEPT_TOKENS = ("accept", "confirm", "button_ok", "button_yes")
 DECLINE_TOKENS = ("decline", "reject", "refuse", "cancel", "close", "no_deal")
@@ -313,6 +331,24 @@ def _tree(bus, root, depth=22, nodes=4000):
         return []
 
 
+def live_control_ids(bus, root):
+    return {str(n.get("id") or "") for n in _tree(bus, root)
+            if n.get("visible") and str(n.get("state")) in _CLICKABLE}
+
+
+def live_option_texts(bus, root):
+    out = set()
+    for n in _tree(bus, root, 22, 3000):
+        if str(n.get("id")) != "dy_option" or not n.get("visible"):
+            continue
+        if str(n.get("state")) not in _CLICKABLE:
+            continue
+        t = str(n.get("text") or "").strip().lower()
+        if t:
+            out.add(t)
+    return out
+
+
 def cancel_declare_war(bus):
     steps = []
     for root in [x for x in roots(bus)
@@ -334,7 +370,8 @@ def cancel_declare_war(bus):
         opts = {k: {"context": None, "text": labels.get(k) or k,
                     "dilemma_id": root, "option_id": k, "payload": [], "subtree": []}
                 for k in targets}
-        key = _choose("declare_war_cancel", sorted(opts), _campaign_hint(), meta=opts)
+        key = _choose("declare_war_cancel", sorted(opts), _campaign_hint(), meta=opts,
+                      live=lambda: live_control_ids(bus, root))
         t0 = time.time()
         clicked = _click(bus, targets[key], settle=2.0)
         gone = _root_gone(bus, root)
@@ -435,7 +472,8 @@ def resolve_prebattle(bus):
                          % ",".join(sorted(ctrls)[:10]))
         return False
     forecast = prebattle_forecast(bus)
-    m = _sticky_choice("pre_battle", "popup_pre_battle", legal, forecast)
+    m = _sticky_choice("pre_battle", "popup_pre_battle", legal, forecast,
+                       live=lambda: live_control_ids(bus, "popup_pre_battle"))
     if m["tries"] > _ANSWER_TRIES:
         sys.stderr.write("interrupts: pre_battle held pick %r already failed %d tries -- "
                          "leaving the screen to the watchdog\n" % (m["want"], _ANSWER_TRIES))
@@ -536,7 +574,8 @@ def handle_results(bus):
                 "recorded under its own id), or to ADVANCE_PREFERENCE if it advances the panel. "
                 "clickable=%s" % (unknown, sorted(ctrls)))
         fates = sorted(i for i in ctrls if is_captive_option(i))
-        target = (_choose("battle_results", fates, _campaign_hint()) if fates
+        target = (_choose("battle_results", fates, _campaign_hint(),
+                          live=lambda: live_control_ids(bus, "popup_battle_results")) if fates
                   else next((i for i in ADVANCE_PREFERENCE if i in ctrls), None))
         if target is None:
             idle_waits += 1
@@ -575,13 +614,17 @@ def handle_results(bus):
 def occupy(bus):
     opts = {}
     for n in _tree(bus, "settlement_captured", 22, 3000):
-        if n.get("id") == "dy_option" and n.get("text"):
-            opts[str(n["text"]).strip().lower()] = str(n["path"]).rsplit("|dy_option", 1)[0]
+        if str(n.get("id")) != "dy_option" or not n.get("text"):
+            continue
+        if not n.get("visible") or str(n.get("state")) not in _CLICKABLE:
+            continue
+        opts[str(n["text"]).strip().lower()] = str(n["path"]).rsplit("|dy_option", 1)[0]
     if not opts:
-        sys.stderr.write("interrupts: settlement_captured has no dy_option nodes\n")
+        sys.stderr.write("interrupts: settlement_captured has no clickable dy_option nodes\n")
         return None
     detail = {k: {"context": None, "text": k} for k in opts}
-    want = _choose("occupation", sorted(opts), _campaign_hint())
+    want = _choose("occupation", sorted(opts), _campaign_hint(),
+                   live=lambda: live_option_texts(bus, "settlement_captured"))
     t0 = time.time()
     clicked = _click(bus, opts[want], settle=2.5)
     if not clicked:
@@ -645,7 +688,8 @@ def acknowledge_war_declared(bus, open_roots):
         opts = {k: {"context": None, "text": labels.get(k) or k,
                     "dilemma_id": root, "option_id": k, "payload": [], "subtree": []}
                 for k in targets}
-        key = _choose("war_declared", sorted(opts), _campaign_hint(), meta=opts)
+        key = _choose("war_declared", sorted(opts), _campaign_hint(), meta=opts,
+                      live=lambda: live_control_ids(bus, root))
         t0 = time.time()
         clicked = _click(bus, targets[key], settle=2.0)
         gone = _root_gone(bus, root)
@@ -685,7 +729,8 @@ def answer_diplomacy(bus):
         detail = _options_of(bus, root, sorted(answers))
         for k, (_path, kind) in answers.items():
             detail[k] = dict(detail.get(k) or {}, answer=kind)
-        want = _choose("diplomacy", sorted(answers), _campaign_hint())
+        want = _choose("diplomacy", sorted(answers), _campaign_hint(),
+                       live=lambda: live_control_ids(bus, root))
         target, kind = answers[want]
         sys.stderr.write("interrupts: diplomacy %s -- %d answer(s) %s -> %r (%s)\n"
                          % (root, len(answers), sorted(answers), want, kind))
@@ -731,12 +776,12 @@ def reset_answers():
     _ANSWER_MEMO.clear()
 
 
-def _sticky_choice(screen, root, options, panel=None):
+def _sticky_choice(screen, root, options, panel=None, live=None):
     m = _ANSWER_MEMO.get(root)
     if m and m.get("want") in options and time.time() - m.get("ts", 0) <= _ANSWER_TTL:
         m["tries"] += 1
         return m
-    m = {"want": _choose(screen, sorted(options), _campaign_hint(), panel),
+    m = {"want": _choose(screen, sorted(options), _campaign_hint(), panel, live=live),
          "policy": _LAST_POLICY[0], "scores": dict(_LAST_SCORES[0] or {}),
          "tries": 1, "ts": time.time()}
     _ANSWER_MEMO[root] = m
@@ -768,7 +813,7 @@ def _screen_facts(tree):
 
 def _drive_decision(bus, root, kind, opts, detail, extra):
     steps = []
-    m = _sticky_choice(kind, root, opts)
+    m = _sticky_choice(kind, root, opts, live=lambda: live_control_ids(bus, root))
     if m["tries"] > _ANSWER_TRIES:
         steps.append("%s_gave_up:%s" % (kind, root))
         return steps
@@ -965,7 +1010,8 @@ def choose_dilemma(bus, open_roots):
                 opts = {i: {"context": None, "text": labels.get(i) or i,
                             "dilemma_id": root, "option_id": i,
                             "payload": [], "subtree": []} for i in ack}
-                key = _choose("event_ack", sorted(opts), _campaign_hint(), meta=opts)
+                key = _choose("event_ack", sorted(opts), _campaign_hint(), meta=opts,
+                              live=lambda: live_control_ids(bus, root))
                 t0 = time.time()
                 clicked = _click(bus, actionable[key], settle=2.0)
                 gone = _root_gone(bus, root)
@@ -991,7 +1037,8 @@ def choose_dilemma(bus, open_roots):
                                   "dilemma_id": v["dilemma_id"], "option_id": v["option_id"],
                                   "payload": v["payload"], "subtree": v["subtree"]}
                               for k, v in found.items()}}
-        key = _choose("dilemma", sorted(opts), _campaign_hint(), meta=found)
+        key = _choose("dilemma", sorted(opts), _campaign_hint(), meta=found,
+                      live=lambda: set(_dilemma_options(bus, root) or {}))
         sys.stderr.write("interrupts: dilemma %s (%s) -- %d options -> %r\n"
                          % (root, dilemma_id, len(opts), key))
         t0 = time.time()
