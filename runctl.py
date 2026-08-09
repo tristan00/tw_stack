@@ -96,7 +96,8 @@ def start_ui(port=DEFAULT_PORT):
 
 
 def start_session(campaigns, turns, model=None, cfg=None, retrain=True, retrain_every=0,
-                  cold=False, dev=False, epsilon=None, factions="all"):
+                  cold=False, dev=False, epsilon=None, factions="all", strategies=None,
+                  ruleset=None):
     if not str(factions or "").strip():
         raise SystemExit("--factions must be 'all' or a comma-separated list of faction keys")
     ts = _stamp()
@@ -113,6 +114,8 @@ def start_session(campaigns, turns, model=None, cfg=None, retrain=True, retrain_
             + (["--retrain"] if retrain and not cold else [])
             + (["--retrain-every", str(retrain_every)] if retrain_every and not cold else [])
             + (["--epsilon", str(epsilon)] if epsilon is not None else [])
+            + (["--strategies", str(strategies)] if strategies else [])
+            + (["--ruleset", str(ruleset)] if ruleset else [])
             + (["--dev"] if dev else []))
     _spawn(args, log)
     os.makedirs(LOG_DIR, exist_ok=True)
@@ -123,7 +126,7 @@ def start_session(campaigns, turns, model=None, cfg=None, retrain=True, retrain_
 
 def up(campaigns, turns, model=None, cfg=None, retrain=True, retrain_every=0, cold=False,
        dev=False, shots=DEFAULT_SHOTS, port=DEFAULT_PORT, with_ui=True, epsilon=None,
-       factions="all"):
+       factions="all", strategies=None, ruleset=None):
     steps = [kill_session(), kill_recorder()]
     if with_ui:
         steps.append(kill_ui())
@@ -136,7 +139,8 @@ def up(campaigns, turns, model=None, cfg=None, retrain=True, retrain_every=0, co
     steps.append("session -> %s" % start_session(campaigns, turns, model=model, cfg=cfg,
                                                  retrain=retrain, retrain_every=retrain_every,
                                                  cold=cold, dev=dev, epsilon=epsilon,
-                                                 factions=factions))
+                                                 factions=factions, strategies=strategies,
+                                                 ruleset=ruleset))
     return steps
 
 
@@ -188,6 +192,8 @@ def main():
         s.add_argument("--no-retrain", action="store_true")
         s.add_argument("--retrain-every", type=int, default=0)
         s.add_argument("--epsilon", type=float, default=None)
+        s.add_argument("--strategies", default=None)
+        s.add_argument("--ruleset", default=None)
         s.add_argument("--cold", action="store_true")
         s.add_argument("--dev", action="store_true")
         if name == "up":
@@ -205,7 +211,7 @@ def main():
         return
     common = dict(model=a.model, cfg=_cfg(a.cfg), retrain=not a.no_retrain,
                   retrain_every=a.retrain_every, cold=a.cold, dev=a.dev, epsilon=a.epsilon,
-                  factions=a.factions)
+                  factions=a.factions, strategies=a.strategies, ruleset=a.ruleset)
     if a.cmd == "session":
         print("session -> %s" % start_session(a.campaigns, a.turns, **common))
         return

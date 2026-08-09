@@ -8,6 +8,8 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 
 import model as M
+import ruleset as R
+import strategies as S
 
 FORBIDDEN_KEYS = frozenset({"button_attack", "button_spectate"})
 
@@ -16,6 +18,32 @@ MAX_ACTIONS_PER_ENTITY = 6
 
 EPSILON = 0.10
 BETA = 0.10
+
+DEFAULT_STRATEGIES = {"exploit_tree": 0.8, "random": 0.2}
+
+
+def normalize_strategies(strategies):
+    mix = dict(strategies if strategies is not None else DEFAULT_STRATEGIES)
+    if not mix:
+        raise ValueError("empty strategy mix -- known strategies: %s" % ", ".join(S.NAMES))
+    unknown = sorted(k for k in mix if k not in S.NAMES)
+    if unknown:
+        raise ValueError("unknown strategy name(s) %s -- known: %s"
+                         % (unknown, ", ".join(S.NAMES)))
+    total = 0.0
+    for k, v in mix.items():
+        try:
+            w = float(v)
+        except (TypeError, ValueError):
+            raise ValueError("strategy %r has a non-numeric weight %r" % (k, v))
+        if w < 0.0:
+            raise ValueError("strategy %r has a negative weight %r" % (k, v))
+        mix[k] = w
+        total += w
+    if total <= 0.0:
+        raise ValueError("strategy mix %r sums to zero" % (strategies,))
+    return {k: w / total for k, w in mix.items()}
+
 
 FACTION_WIDE_CAPS = frozenset(("recruit_lord", "recruit_hero", "research", "rites",
                                "building_dismantle"))
@@ -42,9 +70,17 @@ def _cap_key(context_kind, context_id, action_type):
 
 class Policy:
     def __init__(self, ranker=None, seed=None, max_actions_per_turn=MAX_ACTIONS_PER_TURN,
-                 max_actions_per_entity=MAX_ACTIONS_PER_ENTITY):
+                 max_actions_per_entity=MAX_ACTIONS_PER_ENTITY, strategies=None, ruleset=None):
         self.ranker = ranker if ranker is not None else M.Ranker()
         self.rng = random.Random(seed)
+        self.strategies = normalize_strategies(strategies)
+        self.ruleset = R.RuleSet.load(ruleset) if ruleset else None
+        if "ruleset" in self.strategies and self.ruleset is None:
+            raise ValueError("strategy mix includes 'ruleset' but no ruleset name was given")
+        self.members = {name: S.build(name, rng=self.rng, ranker=self.ranker,
+                                      ruleset=self.ruleset)
+                        for name in self.strategies}
+        self.fallback = self.members.get("random") or S.build("random", rng=self.rng)
         self.max_actions_per_turn = max_actions_per_turn
         self.max_actions_per_entity = max_actions_per_entity
         self.retired = set()
@@ -118,20 +154,20 @@ class Policy:
                             "n_dropped": len(self.last_drops), "actions_taken": actions_taken,
                             "drop_reasons": _tally(d["reason"] for d in self.last_drops),
                             "eligible_types": _tally(r["action_type"] for r in elig),
-                            "mode": None, "roll": None}
+                            "mix": dict(self.strategies), "mode": None, "roll": None}
         if not elig:
             return None, ranked
-        roll = self.rng.random() if hot else 1.0
-        if hot and roll < EPSILON:
-            mode, best = "epsilon_random", self._hier_random(elig)
-        elif hot and roll < EPSILON + BETA:
-            mode = "explore"
-            best = max(elig, key=lambda r: r.get("explore") or 0.0)
-        elif hot:
-            mode = "exploit"
-            best = max(elig, key=lambda r: r.get("exploit") or 0.0)
+        roll = self.rng.random()
+        drawn = self._draw(roll)
+        member = self.members[drawn]
+        best = member.pick(elig, record) if member.ready else None
+        if best is None:
+            mode = "%s->random" % drawn
+            best = self.fallback.pick(elig, record)
+        elif drawn == "ruleset":
+            mode = "ruleset(%s)" % member.last_rule
         else:
-            mode, best = "cold_random", self._hier_random(elig)
+            mode = drawn
         pick = {"context_kind": best["context_kind"], "context_id": best["context_id"],
                 "action_type": best["action_type"], "key": best["key"],
                 "params": best.get("params") or {},
@@ -141,11 +177,14 @@ class Policy:
         self.last_choice["roll"] = round(roll, 4)
         return pick, ranked
 
-    def _hier_random(self, elig):
-        pools = {}
-        for r in elig:
-            pools.setdefault(r["action_type"], []).append(r)
-        return self.rng.choice(pools[self.rng.choice(sorted(pools))])
+    def _draw(self, roll):
+        names = list(self.strategies)
+        acc = 0.0
+        for name in names:
+            acc += self.strategies[name]
+            if roll < acc:
+                return name
+        return names[-1]
 
 
 def scores_for_store(ranked, limit=None):

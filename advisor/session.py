@@ -16,6 +16,7 @@ import journal
 import loop as L
 import model as M
 import policy as P
+import strategies as ST
 from interrupts import UnhandledScreen
 
 RUNS_ROOT = "D:/twdata/runs/human"
@@ -232,9 +233,17 @@ def _postmortem(runs_root, entry, ex, log):
 NO_MODEL_DIR = r"D:\twdata\models\__cold_start__"
 
 
+def _epsilon_mix(epsilon):
+    e = float(epsilon)
+    if not 0.0 <= e <= 1.0:
+        raise SystemExit("--epsilon must be in [0, 1]")
+    return {"exploit_tree": 1.0 - e, "random": e}
+
+
 def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                   log=print, runs_root=RUNS_ROOT, retrain=False, retrain_every=0, seed=None,
-                  cold=False, backend=None, backend_cfg=None, epsilon=None):
+                  cold=False, backend=None, backend_cfg=None, epsilon=None, strategies=None,
+                  ruleset=None):
     from bus import Bus
     from executor import Executor
 
@@ -246,16 +255,33 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
     backend_cfg = backend_cfg or {}
     MB = B.resolve(backend)
     if epsilon is not None:
-        import policy as _P
-        _P.EPSILON = float(epsilon)
-        log("policy EPSILON overridden -> %.2f" % _P.EPSILON)
+        if strategies is not None:
+            raise SystemExit("--epsilon is legacy sugar for --strategies; give one, not both")
+        strategies = _epsilon_mix(epsilon)
+        log("legacy --epsilon %s mapped to strategies %s"
+            % (epsilon, json.dumps(strategies)))
+    mix = P.normalize_strategies(strategies)
+    if "ruleset" in mix and not ruleset:
+        raise SystemExit("strategy mix includes 'ruleset' but no --ruleset <name> was given")
+    if ruleset and "ruleset" not in mix:
+        raise SystemExit("--ruleset %r given but 'ruleset' is not in the strategy mix %s"
+                         % (ruleset, json.dumps(mix)))
+    ruleset_meta = None
+    if ruleset:
+        import ruleset as RS
+        rs = RS.RuleSet.load(ruleset)
+        ruleset_meta = {"name": rs.name, "sha256": rs.sha256}
+        log("ruleset: %s (%d rules, sha256 %s)" % (rs.name, len(rs.rules), rs.sha256[:12]))
+    log("strategy mix: %s" % json.dumps(mix))
     log("model backend: %s -- %s%s"
         % (backend, B.label(backend),
            ("  cfg=%s" % json.dumps(backend_cfg)) if backend_cfg else ""))
     report = {"started": time.time(), "requested": {"campaigns": n, "turns": turns, "plan": plan,
                                                     "backend": backend,
                                                     "backend_cfg": backend_cfg,
-                                                    "epsilon": epsilon},
+                                                    "epsilon": epsilon,
+                                                    "strategies": mix,
+                                                    "ruleset": ruleset_meta},
               "campaigns": []}
     if isinstance(plan, (list, tuple, set)):
         log("sampling the start per campaign from: %s" % ", ".join(sorted(plan)))
@@ -325,7 +351,7 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
             log("run dir: %s" % run_dir)
 
             ranker = MB.Ranker(B.NO_MODEL_DIR) if cold else MB.Ranker()
-            pol = P.Policy(ranker)
+            pol = P.Policy(ranker, strategies=mix, ruleset=ruleset)
             entry["backend"] = backend
             entry["policy"] = ("cold_random(forced)" if cold else
                                "trained(%d rows)" % (ranker.meta or {}).get("rows", 0)
@@ -614,6 +640,8 @@ def _trial_row(stretch, backend, backend_cfg, gen_n, report, trained, log):
            "campaigns": len(stretch),
            "backend": backend, "backend_cfg": backend_cfg,
            "epsilon": (report.get("requested") or {}).get("epsilon"),
+           "strategies": (report.get("requested") or {}).get("strategies"),
+           "ruleset": (report.get("requested") or {}).get("ruleset"),
            "feature_version": _feature_version(),
            "corpus_at_train": report.get("_corpus"),
            "fit": trained,
@@ -969,6 +997,45 @@ def _write(path, report):
         sys.stderr.write("session: could not write the report -> %s\n" % repr(e)[:90])
 
 
+def _parse_strategies(argv):
+    if "--strategies" not in argv:
+        return None
+    try:
+        raw = argv[argv.index("--strategies") + 1].strip()
+    except IndexError:
+        raise SystemExit("--strategies needs a value: name=weight[,name=weight...]")
+    if not raw or raw.startswith("--"):
+        raise SystemExit("--strategies needs a value: name=weight[,name=weight...]")
+    mix = {}
+    for part in raw.split(","):
+        name, sep, w = part.partition("=")
+        name, w = name.strip(), w.strip()
+        if not sep or not name or not w:
+            raise SystemExit("--strategies expects name=weight[,name=weight...], got %r" % part)
+        if name in mix:
+            raise SystemExit("--strategies names %r twice" % name)
+        try:
+            mix[name] = float(w)
+        except ValueError:
+            raise SystemExit("--strategies weight for %r is not a number: %r" % (name, w))
+    try:
+        return P.normalize_strategies(mix)
+    except ValueError as e:
+        raise SystemExit(str(e))
+
+
+def _parse_ruleset(argv):
+    if "--ruleset" not in argv:
+        return None
+    try:
+        name = argv[argv.index("--ruleset") + 1].strip()
+    except IndexError:
+        raise SystemExit("--ruleset needs a name (D:\\twdata\\rules\\<name>.json)")
+    if not name or name.startswith("--"):
+        raise SystemExit("--ruleset needs a name (D:\\twdata\\rules\\<name>.json)")
+    return name
+
+
 def _parse_turns(arg):
     s = str(arg)
     if "-" in s:
@@ -990,13 +1057,21 @@ def main():
     if "--factions" not in sys.argv:
         raise SystemExit("usage: session.py <campaigns> <turns|min-max> --factions "
                          "all|<key,key,...> [--retrain] [--model %s] [--nn-KEY VALUE ...]\n"
+                         "                  [--strategies a=x,b=y[,c=z]] [--ruleset <name>]\n"
                          "       session.py --rescore    -- rebuild every trial row from the "
                          "campaigns' own decision rows (archives the old ledger)\n"
                          "  --model     -- which ranker to play on (default %s):\n%s\n"
                          "  --nn-KEY V  -- backend hyperparameter, e.g. --nn-bottleneck 64\n"
+                         "  --strategies -- per-decision sampling mix over %s\n"
+                         "                 (default exploit_tree=0.8,random=0.2; weights "
+                         "normalized)\n"
+                         "  --ruleset   -- rule file name under D:\\twdata\\rules\\<name>.json "
+                         "(required when 'ruleset' is in the mix)\n"
+                         "  --epsilon E -- legacy sugar for exploit_tree=1-E,random=E\n"
                          % ("|".join(B.names()), B.DEFAULT,
                             "\n".join("                 %-10s %s" % (k, B.label(k))
-                                      for k in B.names()))
+                                      for k in B.names()),
+                            ",".join(ST.NAMES))
                          + "\n"
                          "  all         -- sample from EVERY playable start in the installed game,\n"
                          "                 read from launcher/startable_factions.json (harvested\n"
@@ -1032,9 +1107,14 @@ def main():
         epsilon = float(sys.argv[sys.argv.index("--epsilon") + 1])
         if not 0.0 <= epsilon <= 1.0:
             raise SystemExit("--epsilon must be in [0, 1]")
+    strategies = _parse_strategies(sys.argv)
+    if epsilon is not None and strategies is not None:
+        raise SystemExit("--epsilon is legacy sugar for --strategies; give one, not both")
+    ruleset = _parse_ruleset(sys.argv)
     r = run_campaigns(n, turns, plan=keys, retrain="--retrain" in sys.argv,
                       retrain_every=every, cold=cold, backend=backend,
-                      backend_cfg=backend_cfg, epsilon=epsilon)
+                      backend_cfg=backend_cfg, epsilon=epsilon, strategies=strategies,
+                      ruleset=ruleset)
     return 0 if r["totals"]["completed"] else 2
 
 
