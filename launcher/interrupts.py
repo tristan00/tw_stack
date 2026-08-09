@@ -216,6 +216,21 @@ def roots(bus):
         return []
 
 
+def pending_owned(bus, open_roots, pending=None):
+    odd = [x for x in open_roots if x not in nav.BASE_ROOTS and x not in BENIGN_PANELS
+           and x not in DIPLOMACY_HUD_ROOTS]
+    if not odd:
+        return None
+    p = pending if pending is not None else nav.engine_pending(bus)
+    if p is None:
+        sys.stderr.write("interrupts: pending probe unreadable over %s -- protected, not "
+                         "claimable\n" % odd)
+        return None
+    if not nav.pending_blocks(p):
+        return None
+    return str(p), odd
+
+
 def _refusal(gone, clicked):
     if gone is None:
         return "confirm_unreadable_bus_failure"
@@ -1170,12 +1185,25 @@ def choose_dilemma(bus, open_roots):
                 or root in BATTLE_ROOTS):
             continue
         dilemma = _is_dilemma(bus, root)
-        if not dilemma and not (root == "events" and any(
+        ack_pending = False
+        if not dilemma and root == "events":
+            p = nav.engine_pending(bus)
+            if p is not None and nav.pending_blocks(p):
+                if "DILEMMA" in str(p):
+                    deadline = time.time() + 3.0
+                    while not dilemma and time.time() < deadline:
+                        time.sleep(0.5)
+                        dilemma = _is_dilemma(bus, root)
+                ack_pending = not dilemma
+        if not dilemma and not ack_pending and not (root == "events" and any(
                 str(n.get("text") or "").strip() == "Purification Chant"
                 for n in _tree(bus, root) if n.get("visible"))):
             continue
         found = _dilemma_options(bus, root) if dilemma else {}
         if not found:
+            if ack_pending and any(WAR_DECLARED_MARKER in str(n.get("text") or "").lower()
+                                   for n in _tree(bus, root)):
+                continue
             ctrls = _clickable_controls(bus, root)
             actionable = {i: p for i, p in ctrls.items()
                           if i not in SCROLL_CHROME_IDS and i not in DISPLAY_CONTROLS}
@@ -1393,9 +1421,18 @@ def _is_dilemma(bus, root):
 
 def resolve(bus, max_rounds=6):
     steps = []
+    waited = 0
     for _ in range(max_rounds):
         before = tuple(roots(bus))
         if before and before == _stuck_sig[0]:
+            owned = pending_owned(bus, list(before))
+            if owned:
+                _report_unhandled(bus, "pending_surface", [owned[0]], owned[1],
+                                  root=",".join(owned[1]))
+                raise UnhandledScreen(
+                    "engine pending %s while %s is open on a stuck screen -- refusing to "
+                    "blind-dismiss a decision surface the interrupt model has not answered."
+                    % owned)
             try:
                 n = len(nav.close_popups(bus))
             except Exception as e:
@@ -1457,6 +1494,19 @@ def resolve(bus, max_rounds=6):
             if tuple(roots(bus)) == before:
                 break
             continue
+        owned = pending_owned(bus, list(before))
+        if owned:
+            if waited < 2:
+                waited += 1
+                sys.stderr.write("interrupts: pending %s with %s unclaimed -- waiting for the "
+                                 "panel to finish rendering (%d)\n" % (owned + (waited,)))
+                time.sleep(3.0)
+                continue
+            _report_unhandled(bus, "pending_surface", [owned[0]], owned[1],
+                              root=",".join(owned[1]))
+            raise UnhandledScreen(
+                "engine pending %s while %s is open and no handler claimed it -- refusing to "
+                "blind-dismiss a decision surface the interrupt model has not answered." % owned)
         try:
             n = len(nav.close_popups(bus))
         except Exception as e:
@@ -1490,3 +1540,43 @@ def resolve(bus, max_rounds=6):
                         % json.dumps({k: sorted(v) for k, v in drivable.items()})[:400])
         break
     return steps
+
+
+def claim_screen(bus, where, pending=None, open_roots=None):
+    r = list(open_roots) if open_roots is not None else roots(bus)
+    p = pending if pending is not None else nav.engine_pending(bus)
+    out = {"where": where, "fired": False, "pending": p, "ts": time.time()}
+
+    def _surface(rr, pp):
+        s = [x for x in rr if x in nav.PROTECTED_SURFACES
+             or x == ALLY_ATTACKED_ROOT or x == PROPOSAL_ROOT]
+        if pp is None:
+            s += [x for x in rr if x == "events"]
+        return s
+
+    surface = _surface(r, p)
+    owned = pending_owned(bus, r, pending=p)
+    if not surface and not owned:
+        if p is not None and nav.pending_blocks(p):
+            time.sleep(2.0)
+            r = roots(bus)
+            p = nav.engine_pending(bus)
+            out["pending"] = p
+            surface = _surface(r, p)
+            owned = pending_owned(bus, r, pending=p)
+        if not surface and not owned:
+            return out
+    out["fired"] = True
+    out["surface"] = sorted(set(surface) | set(owned[1] if owned else []))
+    sys.stderr.write("interrupts: claim_screen(%s) pending=%r surface=%s -- the interrupt model "
+                     "answers before anything is closed\n" % (where, p, out["surface"]))
+    out["steps"] = resolve(bus)
+    r2 = roots(bus)
+    p2 = nav.engine_pending(bus)
+    owned2 = pending_owned(bus, r2, pending=p2)
+    out["pending_after"] = p2
+    out["left"] = sorted(set(_surface(r2, p2)) | set(owned2[1] if owned2 else []))
+    if out["left"]:
+        sys.stderr.write("interrupts: claim_screen(%s) surface %s survived resolve -- the caller "
+                         "must leave it on screen\n" % (where, out["left"]))
+    return out

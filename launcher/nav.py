@@ -35,6 +35,44 @@ BENIGN_PANELS = frozenset(("units_panel", "settlement_panel", "recruitment_optio
 
 DECISION_ROOTS = frozenset(("diplomacy_dropdown", "ally_attacked"))
 
+PROTECTED_SURFACES = frozenset(("popup_pre_battle", "popup_battle_results",
+                                "settlement_captured", "appoint_new_general"))
+ORDER_PENDINGS = frozenset(("PENDING_ATTACK",))
+
+_LUA_ENGINE_PENDING = (
+    "local function g(c,p) local ok,v=pcall(function() return c:Call(p) end) "
+    "if ok and v~=nil then return tostring(v) end return 'nil' end "
+    "local r=cco('CcoCampaignRoot','') local pa=nil "
+    "pcall(function() pa=r:Call('PendingActionContext') end) "
+    "if not pa then return 'none' end "
+    "return g(pa,'IsActive')..'|'..g(pa,'ActionType')")
+
+
+def engine_pending(bus, tries=2):
+    for _ in range(tries):
+        try:
+            r = bus.send("eval", _LUA_ENGINE_PENDING, timeout=8.0) or {}
+            v = r.get("result")
+            if v is not None:
+                return v
+        except Exception as e:
+            _warn("engine_pending", repr(e)[:80])
+        time.sleep(0.3)
+    return None
+
+
+def pending_blocks(pend):
+    if pend is None:
+        return True
+    s = str(pend)
+    return s.startswith("true") and s.split("|")[-1] not in ORDER_PENDINGS
+
+
+def protected_surface(root, pend):
+    if root in PROTECTED_SURFACES:
+        return True
+    return root == "events" and pending_blocks(pend)
+
 SCREEN_DUMP_DIR = r"D:/twdata/runs/human/screens"
 _DUMP_MEMO = {}
 
@@ -149,10 +187,15 @@ def diplomacy_owned(root):
 
 def close_popups(bus, max_rounds=8, settle=0.7):
     clicked_paths = []
+    protected = set()
     for _ in range(max_rounds):
         clicked_this_round = False
+        pend = engine_pending(bus)
         for root in _open_roots(bus):
             if diplomacy_owned(root):
+                continue
+            if protected_surface(root, pend):
+                protected.add(root)
                 continue
             if root not in BASE_ROOTS and root not in BENIGN_PANELS:
                 dump_screen(bus, root, "predismiss")
@@ -166,11 +209,17 @@ def close_popups(bus, max_rounds=8, settle=0.7):
                     _warn("close_popups", "dismiss click did not register: %s (%s)" % (btn, res))
         if not clicked_this_round:
             break
+    pend = engine_pending(bus)
     for root in _open_roots(bus):
         if root in BASE_ROOTS or root in BENIGN_PANELS or diplomacy_owned(root):
             continue
+        if protected_surface(root, pend):
+            protected.add(root)
+            continue
         if close_panel(bus, root, settle=settle):
             clicked_paths.append("ClosePanel(%s)" % root)
+    if protected:
+        _warn("close_popups", "left decision surfaces open: %s" % sorted(protected))
     return clicked_paths
 
 

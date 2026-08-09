@@ -73,21 +73,7 @@ def _until(pred, cap, step=0.2):
 
 _CLEAR_TRACE = r"D:\twdata\runs\human\run\clear_screen_trace.jsonl"
 _BATTLE_ROOTS = ("popup_pre_battle", "popup_battle_results", "settlement_captured")
-_LUA_PENDING_SHORT = (
-    "local function g(c,p) local ok,v=pcall(function() return c:Call(p) end) "
-    "if ok and v~=nil then return tostring(v) end return 'nil' end "
-    "local r=cco('CcoCampaignRoot','') local pa=nil "
-    "pcall(function() pa=r:Call('PendingActionContext') end) "
-    "if not pa then return 'none' end "
-    "return g(pa,'IsActive')..'|'..g(pa,'ActionType')")
-
-
-def _pending_short(bus):
-    try:
-        r = bus.send("eval", _LUA_PENDING_SHORT, timeout=8.0) or {}
-        return r.get("result")
-    except Exception:
-        return None
+LAST_GUARD = [None]
 
 
 def _clear_trace(row):
@@ -99,10 +85,32 @@ def _clear_trace(row):
         pass
 
 
-def clear_screen(bus):
+def clear_screen(bus, where=None):
     import nav
-    pending_before = _pending_short(bus)
+    import interrupts
+    inflight = sys.exc_info()[1]
+    pending_before = nav.engine_pending(bus)
     roots_before = nav.visible_roots(bus) or []
+    guard = {}
+    try:
+        guard = interrupts.claim_screen(bus, where or "clear_screen",
+                                        pending=pending_before, open_roots=roots_before)
+    except BaseException as e:
+        if inflight is not None:
+            sys.stderr.write("click_actions: clear_screen(%s) guard raised over in-flight %r\n"
+                             % (where, inflight))
+        _clear_trace({"ts": time.time(), "where": where, "pending_before": pending_before,
+                      "roots_before": roots_before[:14], "guard_raised": repr(e)[:120]})
+        raise
+    if guard.get("fired"):
+        LAST_GUARD[0] = guard
+    if guard.get("left"):
+        sys.stderr.write("click_actions: clear_screen(%s) leaving %s on screen -- the interrupt "
+                         "model has not answered it\n" % (where, guard["left"]))
+        _clear_trace({"ts": time.time(), "where": where, "pending_before": pending_before,
+                      "pending_after": guard.get("pending_after"), "closed_n": 0,
+                      "roots_before": roots_before[:14], "guard": guard})
+        return 0
     try:
         _ev(bus, 'common.call_context_command([[CloseAllPanels]]) return "sent"', timeout=15.0)
         _until(lambda: not [r for r in (nav.visible_roots(bus) or [])
@@ -118,13 +126,14 @@ def clear_screen(bus):
         sys.stderr.write("click_actions: close_popups -> %s" % repr(e)[:80] + chr(10))
     hit = [p for p in closed if any(b in str(p) for b in _BATTLE_ROOTS)]
     battle_root_before = [r for r in roots_before if r in _BATTLE_ROOTS]
-    pending_after = _pending_short(bus)
+    pending_after = nav.engine_pending(bus)
     if hit or battle_root_before or str(pending_before or "").startswith("true") \
-            or pending_before != pending_after:
-        _clear_trace({"ts": time.time(), "pending_before": pending_before,
+            or pending_before != pending_after or guard.get("fired"):
+        _clear_trace({"ts": time.time(), "where": where, "pending_before": pending_before,
                       "pending_after": pending_after, "battle_root_before": battle_root_before,
                       "closed_battle_paths": hit, "closed_n": n,
-                      "roots_before": roots_before[:14]})
+                      "roots_before": roots_before[:14],
+                      "guard": (guard if guard.get("fired") else None)})
     try:
         if any(r not in nav.BASE_ROOTS for r in (nav.visible_roots(bus) or [])):
             nav.deselect(bus)
@@ -177,7 +186,7 @@ def prepare(bus, kind, entity_id, expect_root=None, timeout=6.0):
     if (expect_root and is_selected(bus, kind, entity_id) is True
             and expect_root in (nav.visible_roots(bus) or [])):
         return True, "already_ready"
-    clear_screen(bus)
+    clear_screen(bus, "prepare")
     if kind == "settlement":
         ok = select_settlement(bus, entity_id)
     elif kind == "lord":
@@ -434,7 +443,7 @@ def _recruit_execute(bus, ctx, pick, before):
     try:
         return _recruit_execute_inner(bus, ctx, pick, before)
     finally:
-        clear_screen(bus)
+        clear_screen(bus, "recruit_finally")
 
 
 def _recruit_execute_inner(bus, ctx, pick, before):
@@ -584,7 +593,7 @@ def _merc_execute_for(pool_btn):
         try:
             return _merc_execute_inner(bus, ctx, pick, before, pool_btn)
         finally:
-            clear_screen(bus)
+            clear_screen(bus, "merc_finally")
     return _exec
 
 
@@ -722,7 +731,7 @@ def _lord_snapshot(bus, ctx, pick):
     n = _character_count(bus)
     if n is None:
         return None
-    return {"treasury": _treasury(bus), "n_chars": n}
+    return {"treasury": _treasury(bus), "n_chars": n, "t0": time.time()}
 
 
 def _panel_mode(bus):
@@ -750,7 +759,7 @@ def _lord_execute(bus, ctx, pick, before):
     try:
         return _lord_execute_inner(bus, ctx, pick, before)
     finally:
-        clear_screen(bus)
+        clear_screen(bus, "lord_finally")
 
 
 def _lord_execute_inner(bus, ctx, pick, before):
@@ -831,6 +840,13 @@ def _lord_confirm(bus, ctx, pick, before):
     if n is None:
         return False, {"n_chars": None, "n_chars_before": before_n, "unreadable": True}
     grew = (before_n is not None and n > before_n)
+    g = LAST_GUARD[0] or {}
+    if (grew and g.get("ts", 0) >= (before.get("t0") or 0)
+            and any(str(s).startswith(("dilemma:", "event_ack:")) for s in g.get("steps") or [])):
+        sys.stderr.write("click_actions: lord confirm not attributable -- interrupt %s answered "
+                         "during the clear\n" % (g.get("steps"),))
+        return False, {"n_chars": n, "n_chars_before": before_n, "treasury": t,
+                       "confirm_tainted_by_interrupt": g.get("steps")}
     return grew, {"n_chars": n, "n_chars_before": before_n, "treasury": t,
                   "treasury_dropped": (t is not None and before.get("treasury") is not None
                                        and t < before["treasury"])}
