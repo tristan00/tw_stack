@@ -34,18 +34,25 @@ def summary(con):
     q = lambda s: con.execute(s).fetchone()[0]
     counted = q("SELECT COUNT(*) FROM action_taken WHERE counted=1")
     taken = q("SELECT COUNT(*) FROM action_taken WHERE refusal IS NOT 'awaiting_execution'")
-    latest = con.execute("SELECT campaign_id, turn, settlements, power_rank, lord_level"
-                         " FROM target_rows ORDER BY turn DESC LIMIT 1").fetchone()
+    # newest by clock, not by turn number. The run dir is reused across hundreds of
+    # campaigns, so "the highest turn ever reached" is normally a campaign that ended
+    # days ago -- these cards sit on every tab and used to contradict the live tab
+    # about which faction was being played.
+    latest = con.execute("SELECT campaign_id, turn, settlements, power_rank, lord_level, ts"
+                         " FROM target_rows ORDER BY ts DESC LIMIT 1").fetchone()
     out = {"turns": q("SELECT COUNT(*) FROM target_rows"),
            "decisions": q("SELECT COUNT(*) FROM decision_points"),
            "offers": q("SELECT COUNT(*) FROM action_offers"),
+           "campaigns": q("SELECT COUNT(DISTINCT campaign_id) FROM decision_points"),
            "taken": taken, "counted": counted,
            "confirm_rate": (round(100.0 * counted / taken, 1) if taken else 0.0),
-           "faction": "-", "turn_now": "-", "settlements": "-", "power_rank": "-",
-           "lord_level": "-"}
+           "campaign": "-", "faction": "-", "turn_now": "-", "settlements": "-",
+           "power_rank": "-", "lord_level": "-", "state_age": None}
     if latest:
-        out.update(faction=latest[0] or "-", turn_now=latest[1], settlements=latest[2],
-                   power_rank=latest[3], lord_level=latest[4])
+        out.update(campaign=latest[0] or "-", faction=_faction_of(latest[0]),
+                   turn_now=latest[1], settlements=latest[2], power_rank=latest[3],
+                   lord_level=latest[4],
+                   state_age=(time.time() - latest[5]) if latest[5] else None)
     return out
 
 
@@ -115,15 +122,19 @@ def ranking(con, did, limit=80):
 
 def timeline(con):
     rows = [dict(r) for r in con.execute(
-        "SELECT d.decision_id, d.turn, d.ts, d.timings, t.context_kind, t.context_id, t.action_type,"
+        "SELECT d.decision_id, d.campaign_id, d.turn, d.ts, d.timings, t.context_kind,"
+        " t.context_id, t.action_type,"
         " t.action_key, t.counted, t.refusal, t.latency_ms FROM decision_points d"
         " LEFT JOIN action_taken t ON t.decision_id=d.decision_id"
         " ORDER BY d.decision_id DESC LIMIT ?", (TIMELINE_ROWS,))]
     rows.reverse()
-    out, prev = [], None
+    out, prev, prev_camp = [], None, None
     for r in rows:
-        r["gap"] = (round(r["ts"] - prev, 1) if prev and r["ts"] else None)
-        prev = r["ts"] or prev
+        # the gap across a campaign boundary is game teardown and reload, not think
+        # time between two actions -- attributing it to the next action is a lie
+        same = (r["campaign_id"] == prev_camp)
+        r["gap"] = (round(r["ts"] - prev, 1) if same and prev and r["ts"] else None)
+        prev, prev_camp = (r["ts"] or prev), r["campaign_id"]
         tm = json.loads(r["timings"]) if r.get("timings") else {}
         r["collect_ms"] = tm.get("collect_ms")
         r["queue_ms"] = (tm.get("pickup_lag_ms") if tm.get("pickup_lag_ms") is not None else
@@ -136,51 +147,76 @@ def timeline(con):
         r["total_ms"] = sum(v for v in (r["collect_ms"], r["queue_ms"], r["score_ms"],
                                         r["verify_ms"]) if v) or None
         out.append(r)
-    turns_ = {}
+    # lanes are per (campaign, turn): turn numbers restart every campaign, so keying on
+    # the turn alone merged unrelated campaigns into one lane
+    lanes = {}
     for r in out:
-        turns_.setdefault(r["turn"], []).append(r)
-    return out, turns_
+        lanes.setdefault((r["campaign_id"], r["turn"]), []).append(r)
+    return out, lanes
 
 
 def run_history(con, runs_root=RUNS_ROOT):
-    seen, rows = {}, []
+    """One row per campaign, over every run dir on disk.
+
+    Two families of outcome live here and they are not interchangeable: *peak* is the
+    best a campaign ever reached, *final* is where it stopped. They are gathered with
+    grouped queries rather than two per campaign, which is what the old version cost.
+    """
+    seen = {}
     dbs = sorted(glob.glob(os.path.join(runs_root, "*", "decisions.sqlite")), key=os.path.getmtime)
     for db in dbs:
         try:
             c = sqlite3.connect("file:%s?mode=ro" % db.replace("\\", "/"), uri=True, timeout=5.0)
         except sqlite3.Error:
             continue
+        run = os.path.basename(os.path.dirname(db))
         try:
+            acted = {}
+            for camp, n_rows, counted, waiting in c.execute(
+                    "SELECT d.campaign_id, COUNT(*), COALESCE(SUM(t.counted),0),"
+                    " SUM(CASE WHEN t.refusal IS 'awaiting_execution' THEN 1 ELSE 0 END)"
+                    " FROM action_taken t JOIN decision_points d ON d.decision_id=t.decision_id"
+                    " GROUP BY d.campaign_id"):
+                acted[camp] = (n_rows or 0, counted or 0, waiting or 0)
+            peak = {}
+            for camp, mx_set, mn_rank, mx_lvl in c.execute(
+                    "SELECT campaign_id, MAX(settlements), MIN(power_rank), MAX(lord_level)"
+                    " FROM target_rows GROUP BY campaign_id"):
+                peak[camp] = (mx_set, mn_rank, mx_lvl)
+            final = {}
+            for camp, income, setl, rank in c.execute(
+                    "SELECT campaign_id, income, settlements, power_rank FROM target_rows t"
+                    " WHERE turn = (SELECT MAX(turn) FROM target_rows x"
+                    "               WHERE x.campaign_id = t.campaign_id)"
+                    " GROUP BY campaign_id"):
+                final[camp] = (income, setl, rank)
             for camp, first_ts, last_ts, n_dec, max_turn in c.execute(
                     "SELECT campaign_id, MIN(ts), MAX(ts), COUNT(*), MAX(turn) FROM decision_points"
                     " GROUP BY campaign_id"):
-                taken, counted = c.execute(
-                    "SELECT COUNT(*), COALESCE(SUM(t.counted),0) FROM action_taken t"
-                    " JOIN decision_points d ON d.decision_id=t.decision_id"
-                    " WHERE d.campaign_id=? AND t.refusal IS NOT 'awaiting_execution'",
-                    (camp,)).fetchone()
-                reward = c.execute(
-                    "SELECT turn, income, settlements, power_rank FROM target_rows"
-                    " WHERE campaign_id=? ORDER BY turn DESC LIMIT 1", (camp,)).fetchone()
-                row = {"campaign": camp, "turns": int(max_turn or 0), "decisions": n_dec,
-                       "taken": taken or 0, "counted": counted or 0, "first_ts": first_ts or 0,
-                       "minutes": round(((last_ts or 0) - (first_ts or 0)) / 60.0, 1),
-                       "confirm_pct": round(100.0 * (counted or 0) / (taken or 1), 1),
-                       "run": os.path.basename(os.path.dirname(db)),
-                       "last_income": (reward[1] if reward else None),
-                       "last_settlements": (reward[2] if reward else None),
-                       "last_power_rank": (reward[3] if reward else None)}
-                if camp in seen:
-                    if row["decisions"] > seen[camp]["decisions"]:
-                        seen[camp] = row
-                else:
+                n_rows, counted, waiting = acted.get(camp, (0, 0, 0))
+                pk, fn = peak.get(camp, (None,) * 3), final.get(camp, (None,) * 3)
+                row = {"campaign": camp, "faction": _faction_of(camp),
+                       "turns": int(max_turn or 0), "decisions": n_dec,
+                       # a decision with no action_taken row at all is not an attempt that
+                       # failed -- nothing was ever tried, and it must not enter the rate
+                       "taken": n_rows - waiting, "counted": counted, "waiting": waiting,
+                       "no_action": max(0, n_dec - n_rows),
+                       "first_ts": first_ts or 0,
+                       # decision span, NOT campaign wall clock: it excludes the game load
+                       # before the first decision and the postmortem after the last
+                       "span_min": round(((last_ts or 0) - (first_ts or 0)) / 60.0, 1),
+                       "run": run,
+                       "best_settlements": pk[0], "best_power_rank": pk[1],
+                       "best_lord_level": pk[2],
+                       "last_income": fn[0], "last_settlements": fn[1],
+                       "last_power_rank": fn[2]}
+                if camp not in seen or row["decisions"] > seen[camp]["decisions"]:
                     seen[camp] = row
         except sqlite3.Error:
             pass
         finally:
             c.close()
-    rows = sorted(seen.values(), key=lambda r: r["first_ts"])
-    return rows
+    return sorted(seen.values(), key=lambda r: r["first_ts"])
 
 
 def by_action_type(con):
@@ -190,9 +226,22 @@ def by_action_type(con):
         " WHERE refusal IS NOT 'awaiting_execution' GROUP BY action_type ORDER BY n DESC")]
 
 
-def turns(con):
+def turns(con, campaign_id=None):
+    """The per-turn series for ONE campaign.
+
+    Ordering the whole table by turn mixes every campaign in the run dir together --
+    496 campaigns produced 496 rows all labelled "turn 1" -- which reads as a time
+    series and is not one.
+    """
+    if campaign_id is None:
+        row = con.execute("SELECT campaign_id FROM target_rows ORDER BY ts DESC"
+                          " LIMIT 1").fetchone()
+        campaign_id = row[0] if row else None
+    if campaign_id is None:
+        return []
     return [dict(r) for r in con.execute(
-        "SELECT turn,income,settlements,allies,vassals,power_rank FROM target_rows ORDER BY turn")]
+        "SELECT turn,income,settlements,allies,vassals,power_rank FROM target_rows"
+        " WHERE campaign_id=? ORDER BY turn", (campaign_id,))]
 
 
 _CSS = """
@@ -279,6 +328,35 @@ _TAGS = re.compile(r"\[\[/?[^\]]*\]\]")
 def _strip_tags(v):
     """The game's own colour markup, e.g. '[[col:dip_attitude_4]]23[[/col]]'."""
     return _TAGS.sub("", str(v)).strip() if v else ""
+
+
+# campaign_id is "<faction>_<16 hex>" (decisions/store.py campaign_key); the hex only
+# distinguishes repeat plays of the same lord and carries no meaning on its own.
+_CAMP_SUFFIX = re.compile(r"_[0-9a-f]{8,}$")
+
+
+def _faction_of(campaign_id):
+    s = str(campaign_id or "")
+    return _CAMP_SUFFIX.sub("", s) or s
+
+
+def _camp_label(campaign_id):
+    """Faction first, hex second: showing the tail alone made every row look identical."""
+    s = str(campaign_id or "")
+    f = _faction_of(s)
+    tail = s[len(f):].lstrip("_")
+    return ("%s <span class=dim>#%s</span>" % (_esc(f), _esc(tail[:6])) if tail else _esc(f))
+
+
+def _pct_cell(counted, taken, cls_ok=70, cls_warn=40):
+    """A confirm rate needs a denominator. taken==0 means nothing was ever attempted,
+    which is not the same as "attempted and none confirmed" -- rendering both as 0%
+    painted campaigns red for a failure that never happened."""
+    if not taken:
+        return "<td class=dim>&mdash;</td>"
+    pct = 100.0 * (counted or 0) / taken
+    cls = "ok" if pct >= cls_ok else ("warn" if pct >= cls_warn else "bad")
+    return "<td class='%s num'>%.0f%%</td>" % (cls, pct)
 
 
 def _mix_str(mix, epsilon=None):
@@ -368,6 +446,10 @@ def _policy_tally(counts):
             agg["ruleset"] = agg.get("ruleset", 0) + n
             rule = s[len("ruleset("):-1]
             rules[rule] = rules.get(rule, 0) + n
+        elif s == "ruleset->random":
+            # a retired spelling of ruleset_random_fallback; left as its own row it
+            # looked like a distinct strategy nobody could account for
+            agg["ruleset_random_fallback"] = agg.get("ruleset_random_fallback", 0) + n
         else:
             agg[s] = agg.get(s, 0) + n
     return agg, rules, other
@@ -390,17 +472,27 @@ def _policy_tally_html(title, counts):
     for p, n in sorted(other.items(), key=lambda kv: -kv[1]):
         rows.append("<tr><td class=dim>%s</td><td class=num>%d</td>"
                     "<td class=dim>not a strategy draw</td></tr>" % (_esc(p), n))
-    return ("<h2>%s</h2>"
-            "<p class=muted>ruleset(rule) picks are aggregated under <b>ruleset</b> with the "
-            "per-rule split alongside. <b>forced_end_turn</b> is written by the loop when it "
-            "runs out of actions, so it is listed but kept out of the share denominator. "
-            "<b>gnn_delegated_*</b> is a gnn draw on the interrupt path, where there is no "
-            "gnn model, handed to exploit_tree. Older campaigns carry retired epsilon-era "
-            "strings (cold_random, epsilon_random, explore, exploit, interrupt_exploit, "
-            "interrupt_explore) &mdash; the novelty score that <i>explore</i> named has since "
-            "been deleted, so it can only appear on pre-retirement rows.</p>"
+    # only describe what this tally actually contains: the shared prose used to explain
+    # forced_end_turn on the interrupt path (where it never occurs) and gnn_delegated on
+    # the action path (likewise), which reads as a column that failed to fill
+    notes = ["ruleset(rule) picks are aggregated under <b>ruleset</b> with the per-rule "
+             "split alongside."]
+    if other:
+        notes.append("<b>forced_end_turn</b> is written by the loop when it runs out of "
+                     "actions, so it is listed but kept out of the share denominator.")
+    if any(str(p).startswith("gnn_delegated") for p in agg):
+        notes.append("<b>gnn_delegated_*</b> is a gnn draw on the interrupt path, where "
+                     "there is no gnn model, handed to exploit_tree.")
+    retired = [p for p in ("cold_random", "epsilon_random", "explore", "exploit",
+                           "interrupt_exploit", "interrupt_explore") if p in agg]
+    if retired:
+        notes.append("Retired epsilon-era strings still present here from older campaigns: "
+                     "<b>%s</b> &mdash; the novelty score that <i>explore</i> named has since "
+                     "been deleted, so it can only appear on pre-retirement rows."
+                     % _esc(", ".join(retired)))
+    return ("<h2>%s</h2><p class=muted>%s</p>"
             "<div class=scroll><table><tr><th>policy<th class=num>picks<th>share</tr>"
-            "%s</table></div>" % (_esc(title), "".join(rows)))
+            "%s</table></div>" % (_esc(title), " ".join(notes), "".join(rows)))
 
 
 def render_interrupts(runs_root=RUNS_ROOT):
@@ -581,12 +673,13 @@ def starts_summary(runs_root=RUNS_ROOT):
                     " WHERE d.campaign_id=? AND t.refusal IS NOT 'awaiting_execution'",
                     (camp,)).fetchone()
                 best = c.execute(
-                    "SELECT MAX(settlements), MIN(power_rank), MAX(lord_level), MAX(vassals)"
-                    " FROM target_rows WHERE campaign_id=?", (camp,)).fetchone() or (None,) * 4
+                    "SELECT MAX(settlements), MIN(power_rank), MAX(lord_level), MAX(vassals),"
+                    " MAX(allies) FROM target_rows WHERE campaign_id=?",
+                    (camp,)).fetchone() or (None,) * 5
                 row = {"faction": faction, "turns": int(max_turn or 0), "decisions": n_dec,
                        "taken": taken or 0, "counted": counted or 0,
                        "settlements": best[0], "power_rank": best[1],
-                       "lord_level": best[2], "vassals": best[3]}
+                       "lord_level": best[2], "vassals": best[3], "allies": best[4]}
                 prev = camps.get(camp)
                 if prev is None or row["decisions"] > prev["decisions"]:
                     camps[camp] = row
@@ -598,21 +691,24 @@ def starts_summary(runs_root=RUNS_ROOT):
     for r in camps.values():
         a = agg.setdefault(r["faction"], {"faction": r["faction"], "n": 0, "turns": 0, "taken": 0,
                                           "counted": 0, "best_turns": 0, "settlements": None,
-                                          "power_rank": None, "lord_level": None, "vassals": None})
+                                          "power_rank": None, "lord_level": None,
+                                          "vassals": None, "allies": None,
+                                          "ever_vassal": 0, "ever_ally": 0})
         a["n"] += 1
         a["turns"] += r["turns"]
         a["taken"] += r["taken"]
         a["counted"] += r["counted"]
         a["best_turns"] = max(a["best_turns"], r["turns"])
+        a["ever_vassal"] += 1 if (r.get("vassals") or 0) > 0 else 0
+        a["ever_ally"] += 1 if (r.get("allies") or 0) > 0 else 0
         for k, better in (("settlements", max), ("lord_level", max), ("vassals", max),
-                          ("power_rank", min)):
+                          ("allies", max), ("power_rank", min)):
             v = r[k]
             if v is not None:
                 a[k] = v if a[k] is None else better(a[k], v)
     out = []
     for a in agg.values():
         a["avg_turns"] = round(a["turns"] / a["n"], 1) if a["n"] else 0.0
-        a["confirm_pct"] = round(100.0 * a["counted"] / (a["taken"] or 1), 1)
         out.append(a)
     return sorted(out, key=lambda a: (-a["n"], -a["avg_turns"]))
 
@@ -736,6 +832,7 @@ def render_diplomacy(run_dir):
         ch = d.get("channel")
         p = d.get("panel") or {}
         chance = gift = standing = ""
+        chance_cls = "dim"
         if ch == "outgoing":
             who = d.get("faction")
             resp = p.get("response") or {}
@@ -755,10 +852,16 @@ def render_diplomacy(run_dir):
                 ans, cls = "not staged (%s)" % (p.get("failed_at") or "?"), "bad"
             sc = p.get("success_chance")
             if sc not in (None, ""):
+                # the game's label_deal_success_chance is NOT a percentage: it runs to
+                # -1021.5 here. What it carries is the sign -- negative means the ai
+                # refuses (468/477 observed), positive means the deal was sendable
+                # (578/578). Printing it with a % suffix produced "-1021.5%".
                 try:
-                    chance = "%+.1f%%" % float(sc)
+                    v = float(sc)
+                    chance = "%+.1f" % v
+                    chance_cls = "num ok" if v >= 0 else "num bad"
                 except (TypeError, ValueError):
-                    chance = str(sc)
+                    chance, chance_cls = str(sc), "num dim"
             tb = d.get("treaty_before") or {}
             if tb.get("standing") is not None:
                 standing = "%g%s" % (tb["standing"], " at war" if tb.get("at_war") else "")
@@ -779,11 +882,11 @@ def render_diplomacy(run_dir):
                                                                             _esc(detail))
             else:
                 detail = _esc(detail)
-        tr.append("<tr><td class=dim>%s</td><td>%s</td><td>%s</td><td class=%s>%s</td>"
-                  "<td class=num>%s</td><td class='num dim'>%s</td>"
+        tr.append("<tr><td class=num>%s</td><td>%s</td><td>%s</td><td class=%s>%s</td>"
+                  "<td class='%s'>%s</td><td class='num dim'>%s</td>"
                   "<td style='white-space:normal'>%s</td></tr>"
-                  % (_esc(_int(d.get("turn"))), _esc(ch), _esc(str(who)[:38]), cls, _esc(ans),
-                     _esc(chance) or "<span class=dim>-</span>",
+                  % (_int(d.get("turn")), _esc(ch), _esc(str(who)[:38]), cls, _esc(ans),
+                     chance_cls, _esc(chance) or "<span class=dim>-</span>",
                      _esc(standing) or "-",
                      detail if ch != "outgoing" else _esc(detail)))
     return ("<h2>diplomacy stream <span class=dim>(last %d rows of this run)</span></h2>"
@@ -793,10 +896,15 @@ def render_diplomacy(run_dir):
             "actually sent. <b>ai would refuse</b> means the game told us up front it would "
             "say no, so nothing was sent. <b>not staged</b> is our own failure to build the "
             "deal, not a diplomatic outcome &mdash; worth separating when reading refusal "
-            "rates. <b>chance</b> is the success chance the panel showed before sending; "
+            "rates. <b>deal score</b> is the game's own <code>success_chance</code> readout, "
+            "and despite the name it is <b>not a percentage</b> &mdash; it runs past "
+            "&minus;1000 here. Its sign is what carries: negative and the ai refuses "
+            "(468 of 477 observed), positive and the deal went out (578 of 578). "
             "<b>standing</b> is the relationship before the deal.</div>"
             "<div class=scroll><table>"
-            "<tr><th>turn<th>channel<th>faction<th>outcome<th class=num>chance"
+            "<tr><th class=num>turn<th>channel<th>faction<th>outcome"
+            "<th class=num title='the game&#39;s raw success_chance readout, not a percent -- "
+            "the sign predicts whether the ai accepts'>deal score"
             "<th class=num>standing<th>terms / speech</tr>"
             "%s</table></div>"
             % (len(rows), cards,
@@ -948,11 +1056,16 @@ def render_live(run_dir):
         card("campaign", _esc(st["campaign"] or "-")),
         card("faction", _esc((st["faction"] or "-")[:24])),
         card("turn", _esc(st["turn"] or "-")),
-        card("mix", _esc((_mix_str(st["mix"]) or "-")[:48])),
+        # the formatted mix is 50 chars, so the old [:48] cut the last weight in half and
+        # the card read "...ruleset=0" -- the fixed-width signature fits and lines up
+        card("mix ET/GN/RD/RS", _mix_cell(st["mix"])),
         card("ruleset", _esc(_live_ruleset(st["ruleset"]))),
     ] + [
+        # n= matters: these are session-lifetime averages, and early on they rest on a
+        # couple of campaigns. Hardcoding class=ok made a collapse look identical to health.
         card(k, "&mdash;" if (st["rate"] or {}).get(v) is None
-             else "<span class=ok>%s</span>" % st["rate"][v])
+             else "%s <span class=dim>(n=%s)</span>"
+                  % (st["rate"][v], (st["rate"] or {}).get("campaigns", "?")))
         for k, v in (("campaigns/hr", "campaigns_per_hour"),
                      ("turns/hr", "turns_per_hour"),
                      ("turns/campaign", "turns_per_campaign"))
@@ -1003,36 +1116,55 @@ def render_endings(runs_root=RUNS_ROOT, limit=20):
             lines = fh.read().splitlines()
     except OSError:
         return ""
-    for line in lines[-limit:]:
+    outcomes, suspicious, total = {}, 0, 0
+    for line in lines:
         try:
             r = json.loads(line)
         except ValueError:
             continue
+        total += 1
+        outcomes[r.get("outcome")] = outcomes.get(r.get("outcome"), 0) + 1
+        v = (r.get("plausibility") or {}).get("verdict") or ""
+        if "SUSPICIOUS" in v or "MISLABELED" in v:
+            suspicious += 1
         rows.append(r)
+    rows = rows[-limit:]
     if not rows:
         return ""
     tr = []
     for r in reversed(rows):
         pl = r.get("plausibility") or {}
         verdict = pl.get("verdict") or "-"
-        cls = ("ok" if verdict.startswith("consistent") else
-               "bad" if ("SUSPICIOUS" in verdict or "MISLABELED" in verdict) else
+        # "consistent_with_real_defeat" means the death was genuine, which is not a
+        # success -- reserve ok/warn/bad for harness health and mark this one neutrally
+        cls = ("bad" if ("SUSPICIOUS" in verdict or "MISLABELED" in verdict) else
                "warn" if verdict.startswith("harness") else "dim")
         traj = r.get("trajectory") or []
-        tline = " ".join("%s:%s" % (t.get("turn"), t.get("settlements")) for t in traj[-4:])
-        tr.append("<tr><td class=dim>%s</td><td>%s</td><td>%s</td><td>%s</td>"
-                  "<td class=%s>%s</td><td class=dim>%s</td><td class=dim>%s</td></tr>"
-                  % (_esc(r.get("when", "")[-8:]), _esc(str(r.get("faction"))[:30]),
-                     _esc(r.get("outcome")), _esc(r.get("turns_played")),
-                     cls, _esc(verdict[:60]),
-                     _esc("; ".join((pl.get("evidence") or [])[:2])[:70]),
+        tline = " ".join("%s:%s" % (_int(t.get("turn")), _int(t.get("settlements")))
+                         for t in traj[-4:])
+        tr.append("<tr><td class=dim>%s</td><td>%s</td><td>%s</td><td class=num>%s</td>"
+                  "<td class=%s style='white-space:normal'>%s</td>"
+                  "<td class=dim style='white-space:normal'>%s</td><td class=dim>%s</td></tr>"
+                  % (_esc(str(r.get("when", ""))[5:19]), _esc(str(r.get("faction") or "-")),
+                     _esc(r.get("outcome")), _int(r.get("turns_played")),
+                     cls, _esc(verdict),
+                     _esc("; ".join(pl.get("evidence") or [])),
                      _esc(tline)))
-    return ("<h2>campaign endings &mdash; was it a real defeat?</h2>"
+    spread = ", ".join("%s %d" % (k, v) for k, v in
+                       sorted(outcomes.items(), key=lambda kv: -kv[1]))
+    return ("<h2>campaign endings &mdash; was it a real defeat? "
+            "<span class=dim>(last %d of %d)</span></h2>"
             "<p class=muted>Verdicts are advisory: they argue from the trajectory, the engine "
             "death row, and final-turn battles. turn:settlements shows the death spiral or the "
-            "healthy line that just stopped.</p>"
-            "<div class=scroll><table><tr><th>when<th>faction<th>outcome<th>turns"
-            "<th>verdict<th>evidence<th>turn:settlements</tr>%s</table></div>" % "".join(tr))
+            "healthy line that just stopped. A verdict is <b>not</b> a quality score &mdash; "
+            "<i>consistent_with_real_defeat</i> means the death was genuine, so it is shown "
+            "neutrally; only <span class=warn>harness_failure</span> and "
+            "<span class=bad>SUSPICIOUS/MISLABELED</span> are flagged. Over all %d recorded "
+            "endings: %s &mdash; and <b>%d</b> were flagged suspicious or mislabelled, so an "
+            "absence of red below is a real signal rather than a column that never fills.</p>"
+            "<div class=scroll><table><tr><th>when<th>faction<th>outcome<th class=num>turns"
+            "<th>verdict<th>evidence<th>turn:settlements</tr>%s</table></div>"
+            % (len(rows), total, total, _esc(spread), suspicious, "".join(tr)))
 
 
 def render_faction_matrix():
@@ -1053,34 +1185,70 @@ def render_starts():
     for a in rows:
         def _c(v, fmt="%s"):
             return "&mdash;" if v is None else fmt % v
+
+        def _ever(n):
+            return ("%d/%d" % (n, a["n"])) if n else "<span class=dim>0</span>"
         tr.append("<tr><td>%s</td><td class=num>%d</td><td class=num>%.1f</td>"
                   "<td class=num>%d</td><td class=num>%s</td><td class=num>%s</td>"
-                  "<td class=num>%s</td><td class=num>%s</td><td class=num>%.1f%%</td></tr>"
+                  "<td class=num>%s</td><td class=num>%s</td><td class=num>%s</td>%s</tr>"
                   % (_esc(a["faction"]), a["n"], a["avg_turns"], a["best_turns"],
                      _c(a["settlements"], "%g"), _c(a["power_rank"], "%g"),
-                     _c(a["lord_level"], "%g"), _c(a["vassals"], "%g"), a["confirm_pct"]))
-    return ("<h2>starts <span class=dim>(%d lords, %d campaigns)</span></h2>"
-            "<p class=muted>Most-played first. <b>Best</b> columns are the peak that start ever "
-            "reached across all its campaigns &mdash; power rank counts downwards, so lower is "
-            "better.</p>"
-            "<div class=scroll><table><tr><th>lord / faction<th>campaigns<th>avg turns"
-            "<th>best turns<th>best settlements<th>best power rank<th>best lord level"
-            "<th>best vassals<th>confirmed</tr>%s</table></div>"
+                     _c(a["lord_level"], "%g"),
+                     _ever(a["ever_ally"]), _ever(a["ever_vassal"]),
+                     _pct_cell(a["counted"], a["taken"])))
+    return ("<h2>starts <span class=dim>(%d factions, %d campaigns)</span></h2>"
+            "<div class=legend>One row per playable start, most-played first &mdash; the "
+            "per-campaign view is the <b>overview</b> tab. <b>best</b> columns are the peak "
+            "that start ever reached across all its campaigns; power rank counts downwards, "
+            "so lower is better. These peaks come from few samples: campaigns average about "
+            "four recorded turns, so a start's best is usually drawn from its opening turns "
+            "rather than anything it built. <b>ever allied / ever vassal</b> count how many "
+            "of that start's campaigns ever reached one at all &mdash; they were previously "
+            "a 'best vassals' column that could only ever print 0 or 1. Everything here pools "
+            "every strategy era recorded in the run dir, so <b>confirmed</b> mixes cold-random "
+            "campaigns with gnn ones.</div>"
+            "<div class=scroll><table><tr><th>lord / faction<th class=num>campaigns"
+            "<th class=num>avg turns"
+            "<th class=num>best turns<th class=num>best settlements"
+            "<th class=num title='lower is better'>best power rank"
+            "<th class=num>best lord level"
+            "<th class=num title='campaigns that ever had an ally'>ever allied"
+            "<th class=num title='campaigns that ever had a vassal'>ever vassal"
+            "<th class=num>confirmed</tr>%s</table></div>"
             % (len(rows), sum(a["n"] for a in rows), "".join(tr)))
 
 
 def render_head(con, run_dir):
+    """Two groups, because these are two different things. The first five describe one
+    campaign at one moment; the rest are lifetime totals over every campaign ever
+    recorded into this run dir. Rendering them as one undifferentiated row invited
+    reading the totals as the current campaign's."""
     s = summary(con)
-    cards = "".join("<div class=card><div class=k>%s</div><div class=v>%s</div></div>"
-                    % (k, v) for k, v in
-                    (("faction", s["faction"]), ("lord level", s["lord_level"]),
-                     ("turn", s["turn_now"]), ("settlements", s["settlements"]),
-                     ("power rank", s["power_rank"]),
-                     ("turns", s["turns"]), ("decisions", s["decisions"]), ("offers", s["offers"]),
-                     ("taken", s["taken"]), ("confirmed", s["counted"]),
-                     ("confirm %", s["confirm_rate"])))
-    return ("<h1>advisor v7</h1><div class=dim>%s</div><div class=cards>%s</div>"
-            % (_esc(run_dir), cards))
+    age = s.get("state_age")
+    stale = age is not None and age > 900
+    state = "".join("<div class=card><div class=k>%s</div><div class='v %s'>%s</div></div>"
+                    % (k, cls, v) for k, v, cls in
+                    (("faction", _esc(s["faction"]), "dim" if stale else ""),
+                     ("turn", _int(s["turn_now"]), ""),
+                     ("settlements", _int(s["settlements"]), ""),
+                     ("power rank", _int(s["power_rank"]), ""),
+                     ("lord level", _int(s["lord_level"]), "")))
+    totals = "".join("<div class=card><div class=k>%s</div><div class=v>%s</div></div>"
+                     % (k, v) for k, v in
+                     (("campaigns", s["campaigns"]), ("turns", s["turns"]),
+                      ("decisions", s["decisions"]), ("offers", s["offers"]),
+                      ("taken", s["taken"]), ("confirmed", s["counted"]),
+                      ("confirm %", "%.1f%%" % s["confirm_rate"])))
+    when = ("<span class=%s>%s</span>" % ("warn" if stale else "dim", _age_words(age))
+            if age is not None else "<span class=dim>never</span>")
+    return ("<h1>advisor v7</h1><div class=dim>%s</div>"
+            "<div class=cards>%s</div>"
+            "<div class=dim style='margin:2px 0 0'>state above: <b>%s</b>, recorded %s "
+            "&middot; totals below: every one of the %s campaigns ever recorded into this "
+            "run dir, not just the live one</div>"
+            "<div class=cards>%s</div>"
+            % (_esc(run_dir), state, _camp_label(s["campaign"]), when,
+               s["campaigns"], totals))
 
 
 def _statcards(items):
@@ -1220,23 +1388,56 @@ def render_decisions(con, q):
     return seqtbl
 
 
-def render_reward(con):
-    trows = "".join("<tr><td>%s</td><td class=num>%s</td><td class=num>%s</td>"
-                    "<td class=num>%s</td><td class=num>%s</td><td class=num>%s</td></tr>"
-                    % (_esc(_int(t["turn"])), _esc(_int(t["income"])),
-                       _esc(_int(t["settlements"])), _esc(_int(t["allies"])),
-                       _esc(_int(t["vassals"])), _esc(_int(t["power_rank"])))
-                    for t in turns(con))
-    return ("<h2>reward inputs per turn</h2><div class=scroll><table>"
-            "<tr><th>turn<th class=num>income<th class=num>settlements<th class=num>allies"
-            "<th class=num>vassals<th class=num>power rank</tr>%s"
-            "</table></div>" % (trows or "<tr><td class=dim colspan=6>no turns recorded</td></tr>"))
+REWARD_CAMPAIGNS = 10
+
+
+def render_reward(con, limit=REWARD_CAMPAIGNS):
+    """Turn-by-turn state, one lane per campaign.
+
+    This used to be a single table of every target row in the run dir ordered by turn
+    number. With 496 campaigns that put 496 unrelated rows under "turn 1" and read as
+    one flatlined series. A reward input is only a series within a campaign, so the
+    campaign has to be the lane.
+    """
+    n_camps = con.execute("SELECT COUNT(DISTINCT campaign_id) FROM target_rows").fetchone()[0]
+    if not n_camps:
+        return "<h2>reward inputs per turn</h2><p class=muted>no turns recorded yet</p>"
+    recent = [(r[0], r[1]) for r in con.execute(
+        "SELECT campaign_id, MAX(ts) mts FROM target_rows GROUP BY campaign_id"
+        " ORDER BY mts DESC LIMIT ?", (limit,))]
+    vas, tot = con.execute("SELECT SUM(vassals>0), COUNT(*) FROM target_rows").fetchone()
+    lanes = []
+    for camp, ts in recent:
+        series = turns(con, camp)
+        trows = "".join("<tr><td class=num>%s</td><td class=num>%s</td><td class=num>%s</td>"
+                        "<td class=num>%s</td><td class=num>%s</td><td class=num>%s</td></tr>"
+                        % (_int(t["turn"]), _int(t["income"]), _int(t["settlements"]),
+                           _int(t["allies"]), _int(t["vassals"]), _int(t["power_rank"]))
+                        for t in series)
+        lanes.append("<div class=lanehead>%s<span class=dim> &nbsp;%d turns &middot; %s"
+                     "</span></div>"
+                     "<div class=scroll><table>"
+                     "<tr><th class=num>turn<th class=num>income<th class=num>settlements"
+                     "<th class=num>allies<th class=num>vassals"
+                     "<th class=num title='lower is better'>power rank</tr>%s</table></div>"
+                     % (_camp_label(camp), len(series),
+                        _age_words(time.time() - ts if ts else None),
+                        trows or "<tr><td class=dim colspan=6>no turns recorded</td></tr>"))
+    return ("<h2>reward inputs per turn <span class=dim>(%d most recent campaigns of %d)"
+            "</span></h2>"
+            "<div class=legend>One lane per campaign, newest first. These values are only a "
+            "series <b>within</b> a campaign &mdash; turn numbers restart each time, so the "
+            "run dir's %d campaigns cannot share a turn axis. <b>power rank</b> counts "
+            "downwards, so a falling number is improving. <b>allies</b> and <b>vassals</b> "
+            "are 0/1 in practice: %d of %d recorded turns across the whole run dir have any "
+            "vassal at all.</div>%s"
+            % (len(recent), n_camps, n_camps, vas or 0, tot or 0, "".join(lanes)))
 
 
 PANELS = (
     ("live", "live", lambda con, run, q: render_live(run)),
     ("overview", "overview",
-     lambda con, run, q: render_endings() + render_leaders(con) + render_history(con)),
+     lambda con, run, q: render_endings() + render_campaigns(con)),
     ("starts", "starts", lambda con, run, q: render_starts()),
     ("matrix", "action x faction", lambda con, run, q: render_faction_matrix()),
     ("interrupts", "blocking menus", lambda con, run, q: render_interrupts()),
@@ -1264,36 +1465,75 @@ def render_index(con, run_dir):
                     _TABS_JS % json.dumps([s for s, _t, _f in PANELS])))
 
 
-def render_leaders(con):
-    rows = list(con.execute(
-        "SELECT d.campaign_id, COUNT(*) AS decisions,"
-        " COALESCE(SUM(t.counted),0) AS counted,"
-        " SUM(CASE WHEN t.refusal IS NOT 'awaiting_execution' THEN 1 ELSE 0 END) AS taken,"
-        " MAX(d.turn) AS max_turn"
-        " FROM decision_points d LEFT JOIN action_taken t ON t.decision_id=d.decision_id"
-        " GROUP BY d.campaign_id ORDER BY decisions DESC"))
-    if not rows:
-        return "<h2>by legendary lord</h2><div class=dim>no campaigns recorded yet</div>"
-    best = {}
-    for camp, turn, setl, rank, lvl in con.execute(
-            "SELECT campaign_id, MAX(turn), MAX(settlements), MIN(power_rank), MAX(lord_level)"
-            " FROM target_rows GROUP BY campaign_id"):
-        best[camp] = (turn, setl, rank, lvl)
+def render_campaigns(con):
+    """One row per campaign.
+
+    This used to be two tables on the same tab -- "by legendary lord" and "run history"
+    -- both keyed on campaign_id, both 513 rows, sharing turns/decisions/confirm. The
+    first was not per lord at all: 513 campaigns cover 101 lords, so Nagarythe appeared
+    31 times. render_starts is the per-lord view; this is the per-campaign one.
+    """
+    runs = run_history(con)
+    if not runs:
+        return "<h2>campaigns</h2><div class=dim>no campaigns recorded yet</div>"
+    runs = sorted(runs, key=lambda r: r["first_ts"], reverse=True)
+    mx = max(r["turns"] for r in runs) or 1
+    mxd = max(r["decisions"] for r in runs) or 1
+    multi_run = len({r["run"] for r in runs}) > 1
     out = []
-    for camp, dec, counted, taken, max_turn in rows:
-        b = best.get(camp, (None, None, None, None))
-        pct = (100.0 * (counted or 0) / taken) if taken else 0.0
-        cls = "ok" if pct >= 70 else ("warn" if pct >= 40 else "bad")
-        out.append("<tr><td>%s<td class=num>%s<td class=num>%s<td class='%s num'>%.0f%%"
-                   "<td class=num>%s<td class=num>%s<td class=num>%s</tr>"
-                   % (_esc(camp), _esc(_int(max_turn)), _esc(dec), cls, pct,
-                      _esc(_int(b[1])), _esc(_int(b[2])), _esc(_int(b[3]))))
-    return ("<h2>by legendary lord &mdash; per-start performance</h2><div class=scroll><table>"
-            "<tr><th>faction / lord<th class=num>turns<th class=num>decisions"
-            "<th class=num>confirm %%"
-            "<th class=num>best settlements<th class=num>best power rank"
-            "<th class=num>best lord level</tr>%s</table></div>"
-            % "".join(out))
+    for i, r in enumerate(runs, 1):
+        w = max(2, int(100.0 * r["turns"] / mx))
+        wd = max(2, int(100.0 * r["decisions"] / mxd))
+        cls = "bad" if r["turns"] <= 1 else ("warn" if r["turns"] < 0.4 * mx else "ok")
+        noact = ("<td class='warn num gsep'>%d</td>" % r["no_action"] if r["no_action"]
+                 else "<td class='dim num gsep'>0</td>")
+        out.append(
+            "<tr><td class=dim>%d</td><td title='%s'>%s</td>"
+            "<td class=barcell><div class='bar2 %s' style='width:%d%%'></div>"
+            "<span class=blabel>%d</span></td>"
+            "<td class=barcell><div class='bar2 dimbar' style='width:%d%%'></div>"
+            "<span class=blabel>%d</span></td>"
+            "%s<td class=num>%d</td><td class=num>%d</td>%s"
+            "<td class='dim num gsep'>%s</td>"
+            "<td class='num gsep'>%s</td><td class=num>%s</td><td class=num>%s</td>"
+            "<td class='num gsep'>%s</td><td class=num>%s</td><td class=num>%s</td>%s</tr>"
+            % (i, _esc(r["campaign"]), _camp_label(r["campaign"]),
+               cls, w, r["turns"], wd, r["decisions"],
+               noact, r["taken"], r["counted"], _pct_cell(r["counted"], r["taken"]),
+               _esc("%.1f" % r["span_min"]),
+               _int(r["best_settlements"]), _int(r["best_power_rank"]),
+               _int(r["best_lord_level"]),
+               _int(r["last_settlements"]), _int(r["last_power_rank"]),
+               _int(r["last_income"]),
+               ("<td class=dim>%s</td>" % _esc(r["run"])) if multi_run else ""))
+    return ("<h2>every campaign &mdash; how far each one got</h2>"
+            "<div class=legend>Newest first, one row per campaign (not per lord &mdash; "
+            "%d campaigns across %d lords; the per-lord view is the <b>starts</b> tab). "
+            "<b>no action</b> counts decision points that produced no attempt at all; those "
+            "are excluded from <b>attempted</b> so a campaign that tried nothing reads "
+            "&mdash; rather than 0%%. <b>span</b> is first-to-last decision, which is less "
+            "than campaign wall clock &mdash; game load and postmortem fall outside it. "
+            "<b>peak</b> is the best the campaign ever reached, <b>final</b> where it "
+            "stopped; power rank counts downwards, so lower is better. The turn bar is "
+            "scaled to the longest campaign here (%d turns), not to the run's turn cap."
+            "</div>"
+            "<div class=scroll><table>"
+            "<tr><th colspan=4>campaign<th class=grp colspan=4>decisions"
+            "<th class=grp>&nbsp;<th class=grp colspan=3>peak"
+            "<th class=grp colspan=3>final%s</tr>"
+            "<tr><th>#<th>faction<th>turns<th>decisions"
+            "<th class=gsep title='decision points that produced no action row at all'>"
+            "no action<th class=num>attempted<th class=num>confirmed<th class=num>rate"
+            "<th class='gsep dim num' title='first to last decision, not campaign wall clock'>"
+            "span min"
+            "<th class='gsep num'>settlements"
+            "<th class=num title='lower is better'>power rank<th class=num>lord level"
+            "<th class='gsep num'>settlements"
+            "<th class=num title='lower is better'>power rank<th class=num>income%s</tr>"
+            "%s</table></div>"
+            % (len(runs), len({r["faction"] for r in runs}), mx,
+               "<th class=grp>&nbsp;" if multi_run else "",
+               "<th>run dir" if multi_run else "", "".join(out)))
 
 
 _TABS_JS = """<script>
@@ -1341,40 +1581,9 @@ _TABS_JS = """<script>
 </script>"""
 
 
-def render_history(con):
-    runs = run_history(con)
-    if not runs:
-        return ""
-    mx = max(r["turns"] for r in runs) or 1
-    mxd = max(r["decisions"] for r in runs) or 1
-    bars = []
-    for i, r in enumerate(runs, 1):
-        w = max(2, int(100.0 * r["turns"] / mx))
-        wd = max(2, int(100.0 * r["decisions"] / mxd))
-        cls = "bad" if r["turns"] <= 1 else ("warn" if r["turns"] < 0.4 * mx else "ok")
-        bars.append(
-            "<tr><td>%d</td><td class=dim title='%s'>%s</td>"
-            "<td class=barcell><div class='bar2 %s' style='width:%d%%'></div>"
-            "<span class=blabel>%d</span></td>"
-            "<td class=barcell><div class='bar2 dimbar' style='width:%d%%'></div>"
-            "<span class=blabel>%d</span></td>"
-            "<td>%s</td><td>%s%%</td><td class=dim>%s min</td>"
-            "<td class=dim>%s</td><td class=dim>%s</td><td class=dim>%s</td></tr>"
-            % (i, _esc(r["campaign"]), _esc(str(r["campaign"])[-14:]),
-               cls, w, r["turns"], wd, r["decisions"],
-               r["counted"], r["confirm_pct"], r["minutes"],
-               _esc(_int(r["last_settlements"])), _esc(_int(r["last_income"])),
-               _esc(r.get("run"))))
-    return ("<h2>run history &mdash; how far each campaign got</h2>"
-            "<div class=scroll><table>"
-            "<tr><th>#<th>campaign<th title='max turn reached'>turns survived"
-            "<th title='decision points recorded'>decisions<th>confirmed<th>rate"
-            "<th>wall<th>settlements<th>income<th>run dir</tr>%s</table></div>" % "".join(bars))
-
-
 def render_timeline(con):
-    _rows, per_turn = timeline(con)
-    if not per_turn:
+    _rows, lanes = timeline(con)
+    if not lanes:
         return ""
     scale = 1 / 40.0
     phases = (("collect_ms", "p1", "recorder reading the game"),
@@ -1382,8 +1591,10 @@ def render_timeline(con):
               ("score_ms", "p3", "featurize + rank (with gnn drawn: graph build + forward)"),
               ("verify_ms", "p4", "execute + confirm"))
     out = []
-    for turn in sorted(per_turn, key=lambda t: (t is None, t)):
-        items = per_turn[turn]
+    # newest lane first, and never split a campaign's turn across lanes
+    order = sorted(lanes, key=lambda k: -max(r["decision_id"] for r in lanes[k]))
+    for camp, turn in order:
+        items = lanes[(camp, turn)]
         ok = sum(1 for r in items if r["counted"])
         lines = []
         for r in items:
@@ -1415,17 +1626,26 @@ def render_timeline(con):
                    ("%.1fs" % gap) if gap is not None else "&mdash;",
                    ("%.1fs" % unacc) if unacc is not None else "&mdash;"))
         span = [r["gap"] for r in items if r.get("gap")]
-        wall = (" &nbsp;%.0fs wall" % sum(span)) if span else ""
-        out.append("<div class=lanehead>turn %s<span class=dim> &nbsp;%d/%d confirmed%s</span></div>"
+        wall = (" &nbsp;%.0fs in-turn" % sum(span)) if span else ""
+        out.append("<div class=lanehead>%s <span class=dim>&middot;</span> turn %s"
+                   "<span class=dim> &nbsp;%d/%d confirmed%s</span></div>"
                    "<div class=scroll><table><tr><th>#<th>action<th>key<th>result"
                    "<th>phases<th>collect<th>queue<th>score<th>verify<th>total"
-                   "<th title='wall clock since the previous action'>gap"
+                   "<th title='wall clock since the previous action in this campaign'>gap"
                    "<th title='gap minus the measured phases -- time nothing accounts for'>"
                    "unaccounted</tr>%s</table></div>"
-                   % (_esc(turn), ok, len(items), wall, "".join(lines)))
+                   % (_camp_label(camp), _int(turn), ok, len(items), wall, "".join(lines)))
     legend = " ".join("<span class='seg %s'></span> %s" % (css, lbl) for _k, css, lbl in phases)
+    camps = len({c for c, _t in lanes})
     return ("<h2>timeline &mdash; every action, phase by phase (ms)</h2>"
-            "<div class=legend>%s</div>%s" % (legend, "".join(out)))
+            "<div class=legend>%s<br>The last %d decisions, newest first. Turn numbers restart "
+            "with every campaign, so lanes are keyed on <b>campaign and turn</b> &mdash; this "
+            "window spans %d campaign(s). <b>gap</b> is left blank across a campaign boundary, "
+            "where the elapsed time is game teardown and reload rather than anything this "
+            "action did. <b>unaccounted</b> goes negative when a decision's own phases run "
+            "longer than the interval since the previous decision &mdash; the phases overlap "
+            "that window rather than fitting inside it.</div>%s"
+            % (legend, len(_rows), camps, "".join(out)))
 
 
 def render_decision(con, did):
@@ -1773,7 +1993,7 @@ def _kill_recorder():
 SERVICES_LOG_DIR = r"D:\twdata\logs\services"
 
 
-def _trial_row_html(r, live=False):
+def _trial_row_html(r, live=False, show_cfg=True):
     s = r.get("settlements") or {}
     l = r.get("lord_level") or {}
     t = r.get("timing") or {}
@@ -1791,11 +2011,13 @@ def _trial_row_html(r, live=False):
     sm, meas = s.get("mean"), s.get("campaigns_measured") or 0
     cls = ""
     n = r.get("campaigns", 0)
-    return ("<tr><td%s>%s<td>%s<td class=dim>%s<td>%s<td class=dim>%s<td>%s<td class=dim>%s<td%s>%s"
+    return ("<tr><td%s>%s<td>%s%s<td>%s<td class=dim>%s<td>%s<td class=dim>%s<td%s>%s"
             "<td>%s<td>%s<td>%s<td>%s<td>%s<td>%s<td class=dim>%s</tr>"
             % (" class=warn" if live else "", _esc(r.get("trial", "?")),
                _esc(str(r.get("backend") or "-")),
-               _esc(", ".join("%s=%s" % kv for kv in sorted(cfg.items())) or "-"),
+               ("<td class=dim>%s"
+                % _esc(", ".join("%s=%s" % kv for kv in sorted(cfg.items())) or "-"))
+               if show_cfg else "",
                _mix_cell(r.get("strategies"), r.get("epsilon")),
                _esc(_ruleset_str(r.get("ruleset")) or "-"), n,
                corpus if corpus else "-",
@@ -1847,10 +2069,13 @@ def _trials_table():
         return ("<h2>experiment ledger</h2>%s<div class=dim>no trials in %s</div>"
                 % (note, _esc(S.EXPERIMENTS)))
     rows.sort(key=lambda r: r.get("started") or r.get("ts") or 0, reverse=True)
-    out = ([_trial_row_html(live, live=True)] if live else []) \
-        + [_trial_row_html(r) for r in rows]
+    # backend_cfg only fills for --nn-* tuning runs; when no trial carries one the column
+    # is 66 rows of "-", which reads as a field that failed to populate
+    show_cfg = any((r.get("backend_cfg") or {}) for r in ([live] if live else []) + rows)
+    out = ([_trial_row_html(live, live=True, show_cfg=show_cfg)] if live else []) \
+        + [_trial_row_html(r, show_cfg=show_cfg) for r in rows]
     return ("<h2>experiment ledger</h2>%s<div class=scroll><table>"
-            "<tr><th>trial<th>backend<th>cfg"
+            "<tr><th>trial<th>backend%s"
             "<th title='per-decision strategy mix, as percentages in a fixed order: "
             "exploit_tree / gnn / random / ruleset. Hover a cell for exact weights; legacy "
             "--epsilon trials are shown as the mix they mean'>mix "
@@ -1859,7 +2084,7 @@ def _trials_table():
             "<th>campaigns<th>corpus<th>sett/camp<th>sett total"
             "<th>grew<th title='legendary lord levels gained per campaign'>lord lvl/camp"
             "<th>turns/camp<th>s/camp<th>s/turn<th>notes</tr>%s</table></div>"
-            % (note, "".join(out)))
+            % (note, "<th>cfg" if show_cfg else "", "".join(out)))
 
 
 def _fmt(v, nd=3):
@@ -2001,8 +2226,14 @@ def _catboost_card(name, m, secs, when, events):
     return state, cls, note, rows
 
 
-def _fit_config_table():
+def _fit_config_table(events=()):
     body = []
+    # the last measured fit, rather than a number frozen into the page: this cell used to
+    # claim "14.6s vs 21.6s" while real fits on the grown corpus were taking ~3 minutes
+    last = next((e for e in events if e.get("seconds")), None)
+    cb_cost = ("cpu &mdash; last fit %ss over %s rows"
+               % (_esc(str(last.get("seconds"))), _esc(str(last.get("rows", "?"))))
+               if last else "cpu <span class=dim>(no fit recorded yet)</span>")
     try:
         BM = _live_base_model()
         body.append(
@@ -2010,12 +2241,11 @@ def _fit_config_table():
             "early stop %s &middot; cap %s iters &middot; depth %s &middot; %s &middot; %s "
             "&middot; loss %s &middot; holdout %.0f%% of campaigns"
             "<br><span class=dim>tuned from %s</span>"
-            "<td class=dim>cpu &mdash; measured faster than gpu on this corpus "
-            "(14.6s vs 21.6s)</tr>"
+            "<td class=dim>%s</tr>"
             % (BM.CB_LEARNING_RATE, BM.CB_EARLY_STOPPING, BM.CB_ITERATIONS, BM.CB_DEPTH,
                _esc(str(BM.CB_PARAMS.get("grow_policy"))),
                _esc(str(BM.CB_PARAMS.get("bootstrap_type"))),
-               BM.CB_LOSS, 100 * BM.VAL_FRACTION, _esc(str(BM.CB_TUNED_FROM))))
+               BM.CB_LOSS, 100 * BM.VAL_FRACTION, _esc(str(BM.CB_TUNED_FROM)), cb_cost))
     except Exception as e:
         body.append("<tr><td>catboost<td colspan=3 class=bad>config unreadable: %s</tr>"
                     % _esc(repr(e)[:90]))
@@ -2069,7 +2299,7 @@ def render_models():
     banner = ("<div class=note><span class=bad>needs attention</span> &mdash; %s</div>"
               % " &middot; ".join(alerts)) if alerts else ""
     return ("<h2>models on disk</h2>%s<div class=mcards>%s</div>%s"
-            % (banner, "".join(cards), _fit_config_table()))
+            % (banner, "".join(cards), _fit_config_table(events)))
 
 
 def render_training():
@@ -2129,7 +2359,9 @@ def render_training():
                gnn_cells,
                _esc(str(p.get("campaigns") if p.get("campaigns") is not None else "-")),
                _fmt(p.get("sett_per_campaign")),
-               _esc(str(p.get("sett_total") if p.get("sett_total") is not None else "-")),
+               # the ledger directly above renders this same metric with %g; str() on the
+               # float gave "4.0" here and "4" there for the identical number
+               _int(p.get("sett_total")) if p.get("sett_total") is not None else "-",
                _fmt(p.get("lord_per_campaign"), 2),
                _fmt(p.get("turns_per_campaign")),
                "-" if p.get("grew") is None else "%s/%s" % (p["grew"], p.get("measured", "?"))))
