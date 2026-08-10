@@ -360,7 +360,11 @@ def _collate(items, size, dev, log, tag):
 
 def _fit(datas, ys, groups, cfg, log=print):
     import torch
-    from base_model import grouped_split
+    # stable_split, not grouped_split: the latter reshuffles the whole campaign list as
+    # the corpus grows, so the held-out set is redrawn every retrain and the metric
+    # cannot detect a regression. Measured over one real growth step (532 -> 550
+    # campaigns), campaigns REMOVED from the holdout: grouped_split 71, stable_split 0.
+    from base_model import stable_split
     try:
         from mapgraph3 import net as N
     except ImportError:
@@ -370,7 +374,7 @@ def _fit(datas, ys, groups, cfg, log=print):
     torch.manual_seed(cfg["seed"])
     torch.set_float32_matmul_precision("high")
     dev = _device(cfg, log)
-    val_idx, trn_idx = grouped_split(len(datas), groups)
+    val_idx, trn_idx = stable_split(len(datas), groups)
     y_trn = [ys[i] for i in trn_idx]
     y_mean = sum(y_trn) / max(1, len(y_trn))
     y_sd = (sum((v - y_mean) ** 2 for v in y_trn) / max(1, len(y_trn) - 1)) ** 0.5 or 1.0
