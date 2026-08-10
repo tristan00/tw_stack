@@ -283,6 +283,32 @@ class Executor:
         except Exception as e:
             sys.stderr.write("executor: kill_game -> %s\n" % repr(e)[:120])
 
+    def game_is_up(self):
+        """tasklist, not our own bookkeeping. Fails OPEN (True) so an unreadable process
+        table never reads as 'the gpu is free'."""
+        import bus as _bus
+        return _bus._game_alive()
+
+    def wait_game_down(self, timeout=45.0, poll=1.5, log=None):
+        """Block until no Warhammer3 process remains.
+
+        kill_game() only issues Stop-Process and returns; it does not wait, and it
+        swallows its own failures. A trainer that starts while the game is still up
+        contends with it for VRAM, which is the whole reason the retrain window takes
+        the game down. Kills once more if the first attempt did not take.
+        """
+        for attempt in (1, 2):
+            t0 = time.time()
+            while time.time() - t0 < timeout:
+                if not self.game_is_up():
+                    return True
+                time.sleep(poll)
+            if attempt == 1:
+                if log:
+                    log("   game still up %.0fs after kill -- killing again" % timeout)
+                self.kill_game()
+        return not self.game_is_up()
+
     def hard_restart(self, plan, campaign="Immortal Empires", boot_timeout=90):
         self.kill_game()
         time.sleep(8)
