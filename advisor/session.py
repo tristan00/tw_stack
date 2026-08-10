@@ -319,6 +319,14 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
             generation += 1
             log("taking the game down for retraining -- trainers get the whole box")
             ex.kill_game()
+            # kill_game() does not wait and swallows its own errors, so confirm the
+            # process is actually gone before a trainer touches the gpu -- otherwise
+            # the game and the trainer contend for VRAM through the whole window
+            if ex.wait_game_down(log=log):
+                log("   game down, gpu is free")
+            else:
+                log("!! GAME STILL RUNNING after two kills -- training anyway, but it is "
+                    "contending with the game for the gpu")
             hard_restart_next, prev_outcome = True, "retrain window"
             try:
                 t0 = time.time()
