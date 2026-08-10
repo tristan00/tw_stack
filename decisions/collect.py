@@ -206,6 +206,14 @@ _LUA_CAMPAIGN = (_G + "local okc,t0=pcall(os.clock) "
                  "..'|'..(function() local l=f:faction_leader() "
                  "if not l or l:is_null_interface() then return 'nil' end "
                  "local ok,v=pcall(function() return l:is_wounded() end) "
+                 "return ts(ok and v or nil) end)()"
+                 # field 15: is this faction dead. Until now `defeated` was the hardcoded
+                 # literal False in _parse_campaign -- never queried, False in all 22,136
+                 # decisions of the previous corpus while the harness independently
+                 # recorded 18 defeated campaigns. It is the ground truth for the
+                 # `survival` term in the label. This is the harness's own probe
+                 # (launcher/interrupts.py DEFEAT_PROBE), so the expression is proven.
+                 "..'|'..(function() local ok,v=pcall(function() return f:is_dead() end) "
                  "return ts(ok and v or nil) end)()")
 
 
@@ -263,7 +271,11 @@ def _parse_campaign(raw):
             "_eval_ms": _num(p[13]) if len(p) > 13 else None,
             "ll_wounded": (p[14] == "true") if len(p) > 14 and p[14] in ("true", "false") else None,
             "game_version": _game_version(),
-            "defeated": False}
+            # None, not False, when the field is absent: "we did not ask" and "the
+            # faction is alive" are different facts and conflating them is what let this
+            # sit broken. A coverage check can see a None; it cannot see a wrong False.
+            "defeated": ((p[15] == "true") if len(p) > 15 and p[15] in ("true", "false")
+                         else None)}
 
 
 _LUA_REGIONS = (_G +
