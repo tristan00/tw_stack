@@ -18,7 +18,7 @@ except ImportError:
     import schema as S
     import build as B
 
-THREADS_TRAIN = 16
+THREADS_TRAIN = max(1, os.cpu_count() or 16)
 
 CFG = {"hidden": 64, "lr": 1e-3, "weight_decay": 1e-4, "batch": 32, "epochs": 200,
        "patience": 20, "grad_clip": 5.0, "aux_weight": 0.25, "seed": 0,
