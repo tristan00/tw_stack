@@ -9,9 +9,14 @@ One forward pass builds the whole decision graph, action nodes included, and eve
 offer's score is read off its own node. Offers are matched back to nodes by the same
 `(context_kind, context_id, action_type, key)` tuple `strategies.offer_key` uses.
 
-Reported number is `q - v`, the advantage: `v` is constant within a decision so it does
-not affect the ordering, but it makes the number comparable across decisions, which is
-what the UI and the cross-model comparison need. The ORDERING is `q` alone.
+Reported number is `q` centred within the decision, `q - mean(q)`.
+
+Not `q - v`, which is what v2 reported and what I wrote first: `q` is an unnormalised
+softmax logit whose absolute shift is arbitrary (softmax is shift-invariant), and `v` is
+a z-scored outcome prediction. Subtracting one from the other is apples-oranges -- it
+produced numbers like -12.4 that mean nothing. Centring removes the arbitrary shift and
+gives "how much this candidate is preferred over the average candidate in its own choice
+set", which is what a per-offer number should say. Ordering is identical either way.
 """
 
 import json
@@ -41,6 +46,7 @@ class Ranker:
         self.meta = None
         self.net = None
         self.last_impact = None
+        self.last_value = None
         self.misses = 0
         self._warned = False
         meta_path = os.path.join(model_dir, "meta.json")
@@ -92,7 +98,9 @@ class Ranker:
         with torch.no_grad():
             out = self.net(data)
             q = out["q"].tolist()
-            v = float(out["v"][0])
+            self.last_value = float(out["v"][0])
+        # centre within the decision: the softmax logit's absolute shift is arbitrary
+        v = sum(q) / float(len(q))
         by_key = {}
         for k, s in zip(g.action_keys, q):
             by_key[k] = s
