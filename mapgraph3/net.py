@@ -25,8 +25,10 @@ from __future__ import annotations
   action nodes, so one shared norm would compute its statistics almost entirely off them.
 """
 
+import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch_geometric.data import Data
 from torch_geometric.nn import MessagePassing
 from torch_geometric.utils import scatter, softmax
@@ -49,45 +51,54 @@ class DecisionGraph(Data):
         return super().__cat_dim__(key, value, *args, **kwargs)
 
 
-def to_data(g, y=None, taken=None):
-    """Split the flat edge list into the three channels the encoder needs."""
-    act = S.ACTION_TYPE_INDEX
-    nt = g.node_type
-    m_s, m_d, m_r = [], [], []
-    a_s, a_d, a_r = [], [], []
-    e_s, e_d, e_r = [], [], []
-    for s, d, r in zip(g.src, g.dst, g.rel):
-        s_act, d_act = nt[s] == act, nt[d] == act
-        if not s_act and not d_act:
-            m_s.append(s); m_d.append(d); m_r.append(r)
-        elif s_act and not d_act:
-            a_s.append(s); a_d.append(d); a_r.append(r)      # entities <- actions
-        elif d_act and not s_act:
-            e_s.append(s); e_d.append(d); e_r.append(r)      # actions  <- entities
-        # action<->action edges are not built; if one appears it is dropped on purpose
+_IDX_FIELDS = ("node_type", "race_idx", "agent_idx", "stance_idx", "subtype_idx",
+               "atype_idx", "term_idx", "cat_idx")
 
-    d = DecisionGraph(
-        x=torch.tensor(g.x, dtype=torch.float32),
-        edge_index=torch.tensor([m_s or [0], m_d or [0]], dtype=torch.long),
-    )
-    d.edge_rel = torch.tensor(m_r or [0], dtype=torch.long)
-    d.a2e_index = torch.tensor([a_s or [0], a_d or [0]], dtype=torch.long)
-    d.a2e_rel = torch.tensor(a_r or [0], dtype=torch.long)
-    d.e2a_index = torch.tensor([e_s or [0], e_d or [0]], dtype=torch.long)
-    d.e2a_rel = torch.tensor(e_r or [0], dtype=torch.long)
-    d.node_type = torch.tensor(g.node_type, dtype=torch.long)
-    d.race_idx = torch.tensor(g.race_idx, dtype=torch.long)
-    d.agent_idx = torch.tensor(g.agent_idx, dtype=torch.long)
-    d.stance_idx = torch.tensor(g.stance_idx, dtype=torch.long)
-    d.subtype_idx = torch.tensor(g.subtype_idx, dtype=torch.long)
-    d.atype_idx = torch.tensor(g.atype_idx, dtype=torch.long)
-    d.term_idx = torch.tensor(g.term_idx, dtype=torch.long)
-    d.cat_idx = torch.tensor(g.cat_idx, dtype=torch.long)
-    d.g_ctx = torch.tensor([g.g_ctx], dtype=torch.float32)
-    d.action_index = torch.tensor(g.action_nodes or [0], dtype=torch.long)
-    d.n_actions = torch.tensor([len(g.action_nodes)], dtype=torch.long)
+
+def to_data(g, y=None, taken=None):
+    """Split the flat edge list into the three channels the encoder needs.
+
+    The split is three boolean masks over the edge arrays, not a python loop over every
+    edge. That loop ran ~61.6M iterations across a corpus walk. Boolean indexing keeps
+    order, so each channel is element-for-element what the loop emitted -- including the
+    [[0],[0]] rel-0 placeholder an empty channel gets.
+    """
+    act = S.ACTION_TYPE_INDEX
+    ne, nn_ = len(g.src), len(g.x)
+    src = np.fromiter(g.src, dtype=np.int64, count=ne)
+    dst = np.fromiter(g.dst, dtype=np.int64, count=ne)
+    rel = np.fromiter(g.rel, dtype=np.int64, count=ne)
+    ntype = np.fromiter(g.node_type, dtype=np.int64, count=nn_)
+
+    is_act = ntype == act
+    s_act, d_act = is_act[src], is_act[dst]
+    chan = []
+    #        map                a2e: entities <- actions   e2a: actions <- entities
+    # action<->action edges are not built; s_act & d_act is dropped on purpose
+    for mk in (~(s_act | d_act), s_act & ~d_act, d_act & ~s_act):
+        s2, d2, r2 = src[mk], dst[mk], rel[mk]
+        if s2.size == 0:
+            chan.append((torch.zeros((2, 1), dtype=torch.long),
+                         torch.zeros(1, dtype=torch.long)))
+        else:
+            chan.append((torch.from_numpy(np.stack((s2, d2))), torch.from_numpy(r2)))
+
+    d = DecisionGraph(x=torch.from_numpy(np.asarray(g.x, dtype=np.float32)),
+                      edge_index=chan[0][0])
+    d.edge_rel = chan[0][1]
+    d.a2e_index, d.a2e_rel = chan[1]
+    d.e2a_index, d.e2a_rel = chan[2]
+    d.node_type = torch.from_numpy(ntype)
+    for name in _IDX_FIELDS[1:]:
+        d[name] = torch.from_numpy(
+            np.fromiter(getattr(g, name), dtype=np.int64, count=nn_))
+    d.g_ctx = torch.from_numpy(np.asarray([g.g_ctx], dtype=np.float32))
+    na = len(g.action_nodes)
+    d.action_index = torch.from_numpy(
+        np.fromiter(g.action_nodes or [0], dtype=np.int64, count=na or 1))
+    d.n_actions = torch.tensor([na], dtype=torch.long)
     if taken is not None:
-        d.is_taken = torch.tensor(taken, dtype=torch.float32)
+        d.is_taken = torch.from_numpy(np.asarray(taken, dtype=np.float32))
     if y is not None:
         d.y = torch.tensor([float(y)], dtype=torch.float32)
     return d
@@ -111,6 +122,22 @@ class RelConv(MessagePassing):
     "is this attacker stronger than this defender" -- that needs x_i and x_j together.
     Relation identity enters as an embedding rather than a weight matrix per relation:
     76 relations would otherwise mean 76 weight matrices.
+
+    A cheaper form was tried and rejected: hoisting the source projection out of the edge
+    loop and running the MLP per node on cat([x_i, aggregated]), with the relation added
+    per edge. It is not worth it and it is not equivalent.
+      - The saving is 1.50x on conv MACs, not the 4.4x it claimed -- that number assumed
+        all 8 conv applications traverse all 8.5k edges, but each sees only its own
+        channel (21.8k edge-visits total, not 68k). Arithmetic is ~1% of this model's
+        wall clock, so 1.5x of it buys nothing.
+      - sum_j (W_s x_j + W_r r_ij) = W_s sum_j x_j + W_r sum_j r_ij. The two sums
+        decouple exactly, so which relation attached to which neighbour is unrecoverable
+        at any depth: "besieging settlement S while garrisoned in T" becomes
+        indistinguishable from the swap. With 46 relation types carrying the semantics
+        this schema was restructured around, that is most of what the model is for.
+      - Returning upd(cat([x, m])) rather than a pure message also breaks the zero-init
+        a2e gate below: a node with no incoming action edge would get a nonzero function
+        of its own state instead of 0.
     """
 
     def __init__(self, hidden, rel_dim, aggr):
@@ -150,7 +177,11 @@ class TypeEncoders(nn.Module):
     def forward(self, x, node_type):
         cols = node_type.unsqueeze(1) * S.MAX_FIELDS + self._span
         big = x.new_zeros(x.size(0), _NT * S.MAX_FIELDS).scatter_(1, cols, x)
-        return self.lin(big) + self.bias[node_type]
+        # F.embedding, not self.bias[node_type]: same lookup, but the backward of plain
+        # advanced indexing is an atomic scatter from every node row into only 19 rows,
+        # and that contention was 90% of total training time. F.embedding's dense backward
+        # sorts the indices and segment-reduces instead. Identical maths, ~50x cheaper.
+        return self.lin(big) + F.embedding(node_type, self.bias)
 
 
 class TypeNorm(nn.Module):
@@ -166,14 +197,21 @@ class TypeNorm(nn.Module):
     def __init__(self, hidden, eps=1e-5):
         super().__init__()
         self.eps = eps
-        self.weight = nn.Parameter(torch.ones(_NT, hidden))
-        self.bias = nn.Parameter(torch.zeros(_NT, hidden))
+        self.hidden = hidden
+        # weight and bias live in ONE table so a node costs one lookup, not two.
+        self.affine = nn.Parameter(torch.cat(
+            [torch.ones(_NT, hidden), torch.zeros(_NT, hidden)], dim=1))
 
     def forward(self, h, node_type):
         mu = h.mean(dim=-1, keepdim=True)
         var = h.var(dim=-1, unbiased=False, keepdim=True)
         x = (h - mu) * torch.rsqrt(var + self.eps)
-        return x * self.weight[node_type] + self.bias[node_type]
+        # F.embedding rather than self.affine[node_type]. Plain advanced indexing
+        # backpropagates as an atomic scatter from every node row into only 19 rows;
+        # profiling showed those scatters were 90% of ALL training gpu time. F.embedding
+        # sorts indices and segment-reduces instead -- same values, ~50x cheaper.
+        w, b = F.embedding(node_type, self.affine).split(self.hidden, dim=1)
+        return x * w + b
 
 
 class Encoder(nn.Module):

@@ -301,11 +301,55 @@ class DecisionStore:
                 "campaign": json.loads(dp["campaign"] or "{}"),
                 "world": json.loads(dp["world"] or "{}"), "entities": ents}
 
-    def labelled_decisions(self, confirmed_only=False):
+    def taken_map(self, confirmed_only=False):
+        """{decision_id: ((kind, id, type, key), counted)} for every labelled decision.
+
+        action_taken is ~22k rows, so this is the cheap way to learn which decisions
+        exist and what each one played, without touching the 9M-row offers table. Same
+        filtering as labelled_decisions, so the two always agree on membership.
+        """
+        out = {}
+        for did, ck, cid, atype, akey, counted, refusal in self.con.execute(
+                "SELECT decision_id,context_kind,context_id,action_type,action_key,"
+                "counted,refusal FROM action_taken"):
+            if refusal == "awaiting_execution":
+                continue
+            if confirmed_only and not counted:
+                continue
+            out[did] = ((ck, str(cid), atype, str(akey)), bool(counted))
+        return out
+
+    def max_decision_id(self):
+        r = self.con.execute("SELECT MAX(decision_id) FROM decision_points").fetchone()
+        return int(r[0]) if r and r[0] is not None else 0
+
+    def labelled_decisions(self, confirmed_only=False, after=None, before=None):
+        """Rows in decision_id order.
+
+        `after` (exclusive) and `before` (inclusive) bound decision_id so a caller can
+        read one shard of the corpus instead of the whole thing. Without them every one
+        of the four queries below is a full table scan -- and action_offers is 9M rows,
+        so an unbounded read costs ~20s no matter how few decisions are wanted.
+        The ix_*_dp indexes already exist; nothing was using them.
+
+        A bounded read emits, for each decision, exactly what the unbounded one emits:
+        the indexes order by (decision_id, rowid), so entities stay in snapshot_id order
+        and each entity's offers stay in offer_id order -- and that order is what fixes
+        action-node order, g.action_keys, and therefore the taken mask.
+        """
+        rng, args = "", []
+        if after is not None:
+            rng += " AND decision_id>?"
+            args.append(int(after))
+        if before is not None:
+            rng += " AND decision_id<=?"
+            args.append(int(before))
+        w = (" WHERE 1" + rng) if rng else ""
+
         taken = {}
         for did, ck, cid, atype, akey, counted, refusal in self.con.execute(
                 "SELECT decision_id,context_kind,context_id,action_type,action_key,counted,"
-                "refusal FROM action_taken"):
+                "refusal FROM action_taken" + w, args):
             if refusal == "awaiting_execution":
                 continue
             if confirmed_only and not counted:
@@ -317,7 +361,7 @@ class DecisionStore:
         ents_by_dec, by_snap = {}, {}
         for sid, did, ck, cid, feats in self.con.execute(
                 "SELECT snapshot_id,decision_id,context_kind,context_id,features"
-                " FROM entity_snapshots"):
+                " FROM entity_snapshots" + w, args):
             if did not in taken:
                 continue
             e = {"snapshot_id": sid, "context_kind": ck, "context_id": cid,
@@ -327,7 +371,7 @@ class DecisionStore:
 
         for sid, oid, atype, akey, avail, gate, params in self.con.execute(
                 "SELECT snapshot_id,offer_id,action_type,action_key,available,gate,params"
-                " FROM action_offers"):
+                " FROM action_offers" + w, args):
             e = by_snap.get(sid)
             if e is not None:
                 e["offers"].append({"offer_id": oid, "action_type": atype, "key": akey,
@@ -335,7 +379,8 @@ class DecisionStore:
                                     "params": json.loads(params or "{}")})
 
         out = []
-        cur = self.con.execute("SELECT * FROM decision_points")
+        cur = self.con.execute(
+            "SELECT * FROM decision_points" + w + " ORDER BY decision_id", args)
         cols = [d[0] for d in cur.description]
         for row in cur:
             dp = dict(zip(cols, row))

@@ -61,6 +61,10 @@ TYPE_FIELDS = {
 }
 N_SCALARS = sum(len(v) for v in TYPE_FIELDS.values())   # == 22
 MAX_FIELDS = max(max(len(v) for v in TYPE_FIELDS.values()), 1)
+# {node type: {field name: column}} -- the same information as TYPE_FIELDS, indexed the
+# way build.Graph.add needs it. Building a graph writes ~1000 field values, and
+# TYPE_FIELDS[t].index(k) is a linear scan for every one of them.
+FIELD_POS = {t: {k: i for i, k in enumerate(v)} for t, v in TYPE_FIELDS.items()}
 
 # --------------------------------------------------------------------------
 # relations
@@ -121,8 +125,11 @@ N_RELATIONS = len(RELATIONS) * 2        # forward and reverse are different rela
 REL_DIM = 24
 
 
+N_FORWARD_RELATIONS = len(RELATIONS)
+
+
 def rel_index(name, reverse=False):
-    return REL_INDEX[name] + (len(RELATIONS) if reverse else 0)
+    return REL_INDEX[name] + (N_FORWARD_RELATIONS if reverse else 0)
 
 
 # --------------------------------------------------------------------------
@@ -190,20 +197,22 @@ REFERENCE_DB = r"D:\twdata\reference\reference.sqlite"
 MIN_ROWS = 40
 
 
+# Vocabulary lookups as dicts. These are called once per node per graph and were
+# tuple.index() linear scans -- 210k of them per 200 graphs. Same values, O(1).
+_RACE_IX = {r: i + 1 for i, r in enumerate(RACES)}
+_AGENT_IX = {t: i + 1 for i, t in enumerate(AGENT_TYPES)}
+_ATYPE_IX = {t: i + 1 for i, t in enumerate(ACTION_TYPES)}
+_TERM_IX = {t: i + 1 for i, t in enumerate(DIPLO_TERMS)}
+
+
 def race_index(faction_key):
     parts = str(faction_key or "").split("_")
     race = parts[2] if len(parts) > 2 else None
-    try:
-        return RACES.index(race) + 1
-    except ValueError:
-        return 0
+    return _RACE_IX.get(race, 0)
 
 
 def agent_index(agent_type):
-    try:
-        return AGENT_TYPES.index(str(agent_type)) + 1
-    except ValueError:
-        return 0
+    return _AGENT_IX.get(str(agent_type), 0)
 
 
 def stance_index(stance):
@@ -221,17 +230,11 @@ def subtype_index(subtype):
 
 
 def atype_index(action_type):
-    try:
-        return ACTION_TYPES.index(str(action_type)) + 1
-    except ValueError:
-        return 0
+    return _ATYPE_IX.get(str(action_type), 0)
 
 
 def term_index(term):
-    try:
-        return DIPLO_TERMS.index(str(term)) + 1
-    except ValueError:
-        return 0
+    return _TERM_IX.get(str(term), 0)
 
 
 def cat_index(kind, key):

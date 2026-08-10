@@ -24,17 +24,26 @@ except ImportError:
     import catalogue as C
 
 _TI = {t: i for i, t in enumerate(S.NODE_TYPES)}
+_NREL = S.N_FORWARD_RELATIONS
 
 MOBILE_KINDS = {"army": True, "neutral_army": True, "hero": False, "neutral_hero": False}
 
 
 class Graph:
-    __slots__ = ("x", "node_type", "race_idx", "agent_idx", "stance_idx", "subtype_idx",
+    __slots__ = ("_nodes", "_edges",
+                 "x", "node_type", "race_idx", "agent_idx", "stance_idx", "subtype_idx",
                  "atype_idx", "term_idx", "cat_idx", "src", "dst", "rel",
                  "id2idx", "node_ids", "action_nodes", "action_keys", "own_mask", "g_ctx",
                  "player_faction", "counts", "provenance")
 
     def __init__(self):
+        # Nodes accumulate as one tuple each and edges as a flat run of 6 ints, then
+        # finalize() transposes them into the per-attribute lists everything downstream
+        # reads. Appending to eleven parallel lists per node and six per edge was 3.5M
+        # python-level append calls over a corpus walk, which is most of what building a
+        # graph costs -- the work itself is a few dict lookups.
+        self._nodes = []
+        self._edges = []
         self.x = []
         self.node_type = []
         self.race_idx = []
@@ -59,36 +68,29 @@ class Graph:
 
     def add(self, nid, ntype, values=None, race=0, agent=0, stance=0, subtype=0,
             atype=0, term=0, cat=0, own=False):
-        if nid in self.id2idx:
-            return self.id2idx[nid]
-        fields = S.TYPE_FIELDS[ntype]
+        idx = self.id2idx.get(nid)
+        if idx is not None:
+            return idx
+        pos = S.FIELD_POS[ntype]
         row = [0.0] * S.MAX_FIELDS
         for k, v in (values or {}).items():
-            if k not in fields:
+            col = pos.get(k)
+            if col is None:
                 raise KeyError("mapgraph3.build: %r is not a field of node type %r -- the "
                                "numeric budget is fixed in schema.TYPE_FIELDS" % (k, ntype))
             if not isinstance(v, G.Raw):
                 raise TypeError("mapgraph3.build: %s.%s was written as a plain number. "
                                 "Every scalar must come through guard.Reader so its "
                                 "provenance can be checked." % (ntype, k))
-            row[fields.index(k)] = float(v)
+            row[col] = float(v)
             # Provenance is keyed by ENTITY, not by path: the same semantic field is
             # legitimately read from two collections (own armies vs enemy hostiles).
             # Cross-entity combination is prevented by guard.Raw raising, not here.
             self.provenance.setdefault("%s.%s" % (ntype, k), set()).add(v.eid.split(":")[0])
-        idx = len(self.x)
+        idx = len(self._nodes)
         self.id2idx[nid] = idx
-        self.node_ids.append(nid)
-        self.x.append(row)
-        self.node_type.append(_TI[ntype])
-        self.race_idx.append(race)
-        self.agent_idx.append(agent)
-        self.stance_idx.append(stance)
-        self.subtype_idx.append(subtype)
-        self.atype_idx.append(atype)
-        self.term_idx.append(term)
-        self.cat_idx.append(cat)
-        self.own_mask.append(1.0 if own else 0.0)
+        self._nodes.append((nid, row, _TI[ntype], race, agent, stance, subtype,
+                            atype, term, cat, 1.0 if own else 0.0))
         if ntype == "action":
             self.action_nodes.append(idx)
         return idx
@@ -97,8 +99,25 @@ class Graph:
         """Both directions, as distinct relations: 'A owns B' is not 'B owns A'."""
         if i is None or j is None:
             return
-        self.src.append(i); self.dst.append(j); self.rel.append(S.rel_index(rel))
-        self.src.append(j); self.dst.append(i); self.rel.append(S.rel_index(rel, True))
+        # One dict lookup and one extend. The reverse relation is the forward index plus
+        # the forward count, which is exactly what rel_index(rel, True) returns.
+        r = S.REL_INDEX[rel]
+        self._edges.extend((i, j, r, j, i, r + _NREL))
+
+    def finalize(self):
+        """Transpose the buffers into the per-attribute lists the rest of the code reads.
+
+        One zip and three strided slices, all at C level, instead of 17k python appends
+        per graph. Idempotent, so calling it twice is harmless.
+        """
+        if self._nodes:
+            cols = list(zip(*self._nodes))
+            (self.node_ids, self.x, self.node_type, self.race_idx, self.agent_idx,
+             self.stance_idx, self.subtype_idx, self.atype_idx, self.term_idx,
+             self.cat_idx, self.own_mask) = [list(c) for c in cols]
+        e = self._edges
+        self.src, self.dst, self.rel = e[0::3], e[1::3], e[2::3]
+        return self
 
     def cat_node(self, kind, key):
         if not key:
@@ -314,6 +333,10 @@ def build_graph(record):
         char_faction[cqi] = str(h.get("faction") or "")
         _wire_char(g, ci, cqi, h, char_faction[cqi], prov_of_region, None)
 
+    # _wire_knn reads node_type and x to find characters, so the node buffers have to be
+    # materialised before it runs. It only ADDS edges, so the final finalize() below
+    # picks those up; finalize is idempotent.
+    g.finalize()
     _wire_knn(g)
 
     # ---------------- actions ---------------------------------------------
@@ -326,6 +349,7 @@ def build_graph(record):
             n_offers += 1
             _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me)
 
+    g.finalize()
     if not g.src:
         return None
 
@@ -342,6 +366,7 @@ def build_graph(record):
         float(cd.num("lord_level") / 10.0),
         math.log1p(n_offers) / 7.0,
     ]
+    g.finalize()
     g.counts = {"nodes": len(g.x), "edges": len(g.src), "actions": len(g.action_nodes),
                 "regions": len(region_rows), "offers": n_offers}
     return g
@@ -436,17 +461,20 @@ def _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me):
         if ck_key:
             g.edge(ai, g.cat_node(kind, ck_key), "act_on")
 
+    # Computed once. _target_of only reads id2idx entries under the c:/s:/r:/f: prefixes,
+    # and the only node the hero_action branch can add is an agent_action catalogue node,
+    # so hoisting it above that branch cannot change what it returns. Edge emission order
+    # is unchanged.
+    tgt = _target_of(g, at, key, params)
+
     if at == "hero_action":
         akey = str(params.get("action_key") or "")
         if akey:
             g.edge(ai, g.cat_node("agent_action", akey), "act_on")
         ability = str(params.get("ability") or "") or C.ability_of(akey)
-        if ability in S.ABILITY_RELATIONS:
-            tgt = _target_of(g, at, key, params)
-            if tgt is not None:
-                g.edge(ai, tgt, ability)
+        if ability in S.ABILITY_RELATIONS and tgt is not None:
+            g.edge(ai, tgt, ability)
 
-    tgt = _target_of(g, at, key, params)
     if tgt is not None:
         g.edge(ai, tgt, "act_target")
 
