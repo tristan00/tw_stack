@@ -1030,40 +1030,6 @@ def render_actions(con, q):
     return cards + per_type + prov
 
 
-def _why(r):
-    """Explain a pick with the number the deciding strategy actually ranked on.
-
-    Every strategy in the portfolio decides differently, so a single set of catboost
-    columns describes only the exploit_tree picks. Showing them against a gnn, random
-    or ruleset pick implies a reason that was never used.
-    """
-    pol = r.get("policy") or ""
-    base = pol.split("(")[0]
-    if base == "gnn" and r.get("gnn_impact") is not None:
-        gr = r.get("gnn_rank")
-        return ("<span class=ok>Q&minus;V %+0.4f</span>%s"
-                % (float(r["gnn_impact"]),
-                   (" <span class=dim>rank %s of %s</span>" % (gr, r["n_offers"]))
-                   if gr else ""))
-    if base == "gnn":
-        return "<span class=dim>graph score not recorded (pre-dates gnn score capture)</span>"
-    if base == "exploit_tree":
-        if r.get("exploit") is None:
-            return "<span class=dim>no model score on this offer</span>"
-        pl = r.get("pct_local")
-        return ("exploit <b>%s</b> <span class=dim>global %s &middot; local %s</span>"
-                % (_num(r.get("exploit")), _num(r.get("pct_global")),
-                   _num(pl) if pl is not None else "n/a"))
-    if pol.startswith("ruleset("):
-        return "rule <b>%s</b> matched" % _esc(pol[8:-1])
-    if base == "random":
-        return "<span class=dim>drawn at random &mdash; no score</span>"
-    if pol.endswith("_random_fallback"):
-        return ("<span class=warn>%s could not pick</span> <span class=dim>&mdash; fell back "
-                "to random</span>" % _esc(pol[:-len("_random_fallback")]))
-    return "<span class=dim>-</span>"
-
-
 def render_decisions(con, q):
     seq = []
     seq_total = sequence_total(con)
@@ -1084,16 +1050,28 @@ def render_decisions(con, q):
         pol = _esc(r["policy"])
         if r["policy"] and str(r["policy"]).endswith("_random_fallback"):
             pol = "<span class=warn>%s</span>" % pol
+        decider = str(r["policy"] or "").split("(")[0]
+        gi = r.get("gnn_impact")
+        # highlight the numbers the deciding strategy actually used; the rest are stored
+        # for every offer regardless of who picked, so they stay legible but dim
+        cb = "num" if decider == "exploit_tree" else "num dim"
+        gn = "num" if decider == "gnn" else "num dim"
         seq.append("<tr><td><a href='/d/%d'>#%d</a></td><td>%s</td><td>%s</td>"
                    "<td class=gsep>%s:%s</td><td>%s</td><td>%s</td>"
                    "<td class='%s gsep'>%s</td><td class=dim style='white-space:normal'>%s</td>"
-                   "<td class=gsep>%s</td>"
-                   "<td class=gsep style='white-space:normal'>%s</td></tr>"
+                   "<td class='%s gsep'>%s</td><td class='%s'>%s</td><td class='%s'>%s</td>"
+                   "<td class='%s gsep'>%s</td><td class='%s'>%s</td>"
+                   "<td class=gsep>%s</td></tr>"
                    % (r["decision_id"], r["decision_id"], _esc(r["turn"]), r["n_offers"],
                       _esc(r["context_kind"]), _esc(str(r["context_id"])[:26]),
                       _esc(r["action_type"]), _esc(str(r["action_key"])[:38]), cls, mark,
                       _esc(r["refusal"]),
-                      pol, _why(r)))
+                      cb, _num(r.get("exploit")), cb, _num(r.get("pct_global")),
+                      cb, (_num(r.get("pct_local")) if r.get("pct_local") is not None
+                           else "<span class=dim>n/a</span>"),
+                      gn, ("%+0.4f" % float(gi)) if gi is not None else "-",
+                      gn, _esc(r.get("gnn_rank") if r.get("gnn_rank") is not None else "-"),
+                      pol))
     _first = seq_offset + 1 if seq else 0
     _last = seq_offset + len(seq)
     _prev = max(0, seq_offset - SEQ_PAGE)
@@ -1105,22 +1083,31 @@ def render_decisions(con, q):
               % (_first, _last, seq_total, _prev,
                  _next if _next < seq_total else seq_offset))
     if not seq:
-        seq = ["<tr><td colspan=10 class=dim>no decisions recorded yet</tr>"]
+        seq = ["<tr><td colspan=14 class=dim>no decisions recorded yet</tr>"]
     seqtbl = ("<h2>every decision, newest first</h2>"
-              "<div class=legend>one row per decision point. <b>why</b> is the number the "
-              "deciding strategy actually ranked on &mdash; <b>gnn</b> shows its graph "
-              "Q&minus;V impact, <b>exploit_tree</b> catboost's value percentile and its "
-              "global/local components, <b>ruleset</b> the rule that matched, and "
-              "<b>random</b> nothing, because nothing was scored. A "
+              "<div class=legend>one row per decision point. The scores are grouped by which "
+              "model produced them, and <b>the group belonging to the strategy that actually "
+              "picked is shown bright</b> &mdash; the dim one was computed but not used. "
+              "catboost scores every offer on every decision, so its columns are always "
+              "filled; the gnn only scores when it is the strategy drawn, so its columns are "
+              "blank otherwise. <b>ruleset</b> and <b>random</b> picks rank on no score at "
+              "all &mdash; the rule that fired is named in <b>picked by</b>, and "
               "<span class=warn>*_random_fallback</span> means that strategy was drawn but "
               "could not pick. Click a <b>#</b> for the full ranking behind a decision.</div>"
               + _pager +
               "<div class=scroll><table>"
               "<tr><th colspan=3>decision<th class=grp colspan=3>what it chose"
-              "<th class=grp colspan=2>outcome<th class=grp colspan=2>why</tr>"
+              "<th class=grp colspan=2>outcome"
+              "<th class=grp colspan=3 title='E1-E2 impact percentiles; stored for every "
+              "offer whichever strategy picked'>catboost"
+              "<th class=grp colspan=2 title='twin-head Q minus V; recorded only on decisions "
+              "the gnn was drawn for'>gnn"
+              "<th class=grp>picked by</tr>"
               "<tr><th>#<th>turn<th>offers<th class=gsep>entity<th>action<th>key"
               "<th class=gsep>result<th>refusal"
-              "<th class=gsep>picked by<th>on what basis</tr>"
+              "<th class='gsep num'>exploit<th class=num>global<th class=num>local"
+              "<th class='gsep num'>Q&minus;V<th class=num>rank"
+              "<th class=gsep>strategy</tr>"
               "%s</table></div>" % "".join(seq)) + _pager
     return seqtbl
 
@@ -1499,7 +1486,8 @@ def render_infra(run_dir):
         live_mix = (_session_state() or {}).get("mix")
         dflt = ", ".join("%s=%.2f" % kv
                          for kv in sorted(_P.normalize_strategies(None).items()))
-        pol_cfg = (("running mix <b>%s</b>" % _esc(live_mix)) if live_mix else
+        pol_cfg = (("running mix <b>%s</b>" % _esc(_mix_str(live_mix) or live_mix))
+                   if live_mix else
                    "<span class=warn>no running session &mdash; no live mix</span>")
         pol_cfg += ("<br><span class=dim>%s is only the fallback when --strategies is "
                     "omitted (policy.py DEFAULT_STRATEGIES). A run's own mix comes from "
@@ -1624,7 +1612,7 @@ def render_infra(run_dir):
            "</script>")
     # models moved to the models tab, the experiment ledger to training -- infra is the
     # box itself: what is running, what is writing, and the controls.
-    return svc + activity + ctl + tail
+    return svc + policy_html + activity + ctl + tail
 
 
 def _kill_session():
@@ -1700,7 +1688,7 @@ def _trial_row_html(r, live=False):
                "-" if s.get("total") is None else "%g" % s["total"],
                "-" if s.get("campaigns_that_gained") is None
                else "%s/%s" % (s["campaigns_that_gained"], meas),
-               "-" if l.get("total") is None else "%g" % l["total"],
+               "-" if l.get("mean") is None else "%.2f" % l["mean"],
                r.get("turns_per_campaign", "-"),
                t.get("s_per_campaign") if t.get("s_per_campaign") else "-",
                t.get("s_per_turn") if t.get("s_per_turn") else "-",
@@ -1752,7 +1740,8 @@ def _trials_table():
             "show epsilon=E'>mix"
             "<th title='rule set name@sha256 prefix'>ruleset"
             "<th>campaigns<th>corpus<th>sett/camp<th>sett total"
-            "<th>grew<th>lord total<th>turns/camp<th>s/camp<th>s/turn<th>notes</tr>%s</table></div>"
+            "<th>grew<th title='legendary lord levels gained per campaign'>lord lvl/camp"
+            "<th>turns/camp<th>s/camp<th>s/turn<th>notes</tr>%s</table></div>"
             % (note, "".join(out)))
 
 
@@ -2024,7 +2013,7 @@ def render_training():
                _esc(str(p.get("campaigns") if p.get("campaigns") is not None else "-")),
                _fmt(p.get("sett_per_campaign")),
                _esc(str(p.get("sett_total") if p.get("sett_total") is not None else "-")),
-               _esc(str(p.get("lord_total") if p.get("lord_total") is not None else "-")),
+               _fmt(p.get("lord_per_campaign"), 2),
                _fmt(p.get("turns_per_campaign")),
                "-" if p.get("grew") is None else "%s/%s" % (p["grew"], p.get("measured", "?"))))
     if not out:
@@ -2045,7 +2034,8 @@ def render_training():
             "<th class=gsep>val rows<th>e1 rmse<th>e2 rmse<th>lift<th>best iter<th>MAE"
             "<th class=gsep>rows<th>e1 rmse<th class=gsep>rows<th>e1 rmse"
             "<th class=gsep>rmse<th>rows<th>device"
-            "<th class=gsep>camps<th>sett/camp<th>sett total<th>lord total<th>turns/camp"
+            "<th class=gsep>camps<th>sett/camp<th>sett total"
+            "<th title='legendary lord levels gained per campaign'>lord lvl/camp<th>turns/camp"
             "<th>grew</tr>%s</table></div>"
             % "".join(out))
 
