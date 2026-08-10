@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.join(r"D:\tw_stack", "decisions"))
 import features as F
 import policy as P
 from base_model import (RUNS_ROOT, TARGET_PARTS, target, decision_deltas, fit_es,
-                        isolation_forest, params, regressor, _encode, _mm0, _ranks, _sd)
+                        params, regressor, _ranks, _sd)
 from store import DecisionStore, IncompatibleStore
 
 MODEL_DIR = r"D:\twdata\models\interrupt"
@@ -144,12 +144,6 @@ def train(runs_root=RUNS_ROOT):
     e1 = fit_es(X, y, cat_idx, groups, "e1", fit_report)
     e2 = fit_es(Xs, y, scat_idx, groups, "e2", fit_report)
     os.makedirs(MODEL_DIR, exist_ok=True)
-    Xa, cat_maps = _encode(rows, num, cat)
-    iso = isolation_forest()
-    iso.fit(Xa)
-    nov = [-s for s in iso.score_samples(Xa)]
-    with open(os.path.join(MODEL_DIR, "iso.pkl"), "wb") as fh:
-        pickle.dump({"iso": iso, "cat_maps": cat_maps}, fh)
     preds = list(e1.predict(Pool(X, cat_features=cat_idx)))
     spreds = list(e2.predict(Pool(Xs, cat_features=scat_idx)))
     impacts = [a - b for a, b in zip(preds, spreds)]
@@ -159,7 +153,7 @@ def train(runs_root=RUNS_ROOT):
             "screen_rows": {s: sum(1 for r in rows if r["isc_screen"] == s)
                             for s in {r["isc_screen"] for r in rows}},
             "exp_lo": min(impacts), "exp_hi": max(impacts), "sd_global": sd_global,
-            "nov_lo": min(nov), "nov_hi": max(nov), "beta": P.BETA, "epsilon": P.EPSILON,
+            "beta": P.BETA, "epsilon": P.EPSILON,
             "campaigns": sorted(set(data["groups"]))}
     e1.save_model(os.path.join(MODEL_DIR, "e1.cbm"))
     e2.save_model(os.path.join(MODEL_DIR, "e2.cbm"))
@@ -180,8 +174,6 @@ class InterruptRanker:
         self.ready = False
         self.meta = {}
         self.e1 = self.e2 = None
-        self._iso = None
-        self._cat_maps = None
         self.rng = random.Random(seed)
         self.strategies = P.normalize_strategies(strategies)
         self.ruleset = ruleset
@@ -212,17 +204,12 @@ class InterruptRanker:
                         "counts UNAVAILABLE. Screens in the fitted set %s keep the model; any "
                         "other screen is cold_random until the next retrain.\n"
                         % (self.meta.get("screens") or []))
-            iso = os.path.join(model_dir, "iso.pkl")
-            if self.ready and os.path.exists(iso):
-                with open(iso, "rb") as fh:
-                    blob = pickle.load(fh)
-                self._iso, self._cat_maps = blob.get("iso"), blob.get("cat_maps")
         except Exception as e:
             sys.stderr.write("interrupt_model: could not load -> %s\n" % repr(e)[:140])
 
     def score(self, screen, options, campaign, panel=None, world=None, meta=None):
         if not self.ready or not options:
-            return {}, {}
+            return {}
         try:
             from catboost import Pool
             m = self.meta
@@ -236,17 +223,10 @@ class InterruptRanker:
             Xs = F.matrix([_state_row(screen, len(opts), campaign, world)], snum, scat)
             g = list(self.e2.predict(Pool(Xs, cat_features=list(
                 range(len(snum), len(snum) + len(scat))))))[0]
-            exploit = dict(zip(opts, _ranks([v - g for v in f1])))
-            if self._iso is None:
-                return exploit, {}
-            Xa, _ = _encode(rows, num, cat, self._cat_maps)
-            nov = [-s for s in self._iso.score_samples(Xa)]
-            nov_lo, nov_hi = m.get("nov_lo", 0.0), m.get("nov_hi", 1.0)
-            explore = {o: _mm0(v, nov_lo, nov_hi) for o, v in zip(opts, nov)}
-            return exploit, explore
+            return dict(zip(opts, _ranks([v - g for v in f1])))
         except Exception as e:
             sys.stderr.write("interrupt_model: scoring failed -> %s\n" % repr(e)[:140])
-            return {}, {}
+            return {}
 
     def _draw(self):
         roll = self.rng.random()
@@ -293,10 +273,10 @@ class InterruptRanker:
             sys.stderr.write("interrupt_model: %s -> %r (%sexploit_tree_random_fallback, %s)\n"
                              % (screen, pick, prefix, why))
             return pick, prefix + "exploit_tree_random_fallback", {}
-        exploit, explore = self.score(screen, options, campaign, panel, world, meta)
+        exploit = self.score(screen, options, campaign, panel, world, meta)
         if not exploit:
             return self.rng.choice(opts), prefix + "exploit_tree_random_fallback", {}
-        rich = {o: {"exploit": exploit.get(o), "explore": explore.get(o)} for o in exploit}
+        rich = {o: {"exploit": exploit.get(o)} for o in exploit}
         return max(exploit, key=exploit.get), prefix + "exploit_tree", rich
 
 

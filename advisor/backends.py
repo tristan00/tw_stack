@@ -9,8 +9,8 @@ sys.path.insert(0, _HERE)
 NO_MODEL_DIR = r"D:\twdata\models\__cold_start__"
 
 BACKENDS = {
-    "catboost": {"module": "model", "label": "CatBoost E1/E2 + isolation-forest explore"},
-    "nn": {"module": "nn_model", "label": "MLP on quantile-normalised inputs, random explore"},
+    "catboost": {"module": "model", "label": "CatBoost E1/E2 impact"},
+    "nn": {"module": "nn_model", "label": "MLP on quantile-normalised inputs"},
 }
 DEFAULT = "catboost"
 

@@ -13,8 +13,8 @@ sys.path.insert(0, os.path.join(r"D:\tw_stack", "decisions"))
 
 import features as F
 from base_model import (RUNS_ROOT, TARGET_PARTS, target, SHORT_HORIZON, SHORT_WEIGHT,
-                        decision_deltas, fit_es, future_best, isolation_forest, params,
-                        regressor, _encode, _mm, _mm0, _pct, _ranks, _sd)
+                        decision_deltas, fit_es, future_best, params,
+                        regressor, _pct, _ranks, _sd)
 from store import DecisionStore, IncompatibleStore
 
 MODEL_DIR = r"D:\twdata\models\global"
@@ -140,10 +140,6 @@ def train(runs_root=RUNS_ROOT):
     Xs = F.matrix(srows, snum, scat)
     scat_idx = list(range(len(snum), len(snum) + len(scat)))
     e2 = fit_es(Xs, y, scat_idx, groups, "e2", fit_report)
-    Xa, cat_maps = _encode(rows, num, cat)
-    iso = isolation_forest()
-    iso.fit(Xa)
-    nov = [-s for s in iso.score_samples(Xa)]
     preds = list(e1.predict(Pool(X, cat_features=cat_idx)))
     e2preds = list(e2.predict(Pool(Xs, cat_features=scat_idx)))
     impacts = [a - b for a, b in zip(preds, e2preds)]
@@ -151,8 +147,7 @@ def train(runs_root=RUNS_ROOT):
     sd_global = _sd(impacts)
     meta = {"num": num, "cat": cat, "state_num": snum, "state_cat": scat,
             "exp_lo": min(impacts), "exp_hi": max(impacts), "sd_global": sd_global,
-            "w_local": W_LOCAL,
-            "nov_lo": min(nov), "nov_hi": max(nov), "rows": len(rows),
+            "w_local": W_LOCAL, "rows": len(rows),
             "campaigns": sorted(set(data["groups"])),
             "short_horizon": SHORT_HORIZON, "short_weight": SHORT_WEIGHT,
             "target": ("gain(future_max - decision_snapshot) over %s"
@@ -162,9 +157,8 @@ def train(runs_root=RUNS_ROOT):
     os.makedirs(stage)
     e1.save_model(os.path.join(stage, "e1.cbm"))
     e2.save_model(os.path.join(stage, "e2.cbm"))
-    pickle.dump({"iso": iso, "cat_maps": cat_maps}, open(os.path.join(stage, "iso.pkl"), "wb"))
     json.dump(meta, open(os.path.join(stage, "meta.json"), "w"))
-    for name in ("e1.cbm", "e2.cbm", "iso.pkl", "meta.json"):
+    for name in ("e1.cbm", "e2.cbm", "meta.json"):
         os.replace(os.path.join(stage, name), os.path.join(MODEL_DIR, name))
     shutil.rmtree(stage, ignore_errors=True)
     mae = sum(abs(a - b) for a, b in zip(preds, y)) / len(y)
@@ -218,7 +212,7 @@ class Ranker:
     def __init__(self, model_dir=MODEL_DIR):
         self.ready = False
         self.meta = None
-        self.e1 = self.e2 = self.iso = None
+        self.e1 = self.e2 = None
         meta_path = os.path.join(model_dir, "meta.json")
         if not os.path.isfile(meta_path):
             return
@@ -227,8 +221,6 @@ class Ranker:
             self.meta = json.load(open(meta_path))
             self.e1 = CatBoostRegressor(); self.e1.load_model(os.path.join(model_dir, "e1.cbm"))
             self.e2 = CatBoostRegressor(); self.e2.load_model(os.path.join(model_dir, "e2.cbm"))
-            p = os.path.join(model_dir, "iso.pkl")
-            self.iso = pickle.load(open(p, "rb")) if os.path.isfile(p) else None
             self.ready = True
         except Exception as e:
             sys.stderr.write("model: load failed -> %s\n" % repr(e)[:160])
@@ -253,7 +245,7 @@ class Ranker:
             return [{"context_kind": e["context_kind"], "context_id": e["context_id"],
                      "action_type": o["action_type"], "key": o["key"],
                      "available": o["available"], "gate": o["gate"], "params": o.get("params") or {},
-                     "exploit": None, "explore": None, "impact": None, "score": None}
+                     "exploit": None, "impact": None, "score": None}
                     for e, o, _r in triples]
         from catboost import Pool
         m = self.meta
@@ -271,10 +263,6 @@ class Ranker:
         Xs = F.matrix(srows, m["state_num"], m["state_cat"])
         g = list(self.e2.predict(Pool(Xs, cat_features=list(
             range(len(m["state_num"]), len(m["state_num"]) + len(m["state_cat"]))))))
-        nov = [None] * len(rows)
-        if self.iso is not None:
-            Xa, _ = _encode(rows, m["num"], m["cat"], self.iso["cat_maps"])
-            nov = [-float(s) for s in self.iso["iso"].score_samples(Xa)]
         li = None
         lmeta = getattr(self, "lmeta", None) or {}
         lkinds = set(lmeta.get("kinds") or ())
@@ -307,7 +295,6 @@ class Ranker:
                 exploit = ((pctg - 0.5) + w * (pctl - 0.5)) / (1.0 + w) + 0.5
             else:
                 exploit = pctg
-            explore = _mm(nov[i], m["nov_lo"], m["nov_hi"]) if nov[i] is not None else 0.5
             out.append({"context_kind": e["context_kind"], "context_id": e["context_id"],
                         "action_type": o["action_type"], "key": o["key"],
                         "available": o["available"], "gate": o["gate"],
@@ -317,8 +304,7 @@ class Ranker:
                         "pct_global": round(pctg, 4),
                         "pct_local": (round(pctl, 4) if pctl is not None else None),
                         "w_local": w,
-                        "exploit": round(exploit, 4), "explore": round(explore, 4),
-                        "score": round(exploit, 4)})
+                        "exploit": round(exploit, 4), "score": round(exploit, 4)})
         out.sort(key=lambda r: -(r["score"] if r["score"] is not None else -1))
         return out
 

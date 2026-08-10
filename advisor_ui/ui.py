@@ -57,7 +57,7 @@ def sequence(con, limit=SEQ_PAGE, offset=0):
     return [dict(r) for r in con.execute(
         "SELECT d.decision_id, d.turn, d.decision_seq, d.n_entities, d.n_offers,"
         " t.context_kind, t.context_id, t.action_type, t.action_key, t.counted, t.refusal, t.policy,"
-        " o.score, o.exploit, o.explore, o.pct_global, o.pct_local, o.rank"
+        " o.score, o.exploit, o.pct_global, o.pct_local, o.rank"
         " FROM decision_points d LEFT JOIN action_taken t ON t.decision_id=d.decision_id"
         " LEFT JOIN action_offers o ON o.rowid ="
         "   (SELECT MIN(o2.rowid) FROM action_offers o2 WHERE o2.decision_id=t.decision_id"
@@ -77,7 +77,7 @@ def ranking(con, did, limit=80):
     taken = con.execute("SELECT context_kind,context_id,action_type,action_key,counted,refusal"
                         " FROM action_taken WHERE decision_id=?", (did,)).fetchone()
     rows = [dict(r) for r in con.execute(
-        "SELECT context_kind,context_id,action_type,action_key,available,gate,score,exploit,explore,"
+        "SELECT context_kind,context_id,action_type,action_key,available,gate,score,exploit,"
         "pct_global,pct_local,rank"
         " FROM action_offers WHERE decision_id=?"
         " ORDER BY (score IS NULL), score DESC, available DESC LIMIT ?", (did, limit))]
@@ -215,6 +215,22 @@ tr:last-child td{border-bottom:none}
 .bar2.ok{background:#3fb950}.bar2.warn{background:#d29922}.bar2.bad{background:#f85149}
 .bar2.dimbar{background:#4c8dff;opacity:.55}
 .blabel{margin-left:6px;font-size:11px;color:var(--dim)}
+.mcards{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:12px;margin:12px 0}
+.mcard{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px}
+.mcard.alert{border-color:var(--bad)}
+.mhead{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.mname{font-weight:600;font-size:14px}
+.mrole{color:var(--dim);font-size:11px;margin:2px 0 9px;white-space:normal;line-height:1.4}
+.badge{font-size:10px;text-transform:uppercase;letter-spacing:.06em;padding:2px 7px;
+       border-radius:10px;border:1px solid currentColor;white-space:nowrap}
+.mrow{display:flex;justify-content:space-between;gap:12px;padding:3px 0;
+      border-bottom:1px solid var(--line)}
+.mrow:last-child{border-bottom:none}
+.mk{color:var(--dim)}
+.mv{text-align:right;white-space:nowrap}
+.note{margin-top:9px;font-size:11px;line-height:1.5;white-space:normal}
+th.grp{text-align:center;color:var(--fg);border-left:1px solid var(--line)}
+td.gsep,th.gsep{border-left:1px solid var(--line)}
 """
 
 
@@ -396,8 +412,7 @@ def render_interrupts(runs_root=RUNS_ROOT):
 
         def _lvl(k):
             fmt = lambda x: ("%.2f" % x) if isinstance(x, (int, float)) else "-"
-            return "%s exploit=%s explore=%s" % (_short(k), fmt(_pred(k, "exploit")),
-                                                 fmt(_pred(k, "explore")))
+            return "%s exploit=%s" % (_short(k), fmt(_pred(k, "exploit")))
         ordered = sorted(opts, key=lambda k: -(_pred(k, "exploit")
                                                if _pred(k, "exploit") is not None else -1e9))
         tip = ", ".join(_lvl(k) for k in ordered)
@@ -920,23 +935,56 @@ def render_head(con, run_dir):
             % (_esc(run_dir), cards))
 
 
+def _statcards(items):
+    return ("<div class=cards>%s</div>"
+            % "".join("<div class=card><div class='v %s'>%s</div><div class=k>%s</div></div>"
+                      % (cls, v, _esc(k)) for k, v, cls in items))
+
+
 def render_actions(con, q):
+    """What the advisor tried and whether the game accepted it. The decision-by-decision
+    log lives in its own tab -- mixing the forensic view in here buried these totals."""
+    tot = con.execute(
+        "SELECT COUNT(*) n, SUM(CASE WHEN counted THEN 1 ELSE 0 END) ok,"
+        " SUM(CASE WHEN refusal IS 'awaiting_execution' THEN 1 ELSE 0 END) waiting"
+        " FROM action_taken").fetchone()
+    n, ok = (tot["n"] or 0), (tot["ok"] or 0)
+    settled = n - (tot["waiting"] or 0)
+    rate = (100.0 * ok / settled) if settled else 0.0
+    rcls = "ok" if rate >= 80 else ("warn" if rate >= 40 else "bad")
+    types = by_action_type(con)
+    cards = _statcards([
+        ("decisions acted on", "%d" % n, ""),
+        ("confirmed by the game", "%d" % ok, ""),
+        ("confirm rate", "%.0f%%" % rate, rcls),
+        ("awaiting execution", "%d" % (tot["waiting"] or 0),
+         "warn" if (tot["waiting"] or 0) else "dim"),
+        ("action types seen", "%d" % len(types), ""),
+    ])
     rows = []
-    for r in by_action_type(con):
+    for r in types:
         pct = (100.0 * (r["ok"] or 0) / r["n"]) if r["n"] else 0
         cls = "ok" if pct >= 80 else ("warn" if pct >= 40 else "bad")
         rows.append("<tr><td>%s</td><td>%d</td><td class=%s>%d</td>"
-                    "<td><span class=bar style='width:%dpx'></span> <span class=%s>%.0f%%</span></td>"
-                    "<td class=dim>%s</td></tr>"
+                    "<td class=barcell><span class='bar2 %s' style='width:%dpx'></span>"
+                    "<span class=blabel>%.0f%%</span></td>"
+                    "<td class=dim style='white-space:normal'>%s</td></tr>"
                     % (_esc(r["action_type"]), r["n"], cls, r["ok"] or 0,
-                       int(pct * 0.9), cls, pct, _esc(r["refusals"])))
-    per_type = ("<h2>confirm rate by action type</h2><div class=scroll><table>"
+                       cls, max(2, int(pct * 1.2)), pct, _esc(r["refusals"])))
+    per_type = ("<h2>confirm rate by action type</h2>"
+                "<div class=legend>how often the game actually accepted each action the "
+                "advisor picked. A low rate is a plumbing problem, not a policy one.</div>"
+                "<div class=scroll><table>"
                 "<tr><th>action<th>tried<th>confirmed<th>rate<th>refusals seen</tr>%s</table></div>"
-                % "".join(rows))
+                % ("".join(rows) or "<tr><td colspan=5 class=dim>nothing recorded yet</tr>"))
     prov = _policy_tally_html(
-        "decision provenance (this run)",
+        "who is making the picks (this run)",
         dict(con.execute("SELECT policy, COUNT(*) FROM action_taken"
                          " WHERE refusal IS NOT 'awaiting_execution' GROUP BY policy")))
+    return cards + per_type + prov
+
+
+def render_decisions(con, q):
     seq = []
     seq_total = sequence_total(con)
     try:
@@ -956,16 +1004,18 @@ def render_actions(con, q):
         pl = r.get("pct_local")
         pl_cell = _num(pl) if pl is not None else "<span class=dim>n/a</span>"
         seq.append("<tr><td><a href='/d/%d'>#%d</a></td><td>%s</td><td>%s</td>"
-                   "<td>%s:%s</td><td>%s</td><td>%s</td><td class=%s>%s</td>"
-                   "<td>%s</td><td class=dim>%s</td><td class=dim>%s</td><td class=dim>%s</td>"
+                   "<td class=gsep>%s:%s</td><td>%s</td><td>%s</td>"
+                   "<td class='%s gsep'>%s</td><td class=dim style='white-space:normal'>%s</td>"
+                   "<td class=gsep>%s</td><td class=dim>%s</td><td class=dim>%s</td>"
                    "<td class=dim>%s</td>"
-                   "<td class=dim>%s</td><td class=dim>%s</td></tr>"
+                   "<td class=gsep>%s</td></tr>"
                    % (r["decision_id"], r["decision_id"], _esc(r["turn"]), r["n_offers"],
                       _esc(r["context_kind"]), _esc(str(r["context_id"])[:26]),
                       _esc(r["action_type"]), _esc(str(r["action_key"])[:38]), cls, mark,
+                      _esc(r["refusal"]),
                       _num(r.get("score")), _num(r.get("exploit")),
-                      _num(r.get("pct_global")), pl_cell, _num(r.get("explore")),
-                      _esc(r["refusal"]), _esc(r["policy"])))
+                      _num(r.get("pct_global")), pl_cell,
+                      _esc(r["policy"])))
     _first = seq_offset + 1 if seq else 0
     _last = seq_offset + len(seq)
     _prev = max(0, seq_offset - SEQ_PAGE)
@@ -976,13 +1026,23 @@ def render_actions(con, q):
               "<a class='btn pg' href='#' data-seq=0>newest</a></div>"
               % (_first, _last, seq_total, _prev,
                  _next if _next < seq_total else seq_offset))
-    seqtbl = ("<h2>sequence of picked decisions (newest first)</h2>" + _pager +
+    if not seq:
+        seq = ["<tr><td colspan=14 class=dim>no decisions recorded yet</tr>"]
+    seqtbl = ("<h2>every decision, newest first</h2>"
+              "<div class=legend>one row per decision point. <b>score</b> is the value "
+              "percentile the pick was ranked on, <b>global</b>/<b>local</b> are its "
+              "percentile within the whole faction and within its own entity kind. "
+              "Click a <b>#</b> for the full ranking behind that decision.</div>" + _pager +
               "<div class=scroll><table>"
-              "<tr><th>#<th>turn<th>offers<th>entity<th>action<th>key<th>result"
-              "<th title='score = exploit (value percentile); rank = value order. Rows recorded before 50082a9 (2026-08-02 20:32) hold the retired 0.9*exploit+0.1*explore blend'>score<th>exploit<th>&nbsp;&nbsp;global<th>&nbsp;&nbsp;local<th>explore"
-              "<th>refusal<th>policy</tr>"
+              "<tr><th colspan=3>decision<th class=grp colspan=3>what it chose"
+              "<th class=grp colspan=2>outcome<th class=grp colspan=4>why"
+              "<th class=grp>picked by</tr>"
+              "<tr><th>#<th>turn<th>offers<th class=gsep>entity<th>action<th>key"
+              "<th class=gsep>result<th>refusal"
+              "<th class=gsep>score<th>exploit<th>global<th>local"
+              "<th class=gsep>policy</tr>"
               "%s</table></div>" % "".join(seq)) + _pager
-    return per_type + prov + seqtbl
+    return seqtbl
 
 
 def render_reward(con):
@@ -1005,9 +1065,11 @@ PANELS = (
     ("diplomacy", "diplomacy", lambda con, run, q: render_diplomacy(run)),
     ("timing", "timing", lambda con, run, q: render_timing(run)),
     ("actions", "actions", lambda con, run, q: render_actions(con, q)),
+    ("decisions", "decision log", lambda con, run, q: render_decisions(con, q)),
     ("timeline", "timeline", lambda con, run, q: render_timeline(con)),
     ("reward", "reward", lambda con, run, q: render_reward(con)),
     ("models", "models", lambda con, run, q: render_models()),
+    ("training", "training", lambda con, run, q: render_training()),
     ("infra", "infrastructure", lambda con, run, q: render_infra(run)),
 )
 
@@ -1201,16 +1263,16 @@ def render_decision(con, did):
         pl = o.get("pct_local")
         pl_cell = fmt(pl) if pl is not None else "<span class=dim>n/a</span>"
         rows.append("<tr class='%s'><td>%s</td><td>%s:%s</td><td>%s</td><td>%s</td><td>%s</td>"
-                    "<td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td>"
+                    "<td>%s</td><td>%s</td><td>%s</td><td>%s</td>"
                     "<td class=dim>%s</td></tr>"
                     % (cls, _esc(o["rank"]), _esc(o["context_kind"]),
                        _esc(str(o["context_id"])[:22]), _esc(o["action_type"]),
                        _esc(str(o["action_key"])[:44]), avail, fmt(o["score"]),
                        fmt(o["exploit"]), fmt(o.get("pct_global")), pl_cell,
-                       fmt(o["explore"]), _esc(o["gate"])))
+                       _esc(o["gate"])))
     tbl = ("<h2>the ranking it produced over the whole faction</h2><div class=scroll><table>"
            "<tr><th>rank<th>entity<th>action<th>key<th>available<th>score<th>exploit"
-           "<th>&nbsp;&nbsp;global<th>&nbsp;&nbsp;local<th>explore<th>gate</tr>"
+           "<th>&nbsp;&nbsp;global<th>&nbsp;&nbsp;local<th>gate</tr>"
            "%s</table></div>" % "".join(rows))
     ent = []
     for e in d["entities"]:
@@ -1641,51 +1703,201 @@ def _lift(e2_rmse, e1_rmse):
     return "<td class=%s>%+.4f" % ("ok" if d > 0.02 else "bad" if d <= 0 else "warn", d)
 
 
-def render_models():
-    import session as S
+MODEL_DIRS = (("global", r"D:\twdata\models\global"),
+              ("local", r"D:\twdata\models\local"),
+              ("interrupt", r"D:\twdata\models\interrupt"),
+              ("gnn", r"D:\twdata\models\gnn"))
+
+_MODEL_ROLE = {
+    "global": "catboost E1/E2 &mdash; scores every main-loop offer; E2 is the counterfactual "
+              "baseline, and E1&minus;E2 is the impact the policy ranks on",
+    "local": "catboost &mdash; per-entity local value, blended into the global score",
+    "interrupt": "catboost &mdash; ranks the options on blocking menus (battles, occupation)",
+    "gnn": "GINE graph net &mdash; twin Q/V heads score offers over the "
+           "province/region/settlement/character/faction graph",
+}
+
+
+def _live_gnn_schema():
+    try:
+        if r"D:\tw_stack" not in sys.path:
+            sys.path.insert(0, r"D:\tw_stack")
+        from mapgraph import schema as GS
+        return GS.SCHEMA_VERSION, GS.schema_hash()
+    except Exception:
+        return None, None
+
+
+def _mrow(k, v, cls=""):
+    return ("<div class=mrow><span class=mk>%s</span><span class='mv %s'>%s</span></div>"
+            % (k, cls, v))
+
+
+def _age_words(secs):
+    if secs is None:
+        return "-"
+    if secs < 90:
+        return "%.0fs ago" % secs
+    if secs < 5400:
+        return "%.0fm ago" % (secs / 60.0)
+    if secs < 172800:
+        return "%.1fh ago" % (secs / 3600.0)
+    return "%.1fd ago" % (secs / 86400.0)
+
+
+def _gnn_card(path, m, secs, when):
+    """The gnn card carries the readiness gate: a schema mismatch silently voids the
+    whole gnn share of the mix, so it has to be the loudest thing on the card."""
+    fit = m.get("fit") or {}
+    live_ver, live_hash = _live_gnn_schema()
+    have_hash = m.get("schema_hash")
+    weights = all(os.path.exists(os.path.join(os.path.dirname(path), f))
+                  for f in ("encoder.pt", "head.pt"))
+    if not m:
+        state, cls, note = "missing", "bad", (
+            "No model on disk. Every <b>gnn</b> draw falls back to random until the first "
+            "retrain window trains one.")
+    elif not weights:
+        state, cls, note = "incomplete", "bad", (
+            "meta.json is present but encoder.pt/head.pt are not &mdash; the ranker cannot "
+            "load this; gnn draws fall back to random.")
+    elif live_hash and have_hash != live_hash:
+        state, cls, note = "stale schema", "bad", (
+            "The graph schema in code has changed since this was trained, so "
+            "<code>rank.py</code> refuses it and <b>every gnn draw falls back to random</b>. "
+            "It clears itself at the next retrain window."
+            "<br>on disk <code>v%s %s</code> &middot; code <code>v%s %s</code>"
+            % (_esc(str(m.get("schema_version"))), _esc(str(have_hash)[:12]),
+               _esc(str(live_ver)), _esc(str(live_hash)[:12])))
+    else:
+        state, cls, note = "ready", "ok", ""
+    dev = fit.get("device")
+    rows = [
+        _mrow("held-out rmse", _fmt(fit.get("val_rmse_raw"), 4)),
+        _mrow("rows / campaigns", "%s &middot; %s" % (_esc(str(m.get("rows", "-"))),
+                                                      len(m.get("campaigns") or []) or "-")),
+        _mrow("trained on", ("<span class=%s>%s</span>"
+                             % ("ok" if dev == "cuda" else "warn", _esc(str(dev))))
+              if dev else "<span class=dim>not recorded</span>"),
+        _mrow("fit", "%ss &middot; %s epochs (%s)"
+              % (_esc(str(fit.get("seconds", "-"))), _esc(str(fit.get("epochs_run", "-"))),
+                 _esc(str(fit.get("stopped_by", "-"))))),
+        _mrow("graph schema", "v%s <span class=dim>%s</span>"
+              % (_esc(str(m.get("schema_version", "-"))), _esc(str(have_hash or "-")[:12]))),
+        _mrow("aux labelled nodes", _esc(str((m.get("aux") or {}).get("n_labelled_nodes", "-")))),
+        _mrow("trained at", "%s <span class=dim>%s</span>" % (_esc(when), _age_words(secs))),
+    ]
+    return state, cls, note, rows
+
+
+def _catboost_card(name, m, secs, when, events):
+    latest = None
+    for e in events:
+        if (e.get(name) or {}).get("e1", {}).get("val_rmse") is not None:
+            latest = e
+            break
+    fam = (latest or {}).get(name) or {}
+    e1 = (fam.get("e1") or {}).get("val_rmse")
+    e2 = (fam.get("e2") or {}).get("val_rmse")
+    state, cls, note = ("ready", "ok", "") if m else (
+        "missing", "bad", "No model on disk &mdash; picks for this stage fall back.")
+    rows = [_mrow("held-out rmse (e1)", _fmt(e1, 4))]
+    if e2 is not None:
+        d = float(e2) - float(e1) if e1 is not None else None
+        rows.append(_mrow("e2 baseline / lift", "%s <span class=%s>%s</span>"
+                          % (_fmt(e2, 4),
+                             "ok" if d and d > 0.02 else "bad" if d is not None and d <= 0
+                             else "warn",
+                             ("%+.4f" % d) if d is not None else "-")))
+    rows.append(_mrow("rows / campaigns", "%s &middot; %s"
+                      % (_esc(str(m.get("rows", "-"))),
+                         len(m.get("campaigns") or []) or "-")))
+    sd = m.get("sd_global") or m.get("sd_local")
+    if sd is not None:
+        rows.append(_mrow("target spread (sd)", _fmt(sd, 4)))
+    if m.get("screens") is not None:
+        rows.append(_mrow("screens covered", _esc(str(len(m.get("screens") or [])))))
+    rows.append(_mrow("trained at", "%s <span class=dim>%s</span>" % (_esc(when),
+                                                                      _age_words(secs))))
+    return state, cls, note, rows
+
+
+def _fit_config_table():
+    body = []
     try:
         BM = _live_base_model()
-        cfg = ("learning_rate <b>%s</b> &nbsp; early_stopping_rounds <b>%s</b> &nbsp; "
-               "iteration cap %s &nbsp; depth %s &nbsp; grow_policy %s &nbsp; bootstrap %s &nbsp; "
-               "loss %s &nbsp; holdout %.0f%% of campaigns<br><span class=dim>%s</span>"
-               % (BM.CB_LEARNING_RATE, BM.CB_EARLY_STOPPING, BM.CB_ITERATIONS, BM.CB_DEPTH,
-                  _esc(str(BM.CB_PARAMS.get("grow_policy"))),
-                  _esc(str(BM.CB_PARAMS.get("bootstrap_type"))),
-                  BM.CB_LOSS, 100 * BM.VAL_FRACTION, _esc(str(BM.CB_TUNED_FROM))))
+        body.append(
+            "<tr><td>catboost<td>global / local / interrupt<td>lr %s &middot; "
+            "early stop %s &middot; cap %s iters &middot; depth %s &middot; %s &middot; %s "
+            "&middot; loss %s &middot; holdout %.0f%% of campaigns"
+            "<td class=dim>cpu &mdash; measured faster than gpu on this corpus "
+            "(14.6s vs 21.6s)</tr>"
+            % (BM.CB_LEARNING_RATE, BM.CB_EARLY_STOPPING, BM.CB_ITERATIONS, BM.CB_DEPTH,
+               _esc(str(BM.CB_PARAMS.get("grow_policy"))),
+               _esc(str(BM.CB_PARAMS.get("bootstrap_type"))),
+               BM.CB_LOSS, 100 * BM.VAL_FRACTION))
     except Exception as e:
-        cfg = "unreadable: %s" % _esc(repr(e)[:90])
-    cfg = "<b>catboost (global/local/interrupt)</b> &mdash; " + cfg
+        body.append("<tr><td>catboost<td colspan=3 class=bad>config unreadable: %s</tr>"
+                    % _esc(repr(e)[:90]))
     try:
         if r"D:\tw_stack" not in sys.path:
             sys.path.insert(0, r"D:\tw_stack")
         from mapgraph import train as _GT
-        _gc = _GT.CFG
-        cfg += ("<br><b>gnn (graph offer-scorer)</b> &mdash; GINE encoder hidden %s &nbsp; "
-                "lr %s &nbsp; weight_decay %s &nbsp; batch %s graphs &nbsp; epochs &le;%s "
-                "(patience %s) &nbsp; aux weight %s &nbsp; threads %s train / %s infer &nbsp; "
-                "time budget %ss &nbsp; same campaign-grouped holdout"
-                % tuple(_esc(str(v)) for v in
-                        (_gc["hidden"], _gc["lr"], _gc["weight_decay"], _gc["batch"],
-                         _gc["epochs"], _gc["patience"], _gc["aux_weight"],
-                         _GT.THREADS_TRAIN, 2, _gc["time_budget_s"])))
+        c = _GT.CFG
+        body.append(
+            "<tr><td>gnn<td>graph offer-scorer<td>GINE hidden %s &middot; lr %s &middot; "
+            "weight decay %s &middot; batch %s graphs &middot; &le;%s epochs "
+            "(patience %s) &middot; aux weight %s &middot; budget %ss &middot; "
+            "campaign-grouped holdout"
+            "<td class=dim>%s &mdash; corpus collated once and held resident; "
+            "%s train threads, %s infer</tr>"
+            % tuple(_esc(str(v)) for v in
+                    (c["hidden"], c["lr"], c["weight_decay"], c["batch"], c["epochs"],
+                     c["patience"], c["aux_weight"], c["time_budget_s"],
+                     c.get("device", "auto"), _GT.THREADS_TRAIN, 2)))
     except Exception as e:
-        cfg += "<br><b>gnn</b> &mdash; config unreadable: %s" % _esc(repr(e)[:90])
-    disk = []
-    for name, path in (("global", r"D:\twdata\models\global\meta.json"),
-                       ("local", r"D:\twdata\models\local\meta.json"),
-                       ("interrupt", r"D:\twdata\models\interrupt\meta.json"),
-                       ("gnn", r"D:\twdata\models\gnn\meta.json")):
+        body.append("<tr><td>gnn<td colspan=3 class=bad>config unreadable: %s</tr>"
+                    % _esc(repr(e)[:90]))
+    return ("<h2>fit configuration</h2><div class=scroll><table>"
+            "<tr><th>family<th>role<th>hyperparameters<th>compute</tr>%s</table></div>"
+            % "".join(body))
+
+
+def render_models():
+    import session as S
+    try:
+        events = S.train_events()
+    except Exception:
+        events = []
+    cards, alerts = [], []
+    for name, d in MODEL_DIRS:
+        path = os.path.join(d, "meta.json")
         m = _meta(path)
         secs, when = _age(path)
-        note = ("val_rmse=%s" % ((m.get("fit") or {}).get("val_rmse_raw") or "-")
-                if name == "gnn" else
-                "sd=%s" % (m.get("sd_global") or m.get("sd_local") or "-"))
-        disk.append("<tr><td>%s<td>%s<td>%s<td class=dim>%s</tr>"
-                    % (_esc(name), _esc(str(m.get("rows", "-"))), _esc(when), _esc(note)))
+        if name == "gnn":
+            state, cls, note, rows = _gnn_card(path, m, secs, when)
+        else:
+            state, cls, note, rows = _catboost_card(name, m, secs, when, events)
+        if cls == "bad":
+            alerts.append("<b>%s</b>: %s" % (_esc(name), state))
+        cards.append(
+            "<div class='mcard%s'><div class=mhead><span class=mname>%s</span>"
+            "<span class='badge %s'>%s</span></div><div class=mrole>%s</div>%s%s</div>"
+            % (" alert" if cls == "bad" else "", _esc(name), cls, _esc(state),
+               _MODEL_ROLE.get(name, ""), "".join(rows),
+               ("<div class='note %s'>%s</div>" % (cls, note)) if note else ""))
+    banner = ("<div class=note><span class=bad>needs attention</span> &mdash; %s</div>"
+              % " &middot; ".join(alerts)) if alerts else ""
+    return ("<h2>models on disk</h2>%s<div class=mcards>%s</div>%s"
+            % (banner, "".join(cards), _fit_config_table()))
+
+
+def render_training():
+    import session as S
     try:
         events = S.train_events()
     except Exception as e:
-        return ("<h2>models</h2><div class=bad>training history unreadable: %s</div>"
+        return ("<h2>training history</h2><div class=bad>unreadable: %s</div>"
                 % _esc(repr(e)[:160]))
     out = []
     alive = _session_alive()
@@ -1702,15 +1914,29 @@ def render_models():
                           "alive -- this generation was never flushed</span>")
         if e.get("error"):
             badge = " <span class=bad>FAILED</span>"
+        gn_dev = gn_fit.get("device")
+        if not gn:
+            gnn_cells = "<td class='dim gsep'>-<td class=dim>-<td class=dim>-"
+        elif gn.get("error"):
+            gnn_cells = ("<td class='bad gsep' colspan=3>%s"
+                         % _esc(str(gn.get("error"))[:70]))
+        else:
+            gnn_cells = ("<td class=gsep>%s<td class=dim>%s<td class=%s>%s"
+                         % (_fmt(gn_fit.get("val_rmse_raw"), 4),
+                            _esc(str(gn.get("rows", "-"))),
+                            "ok" if gn_dev == "cuda" else "warn" if gn_dev else "dim",
+                            _esc(str(gn_dev or "-"))))
         out.append(
-            "<tr><td class=dim>%s<td>%s%s<td>%s<td>%s<td class=dim>%s<td>%s<td>%s<td>%s"
-            "<td>%s<td>%s<td>%s%s<td class=dim>%s<td>%s<td>%s<td>%s<td>%s<td>%s<td>%s"
-            "<td>%s<td>%s<td>%s</tr>"
-            % (_esc(e["when"][5:16]), _esc(e["trial"]), badge,
+            "<tr><td class=dim>%s<td title='%s'>%s%s<td class=gsep>%s<td>%s<td class=dim>%s<td>%s"
+            "<td class=gsep>%s<td>%s<td>%s%s<td class=dim>%s<td class=dim>%s"
+            "<td class=gsep>%s<td>%s<td class=gsep>%s<td>%s%s"
+            "<td class=gsep>%s<td>%s<td>%s</tr>"
+            % (_esc(e["when"][5:16]),
+               _esc("lr=%s early_stopping=%s" % (par.get("learning_rate", "?"),
+                                                 par.get("early_stopping_rounds", "?"))),
+               _esc(e["trial"]), badge,
                _esc(str(e.get("rows", "-"))), _esc(str(e.get("campaigns", "-"))),
                _esc(str(e.get("n_decisions", "-"))),
-               _esc(str(par.get("learning_rate", "?"))),
-               _esc(str(par.get("early_stopping_rounds", "?"))),
                _esc(str(e.get("seconds", "-"))),
                _esc(str(g["e1"].get("val_rows", "-"))),
                _fmt(g["e1"].get("val_rmse"), 4), _fmt(g["e2"].get("val_rmse"), 4),
@@ -1719,24 +1945,27 @@ def render_models():
                _fmt(e.get("mae_in_sample"), 4),
                _esc(str(l.get("rows", "-"))), _fmt(l["e1"].get("val_rmse"), 4),
                _esc(str(i.get("rows", "-"))), _fmt(i["e1"].get("val_rmse"), 4),
-               ("-" if not gn else
-                ("<span class=bad>%s</span>" % _esc(str(gn.get("error"))[:60])
-                 if gn.get("error") else
-                 "%s r%s" % (_fmt(gn_fit.get("val_rmse_raw"), 4), gn.get("rows", "-")))),
+               gnn_cells,
                _esc(str(p.get("campaigns") if p.get("campaigns") is not None else "-")),
                _fmt(p.get("sett_per_campaign")),
                "-" if p.get("grew") is None else "%s/%s" % (p["grew"], p.get("measured", "?"))))
     if not out:
-        out = ["<tr><td colspan=21 class=dim>no training runs recorded</tr>"]
-    return ("<h2>fit configuration</h2><div>%s</div>"
-            "<h2>models on disk</h2><div class=scroll><table>"
-            "<tr><th>model<th>rows<th>trained at<th></tr>%s</table></div>"
-            "<h2>training history</h2><div class=scroll><table>"
-            "<tr><th>when<th>trial<th>rows<th>camps<th>decisions<th>lr<th>ES<th>secs<th>val rows"
-            "<th>global e1 rmse<th>global e2 rmse<th>lift<th>best iter<th>MAE in-sample"
-            "<th>local rows<th>local e1 rmse<th>int rows<th>int e1 rmse<th>gnn rmse"
-            "<th>played<th>sett/camp<th>grew</tr>%s</table></div>"
-            % (cfg, "".join(disk), "".join(out)))
+        out = ["<tr><td colspan=20 class=dim>no training runs recorded</tr>"]
+    return ("<h2>training history</h2>"
+            "<div class=legend>one row per retrain window, newest first. "
+            "<b>lift</b> is e2&minus;e1: how much better the model is than its own "
+            "counterfactual baseline &mdash; at or below zero the model adds nothing.</div>"
+            "<div class=scroll><table>"
+            "<tr><th colspan=2>run<th class=grp colspan=4>corpus"
+            "<th class=grp colspan=6>catboost global<th class=grp colspan=2>local"
+            "<th class=grp colspan=2>interrupt<th class=grp colspan=3>gnn"
+            "<th class=grp colspan=3>what it played</tr>"
+            "<tr><th>when<th>trial<th class=gsep>rows<th>camps<th>decisions<th>secs"
+            "<th class=gsep>val rows<th>e1 rmse<th>e2 rmse<th>lift<th>best iter<th>MAE"
+            "<th class=gsep>rows<th>e1 rmse<th class=gsep>rows<th>e1 rmse"
+            "<th class=gsep>rmse<th>rows<th>device"
+            "<th class=gsep>camps<th>sett/camp<th>grew</tr>%s</table></div>"
+            % "".join(out))
 
 
 def _model_select():
