@@ -185,6 +185,7 @@ class InterruptRanker:
         self.rng = random.Random(seed)
         self.strategies = P.normalize_strategies(strategies)
         self.ruleset = ruleset
+        self._gnn_noted = False
         try:
             from catboost import CatBoostRegressor
             p1 = os.path.join(model_dir, "e1.cbm")
@@ -269,6 +270,17 @@ class InterruptRanker:
             if hit:
                 return hit[0], "ruleset(%s)" % hit[1], {}
             return self.rng.choice(opts), "ruleset_random_fallback", {}
+        prefix = ""
+        if drawn == "gnn":
+            prefix = "gnn_delegated_"
+            if not self._gnn_noted:
+                self._gnn_noted = True
+                sys.stderr.write("interrupt_model: 'gnn' has no interrupt-side model -- "
+                                 "delegating its draws to exploit_tree this campaign "
+                                 "(provenance %sexploit_tree)\n" % prefix)
+        elif drawn != "exploit_tree":
+            raise RuntimeError("interrupt_model: drawn strategy %r has no interrupt branch -- "
+                               "refusing to silently play exploit_tree" % (drawn,))
         sr = self.meta.get("screen_rows")
         if sr is not None:
             seen = int(sr.get(str(screen), 0))
@@ -278,14 +290,14 @@ class InterruptRanker:
             why = "screen not in the fitted set (meta predates screen_rows)"
         if seen < MIN_ROWS:
             pick = self.rng.choice(opts)
-            sys.stderr.write("interrupt_model: %s -> %r (exploit_tree_random_fallback, %s)\n"
-                             % (screen, pick, why))
-            return pick, "exploit_tree_random_fallback", {}
+            sys.stderr.write("interrupt_model: %s -> %r (%sexploit_tree_random_fallback, %s)\n"
+                             % (screen, pick, prefix, why))
+            return pick, prefix + "exploit_tree_random_fallback", {}
         exploit, explore = self.score(screen, options, campaign, panel, world, meta)
         if not exploit:
-            return self.rng.choice(opts), "exploit_tree_random_fallback", {}
+            return self.rng.choice(opts), prefix + "exploit_tree_random_fallback", {}
         rich = {o: {"exploit": exploit.get(o), "explore": explore.get(o)} for o in exploit}
-        return max(exploit, key=exploit.get), "exploit_tree", rich
+        return max(exploit, key=exploit.get), prefix + "exploit_tree", rich
 
 
 def main():

@@ -17,8 +17,8 @@ LOG = r"D:\twdata\logs\services\babysitter.log"
 STALL_S = 1200
 RELAUNCH_COOLDOWN_S = 1800
 
-RUN = {"campaigns": 1000, "turns": 20, "model": "catboost", "retrain_every": 20,
-       "strategies": "exploit_tree=0.5,random=0.4,ruleset=0.1", "ruleset": "v1",
+RUN = {"campaigns": 100, "turns": 20, "model": "catboost", "retrain_every": 20,
+       "strategies": "exploit_tree=0.4,gnn=0.4,random=0.1,ruleset=0.1", "ruleset": "v1",
        "factions": "all"}
 
 

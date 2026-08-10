@@ -281,7 +281,7 @@ def _policy_tally_html(title, counts):
             "per-rule split alongside. Older campaigns carry the retired epsilon-era strings "
             "(cold_random, epsilon_random, explore, exploit, interrupt_exploit, "
             "interrupt_explore); newer ones carry the strategy-portfolio strings (random, "
-            "exploit_tree, ruleset(rule), *_random_fallback).</p>"
+            "exploit_tree, ruleset(rule), gnn, gnn_delegated_*, *_random_fallback).</p>"
             "<div class=scroll><table><tr><th>policy<th>picks<th>share</tr>%s</table></div>"
             % (_esc(title), "".join(rows)))
 
@@ -1436,9 +1436,10 @@ def render_infra(run_dir):
            " -- recorded on the trial as backend_cfg'>cfg <input name=cfg type=text value='' "
            "placeholder='bottleneck=64 lr=0.01' style='width:170px'></label>"
            "<label title='per-decision strategy mix as name=weight pairs over random, "
-           "exploit_tree, ruleset; weights are normalized; blank = policy.py default'>"
+           "exploit_tree, ruleset, gnn; weights are normalized; blank = policy.py default'>"
            "strategies <input name=strategies type=text value='' "
-           "placeholder='exploit_tree=0.8,random=0.2' style='width:190px'></label>"
+           "placeholder='exploit_tree=0.4,gnn=0.4,random=0.1,ruleset=0.1' "
+           "style='width:190px'></label>"
            "<label title='rule file D:\\twdata\\rules\\NAME.json; required when ruleset is in "
            "the mix, forbidden otherwise'>ruleset <input name=ruleset type=text value='' "
            "placeholder='v1' style='width:70px'></label>"
@@ -1647,12 +1648,15 @@ def render_models():
     disk = []
     for name, path in (("global", r"D:\twdata\models\global\meta.json"),
                        ("local", r"D:\twdata\models\local\meta.json"),
-                       ("interrupt", r"D:\twdata\models\interrupt\meta.json")):
+                       ("interrupt", r"D:\twdata\models\interrupt\meta.json"),
+                       ("gnn", r"D:\twdata\models\gnn\meta.json")):
         m = _meta(path)
         secs, when = _age(path)
+        note = ("val_rmse=%s" % ((m.get("fit") or {}).get("val_rmse_raw") or "-")
+                if name == "gnn" else
+                "sd=%s" % (m.get("sd_global") or m.get("sd_local") or "-"))
         disk.append("<tr><td>%s<td>%s<td>%s<td class=dim>%s</tr>"
-                    % (_esc(name), _esc(str(m.get("rows", "-"))), _esc(when),
-                       _esc("sd=%s" % (m.get("sd_global") or m.get("sd_local") or "-"))))
+                    % (_esc(name), _esc(str(m.get("rows", "-"))), _esc(when), _esc(note)))
     try:
         events = S.train_events()
     except Exception as e:
@@ -1662,6 +1666,8 @@ def render_models():
     alive = _session_alive()
     for e in events:
         g, l, i, p = e["global"], e["local"], e["interrupt"], e["played"]
+        gn = e.get("gnn") or {}
+        gn_fit = gn.get("fit") or {}
         par = e.get("params") or {}
         badge = ""
         if p.get("running"):
@@ -1673,7 +1679,7 @@ def render_models():
             badge = " <span class=bad>FAILED</span>"
         out.append(
             "<tr><td class=dim>%s<td>%s%s<td>%s<td>%s<td class=dim>%s<td>%s<td>%s<td>%s"
-            "<td>%s<td>%s<td>%s%s<td class=dim>%s<td>%s<td>%s<td>%s<td>%s<td>%s"
+            "<td>%s<td>%s<td>%s%s<td class=dim>%s<td>%s<td>%s<td>%s<td>%s<td>%s<td>%s"
             "<td>%s<td>%s<td>%s</tr>"
             % (_esc(e["when"][5:16]), _esc(e["trial"]), badge,
                _esc(str(e.get("rows", "-"))), _esc(str(e.get("campaigns", "-"))),
@@ -1688,18 +1694,22 @@ def render_models():
                _fmt(e.get("mae_in_sample"), 4),
                _esc(str(l.get("rows", "-"))), _fmt(l["e1"].get("val_rmse"), 4),
                _esc(str(i.get("rows", "-"))), _fmt(i["e1"].get("val_rmse"), 4),
+               ("-" if not gn else
+                ("<span class=bad>%s</span>" % _esc(str(gn.get("error"))[:60])
+                 if gn.get("error") else
+                 "%s r%s" % (_fmt(gn_fit.get("val_rmse_raw"), 4), gn.get("rows", "-")))),
                _esc(str(p.get("campaigns") if p.get("campaigns") is not None else "-")),
                _fmt(p.get("sett_per_campaign")),
                "-" if p.get("grew") is None else "%s/%s" % (p["grew"], p.get("measured", "?"))))
     if not out:
-        out = ["<tr><td colspan=20 class=dim>no training runs recorded</tr>"]
+        out = ["<tr><td colspan=21 class=dim>no training runs recorded</tr>"]
     return ("<h2>fit configuration</h2><div>%s</div>"
             "<h2>models on disk</h2><div class=scroll><table>"
             "<tr><th>model<th>rows<th>trained at<th></tr>%s</table></div>"
             "<h2>training history</h2><div class=scroll><table>"
             "<tr><th>when<th>trial<th>rows<th>camps<th>decisions<th>lr<th>ES<th>secs<th>val rows"
             "<th>global e1 rmse<th>global e2 rmse<th>lift<th>best iter<th>MAE in-sample"
-            "<th>local rows<th>local e1 rmse<th>int rows<th>int e1 rmse"
+            "<th>local rows<th>local e1 rmse<th>int rows<th>int e1 rmse<th>gnn rmse"
             "<th>played<th>sett/camp<th>grew</tr>%s</table></div>"
             % (cfg, "".join(disk), "".join(out)))
 

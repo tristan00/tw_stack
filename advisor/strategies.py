@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-NAMES = ("random", "exploit_tree", "ruleset")
+import sys
+
+NAMES = ("random", "exploit_tree", "ruleset", "gnn")
 
 
 class Random:
@@ -49,11 +51,33 @@ class Ruleset:
         return row
 
 
-def build(name, rng=None, ranker=None, ruleset=None):
+class Gnn:
+
+    def __init__(self, gnn):
+        self.gnn = gnn
+        self.errors = 0
+
+    @property
+    def ready(self):
+        return bool(self.gnn is not None and self.gnn.ready)
+
+    def pick(self, elig, record):
+        try:
+            return self.gnn.pick(elig, record)
+        except Exception as e:
+            self.errors += 1
+            sys.stderr.write("strategies: gnn pick failed (%d so far) -> %s\n"
+                             % (self.errors, repr(e)[:140]))
+            return None
+
+
+def build(name, rng=None, ranker=None, ruleset=None, gnn=None):
     if name == "random":
         return Random(rng)
     if name == "exploit_tree":
         return ExploitTree(ranker)
     if name == "ruleset":
         return Ruleset(ruleset)
+    if name == "gnn":
+        return Gnn(gnn)
     raise ValueError("unknown strategy %r -- known: %s" % (name, ", ".join(NAMES)))

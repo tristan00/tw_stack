@@ -266,6 +266,9 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
     if ruleset and "ruleset" not in mix:
         raise SystemExit("--ruleset %r given but 'ruleset' is not in the strategy mix %s"
                          % (ruleset, json.dumps(mix)))
+    if cold and "gnn" in mix:
+        raise SystemExit("--cold forces cold_random but the mix includes 'gnn' -- a cold run "
+                         "must not load a trained gnn; drop 'gnn' or drop --cold")
     ruleset_meta = None
     if ruleset:
         import ruleset as RS
@@ -327,12 +330,30 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                 irep = IM.train()
                 entry["retrain_interrupt"] = irep
                 log("   interrupt model: %s" % json.dumps(irep)[:200])
+                if "gnn" in mix:
+                    try:
+                        if r"D:\tw_stack" not in sys.path:
+                            sys.path.insert(0, r"D:\tw_stack")
+                        from mapgraph import train as GT
+                        t1 = time.time()
+                        grep = GT.train(log=log)
+                        grep["seconds"] = round(time.time() - t1, 1)
+                    except Exception as ge:
+                        grep = {"trained": False, "error": repr(ge)[:250]}
+                        log("!! gnn retrain before run %d failed (continuing on the previous "
+                            "gnn): %s" % (i + 1, repr(ge)[:180]))
+                    entry["retrain_gnn"] = grep
+                    entry["retrain"]["gnn"] = grep
+                    log("   gnn model: %s" % json.dumps(grep, default=str)[:220])
                 if not rep.get("trained"):
                     log("!! retrain %d DID NOT FIT (rows=%s need=%s) -- this campaign will NOT be "
                         "played by a freshly trained model" % (i + 1, rep.get("rows"), rep.get("need")))
             except Exception as e:
                 entry["retrain"] = {"error": repr(e)[:250]}
                 trained = entry["retrain"]
+                if "gnn" in mix and "retrain_gnn" not in entry:
+                    entry["retrain_gnn"] = {"trained": False,
+                                            "error": "skipped: upstream retrain raised"}
                 log("!! retrain before run %d failed (continuing on the previous model): %s"
                     % (i + 1, repr(e)[:180]))
             entry.setdefault("outcome", "in_progress")
@@ -357,6 +378,10 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                                "trained(%d rows)" % (ranker.meta or {}).get("rows", 0)
                                if ranker.ready else "cold_random")
             log("policy: %s" % entry["policy"])
+            if pol.gnn is not None:
+                entry["gnn_policy"] = ("trained(%d rows)" % (pol.gnn.meta or {}).get("rows", 0)
+                                       if pol.gnn.ready else "unready->gnn_random_fallback")
+                log("gnn: %s" % entry["gnn_policy"])
             def _flush_turn(so_far, _e=entry):
                 _e.update(outcome="in_progress", turns_played=len(so_far),
                           actions=sum(r["actions"] for r in so_far),
@@ -924,6 +949,7 @@ def train_events(runs_root=RUNS_ROOT):
                                   mae_in_sample=irt.get("mae_in_sample"),
                                   trained=irt.get("trained"),
                                   screens=irt.get("screens")),
+                "gnn": c.get("retrain_gnn"),
                 "played": {"campaigns": trial.get("campaigns"),
                            "sett_per_campaign": (trial.get("settlements") or {}).get("mean"),
                            "sett_total": (trial.get("settlements") or {}).get("total"),
@@ -1067,6 +1093,8 @@ def main():
                          "normalized)\n"
                          "  --ruleset   -- rule file name under D:\\twdata\\rules\\<name>.json "
                          "(required when 'ruleset' is in the mix)\n"
+                         "  'gnn'       -- graph offer-scorer (D:\\twdata\\models\\gnn); "
+                         "untrained -> gnn_random_fallback\n"
                          "  --epsilon E -- legacy sugar for exploit_tree=1-E,random=E\n"
                          % ("|".join(B.names()), B.DEFAULT,
                             "\n".join("                 %-10s %s" % (k, B.label(k))
