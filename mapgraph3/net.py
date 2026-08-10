@@ -126,37 +126,54 @@ class RelConv(MessagePassing):
         return self.msg(torch.cat([x_i, x_j, rel], dim=-1))
 
 
+_NT = len(S.NODE_TYPES)
+
+
 class TypeEncoders(nn.Module):
+    """Per-node-type input projection, as ONE block-diagonal matmul.
+
+    Semantically identical to a Linear per node type: each node's own fields are
+    scattered into its type's slot of a [N, n_types * MAX_FIELDS] row and projected by a
+    single weight whose blocks are exactly those per-type weights. Written as a Python
+    loop over 19 types it cost more in kernel launches than the entire message passing --
+    most types hold single-digit node counts, so it was 19 tiny gather/scatter pairs per
+    call to do a few thousand FLOPs.
+    """
 
     def __init__(self, hidden):
         super().__init__()
         self.hidden = hidden
-        self.enc = nn.ModuleList(
-            [nn.Linear(max(len(S.TYPE_FIELDS[t]), 1), hidden) for t in S.NODE_TYPES])
+        self.lin = nn.Linear(_NT * S.MAX_FIELDS, hidden, bias=False)
+        self.bias = nn.Parameter(torch.zeros(_NT, hidden))
+        self.register_buffer("_span", torch.arange(S.MAX_FIELDS), persistent=False)
 
     def forward(self, x, node_type):
-        h = x.new_zeros(x.size(0), self.hidden)
-        for ti, t in enumerate(S.NODE_TYPES):
-            sel = node_type == ti
-            if not bool(sel.any()):
-                continue
-            h[sel] = self.enc[ti](x[sel, :max(len(S.TYPE_FIELDS[t]), 1)])
-        return h
+        cols = node_type.unsqueeze(1) * S.MAX_FIELDS + self._span
+        big = x.new_zeros(x.size(0), _NT * S.MAX_FIELDS).scatter_(1, cols, x)
+        return self.lin(big) + self.bias[node_type]
 
 
 class TypeNorm(nn.Module):
+    """LayerNorm with per-node-type affine parameters, fused.
 
-    def __init__(self, hidden):
+    nn.LayerNorm takes its statistics over the feature dimension of each row
+    independently, so a separate LayerNorm per node type differs from a shared one ONLY
+    in the affine parameters -- the normalisation itself is per-row either way. So this
+    is mathematically the same thing the 19-way loop computed, in two kernels instead of
+    roughly seventy-six, and without the full-width h.clone() it did on every call.
+    """
+
+    def __init__(self, hidden, eps=1e-5):
         super().__init__()
-        self.norm = nn.ModuleList([nn.LayerNorm(hidden) for _ in S.NODE_TYPES])
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(_NT, hidden))
+        self.bias = nn.Parameter(torch.zeros(_NT, hidden))
 
     def forward(self, h, node_type):
-        out = h.clone()
-        for ti in range(len(S.NODE_TYPES)):
-            sel = node_type == ti
-            if bool(sel.any()):
-                out[sel] = self.norm[ti](h[sel])
-        return out
+        mu = h.mean(dim=-1, keepdim=True)
+        var = h.var(dim=-1, unbiased=False, keepdim=True)
+        x = (h - mu) * torch.rsqrt(var + self.eps)
+        return x * self.weight[node_type] + self.bias[node_type]
 
 
 class Encoder(nn.Module):

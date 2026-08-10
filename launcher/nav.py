@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 import os, sys, time
 
 import trace as trace
@@ -45,7 +45,7 @@ _CLICKABLE_STATES = frozenset(("active", "default", "NewState", "selected", "hov
 #   dlc27_hef_sotwt_scrolls_gained 202x110  30 particle nodes  0 buttons  "Scrolls of Knowledge Gained!"
 BENIGN_PANELS = frozenset(("units_panel", "settlement_panel", "recruitment_options",
                            "influence_gained", "dlc27_hef_sotwt_scrolls_gained",
-                           "province_publicorder_tooltip"))
+                           "province_publicorder_tooltip", "skaven_revealed_anim"))
 
 DECISION_ROOTS = frozenset(("diplomacy_dropdown", "ally_attacked"))
 

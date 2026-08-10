@@ -2333,7 +2333,7 @@ def _lift(e2_rmse, e1_rmse):
 MODEL_DIRS = (("global", r"D:\twdata\models\global"),
               ("local", r"D:\twdata\models\local"),
               ("interrupt", r"D:\twdata\models\interrupt"),
-              ("gnn", r"D:\twdata\models\gnn"))
+              ("gnn", r"D:\twdata\models\gnn3"))
 
 _MODEL_ROLE = {
     "global": "catboost E1/E2 &mdash; E2 is the counterfactual baseline and E1&minus;E2 is the "
@@ -2341,8 +2341,11 @@ _MODEL_ROLE = {
               "ignore it, but its scores are still stored on every offer row",
     "local": "catboost &mdash; per-entity local value, blended into the global score",
     "interrupt": "catboost &mdash; ranks the options on blocking menus (battles, occupation)",
-    "gnn": "GINE graph net &mdash; twin Q/V heads score offers over the "
-           "province/region/settlement/character/faction graph",
+    "gnn": "mapgraph3 &mdash; every candidate action is a <b>node</b> in the decision "
+           "graph, wired by typed edges to the actor, the target and the shared "
+           "catalogue entry it instantiates (unit / building / tech / skill). The score "
+           "is read off the action's own embedding after message passing; the ranking "
+           "objective is a listwise softmax over the candidate set, not a regression",
 }
 
 
@@ -2350,7 +2353,7 @@ def _live_gnn_schema():
     try:
         if r"D:\tw_stack" not in sys.path:
             sys.path.insert(0, r"D:\tw_stack")
-        from mapgraph import schema as GS
+        from mapgraph3 import schema as GS
         return GS.SCHEMA_VERSION, GS.schema_hash()
     except Exception:
         return None, None
@@ -2400,8 +2403,14 @@ def _gnn_card(path, m, secs, when):
     else:
         state, cls, note = "ready", "ok", ""
     dev = fit.get("device")
+    # v3 does not regress the score, so there is no rmse to show. The ranking metric is
+    # the held-out listwise NLL, in nats, and it is only readable against the uniform
+    # baseline log(candidate set size) -- about 5.9 at the corpus median of 376 offers.
+    nll = fit.get("val_listwise_nll")
     rows = [
-        _mrow("held-out rmse", _fmt(fit.get("val_rmse_raw"), 4)),
+        _mrow("held-out listwise NLL",
+              ("%s <span class=dim>nats &middot; uniform &asymp; 5.9</span>" % _fmt(nll, 4))
+              if nll is not None else "<span class=dim>-</span>"),
         _mrow("rows / campaigns", "%s &middot; %s" % (_esc(str(m.get("rows", "-"))),
                                                       len(m.get("campaigns") or []) or "-")),
         _mrow("trained on", ("<span class=%s>%s</span>"
@@ -2479,19 +2488,23 @@ def _fit_config_table(events=()):
     try:
         if r"D:\tw_stack" not in sys.path:
             sys.path.insert(0, r"D:\tw_stack")
-        from mapgraph import train as _GT
+        from mapgraph3 import train as _GT
+        from mapgraph3 import schema as _GS
         c = _GT.CFG
         body.append(
-            "<tr><td>gnn<td>graph offer-scorer<td>GINE hidden %s &middot; lr %s &middot; "
-            "weight decay %s &middot; batch %s graphs &middot; &le;%s epochs "
-            "(patience %s) &middot; aux weight %s &middot; budget %ss &middot; "
-            "campaign-grouped holdout"
-            "<td class=dim>%s &mdash; corpus collated once and held resident; "
-            "%s train threads, %s infer</tr>"
+            "<tr><td>gnn<td>graph action-scorer<td>hidden %s &middot; %s entity layers + "
+            "%s action rounds &middot; lr %s &middot; weight decay %s &middot; "
+            "batch %s graphs &middot; &le;%s epochs (patience %s) &middot; "
+            "advantage weight exp(adv/%s) capped %s &middot; budget %ss &middot; "
+            "campaign-grouped holdout &middot; %s raw scalars over %s node types "
+            "and %s relations"
+            "<td class=dim>%s &mdash; %s train threads, %s infer</tr>"
             % tuple(_esc(str(v)) for v in
-                    (c["hidden"], c["lr"], c["weight_decay"], c["batch"], c["epochs"],
-                     c["patience"], c["aux_weight"], c["time_budget_s"],
-                     c.get("device", "auto"), _GT.THREADS_TRAIN, 2)))
+                    (c["hidden"], c["entity_layers"], c["action_rounds"], c["lr"],
+                     c["weight_decay"], c["batch"], c["epochs"], c["patience"],
+                     c["adv_tau"], c["adv_clip"], c["time_budget_s"],
+                     _GS.N_SCALARS, len(_GS.NODE_TYPES), len(_GS.RELATIONS),
+                     c.get("device", "auto"), _GT.THREADS, 2)))
     except Exception as e:
         body.append("<tr><td>gnn<td colspan=3 class=bad>config unreadable: %s</tr>"
                     % _esc(repr(e)[:90]))
@@ -2559,7 +2572,7 @@ def render_training():
                          % _esc(str(gn.get("error"))[:70]))
         else:
             gnn_cells = ("<td class=gsep>%s<td class=dim>%s<td class=%s>%s"
-                         % (_fmt(gn_fit.get("val_rmse_raw"), 4),
+                         % (_fmt(gn_fit.get("val_listwise_nll"), 4),
                             _esc(str(gn.get("rows", "-"))),
                             "ok" if gn_dev == "cuda" else "warn" if gn_dev else "dim",
                             _esc(str(gn_dev or "-"))))
@@ -2609,7 +2622,9 @@ def render_training():
             "<th>lr<th>ES"
             "<th class=gsep>val rows<th>e1 rmse<th>e2 rmse<th>lift<th>best iter<th>MAE"
             "<th class=gsep>rows<th>e1 rmse<th class=gsep>rows<th>e1 rmse"
-            "<th class=gsep>rmse<th>rows<th>device"
+            "<th class=gsep title='held-out listwise NLL in nats over the candidate set; "
+            "uniform baseline is log(n offers), about 5.9. NOT comparable to the catboost "
+            "rmse columns -- different objective, different units'>list NLL<th>rows<th>device"
             "<th class=gsep>camps<th>sett/camp<th>sett total"
             "<th title='legendary lord levels gained per campaign'>lord lvl/camp<th>turns/camp"
             "<th>grew</tr>%s</table></div>"
