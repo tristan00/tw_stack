@@ -281,6 +281,54 @@ def _mix_str(mix, epsilon=None):
     return None
 
 
+# fixed display order so the same slot means the same strategy on every row
+MIX_ORDER = (("exploit_tree", "ET", "p1"), ("gnn", "GN", "p2"),
+             ("random", "RD", "p3"), ("ruleset", "RS", "p4"))
+
+
+def _mix_dict(mix, epsilon=None):
+    if isinstance(mix, str):
+        try:
+            mix = json.loads(mix)
+        except ValueError:
+            return None
+    if isinstance(mix, dict) and mix:
+        return {k: float(v) for k, v in mix.items()}
+    if epsilon is not None:
+        e = float(epsilon)
+        return {"exploit_tree": 1.0 - e, "random": e}
+    return None
+
+
+def _mix_cell(mix, epsilon=None):
+    """A fixed-width mix signature.
+
+    Rendering the raw dict gave a different-length string on every row, so trials
+    could not be compared by eye. Every row now shows the same four slots in the
+    same order, with a proportion bar; the tooltip keeps the exact values.
+    """
+    d = _mix_dict(mix, epsilon)
+    if not d:
+        return "<span class=dim>-</span>"
+    total = sum(d.values()) or 1.0
+    bar, nums, extra = [], [], []
+    for key, short, seg in MIX_ORDER:
+        v = d.get(key, 0.0)
+        pct = 100.0 * v / total
+        if pct >= 0.5:
+            bar.append("<span class='seg %s' style='width:%dpx'></span>" % (seg, round(pct * 0.6)))
+        nums.append("<span class=%s>%02d</span>" % ("" if pct >= 0.5 else "dim", round(pct)))
+    for k in sorted(d):
+        if k not in {m[0] for m in MIX_ORDER}:
+            extra.append("%s=%.2f" % (k, d[k]))
+    tip = ", ".join("%s=%.2f" % (k, d[k]) for k in sorted(d))
+    if epsilon is not None and not isinstance(mix, dict):
+        tip += " (legacy --epsilon %g)" % float(epsilon)
+    return ("<span title='%s' style='white-space:nowrap'>%s <span class=dim>%s</span>%s</span>"
+            % (_esc(tip), "".join(bar), "/".join(nums),
+               (" <span class=warn>+%s</span>" % _esc(",".join(extra))) if extra else ""))
+
+
 def _ruleset_str(rs):
     if isinstance(rs, dict) and rs.get("name"):
         return "%s@%s" % (rs["name"], str(rs.get("sha256") or "")[:8] or "?")
@@ -1681,7 +1729,7 @@ def _trial_row_html(r, live=False):
             % (" class=warn" if live else "", _esc(r.get("trial", "?")),
                _esc(str(r.get("backend") or "-")),
                _esc(", ".join("%s=%s" % kv for kv in sorted(cfg.items())) or "-"),
-               _esc(_mix_str(r.get("strategies"), r.get("epsilon")) or "-"),
+               _mix_cell(r.get("strategies"), r.get("epsilon")),
                _esc(_ruleset_str(r.get("ruleset")) or "-"), n,
                corpus if corpus else "-",
                cls, "-" if sm is None else "%.3f" % sm,
@@ -1736,8 +1784,10 @@ def _trials_table():
         + [_trial_row_html(r) for r in rows]
     return ("<h2>experiment ledger</h2>%s<div class=scroll><table>"
             "<tr><th>trial<th>backend<th>cfg"
-            "<th title='per-decision strategy mix; legacy trials that only recorded --epsilon "
-            "show epsilon=E'>mix"
+            "<th title='per-decision strategy mix, as percentages in a fixed order: "
+            "exploit_tree / gnn / random / ruleset. Hover a cell for exact weights; legacy "
+            "--epsilon trials are shown as the mix they mean'>mix "
+            "<span class=dim>ET/GN/RD/RS</span>"
             "<th title='rule set name@sha256 prefix'>ruleset"
             "<th>campaigns<th>corpus<th>sett/camp<th>sett total"
             "<th>grew<th title='legendary lord levels gained per campaign'>lord lvl/camp"
