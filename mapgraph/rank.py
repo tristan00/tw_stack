@@ -21,6 +21,7 @@ class Ranker:
         self.ready = False
         self.meta = None
         self.net = None
+        self.last_impact = None
         meta_path = os.path.join(model_dir, "meta.json")
         if not os.path.exists(meta_path):
             return
@@ -73,9 +74,13 @@ class Ranker:
         return impact
 
     def pick(self, elig, record):
+        self.last_impact = None
         if not elig:
             return None
         impact = self.score_elig(elig, record)
+        # keep the per-offer Q-V so the pick can be explained after the fact; without this
+        # the gnn's own numbers die here and the ui can only ever show catboost's opinion
+        self.last_impact = list(impact)
         best = max(range(len(elig)), key=lambda i: impact[i])
         return elig[best]
 

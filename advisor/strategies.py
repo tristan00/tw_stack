@@ -51,24 +51,37 @@ class Ruleset:
         return row
 
 
+def offer_key(r):
+    """Identity of an offer, matching how the store keys action_offers rows."""
+    return (r.get("context_kind"), str(r.get("context_id")),
+            r.get("action_type"), str(r.get("key")))
+
+
 class Gnn:
 
     def __init__(self, gnn):
         self.gnn = gnn
         self.errors = 0
+        self.last_scores = {}
 
     @property
     def ready(self):
         return bool(self.gnn is not None and self.gnn.ready)
 
     def pick(self, elig, record):
+        self.last_scores = {}
         try:
-            return self.gnn.pick(elig, record)
+            best = self.gnn.pick(elig, record)
         except Exception as e:
             self.errors += 1
             sys.stderr.write("strategies: gnn pick failed (%d so far) -> %s\n"
                              % (self.errors, repr(e)[:140]))
             return None
+        # the Q-V the gnn actually ranked on, so the decision can be explained later with
+        # its own number instead of catboost's opinion of an offer catboost did not choose
+        impact = getattr(self.gnn, "last_impact", None) or []
+        self.last_scores = {offer_key(r): float(v) for r, v in zip(elig, impact)}
+        return best
 
 
 def build(name, rng=None, ranker=None, ruleset=None, gnn=None):
