@@ -83,7 +83,15 @@ CFG = {"hidden": 192, "entity_layers": 2, "action_rounds": 2,
        # 20.4k graphs, resident: b16 87s/epoch, b64 10.9s, b128 8.4s, b256 13.9s.
        # NOTE lr is unchanged at 2e-3 -- 8x fewer optimizer steps per epoch is a real
        # change to the optimisation and the right lr for b128 has NOT been measured yet.
-       "lr": 2e-3, "weight_decay": 1e-4, "batch": 128, "epochs": 200, "patience": 25,
+       # patience 25 was never reachable when an epoch cost 250s, so it had never been
+       # exercised. With a 5s epoch the full curve is now visible, and it says the fit
+       # peaks around epoch 14 and then OVERFITS steadily -- val_nll 3.994 at 14 rising
+       # to 4.28 by 39, which is 7x the epoch-to-epoch noise, so it is a trend and not
+       # jitter. 25 epochs of that is ~170s of a 300s budget spent getting worse.
+       # 10 still clears the noise band comfortably. Lowering it cannot cost accuracy --
+       # the fit restores best_state either way, so this only decides how long it keeps
+       # looking. Single seed, single split: worth re-checking across seeds.
+       "lr": 2e-3, "weight_decay": 1e-4, "batch": 128, "epochs": 200, "patience": 10,
        "grad_clip": 5.0, "adv_tau": 1.0, "adv_clip": 20.0, "value_weight": 1.0, "bf16": True,
        # TOTAL budget for a retrain -- corpus walk AND fit, not the fit alone. session.py
        # retrains between campaigns with the game shut down, so every second here is a
