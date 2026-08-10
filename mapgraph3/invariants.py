@@ -41,6 +41,10 @@ def _code_only(path):
         if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef,
                              ast.ClassDef)) and ast.get_docstring(node):
             node.body = node.body[1:]
+            # a class or def whose entire body was the docstring still needs a body,
+            # or ast.unparse emits something that will not re-parse
+            if not node.body and not isinstance(node, ast.Module):
+                node.body = [ast.Pass()]
     return ast.unparse(tree)
 
 
@@ -84,14 +88,30 @@ def check(verbose=True):
     ok("advantage weight exp((y_z - v)/tau), clipped",
        "b.y_z - v.detach()" in code_trn and "adv_clip" in code_trn)
 
-    # 5. the ban: no CatBoost features anywhere in the corpus path
-    banned = [b for b in ("stamp_prev_actions", "stamp_action_counts") if b in code_trn]
-    imported = {a.name for n in ast.walk(ast.parse(code_trn))
-                if isinstance(n, ast.Import) for a in n.names}
-    imported |= {n.module or "" for n in ast.walk(ast.parse(code_trn))
-                 if isinstance(n, ast.ImportFrom)}
-    ok("walk stamps no CatBoost features",
-       not banned and "features" not in imported, "banned calls: %s" % (banned or "none"))
+    # 5. the ban: no mapgraph3 module may import advisor/features.py, and nothing may
+    #    call v2's CatBoost-stamping helpers.
+    #    Static, across the whole package. A runtime sys.modules check (guard.py used to
+    #    have one) cannot do this job: the LABEL legitimately goes through base_model,
+    #    which imports features, so after the first walk `features` is loaded no matter
+    #    how clean mapgraph3 is. Only the import graph distinguishes "we use the label"
+    #    from "we transcribed the feature set".
+    banned_calls, importers = [], []
+    for fn in sorted(os.listdir(_HERE)):
+        # skip this file: it names the banned helpers in order to look for them
+        if not fn.endswith(".py") or fn == os.path.basename(__file__):
+            continue
+        code = _code_only(os.path.join(_HERE, fn))
+        for b in ("stamp_prev_actions", "stamp_action_counts"):
+            if b in code:
+                banned_calls.append("%s:%s" % (fn, b))
+        for n in ast.walk(ast.parse(code)):
+            mods = ([a.name for a in n.names] if isinstance(n, ast.Import)
+                    else ([n.module or ""] if isinstance(n, ast.ImportFrom) else []))
+            if any(m.split(".")[-1] == "features" for m in mods):
+                importers.append(fn)
+    ok("no mapgraph3 module imports advisor/features.py",
+       not banned_calls and not importers,
+       "importers: %s  banned calls: %s" % (importers or "none", banned_calls or "none"))
 
     # 6. entity-only layers before actions join, so the map embedding cannot depend on
     #    which offers the generator happened to emit

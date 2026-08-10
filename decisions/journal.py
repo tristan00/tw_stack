@@ -20,25 +20,6 @@ def current_run_dir(runs_root=RUNS_ROOT, timeout=0.0):
     return RUN_DIR
 
 
-def _unused_current_run_dir(runs_root=RUNS_ROOT, timeout=0.0):
-    path = os.path.join(runs_root, CURRENT_POINTER)
-    deadline = time.time() + max(0.0, timeout)
-    while True:
-        try:
-            with open(path, encoding="utf-8") as f:
-                d = f.read().strip()
-            if d and os.path.isdir(d):
-                return d
-        except OSError:
-            pass
-        if time.time() >= deadline:
-            raise RuntimeError("no live run dir at %s -- is the manager running?" % path)
-        time.sleep(0.5)
-
-
-_io_lock = threading.Lock()
-
-
 def _append(run_dir, name, row):
     row.setdefault("ts", time.time())
     line = json.dumps(row, default=str) + "\n"
