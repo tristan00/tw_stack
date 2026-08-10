@@ -1564,24 +1564,35 @@ def _province_offers_assemble(region, state, campaign, combo, lord_pools, slot_s
     for sub, (n, can, traits, ranks, agents) in (lord_pools or {}).items():
         if not n:
             continue
+        # ONE OFFER PER CANDIDATE. This loop used to pick a single index --
+        # `i = oks.index(True) if any(oks) else 0` -- and emit one offer for the whole
+        # pool. Candidate 0 is almost always recruitable, which is why candidate_index
+        # was 0 in all 349,934 rows of the previous corpus while n_candidates ranged
+        # 1..6. The other candidates were fetched across the bus and dropped in python:
+        # 671,186 of them. They are different game actions with different traits, ranks
+        # and mounts, and the agent could never choose between them.
         oks = [bool(can[i]) if i < len(can) else False for i in range(n)]
-        i = oks.index(True) if any(oks) else 0
-        tr = traits[i] if i < len(traits) else []
-        is_agent = bool(agents[i]) if i < len(agents) and agents[i] is not None else False
         agent_type = (_hero_subtype_types(campaign.get("faction")) or {}).get(sub)
         fielded = (campaign.get("hero_type_counts") or {}).get(agent_type or "", 0)
-        if is_agent:
-            ok = bool(any(oks) and agent_type)
-            gate = (None if ok else
-                    "agent_type_unknown" if not agent_type else "cannot_recruit_character")
-        else:
-            ok = any(oks)
-            gate = None if ok else "cannot_recruit_character"
-        offers.append(_offer("recruit_hero" if is_agent else "recruit_lord", sub, ok, gate,
-                             candidate_index=i, n_candidates=n, traits=tr,
-                             trait=(tr[0] if tr else None), n_traits=len(tr),
-                             is_agent=is_agent, agent_type=agent_type, type_fielded=fielded,
-                             cand_rank=(ranks[i] if i < len(ranks) else None)))
+        for i in range(n):
+            tr = traits[i] if i < len(traits) else []
+            is_agent = (bool(agents[i]) if i < len(agents) and agents[i] is not None
+                        else False)
+            if is_agent:
+                ok = bool(oks[i] and agent_type)
+                gate = (None if ok else
+                        "agent_type_unknown" if not agent_type else
+                        "cannot_recruit_character")
+            else:
+                ok = oks[i]
+                gate = None if ok else "cannot_recruit_character"
+            offers.append(_offer("recruit_hero" if is_agent else "recruit_lord",
+                                 "%s@%d" % (sub, i), ok, gate,
+                                 candidate_index=i, n_candidates=n, traits=tr,
+                                 trait=(tr[0] if tr else None), n_traits=len(tr),
+                                 is_agent=is_agent, agent_type=agent_type,
+                                 type_fielded=fielded,
+                                 cand_rank=(ranks[i] if i < len(ranks) else None)))
     offers.extend(_slot_action_offers(region, slot_states))
     offers.append(_offer("noop", "noop", True))
     return offers
