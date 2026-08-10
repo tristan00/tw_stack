@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import os
+import random
 import sys
 from dataclasses import dataclass
 
@@ -15,6 +16,7 @@ import features as F
 import features_db
 
 RULES_DIR = r"D:\twdata\rules"
+_RULE_RNG = random.Random()
 
 PREDICATE_OPS = frozenset(("==", "!=", ">", ">=", "<", "<=", "in", "not_in"))
 RULE_KEYS = frozenset(("name", "priority", "match", "action", "prefer"))
@@ -24,7 +26,7 @@ ENTITY_KEYS = frozenset(("kind", "state"))
 OFFER_KEYS = frozenset(("action_type", "key", "gate", "params"))
 ACTION_KEYS = frozenset(("action_type", "key"))
 PREFER_KEYS = frozenset(("field", "order"))
-PREFER_ORDERS = frozenset(("min", "max"))
+PREFER_ORDERS = frozenset(("min", "max", "random"))
 ENTITY_KINDS = frozenset(("lord", "hero", "province", "campaign"))
 
 PARAMS_FIELDS = frozenset((
@@ -356,10 +358,15 @@ class Rule:
             _validate_pattern(action["key"], "%s action.key" % tag, source)
         prefer = d.get("prefer")
         if prefer is not None:
-            _require_keys(prefer, PREFER_KEYS, PREFER_KEYS, "%s prefer" % tag, source)
+            required = (frozenset(("order",)) if prefer.get("order") == "random"
+                        else PREFER_KEYS)
+            _require_keys(prefer, PREFER_KEYS, required, "%s prefer" % tag, source)
             if prefer["order"] not in PREFER_ORDERS:
                 raise ValueError("%s: %s prefer.order %r not in %s"
                                  % (source, tag, prefer["order"], sorted(PREFER_ORDERS)))
+            if prefer["order"] == "random":
+                return cls(name=name, priority=priority, match=dict(match),
+                           action=dict(action), prefer=dict(prefer))
             if prefer["field"] not in PREFER_FIELDS:
                 raise ValueError("%s: %s prefer.field %r not in the derived+params vocabulary"
                                  " -- derived: %s" % (source, tag, prefer["field"],
@@ -513,7 +520,10 @@ class RuleSet:
             if not hits:
                 continue
             if rule.prefer:
-                field, order = rule.prefer["field"], rule.prefer["order"]
+                order = rule.prefer["order"]
+                if order == "random":
+                    return _RULE_RNG.choice(hits), rule.name
+                field = rule.prefer["field"]
                 scored = [(_field_value(field, r, ctx), r) for r in hits]
                 scored = [(v, r) for v, r in scored if v is not None]
                 if not scored:
@@ -532,7 +542,7 @@ def main(argv):
           % (rs.name, len(rs.rules), len(rs.screen_rules), rs.path))
     print("sha256 %s" % rs.sha256)
     for r in rs.rules:
-        pref = " prefer %s %s" % (r.prefer["order"], r.prefer["field"]) if r.prefer else ""
+        pref = " prefer %s %s" % (r.prefer["order"], r.prefer.get("field", "")) if r.prefer else ""
         print("  %4d  %-32s -> %s %s%s" % (r.priority, r.name, r.action["action_type"],
                                            r.action.get("key", "*"), pref))
     for r in rs.screen_rules:

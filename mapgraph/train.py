@@ -22,7 +22,7 @@ THREADS_TRAIN = 16
 
 CFG = {"hidden": 64, "lr": 1e-3, "weight_decay": 1e-4, "batch": 32, "epochs": 200,
        "patience": 20, "grad_clip": 5.0, "aux_weight": 0.25, "seed": 0,
-       "time_budget_s": 600}
+       "time_budget_s": 600, "device": "auto", "gpu_mem_fraction": None}
 
 _NF = {name: i for i, name in enumerate(S.NODE_FIELDS)}
 
@@ -145,7 +145,7 @@ def _node_deltas(g, ents, turn):
             vals = [turns[t] for t in turns if t >= turn and turns[t] is not None]
             if vals:
                 out.append((idx, kind, max(vals) - base))
-        elif meta.get("kind") == "region" and meta.get("own_snap"):
+        elif meta.get("kind") == "settlement" and meta.get("own_snap"):
             turns = ents.get(("province", meta["key"]))
             if not turns:
                 continue
@@ -188,6 +188,28 @@ def _tensorize(examples, dists):
     return datas
 
 
+def _resolve_device(cfg, log):
+    import torch
+    want = str(cfg.get("device") or "auto")
+    if want == "cpu":
+        return torch.device("cpu")
+    try:
+        if torch.cuda.is_available():
+            frac = cfg.get("gpu_mem_fraction")
+            if frac:
+                torch.cuda.set_per_process_memory_fraction(float(frac))
+            log("mapgraph.train: device cuda (%s%s)"
+                % (torch.cuda.get_device_name(0),
+                   ", VRAM cap %.0f%%" % (float(frac) * 100) if frac else ", uncapped"))
+            return torch.device("cuda")
+    except Exception as e:
+        log("mapgraph.train: cuda probe failed -> %s" % repr(e)[:120])
+    if want == "cuda":
+        raise RuntimeError("mapgraph.train: device=cuda requested but CUDA is unavailable")
+    log("mapgraph.train: device cpu (CUDA unavailable in this torch build)")
+    return torch.device("cpu")
+
+
 def _fit(datas, ys, groups, cfg, log=print):
     import torch
     from base_model import grouped_split
@@ -198,6 +220,7 @@ def _fit(datas, ys, groups, cfg, log=print):
         import net as N
     torch.set_num_threads(THREADS_TRAIN)
     torch.manual_seed(cfg["seed"])
+    dev = _resolve_device(cfg, log)
     val_idx, trn_idx = grouped_split(len(datas), groups)
     y_trn = [ys[i] for i in trn_idx]
     y_mean = sum(y_trn) / len(y_trn)
@@ -207,7 +230,7 @@ def _fit(datas, ys, groups, cfg, log=print):
     for d in datas:
         d.y_z = (d.y - y_mean) / y_sd
 
-    net = N.Net(hidden=cfg["hidden"])
+    net = N.Net(hidden=cfg["hidden"]).to(dev)
     opt = torch.optim.AdamW(net.parameters(), lr=cfg["lr"], weight_decay=cfg["weight_decay"])
     gen = torch.Generator().manual_seed(cfg["seed"])
     trn = [datas[i] for i in trn_idx]
@@ -228,41 +251,58 @@ def _fit(datas, ys, groups, cfg, log=print):
 
     best, best_state, bad, epochs_run, stopped_by = None, None, 0, 0, "epochs"
     t0 = time.time()
-    for epoch in range(cfg["epochs"]):
+    epoch = 0
+    while epoch < cfg["epochs"]:
         epochs_run = epoch + 1
-        net.train()
-        for batch in loader:
-            opt.zero_grad()
-            loss, _ = _loss(batch)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(net.parameters(), cfg["grad_clip"])
-            opt.step()
-        if vloader is not None:
-            net.eval()
-            tot = n = 0.0
-            with torch.no_grad():
-                for batch in vloader:
-                    _, lq = _loss(batch)
-                    tot += float(lq) * batch.num_graphs
-                    n += batch.num_graphs
-            score = tot / max(n, 1.0)
-            if best is None or score < best - 1e-5:
-                best, bad = score, 0
-                best_state = {k: v.detach().clone() for k, v in net.state_dict().items()}
-            else:
-                bad += 1
-                if bad >= cfg["patience"]:
-                    stopped_by = "patience"
-                    break
+        try:
+            net.train()
+            for batch in loader:
+                batch = batch.to(dev)
+                opt.zero_grad()
+                loss, _ = _loss(batch)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(net.parameters(), cfg["grad_clip"])
+                opt.step()
+            if vloader is not None:
+                net.eval()
+                tot = n = 0.0
+                with torch.no_grad():
+                    for batch in vloader:
+                        batch = batch.to(dev)
+                        _, lq = _loss(batch)
+                        tot += float(lq) * batch.num_graphs
+                        n += batch.num_graphs
+                score = tot / max(n, 1.0)
+                if best is None or score < best - 1e-5:
+                    best, bad = score, 0
+                    best_state = {k: v.detach().cpu().clone()
+                                  for k, v in net.state_dict().items()}
+                else:
+                    bad += 1
+                    if bad >= cfg["patience"]:
+                        stopped_by = "patience"
+                        break
+        except torch.cuda.OutOfMemoryError as e:
+            if dev.type != "cuda":
+                raise
+            log("mapgraph.train: CUDA OOM at epoch %d -> falling back to cpu and continuing: %s"
+                % (epochs_run, repr(e)[:120]))
+            torch.cuda.empty_cache()
+            dev = torch.device("cpu")
+            net = net.cpu()
+            continue
         if time.time() - t0 > cfg["time_budget_s"]:
             stopped_by = "time_budget"
             break
+        epoch += 1
+    net = net.cpu()
     if best_state is not None:
         net.load_state_dict(best_state)
     fit = {"val_mse_z": round(best, 5) if best is not None else None,
            "val_rmse_raw": round((best ** 0.5) * y_sd, 5) if best is not None else None,
            "epochs_run": epochs_run, "stopped_by": stopped_by,
            "val_rows": len(val_idx), "train_rows": len(trn_idx),
+           "device": dev.type,
            "seconds": round(time.time() - t0, 1)}
     return net, fit, y_mean, y_sd
 

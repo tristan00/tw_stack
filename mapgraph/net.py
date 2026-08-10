@@ -75,6 +75,8 @@ class Encoder(nn.Module):
         self.norm1 = GraphNorm(hidden)
         self.conv2 = GINEConv(_mlp([hidden, hidden * 2, hidden]), edge_dim=S.EDGE_DIM)
         self.norm2 = GraphNorm(hidden)
+        self.conv3 = GINEConv(_mlp([hidden, hidden * 2, hidden]), edge_dim=S.EDGE_DIM)
+        self.norm3 = GraphNorm(hidden)
         self.drop = nn.Dropout(0.2)
 
     def forward(self, data):
@@ -89,6 +91,9 @@ class Encoder(nn.Module):
         h = h + d
         d = self.drop(torch.relu(self.norm2(
             self.conv2(h, data.edge_index, data.edge_attr), batch)))
+        h = h + d
+        d = self.drop(torch.relu(self.norm3(
+            self.conv3(h, data.edge_index, data.edge_attr), batch)))
         h = h + d
         w = data.own_mask.unsqueeze(1)
         n_graphs = int(batch.max().item()) + 1 if batch.numel() else 1
