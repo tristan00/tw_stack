@@ -772,7 +772,10 @@ def _lord_execute_inner(bus, ctx, pick, before):
         sys.stderr.write("click_actions: %s refused, not a known state -> %s"
                          % (pick.get("action_type") or "recruit", why) + chr(10))
         return False
-    want = str(pick["key"])
+    # recruit keys are "<subtype>@<candidate_index>" -- the pool offers one row per
+    # candidate now, and the subtype is what names the UI button. Same "@" convention
+    # recruit_unit and the building slot ops already use. Bare subtypes still parse.
+    want = str(pick["key"]).split("@", 1)[0]
     params = pick.get("params") or {}
     is_hero = pick.get("action_type") == "recruit_hero"
     if not _open_panel_mode(bus, AGENT_MODE if is_hero else LORD_MODE):
