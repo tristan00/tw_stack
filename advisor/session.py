@@ -317,6 +317,9 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
             _flush_generation(stretch, backend, backend_cfg, generation, report, trained, log)
             stretch = []
             generation += 1
+            log("taking the game down for retraining -- trainers get the whole box")
+            ex.kill_game()
+            hard_restart_next, prev_outcome = True, "retrain window"
             try:
                 t0 = time.time()
                 rep = MB.train(**backend_cfg) if backend_cfg else MB.train()
