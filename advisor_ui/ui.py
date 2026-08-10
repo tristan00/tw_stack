@@ -53,12 +53,28 @@ def _num(v, nd=4):
     return "-" if v is None else ("%%.%df" % nd) % float(v)
 
 
+def _optional_cols(con, table, wanted):
+    """Columns from `wanted` that this database actually has.
+
+    Run databases are long-lived and are written by whatever code was running at the
+    time, so newer columns are absent from older runs -- and from a run already in
+    flight when the column was added. Selecting them unconditionally would break the
+    page for exactly the runs worth looking at.
+    """
+    try:
+        have = {r[1] for r in con.execute("PRAGMA table_info(%s)" % table)}
+    except sqlite3.Error:
+        return ()
+    return tuple(c for c in wanted if c in have)
+
+
 def sequence(con, limit=SEQ_PAGE, offset=0):
+    gnn = _optional_cols(con, "action_offers", ("gnn_impact", "gnn_rank"))
     return [dict(r) for r in con.execute(
         "SELECT d.decision_id, d.turn, d.decision_seq, d.n_entities, d.n_offers,"
         " t.context_kind, t.context_id, t.action_type, t.action_key, t.counted, t.refusal, t.policy,"
-        " o.score, o.exploit, o.pct_global, o.pct_local, o.rank,"
-        " o.gnn_impact, o.gnn_rank"
+        " o.score, o.exploit, o.pct_global, o.pct_local, o.rank"
+        + "".join(", o.%s" % c for c in gnn) +
         " FROM decision_points d LEFT JOIN action_taken t ON t.decision_id=d.decision_id"
         " LEFT JOIN action_offers o ON o.rowid ="
         "   (SELECT MIN(o2.rowid) FROM action_offers o2 WHERE o2.decision_id=t.decision_id"
@@ -78,10 +94,12 @@ def ranking(con, did, limit=80):
     taken = con.execute("SELECT context_kind,context_id,action_type,action_key,counted,refusal"
                         " FROM action_taken WHERE decision_id=?", (did,)).fetchone()
     rows = [dict(r) for r in con.execute(
-        "SELECT context_kind,context_id,action_type,action_key,available,gate,score,exploit,"
-        "pct_global,pct_local,rank,gnn_impact,gnn_rank"
+        "SELECT context_kind,context_id,action_type,action_key,available,gate,exploit,"
+        "pct_global,pct_local,rank"
+        + "".join(",%s" % c for c in _optional_cols(con, "action_offers",
+                                                    ("gnn_impact", "gnn_rank"))) +
         " FROM action_offers WHERE decision_id=?"
-        " ORDER BY (score IS NULL), score DESC, available DESC LIMIT ?", (did, limit))]
+        " ORDER BY (exploit IS NULL), exploit DESC, available DESC LIMIT ?", (did, limit))]
     tk = (dict(taken) if taken else None)
     for r in rows:
         r["taken"] = bool(tk and r["context_kind"] == tk["context_kind"]
@@ -201,6 +219,8 @@ th,td{padding:5px 10px;text-align:left;border-bottom:1px solid var(--line)}
 th{color:var(--dim);font-weight:500;position:sticky;top:0;background:var(--card)}
 tr:last-child td{border-bottom:none}
 .ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}.dim{color:var(--dim)}
+.muted{color:var(--dim);font-size:11px;line-height:1.5;max-width:105ch;white-space:normal}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .btn{display:inline-block;background:var(--card);border:1px solid var(--line);border-radius:6px;
      padding:7px 12px;color:var(--fg);text-decoration:none;font-size:12px}
 .btn:hover{border-color:var(--ok);color:var(--ok)}
@@ -254,7 +274,10 @@ def _mix_str(mix, epsilon=None):
     if isinstance(mix, dict) and mix:
         return ",".join("%s=%.2f" % (k, float(v)) for k, v in sorted(mix.items()))
     if epsilon is not None:
-        return "epsilon=%g" % float(epsilon)
+        # legacy trials recorded only --epsilon; session.py maps it to this mix
+        e = float(epsilon)
+        return ("exploit_tree=%.2f,random=%.2f <span class=dim>(legacy --epsilon %g)</span>"
+                % (1.0 - e, e, e))
     return None
 
 
@@ -266,22 +289,29 @@ def _ruleset_str(rs):
     return None
 
 
+# written by the loop when it runs out of actions, not drawn from the strategy mix --
+# counting it as a strategy would dilute every real share
+NOT_A_DRAW = ("forced_end_turn",)
+
+
 def _policy_tally(counts):
-    agg, rules = {}, {}
+    agg, rules, other = {}, {}, {}
     for p, n in counts.items():
         s = str(p) if p else "-"
-        if s.startswith("ruleset(") and s.endswith(")"):
+        if s in NOT_A_DRAW:
+            other[s] = other.get(s, 0) + n
+        elif s.startswith("ruleset(") and s.endswith(")"):
             agg["ruleset"] = agg.get("ruleset", 0) + n
             rule = s[len("ruleset("):-1]
             rules[rule] = rules.get(rule, 0) + n
         else:
             agg[s] = agg.get(s, 0) + n
-    return agg, rules
+    return agg, rules, other
 
 
 def _policy_tally_html(title, counts):
-    agg, rules = _policy_tally(counts)
-    if not agg:
+    agg, rules, other = _policy_tally(counts)
+    if not agg and not other:
         return ""
     total = sum(agg.values())
     rows = []
@@ -292,15 +322,21 @@ def _policy_tally_html(title, counts):
                 ", ".join("%s %d" % (r, c)
                           for r, c in sorted(rules.items(), key=lambda kv: -kv[1])))
         rows.append("<tr><td>%s%s</td><td class=num>%d</td><td class=dim>%.1f%%</td></tr>"
-                    % (_esc(p), extra, n, 100.0 * n / total))
+                    % (_esc(p), extra, n, 100.0 * n / total if total else 0.0))
+    for p, n in sorted(other.items(), key=lambda kv: -kv[1]):
+        rows.append("<tr><td class=dim>%s</td><td class=num>%d</td>"
+                    "<td class=dim>not a strategy draw</td></tr>" % (_esc(p), n))
     return ("<h2>%s</h2>"
             "<p class=muted>ruleset(rule) picks are aggregated under <b>ruleset</b> with the "
-            "per-rule split alongside. Older campaigns carry the retired epsilon-era strings "
-            "(cold_random, epsilon_random, explore, exploit, interrupt_exploit, "
-            "interrupt_explore); newer ones carry the strategy-portfolio strings (random, "
-            "exploit_tree, ruleset(rule), gnn, gnn_delegated_*, *_random_fallback).</p>"
-            "<div class=scroll><table><tr><th>policy<th>picks<th>share</tr>%s</table></div>"
-            % (_esc(title), "".join(rows)))
+            "per-rule split alongside. <b>forced_end_turn</b> is written by the loop when it "
+            "runs out of actions, so it is listed but kept out of the share denominator. "
+            "<b>gnn_delegated_*</b> is a gnn draw on the interrupt path, where there is no "
+            "gnn model, handed to exploit_tree. Older campaigns carry retired epsilon-era "
+            "strings (cold_random, epsilon_random, explore, exploit, interrupt_exploit, "
+            "interrupt_explore) &mdash; the novelty score that <i>explore</i> named has since "
+            "been deleted, so it can only appear on pre-retirement rows.</p>"
+            "<div class=scroll><table><tr><th>policy<th class=num>picks<th>share</tr>"
+            "%s</table></div>" % (_esc(title), "".join(rows)))
 
 
 def render_interrupts(runs_root=RUNS_ROOT):
@@ -340,7 +376,10 @@ def render_interrupts(runs_root=RUNS_ROOT):
         import interrupt_model as IM
         import strategies as ST
         mix_note = ("the sampler draws each pick from the run's strategy mix over %s "
-                    "(--strategies, recorded on the trial)" % "/".join(ST.NAMES))
+                    "(--strategies, recorded on the trial). <b>gnn has no interrupt-side "
+                    "model</b>, so a gnn draw here is delegated to exploit_tree and recorded "
+                    "as <code>gnn_delegated_*</code> &mdash; on this path the effective "
+                    "exploit_tree share is exploit_tree + gnn" % "/".join(ST.NAMES))
         r = IM.InterruptRanker()
         if r.ready:
             sr = (r.meta or {}).get("screen_rows") or {}
@@ -448,7 +487,7 @@ def render_interrupts(runs_root=RUNS_ROOT):
     prov = _policy_tally_html("interrupt provenance (all runs)", policies)
     agg = ("<p class=muted>Dilemmas, pre-battle, post-battle and occupation. <b>taken</b> is how "
            "often we picked that option; <b>offered</b> is how often the screen showed it, so the "
-           "rate exposes whether a choice is genuinely being explored or never gets picked.</p>"
+           "rate exposes whether a choice ever actually gets picked.</p>"
            "<div class=scroll><table><tr><th>screen<th>option<th>taken<th>offered<th>rate</tr>"
            "%s</table></div>" % "".join(rows))
     return head + prov + recent_tbl + agg
@@ -978,8 +1017,14 @@ def render_actions(con, q):
                 "<div class=scroll><table>"
                 "<tr><th>action<th>tried<th>confirmed<th>rate<th>refusals seen</tr>%s</table></div>"
                 % ("".join(rows) or "<tr><td colspan=5 class=dim>nothing recorded yet</tr>"))
+    # the run dir is fixed and reused across sessions, so this table is every session
+    # ever recorded into it -- saying "this run" made retired eras look like live strategies
+    span = con.execute(
+        "SELECT COUNT(DISTINCT campaign_id), MIN(turn), MAX(turn) FROM decision_points"
+    ).fetchone()
     prov = _policy_tally_html(
-        "who is making the picks (this run)",
+        "who is making the picks &mdash; every session recorded in this run dir (%s campaigns)"
+        % (span[0] if span else "?"),
         dict(con.execute("SELECT policy, COUNT(*) FROM action_taken"
                          " WHERE refusal IS NOT 'awaiting_execution' GROUP BY policy")))
     return cards + per_type + prov
@@ -1232,7 +1277,7 @@ def render_timeline(con):
     scale = 1 / 40.0
     phases = (("collect_ms", "p1", "recorder reading the game"),
               ("queue_ms", "p2", "request round trip"),
-              ("score_ms", "p3", "featurize + rank"),
+              ("score_ms", "p3", "featurize + rank (with gnn drawn: graph build + forward)"),
               ("verify_ms", "p4", "execute + confirm"))
     out = []
     for turn in sorted(per_turn, key=lambda t: (t is None, t)):
@@ -1451,14 +1496,20 @@ def render_infra(run_dir):
 
     try:
         import policy as _P
-        pol_cfg = ("strategy portfolio; default mix %s (policy.py DEFAULT_STRATEGIES) -- a "
-                   "run's own mix comes from --strategies, is recorded on its trial, and "
-                   "drives both the action sampler and the interrupt sampler"
-                   % ", ".join("%s=%.2f" % kv
-                               for kv in sorted(_P.normalize_strategies(None).items())))
+        live_mix = (_session_state() or {}).get("mix")
+        dflt = ", ".join("%s=%.2f" % kv
+                         for kv in sorted(_P.normalize_strategies(None).items()))
+        pol_cfg = (("running mix <b>%s</b>" % _esc(live_mix)) if live_mix else
+                   "<span class=warn>no running session &mdash; no live mix</span>")
+        pol_cfg += ("<br><span class=dim>%s is only the fallback when --strategies is "
+                    "omitted (policy.py DEFAULT_STRATEGIES). A run's own mix comes from "
+                    "--strategies, is recorded on its trial, and drives both the action "
+                    "sampler and the interrupt sampler &mdash; except that gnn has no "
+                    "interrupt-side model, so gnn draws there are delegated to exploit_tree."
+                    "</span>" % _esc(dflt))
     except Exception as e:
-        pol_cfg = "unreadable: %s" % repr(e)[:60]
-    policy_html = ("<h2>pick policy</h2><div class=legend>%s</div>" % _esc(pol_cfg))
+        pol_cfg = "unreadable: %s" % _esc(repr(e)[:60])
+    policy_html = ("<h2>pick policy</h2><div class=muted>%s</div>" % pol_cfg)
 
     watch = [("session log", (open(CURRENT_LOG, encoding="utf-8-sig").read().strip()
                               if os.path.isfile(CURRENT_LOG) else ""), 90, 420)]
@@ -1515,14 +1566,16 @@ def render_infra(run_dir):
            "before campaign 1 -- tick retrain first for that. Leave it unticked to run the first "
            "N campaigns on the model already on disk. Each stretch between retrains is one trial "
            "in the ledger'></label>"
-           "<label title='which ranker plays this trial'>model </label>") + _model_select() + (
+           "<label title='backend for the exploit_tree strategy, and the model whose scores "
+           "are stored on every offer row. The gnn ranker is not selected here -- it is "
+           "chosen by putting gnn in the strategy mix'>model </label>") + _model_select() + (
            "<label title='backend hyperparameters as KEY=VALUE pairs, e.g. bottleneck=64 lr=0.01"
            " -- recorded on the trial as backend_cfg'>cfg <input name=cfg type=text value='' "
            "placeholder='bottleneck=64 lr=0.01' style='width:170px'></label>"
            "<label title='per-decision strategy mix as name=weight pairs over random, "
            "exploit_tree, ruleset, gnn; weights are normalized; blank = policy.py default'>"
            "strategies <input name=strategies type=text value='' "
-           "placeholder='exploit_tree=0.4,gnn=0.4,random=0.1,ruleset=0.1' "
+           "placeholder='exploit_tree=0.3,gnn=0.3,random=0.3,ruleset=0.1' "
            "style='width:190px'></label>"
            "<label title='rule file D:\\twdata\\rules\\NAME.json; required when ruleset is in "
            "the mix, forbidden otherwise'>ruleset <input name=ruleset type=text value='' "
@@ -1530,11 +1583,12 @@ def render_infra(run_dir):
            "<label title='firehose script-log tail + UI tree scrapes; gigabytes per run'><input type=checkbox name=dev value=1> dev logging</label>"
            "<button class=btn>launch run</button>"
            "</form></div>"
-           "<div class=dim style='margin:14px 0 8px'>cold start: same kill+recorder sequence, but "
-           "the session runs with NO model (--cold) &mdash; the exploit_tree strategy can never "
-           "fire, so every action and interrupt pick lands on random (provenance random / "
+           "<div class=muted style='margin:14px 0 8px'>cold start: same kill+recorder sequence, "
+           "but the session runs with NO model (--cold), on the default exploit_tree/random "
+           "mix &mdash; no ranker is loaded, so every pick lands on random (provenance random / "
            "exploit_tree_random_fallback; the ledger labels the campaigns cold_random(forced)). "
-           "Never retrains.</div>"
+           "A mix containing <b>gnn</b> is refused outright by session.py; <b>ruleset</b> needs "
+           "no model and would still fire if one were requested. Never retrains.</div>"
            "<form action='/ctl/coldstart' method='get' onsubmit='return launchCold(this)' "
            "style='display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0'>"
            "<label>campaigns <input name=campaigns type=number min=1 max=9999 value=10 "
@@ -1724,8 +1778,9 @@ MODEL_DIRS = (("global", r"D:\twdata\models\global"),
               ("gnn", r"D:\twdata\models\gnn"))
 
 _MODEL_ROLE = {
-    "global": "catboost E1/E2 &mdash; scores every main-loop offer; E2 is the counterfactual "
-              "baseline, and E1&minus;E2 is the impact the policy ranks on",
+    "global": "catboost E1/E2 &mdash; E2 is the counterfactual baseline and E1&minus;E2 is the "
+              "impact the <b>exploit_tree</b> strategy ranks on. The other three strategies "
+              "ignore it, but its scores are still stored on every offer row",
     "local": "catboost &mdash; per-entity local value, blended into the global score",
     "interrupt": "catboost &mdash; ranks the options on blocking menus (battles, occupation)",
     "gnn": "GINE graph net &mdash; twin Q/V heads score offers over the "
@@ -1815,7 +1870,10 @@ def _catboost_card(name, m, secs, when, events):
     e1 = (fam.get("e1") or {}).get("val_rmse")
     e2 = (fam.get("e2") or {}).get("val_rmse")
     state, cls, note = ("ready", "ok", "") if m else (
-        "missing", "bad", "No model on disk &mdash; picks for this stage fall back.")
+        "missing", "bad",
+        "No model on disk. Every <b>exploit_tree</b> draw falls back to random "
+        "(provenance <code>exploit_tree_random_fallback</code>); the gnn, ruleset and "
+        "random shares of the mix are unaffected.")
     rows = [_mrow("held-out rmse (e1)", _fmt(e1, 4))]
     if e2 is not None:
         d = float(e2) - float(e1) if e1 is not None else None
