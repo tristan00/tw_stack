@@ -49,26 +49,43 @@ SHARD = 2000
 def _graph_sources():
     """Every module in this package that a graph's contents can depend on.
 
-    Discovered by importing the two entry points and asking the interpreter what came
-    with them, rather than from a hand-written list. A hand-written list is exactly the
-    thing that goes stale: add an import to build.py, forget to add it here, and the
-    cache silently serves graphs built by code that no longer exists. This way the
-    dependency set maintains itself, and train.py/rank.py/eval.py are excluded
-    automatically because building a graph does not import them.
+    Found by walking imports STATICALLY from the two entry points -- build.build_graph
+    and net.to_data -- so the answer is a property of the code, not of the process.
+
+    An earlier version read sys.modules instead. That was wrong in a way that cost a
+    full cache: the set depended on what the CALLER had already imported, so invoking
+    this from train.py pulled train.py into the fingerprint, and editing the training
+    loop -- which cannot change a single node or edge -- discarded 2.7GB and forced a
+    134s cold walk. A hand-written list has the opposite failure (add an import, forget
+    to list it, and the cache silently serves graphs built by code that no longer
+    exists), so neither of those; walk the import graph.
     """
-    import sys
-    try:
-        from mapgraph3 import build, net           # noqa: F401  (imported for effect)
-    except ImportError:
-        import build, net                          # noqa: F401
-    out = set()
-    for mod in list(sys.modules.values()):
-        f = getattr(mod, "__file__", None)
-        if f and os.path.dirname(os.path.abspath(f)) == _HERE:
-            base = os.path.basename(f)
-            if base != os.path.basename(__file__):  # this file cannot change a graph
-                out.add(base)
-    return sorted(out)
+    import ast
+    seen, stack = set(), ["build.py", "net.py"]
+    while stack:
+        name = stack.pop()
+        if name in seen:
+            continue
+        path = os.path.join(_HERE, name)
+        if not os.path.exists(path):
+            continue
+        seen.add(name)
+        try:
+            tree = ast.parse(open(path, encoding="utf-8").read())
+        except (OSError, SyntaxError):
+            continue
+        for node in ast.walk(tree):
+            names = []
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                # covers both `import schema` and `from mapgraph3 import schema`
+                names = ([node.module] if node.module else []) + [a.name for a in node.names]
+            for mod in names:
+                leaf = mod.split(".")[-1] + ".py"
+                if os.path.exists(os.path.join(_HERE, leaf)):
+                    stack.append(leaf)
+    return sorted(seen)
 
 
 def fingerprint():
