@@ -8,7 +8,10 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
-sys.path.insert(0, os.path.join(r"D:\tw_stack", "decisions"))
+sys.path.insert(0, os.path.dirname(_HERE))
+import common
+
+sys.path.insert(0, common.DECISIONS)
 
 import features as F
 import policy as P
@@ -16,7 +19,7 @@ from base_model import (RUNS_ROOT, TARGET_PARTS, target, decision_deltas, fit_es
                         params, regressor, _ranks, _sd)
 from store import DecisionStore, IncompatibleStore
 
-MODEL_DIR = r"D:\twdata\models\interrupt"
+MODEL_DIR = common.MODEL_INTERRUPT
 MIN_ROWS = 5
 
 

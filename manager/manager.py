@@ -9,6 +9,9 @@ import time
 RECORDER_VERSION = "v7"
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(_HERE))
+import common
+
 sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "campaigns"))
 try:
     from splitter import CampaignTracker
@@ -284,8 +287,8 @@ def reset_bus_files():
         import bus
         paths = [bus.CMD_PATH, bus.OUT_PATH]
     except Exception as e:
-        paths = ["D:/totalwar_runner/data/commands.txt", "D:/totalwar_runner/data/twcontrol.jsonl"]
-        sys.stderr.write("manager: bus import failed, using hardcoded bus paths -> %s\n" % repr(e)[:80])
+        paths = [common.BUS_CMD_PATH, common.BUS_OUT_PATH]
+        sys.stderr.write("manager: bus import failed, using common.py bus paths -> %s\n" % repr(e)[:80])
     total = 0
     for p in paths:
         try:
@@ -322,10 +325,10 @@ def main():
         appdata = os.path.expandvars(r"%APPDATA%/The Creative Assembly/Warhammer3/logs")
         out_root = config.RUNS_ROOT
     except Exception as e:
-        game_dir = r"D:\SteamLibrary\steamapps\common\Total War WARHAMMER III"
+        game_dir = common.GAME_DIR
         appdata = os.path.expandvars(r"%APPDATA%/The Creative Assembly/Warhammer3/logs")
-        out_root = "D:/twdata/runs/human"
-        sys.stderr.write("manager: config import failed, using hardcoded paths -> %s\n" % repr(e)[:80])
+        out_root = common.RUNS_ROOT
+        sys.stderr.write("manager: config import failed, using common.py paths -> %s\n" % repr(e)[:80])
 
     argv = sys.argv[1:]
     shots_on = "--shots" in argv or "--debug" in argv

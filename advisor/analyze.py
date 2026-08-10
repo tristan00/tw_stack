@@ -5,11 +5,14 @@ import os
 import sqlite3
 import sys
 
-RUNS_ROOT = "D:/twdata/runs/human"
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import common
+
+RUNS_ROOT = common.RUNS_ROOT
 
 
 def live_run():
-    return 'D:/twdata/runs/human/run'
+    return common.RUN_DIR
 
 
 def _con(run_dir):

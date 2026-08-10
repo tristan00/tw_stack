@@ -6,6 +6,8 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
+sys.path.insert(0, os.path.dirname(_HERE))
+import common
 
 import model as M
 import ruleset as R
@@ -94,15 +96,13 @@ class Policy:
             raise ValueError("strategy mix includes 'ruleset' but no ruleset name was given")
         self.gnn = None
         if "gnn" in self.strategies:
-            # Resolve mapgraph3 against the checkout this file lives in. Hardcoding
-            # D:\tw_stack here meant a worktree loaded the MAIN checkout's mapgraph3
-            # while training wrote a model from its own -- which surfaces as a
-            # state_dict key mismatch and silently drops the gnn arm to random.
-            _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            if not os.path.isdir(os.path.join(_root, "mapgraph3")):
-                _root = r"D:\tw_stack"
-            if _root not in sys.path:
-                sys.path.insert(0, _root)
+            # Resolve mapgraph3 against the checkout this file lives in -- common.ROOT
+            # is derived from common.py's own location. Hardcoding D:\tw_stack here meant
+            # a worktree loaded the MAIN checkout's mapgraph3 while training wrote a model
+            # from its own -- which surfaces as a state_dict key mismatch and silently
+            # drops the gnn arm to random.
+            if common.ROOT not in sys.path:
+                sys.path.insert(0, common.ROOT)
             from mapgraph3 import rank as GNN
             self.gnn = GNN.Ranker()
         self.members = {name: S.build(name, rng=self.rng, ranker=self.ranker,

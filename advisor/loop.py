@@ -16,13 +16,16 @@ LOCOMOTION_ACTIONS = frozenset(("attack_army", "attack_settlement", "colonize"))
 POST_ATTACK_HUD_PAUSE = 0.6
 _last_beat_turn = [None]
 sys.path.insert(0, _HERE)
-sys.path.insert(0, os.path.join(r"D:\tw_stack", "decisions"))
+sys.path.insert(0, os.path.dirname(_HERE))
+import common
+
+sys.path.insert(0, common.DECISIONS)
 
 import features as F
 import journal
 import policy as P
 
-sys.path.insert(0, os.path.join(r"D:\tw_stack", "launcher"))
+sys.path.insert(0, common.LAUNCHER)
 import trace as TR
 from watchdog import Watchdog
 
@@ -150,12 +153,12 @@ class TurnResult(dict):
     pass
 
 
-NO_MODEL_DIR = r"D:\twdata\models\__cold_start__"
+NO_MODEL_DIR = common.MODEL_COLD_START
 
 
 def _verify_action_catalogues(log):
     try:
-        sys.path.insert(0, os.path.join(r"D:\tw_stack", "advisor", "reference"))
+        sys.path.insert(0, common.REFERENCE)
         import collect as C
         import features_db as DB
         mapped = DB.verify_hero_action_mappings(C.HERO_ACTIONS)
@@ -679,7 +682,7 @@ def _append(path, row):
 
 
 def verify_streams(run_dir):
-    sys.path.insert(0, os.path.join(r"D:\tw_stack", "decisions"))
+    sys.path.insert(0, common.DECISIONS)
     from store import DecisionStore
     s = DecisionStore(run_dir)
     try:

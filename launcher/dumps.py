@@ -126,8 +126,10 @@ def dump_screen(bus, log_path=None, save_dir=None, deep=True, depth=40, nodes=16
 
 if __name__ == "__main__":
     import sys
-    sys.path.insert(0, r"D:\tw_stack\bus")
-    sys.path.insert(0, r"D:\tw_stack\launcher")
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    import common
+    sys.path.insert(0, common.BUS)
+    sys.path.insert(0, common.LAUNCHER)
     from bus import Bus
     out = sys.argv[1] if len(sys.argv) > 1 else None
     d = dump_screen(Bus(), save_dir=out)

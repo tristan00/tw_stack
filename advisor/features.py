@@ -4,7 +4,10 @@ import math
 import os
 import sys
 
-sys.path.insert(0, os.path.join(r"D:\tw_stack", "advisor", "reference"))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import common
+
+sys.path.insert(0, common.REFERENCE)
 import features_db as DB
 
 RINGS = (10, 25, 50)

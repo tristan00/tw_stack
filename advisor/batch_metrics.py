@@ -8,8 +8,11 @@ import sqlite3
 import sys
 import time
 
-RUNS = r"D:/twdata/runs/human"
-OUT_DIR = r"D:\twdata\metrics"
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import common
+
+RUNS = common.RUNS_ROOT
+OUT_DIR = common.METRICS_DIR
 GAP_CAP = 600.0
 
 

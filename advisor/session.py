@@ -7,9 +7,12 @@ import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
-sys.path.insert(0, r"D:\tw_stack\bus")
-sys.path.insert(0, r"D:\tw_stack\launcher")
-sys.path.insert(0, os.path.join(r"D:\tw_stack", "decisions"))
+sys.path.insert(0, os.path.dirname(_HERE))
+import common
+
+sys.path.insert(0, common.BUS)
+sys.path.insert(0, common.LAUNCHER)
+sys.path.insert(0, common.DECISIONS)
 
 import interrupt_model as IM
 import journal
@@ -19,11 +22,11 @@ import policy as P
 import strategies as ST
 from interrupts import UnhandledScreen
 
-RUNS_ROOT = "D:/twdata/runs/human"
+RUNS_ROOT = common.RUNS_ROOT
 
 
 MAX_LAUNCH_FAILURES = 3
-LOG_ARCHIVE = r"D:\twdata\archive\script_logs"
+LOG_ARCHIVE = common.ARCHIVE_SCRIPT_LOGS
 ROTATE_MIN_AGE_S = 600
 
 
@@ -58,8 +61,8 @@ def _rotate_logs(log):
         moved, moved_mb, dst if moved else LOG_ARCHIVE, skipped)
 
 
-BUS_FILES = (r"D:\totalwar_runner\data\commands.txt",
-             r"D:\totalwar_runner\data\twcontrol.jsonl")
+BUS_FILES = (common.native(common.BUS_CMD_PATH),
+             common.native(common.BUS_OUT_PATH))
 
 
 def _bus_sizes():
@@ -230,7 +233,7 @@ def _postmortem(runs_root, entry, ex, log):
         log("   !! post-mortem NOT written: %s" % repr(e)[:160])
 
 
-NO_MODEL_DIR = r"D:\twdata\models\__cold_start__"
+NO_MODEL_DIR = common.MODEL_COLD_START
 
 
 def _epsilon_mix(epsilon):
@@ -344,11 +347,8 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                 if "gnn" in mix:
                     try:
                         # against this checkout, not a hardcoded one -- see policy.py
-                        _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                        if not os.path.isdir(os.path.join(_root, "mapgraph3")):
-                            _root = r"D:\tw_stack"
-                        if _root not in sys.path:
-                            sys.path.insert(0, _root)
+                        if common.ROOT not in sys.path:
+                            sys.path.insert(0, common.ROOT)
                         from mapgraph3 import train as GT
                         t1 = time.time()
                         grep = GT.train(log=log)
@@ -471,7 +471,7 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
     return report
 
 
-METRICS_DIR = r"D:\twdata\metrics"
+METRICS_DIR = common.METRICS_DIR
 EXPERIMENTS = os.path.join(METRICS_DIR, "experiments.jsonl")
 
 
@@ -772,7 +772,7 @@ def _stretch_context(path, rep, gen, stretch, extra):
             shadow, trained)
 
 
-ARCHIVE_DIR = r"D:\twdata\archive"
+ARCHIVE_DIR = common.ARCHIVE_DIR
 
 
 def rescore(runs_root=RUNS_ROOT, log=print):
@@ -813,7 +813,7 @@ def rescore(runs_root=RUNS_ROOT, log=print):
 
 IN_FLIGHT_S = 600
 LIVE_LOG_S = 1800
-CURRENT_SESSION_LOG = r"D:\twdata\logs\advisor\CURRENT_SESSION_LOG.txt"
+CURRENT_SESSION_LOG = common.CURRENT_SESSION_LOG
 
 
 def _live_log():
@@ -981,7 +981,7 @@ def train_events(runs_root=RUNS_ROOT):
 
 def _feature_version():
     import hashlib
-    for d in (r"D:\twdata\models\nn_global", r"D:\twdata\models\global"):
+    for d in (common.MODEL_NN_GLOBAL, common.MODEL_GLOBAL):
         p = os.path.join(d, "meta.json")
         if not os.path.isfile(p):
             continue
@@ -1124,7 +1124,7 @@ def main():
                          "  <key,...>   -- game faction keys, e.g. wh2_main_hef_nagarythe")
     arg = sys.argv[sys.argv.index("--factions") + 1].strip()
     if arg == "all":
-        sys.path.insert(0, r"D:\tw_stack\launcher")
+        sys.path.insert(0, common.LAUNCHER)
         import bus_launcher
         keys = bus_launcher.BusLauncher().startable_factions()
     else:

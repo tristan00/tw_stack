@@ -7,10 +7,11 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import common
 from campaigns.splitter import split_run
 
-DEFAULT_ROOT = r"D:/twdata/runs/human"
-DEFAULT_PREVIEW = r"D:/twdata/_split_preview"
+DEFAULT_ROOT = common.RUNS_ROOT
+DEFAULT_PREVIEW = common.SPLIT_PREVIEW
 ACTIVE_RUN = "20260728_143603"
 
 

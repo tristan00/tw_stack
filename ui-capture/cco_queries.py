@@ -161,7 +161,10 @@ def lord_actions(bus, char_cqi):
 
 
 if __name__ == "__main__":
-    sys.path.insert(0, r"D:\tw_stack\bus")
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    import common
+    sys.path.insert(0, common.BUS)
     from bus import Bus
     b = Bus()
     ents = list_entities(b)

@@ -1,6 +1,9 @@
 ﻿from __future__ import annotations
 import os, sys, time
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import common
+
 import trace as trace
 
 _FIND_T = 6.0
@@ -87,7 +90,7 @@ def protected_surface(root, pend):
         return True
     return root == "events" and pending_blocks(pend)
 
-SCREEN_DUMP_DIR = r"D:/twdata/runs/human/screens"
+SCREEN_DUMP_DIR = common.SCREEN_DUMP_DIR
 _DUMP_MEMO = {}
 
 
@@ -407,7 +410,7 @@ def capital_region(bus):
 
 
 if __name__ == "__main__":
-    sys.path.insert(0, r"D:\tw_stack\bus")
+    sys.path.insert(0, common.BUS)
     from bus import Bus
     _bus = Bus()
     before = _open_roots(_bus)

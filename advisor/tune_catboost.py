@@ -10,9 +10,12 @@ import time
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.join(_HERE, "reference"))
-sys.path.insert(0, r"D:\tw_stack\bus")
-sys.path.insert(0, r"D:\tw_stack\launcher")
-sys.path.insert(0, os.path.join(r"D:\tw_stack", "decisions"))
+sys.path.insert(0, os.path.dirname(_HERE))
+import common
+
+sys.path.insert(0, common.BUS)
+sys.path.insert(0, common.LAUNCHER)
+sys.path.insert(0, common.DECISIONS)
 
 import features as F
 from base_model import (CB_DEPTH, CB_EARLY_STOPPING, CB_ITERATIONS, CB_LEARNING_RATE, CB_LOSS,
@@ -20,9 +23,9 @@ from base_model import (CB_DEPTH, CB_EARLY_STOPPING, CB_ITERATIONS, CB_LEARNING_
 from base_model import params as BM_PARAMS
 from model import MIN_ROWS, RUNS_ROOT, gather
 
-TRAIN_DIR = r"D:\twdata\tmp\catboost_tune"
-OUT_DIR = r"D:\twdata\metrics"
-STUDY_DIR = r"D:\twdata\metrics\optuna"
+TRAIN_DIR = common.TMP_CATBOOST_TUNE
+OUT_DIR = common.METRICS_DIR
+STUDY_DIR = common.OPTUNA_DIR
 
 TRAIN_FITS = 4
 FAST_ITERATIONS = 200

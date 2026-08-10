@@ -4,7 +4,10 @@ import os
 import sys
 import time
 
-BULK_ROOT = "D:/twdata/stream"
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import common
+
+BULK_ROOT = common.STREAM_ROOT
 
 LOGTAIL_EVERY = 3.0
 

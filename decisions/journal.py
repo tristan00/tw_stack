@@ -3,17 +3,21 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import sys
 import threading
 import time
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import common
 
 REQUESTS = "decisions_requests.jsonl"
 RESPONSES = "decisions_responses.jsonl"
 DB_NAME = "decisions.sqlite"
-RUNS_ROOT = "D:/twdata/runs/human"
+RUNS_ROOT = common.RUNS_ROOT
 CURRENT_POINTER = "CURRENT_RUN"
 
 
-RUN_DIR = "D:/twdata/runs/human/run"
+RUN_DIR = common.RUN_DIR
 
 
 def current_run_dir(runs_root=RUNS_ROOT, timeout=0.0):

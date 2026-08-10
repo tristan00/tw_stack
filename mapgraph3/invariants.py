@@ -21,10 +21,10 @@ import os
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_ROOT = os.path.dirname(_HERE)
-if not os.path.isdir(os.path.join(_ROOT, "decisions")):
-    _ROOT = r"D:\tw_stack"
-for _p in (os.path.join(_ROOT, "decisions"), os.path.join(_ROOT, "advisor"), _ROOT):
+sys.path.insert(0, os.path.dirname(_HERE))
+import common
+
+for _p in (common.DECISIONS, common.ADVISOR, common.ROOT):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 

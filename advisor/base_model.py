@@ -5,18 +5,19 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
-# Resolve decisions/ against the checkout this file lives in. Hardcoding D:\tw_stack
-# here meant a worktree silently imported the MAIN checkout's store.py underneath its
-# own edits -- and since this insert lands at position 0, it overrode whatever the
-# caller had already set up. Identical path in the live checkout.
-_ROOT = os.path.dirname(_HERE)
-if not os.path.isdir(os.path.join(_ROOT, "decisions")):
-    _ROOT = r"D:\tw_stack"
-sys.path.insert(0, os.path.join(_ROOT, "decisions"))
+# Resolve decisions/ against the checkout this file lives in -- see common.py, which
+# derives it from its own location. Hardcoding D:\tw_stack here meant a worktree silently
+# imported the MAIN checkout's store.py underneath its own edits, and since this insert
+# lands at position 0 it overrode whatever the caller had already set up. Identical path
+# in the live checkout.
+sys.path.insert(0, os.path.dirname(_HERE))
+import common
+
+sys.path.insert(0, common.DECISIONS)
 
 import features as F
 
-RUNS_ROOT = "D:/twdata/runs/human"
+RUNS_ROOT = common.RUNS_ROOT
 GAIN_PARTS = ("settlements", "lord_level", "allies", "vassals")
 TARGET_PARTS = GAIN_PARTS + ("survival",)
 TARGET_WEIGHTS = {"settlements": 1.0, "lord_level": 1.0, "allies": 1.0, "vassals": 3.0,
@@ -48,7 +49,7 @@ CB_PARAMS = {
 
 CB_DEPTH = CB_PARAMS["depth"]
 CB_LEARNING_RATE = CB_PARAMS["learning_rate"]
-CB_TRAIN_DIR = r"D:\twdata\tmp\catboost"
+CB_TRAIN_DIR = common.TMP_CATBOOST
 CB_EARLY_STOPPING = 50
 VAL_FRACTION = 0.15
 SPLIT_SEED = 0

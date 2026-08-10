@@ -12,15 +12,17 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "advisor"))
+import common
 
-RUNS_ROOT = "D:/twdata/runs/human"
+sys.path.insert(0, common.ADVISOR)
+
+RUNS_ROOT = common.RUNS_ROOT
 SEQ_PAGE = 50
 TIMELINE_ROWS = 200
 
 
 def newest_run():
-    return 'D:/twdata/runs/human/run'
+    return common.RUN_DIR
 
 
 def _con(run_dir):
@@ -1925,9 +1927,9 @@ def render_decision(con, did):
     return _page(head + tbl + ents, "decision #%d" % did)
 
 
-TW_STACK = r"D:\tw_stack"
-VENV_PY = r"D:\totalwar_runner\.venv\Scripts\python.exe"
-LOG_DIR = r"D:\twdata\logs\advisor"
+TW_STACK = common.ROOT
+VENV_PY = common.VENV_PY
+LOG_DIR = common.LOGS_ADVISOR
 CURRENT_LOG = os.path.join(LOG_DIR, "CURRENT_SESSION_LOG.txt")
 SERVICES = (("session.py", "advisor session"), ("manager.py", "recorder"), ("ui.py", "UI"))
 
@@ -2217,7 +2219,7 @@ def _kill_recorder():
         return "recorder kill failed: %s" % repr(e)[:120]
 
 
-SERVICES_LOG_DIR = r"D:\twdata\logs\services"
+SERVICES_LOG_DIR = common.LOGS_SERVICES
 
 
 def _trial_row_html(r, live=False, show_cfg=True):
@@ -2330,10 +2332,10 @@ def _lift(e2_rmse, e1_rmse):
     return "<td class=%s>%+.4f" % ("ok" if d > 0.02 else "bad" if d <= 0 else "warn", d)
 
 
-MODEL_DIRS = (("global", r"D:\twdata\models\global"),
-              ("local", r"D:\twdata\models\local"),
-              ("interrupt", r"D:\twdata\models\interrupt"),
-              ("gnn", r"D:\twdata\models\gnn3"))
+MODEL_DIRS = (("global", common.MODEL_GLOBAL),
+              ("local", common.MODEL_LOCAL),
+              ("interrupt", common.MODEL_INTERRUPT),
+              ("gnn", common.MODEL_GNN3))
 
 _MODEL_ROLE = {
     "global": "catboost E1/E2 &mdash; E2 is the counterfactual baseline and E1&minus;E2 is the "
@@ -2351,8 +2353,8 @@ _MODEL_ROLE = {
 
 def _live_gnn_schema():
     try:
-        if r"D:\tw_stack" not in sys.path:
-            sys.path.insert(0, r"D:\tw_stack")
+        if common.ROOT not in sys.path:
+            sys.path.insert(0, common.ROOT)
         from mapgraph3 import schema as GS
         return GS.SCHEMA_VERSION, GS.schema_hash()
     except Exception:
@@ -2486,8 +2488,8 @@ def _fit_config_table(events=()):
         body.append("<tr><td>catboost<td colspan=3 class=bad>config unreadable: %s</tr>"
                     % _esc(repr(e)[:90]))
     try:
-        if r"D:\tw_stack" not in sys.path:
-            sys.path.insert(0, r"D:\tw_stack")
+        if common.ROOT not in sys.path:
+            sys.path.insert(0, common.ROOT)
         from mapgraph3 import train as _GT
         from mapgraph3 import schema as _GS
         c = _GT.CFG

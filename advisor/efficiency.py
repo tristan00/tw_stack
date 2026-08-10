@@ -8,8 +8,11 @@ import os
 import re
 import sys
 
-LOGS = r"D:\twdata\logs\advisor"
-RUNS = r"D:\twdata\runs\human"
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import common
+
+LOGS = common.LOGS_ADVISOR
+RUNS = common.native(common.RUNS_ROOT)
 
 
 def _read(path):

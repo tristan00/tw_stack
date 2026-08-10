@@ -11,11 +11,13 @@ from dataclasses import dataclass
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.join(_HERE, "reference"))
+sys.path.insert(0, os.path.dirname(_HERE))
+import common
 
 import features as F
 import features_db
 
-RULES_DIR = r"D:\twdata\rules"
+RULES_DIR = common.RULES_DIR
 _RULE_RNG = random.Random()
 
 PREDICATE_OPS = frozenset(("==", "!=", ">", ">=", "<", "<=", "in", "not_in"))

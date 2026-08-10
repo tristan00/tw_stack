@@ -8,10 +8,12 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
+sys.path.insert(0, os.path.dirname(_HERE))
+import common
 
 from store import DecisionStore
 
-RUN_DIR = r"D:/twdata/runs/human/run"
+RUN_DIR = common.RUN_DIR
 
 
 def run_dir():

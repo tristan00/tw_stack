@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import os
 import sys
 import time
 
-sys.path.insert(0, r"D:\tw_stack\bus")
-sys.path.insert(0, r"D:\tw_stack\launcher")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import common
+
+sys.path.insert(0, common.BUS)
+sys.path.insert(0, common.LAUNCHER)
 
 from cco_actions import _G, _ev, register
 
@@ -71,7 +75,7 @@ def _until(pred, cap, step=0.2):
     return False
 
 
-_CLEAR_TRACE = r"D:\twdata\runs\human\run\clear_screen_trace.jsonl"
+_CLEAR_TRACE = common.CLEAR_SCREEN_TRACE
 _BATTLE_ROOTS = ("popup_pre_battle", "popup_battle_results", "settlement_captured")
 LAST_GUARD = [None]
 

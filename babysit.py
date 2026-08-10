@@ -5,15 +5,18 @@ import os
 import sys
 import time
 
-TW_STACK = r"D:\tw_stack"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import common
+
+TW_STACK = common.ROOT
 sys.path.insert(0, TW_STACK)
 
 import runctl
 
-RUNS_ROOT = r"D:\twdata\runs\human"
-OFF_FLAG = r"D:\twdata\BABYSIT_OFF"
-STAMP = r"D:\twdata\logs\services\babysitter_last_relaunch.txt"
-LOG = r"D:\twdata\logs\services\babysitter.log"
+RUNS_ROOT = common.native(common.RUNS_ROOT)
+OFF_FLAG = common.BABYSIT_OFF
+STAMP = common.BABYSIT_STAMP
+LOG = common.BABYSIT_LOG
 STALL_S = 1200
 RELAUNCH_COOLDOWN_S = 1800
 

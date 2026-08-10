@@ -7,11 +7,14 @@ import sqlite3
 import statistics
 import sys
 
-RUNS_ROOT = "D:/twdata/runs/human"
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import common
+
+RUNS_ROOT = common.RUNS_ROOT
 
 
 def current_run():
-    return 'D:/twdata/runs/human/run'
+    return common.RUN_DIR
 
 
 def _interrupts(run_dir):

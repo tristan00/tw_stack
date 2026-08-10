@@ -5,8 +5,10 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
+sys.path.insert(0, os.path.dirname(_HERE))
+import common
 
-NO_MODEL_DIR = r"D:\twdata\models\__cold_start__"
+NO_MODEL_DIR = common.MODEL_COLD_START
 
 BACKENDS = {
     "catboost": {"module": "model", "label": "CatBoost E1/E2 impact"},

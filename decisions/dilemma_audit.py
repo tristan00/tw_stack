@@ -5,10 +5,12 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
+sys.path.insert(0, os.path.dirname(_HERE))
+import common
 
 from store import DecisionStore, IncompatibleStore
 
-RUNS_ROOT = r"D:/twdata/runs/human"
+RUNS_ROOT = common.RUNS_ROOT
 
 
 def audit_run(run_dir):
