@@ -12,7 +12,8 @@
    run dirs  D:\twdata\runs\human\<ts>\  + CURRENT_RUN          │ execute picked action
                  │                                              │
    advisor (BACKEND: session → loop → policy/model)  ───────────┘
-   E1/E2 CatBoost + isolation-forest explore · interrupt model · watchdog
+   strategy portfolio: exploit_tree (E1/E2 CatBoost) · gnn · ruleset · random
+   interrupt model · watchdog
    features ← reference/features_db ← D:\twdata\reference\reference.sqlite
                  │
    advisor_ui (FRONTEND: ui.py :8779 — dashboard over decisions.sqlite,
