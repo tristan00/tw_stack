@@ -92,8 +92,14 @@ class Policy:
         self.ruleset = R.RuleSet.load(ruleset) if ruleset else None
         if "ruleset" in self.strategies and self.ruleset is None:
             raise ValueError("strategy mix includes 'ruleset' but no ruleset name was given")
+        self.gnn = None
+        if "gnn" in self.strategies:
+            if r"D:\tw_stack" not in sys.path:
+                sys.path.insert(0, r"D:\tw_stack")
+            from mapgraph import rank as GNN
+            self.gnn = GNN.Ranker()
         self.members = {name: S.build(name, rng=self.rng, ranker=self.ranker,
-                                      ruleset=self.ruleset)
+                                      ruleset=self.ruleset, gnn=self.gnn)
                         for name in self.strategies}
         self.fallback = self.members.get("random") or S.build("random", rng=self.rng)
         self.max_actions_per_turn = max_actions_per_turn
