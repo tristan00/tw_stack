@@ -30,8 +30,20 @@ PERSISTENT_ROOTS = frozenset((
 
 _CLICKABLE_STATES = frozenset(("active", "default", "NewState", "selected", "hover", "down"))
 
+# The *_gained roots are the same reward-toast widget in three faction skins: a small
+# particle-emitter popup with a glint, a label and a value, and NO controls at all. They
+# fade themselves out, so they can vanish between a roots() snapshot and the read that
+# follows -- and choose_dilemma() then sends a root with 0 nodes into _read_tree_or_die,
+# which declares a bus failure and kills the session. influence_gained was listed for
+# exactly this reason; scrolls (Teclis, Secrets of the White Tower, awarded for winning a
+# battle with mages) and relics (Cathay) are the identical widget.
+#   influence_gained              398x220  32 particle nodes  0 buttons  "Influence Gained!"
+#   cp1_cth_relics_gained         420x233  32 particle nodes  0 buttons  "Relic Gained!"
+#   dlc27_hef_sotwt_scrolls_gained 202x110 30 particle nodes  0 buttons  "Scrolls of Knowledge Gained!"
 BENIGN_PANELS = frozenset(("units_panel", "settlement_panel", "recruitment_options",
-                           "influence_gained", "province_publicorder_tooltip"))
+                           "influence_gained", "cp1_cth_relics_gained",
+                           "dlc27_hef_sotwt_scrolls_gained",
+                           "province_publicorder_tooltip"))
 
 DECISION_ROOTS = frozenset(("diplomacy_dropdown", "ally_attacked"))
 
