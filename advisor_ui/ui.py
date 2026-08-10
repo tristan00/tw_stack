@@ -1654,6 +1654,22 @@ def render_models():
                   BM.CB_LOSS, 100 * BM.VAL_FRACTION, _esc(str(BM.CB_TUNED_FROM))))
     except Exception as e:
         cfg = "unreadable: %s" % _esc(repr(e)[:90])
+    cfg = "<b>catboost (global/local/interrupt)</b> &mdash; " + cfg
+    try:
+        if r"D:\tw_stack" not in sys.path:
+            sys.path.insert(0, r"D:\tw_stack")
+        from mapgraph import train as _GT
+        _gc = _GT.CFG
+        cfg += ("<br><b>gnn (graph offer-scorer)</b> &mdash; GINE encoder hidden %s &nbsp; "
+                "lr %s &nbsp; weight_decay %s &nbsp; batch %s graphs &nbsp; epochs &le;%s "
+                "(patience %s) &nbsp; aux weight %s &nbsp; threads %s train / %s infer &nbsp; "
+                "time budget %ss &nbsp; same campaign-grouped holdout"
+                % tuple(_esc(str(v)) for v in
+                        (_gc["hidden"], _gc["lr"], _gc["weight_decay"], _gc["batch"],
+                         _gc["epochs"], _gc["patience"], _gc["aux_weight"],
+                         _GT.THREADS_TRAIN, 2, _gc["time_budget_s"])))
+    except Exception as e:
+        cfg += "<br><b>gnn</b> &mdash; config unreadable: %s" % _esc(repr(e)[:90])
     disk = []
     for name, path in (("global", r"D:\twdata\models\global\meta.json"),
                        ("local", r"D:\twdata\models\local\meta.json"),
