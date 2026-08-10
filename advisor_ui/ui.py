@@ -265,6 +265,22 @@ def _esc(v):
     return html.escape("" if v is None else str(v))
 
 
+def _int(v):
+    """Turn numbers arrive as floats from the bus; 4.0 is noise in a table."""
+    try:
+        return "%d" % float(v)
+    except (TypeError, ValueError):
+        return "" if v is None else str(v)
+
+
+_TAGS = re.compile(r"\[\[/?[^\]]*\]\]")
+
+
+def _strip_tags(v):
+    """The game's own colour markup, e.g. '[[col:dip_attitude_4]]23[[/col]]'."""
+    return _TAGS.sub("", str(v)).strip() if v else ""
+
+
 def _mix_str(mix, epsilon=None):
     if isinstance(mix, str):
         try:
@@ -718,29 +734,73 @@ def render_diplomacy(run_dir):
     tr = []
     for d in reversed(deals):
         ch = d.get("channel")
+        p = d.get("panel") or {}
+        chance = gift = standing = ""
         if ch == "outgoing":
             who = d.get("faction")
-            ans = "sent" if (d.get("panel") or {}).get("sent") else \
-                  "refused(%s)" % ((d.get("panel") or {}).get("failed_at"))
-            ok = bool((d.get("panel") or {}).get("sent"))
+            resp = p.get("response") or {}
+            if p.get("sent"):
+                # a sent deal is not a won deal -- the ai still answers it
+                a = resp.get("answer")
+                if resp.get("accepted"):
+                    ans, cls = "accepted", "ok"
+                elif a:
+                    ans, cls = "declined", "warn"
+                else:
+                    ans, cls = "sent, no answer", "warn"
+            elif p.get("failed_at") == "ai_would_refuse":
+                ans, cls = "ai would refuse", "bad"
+            else:
+                # not the ai saying no: we never managed to stage the deal
+                ans, cls = "not staged (%s)" % (p.get("failed_at") or "?"), "bad"
+            sc = p.get("success_chance")
+            if sc not in (None, ""):
+                try:
+                    chance = "%+.1f%%" % float(sc)
+                except (TypeError, ValueError):
+                    chance = str(sc)
+            tb = d.get("treaty_before") or {}
+            if tb.get("standing") is not None:
+                standing = "%g%s" % (tb["standing"], " at war" if tb.get("at_war") else "")
+            detail = ",".join(d.get("terms") or [])
+            if d.get("gift"):
+                # folded in rather than given a column: most deals carry no gift
+                detail += " + gift %s" % d["gift"]
         else:
             who = d.get("proposer") or ",".join(d.get("faction_keys") or [])[:40]
-            ans = d.get("answer")
+            ans = d.get("answer") or "-"
             ok = bool(d.get("confirmed")) and ans in ("accept", "acknowledge", "join")
-        cls = "ok" if ok else ("warn" if ans == "decline" else "bad")
+            cls = "ok" if ok else ("warn" if ans == "decline" else "bad")
+            # attitude is only ever recorded on incoming proposals
+            att = _strip_tags(d.get("attitude"))
+            detail = str(d.get("speech") or "")[:70]
+            if att:
+                detail = "<span class=dim>attitude %s</span> &middot; %s" % (_esc(att),
+                                                                            _esc(detail))
+            else:
+                detail = _esc(detail)
         tr.append("<tr><td class=dim>%s</td><td>%s</td><td>%s</td><td class=%s>%s</td>"
-                  "<td>%s</td><td class=dim>%s</td></tr>"
-                  % (_esc(d.get("turn")), _esc(ch), _esc(str(who)[:38]), cls, _esc(ans),
-                     _esc(d.get("attitude") or "&mdash;"),
-                     _esc(",".join(d.get("terms") or []) if ch == "outgoing" else
-                          str(d.get("speech") or "")[:60])))
+                  "<td class=num>%s</td><td class='num dim'>%s</td>"
+                  "<td style='white-space:normal'>%s</td></tr>"
+                  % (_esc(_int(d.get("turn"))), _esc(ch), _esc(str(who)[:38]), cls, _esc(ans),
+                     _esc(chance) or "<span class=dim>-</span>",
+                     _esc(standing) or "-",
+                     detail if ch != "outgoing" else _esc(detail)))
     return ("<h2>diplomacy stream <span class=dim>(last %d rows of this run)</span></h2>"
             "<div class=cards>%s</div>"
-            "<h2>recent deal events</h2><div class=scroll><table>"
-            "<tr><th>turn<th>channel<th>faction<th>answer<th>attitude<th>terms / speech</tr>"
+            "<h2>recent deal events</h2>"
+            "<div class=legend><b>accepted / declined</b> are the ai's answer to a deal we "
+            "actually sent. <b>ai would refuse</b> means the game told us up front it would "
+            "say no, so nothing was sent. <b>not staged</b> is our own failure to build the "
+            "deal, not a diplomatic outcome &mdash; worth separating when reading refusal "
+            "rates. <b>chance</b> is the success chance the panel showed before sending; "
+            "<b>standing</b> is the relationship before the deal.</div>"
+            "<div class=scroll><table>"
+            "<tr><th>turn<th>channel<th>faction<th>outcome<th class=num>chance"
+            "<th class=num>standing<th>terms / speech</tr>"
             "%s</table></div>"
             % (len(rows), cards,
-               "".join(tr) or "<tr><td class=dim colspan=6>no deal rows yet</td></tr>"))
+               "".join(tr) or "<tr><td class=dim colspan=7>no deal rows yet</td></tr>"))
 
 
 def _med(vals):
@@ -1071,7 +1131,7 @@ def render_actions(con, q):
         "SELECT COUNT(DISTINCT campaign_id), MIN(turn), MAX(turn) FROM decision_points"
     ).fetchone()
     prov = _policy_tally_html(
-        "who is making the picks &mdash; every session recorded in this run dir (%s campaigns)"
+        "who is making the picks: every session recorded in this run dir (%s campaigns)"
         % (span[0] if span else "?"),
         dict(con.execute("SELECT policy, COUNT(*) FROM action_taken"
                          " WHERE refusal IS NOT 'awaiting_execution' GROUP BY policy")))
@@ -1161,12 +1221,15 @@ def render_decisions(con, q):
 
 
 def render_reward(con):
-    trows = "".join("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
-                    % (_esc(t["turn"]), _esc(t["income"]), _esc(t["settlements"]),
-                       _esc(t["allies"]), _esc(t["vassals"]), _esc(t["power_rank"]))
+    trows = "".join("<tr><td>%s</td><td class=num>%s</td><td class=num>%s</td>"
+                    "<td class=num>%s</td><td class=num>%s</td><td class=num>%s</td></tr>"
+                    % (_esc(_int(t["turn"])), _esc(_int(t["income"])),
+                       _esc(_int(t["settlements"])), _esc(_int(t["allies"])),
+                       _esc(_int(t["vassals"])), _esc(_int(t["power_rank"])))
                     for t in turns(con))
     return ("<h2>reward inputs per turn</h2><div class=scroll><table>"
-            "<tr><th>turn<th>income<th>settlements<th>allies<th>vassals<th>power rank</tr>%s"
+            "<tr><th>turn<th class=num>income<th class=num>settlements<th class=num>allies"
+            "<th class=num>vassals<th class=num>power rank</tr>%s"
             "</table></div>" % (trows or "<tr><td class=dim colspan=6>no turns recorded</td></tr>"))
 
 
@@ -1221,12 +1284,15 @@ def render_leaders(con):
         b = best.get(camp, (None, None, None, None))
         pct = (100.0 * (counted or 0) / taken) if taken else 0.0
         cls = "ok" if pct >= 70 else ("warn" if pct >= 40 else "bad")
-        out.append("<tr><td>%s<td>%s<td>%s<td class=%s>%.0f%%<td>%s<td>%s<td>%s</tr>"
-                   % (_esc(camp), _esc(max_turn), _esc(dec), cls, pct,
-                      _esc(b[1]), _esc(b[2]), _esc(b[3])))
+        out.append("<tr><td>%s<td class=num>%s<td class=num>%s<td class='%s num'>%.0f%%"
+                   "<td class=num>%s<td class=num>%s<td class=num>%s</tr>"
+                   % (_esc(camp), _esc(_int(max_turn)), _esc(dec), cls, pct,
+                      _esc(_int(b[1])), _esc(_int(b[2])), _esc(_int(b[3]))))
     return ("<h2>by legendary lord &mdash; per-start performance</h2><div class=scroll><table>"
-            "<tr><th>faction / lord<th>turns<th>decisions<th>confirm %%"
-            "<th>best settlements<th>best power rank<th>best lord level</tr>%s</table></div>"
+            "<tr><th>faction / lord<th class=num>turns<th class=num>decisions"
+            "<th class=num>confirm %%"
+            "<th class=num>best settlements<th class=num>best power rank"
+            "<th class=num>best lord level</tr>%s</table></div>"
             % "".join(out))
 
 
@@ -1297,7 +1363,8 @@ def render_history(con):
             % (i, _esc(r["campaign"]), _esc(str(r["campaign"])[-14:]),
                cls, w, r["turns"], wd, r["decisions"],
                r["counted"], r["confirm_pct"], r["minutes"],
-               _esc(r["last_settlements"]), _esc(r["last_income"]), _esc(r.get("run"))))
+               _esc(_int(r["last_settlements"])), _esc(_int(r["last_income"])),
+               _esc(r.get("run"))))
     return ("<h2>run history &mdash; how far each campaign got</h2>"
             "<div class=scroll><table>"
             "<tr><th>#<th>campaign<th title='max turn reached'>turns survived"
