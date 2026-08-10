@@ -30,19 +30,21 @@ PERSISTENT_ROOTS = frozenset((
 
 _CLICKABLE_STATES = frozenset(("active", "default", "NewState", "selected", "hover", "down"))
 
-# The *_gained roots are the same reward-toast widget in three faction skins: a small
-# particle-emitter popup with a glint, a label and a value, and NO controls at all. They
-# fade themselves out, so they can vanish between a roots() snapshot and the read that
-# follows -- and choose_dilemma() then sends a root with 0 nodes into _read_tree_or_die,
-# which declares a bus failure and kills the session. influence_gained was listed for
-# exactly this reason; scrolls (Teclis, Secrets of the White Tower, awarded for winning a
-# battle with mages) and relics (Cathay) are the identical widget.
-#   influence_gained              398x220  32 particle nodes  0 buttons  "Influence Gained!"
-#   cp1_cth_relics_gained         420x233  32 particle nodes  0 buttons  "Relic Gained!"
-#   dlc27_hef_sotwt_scrolls_gained 202x110 30 particle nodes  0 buttons  "Scrolls of Knowledge Gained!"
+# Adding a root here removes it from the failure surface, so it is added ONLY on Tristan's
+# explicit call -- never by an agent deciding for itself that a screen needs no handling.
+# Unhandled screens are meant to kill the run loudly; runs have had to be deleted wholesale
+# because that failure was quietly smoothed over. cp1_cth_relics_gained looks like the same
+# widget as the two below and is deliberately NOT listed: it has never actually failed, so
+# it gets to fail hard first and be fixed on purpose.
+#
+# The *_gained entries are particle-emitter reward toasts with NO controls at all, verified
+# from the game's own UI tree. They fade themselves out, so they can vanish between a
+# roots() snapshot and the read that follows -- choose_dilemma() then hands a 0-node root to
+# _read_tree_or_die, which reports a bus failure and ends the session.
+#   influence_gained               398x220  32 particle nodes  0 buttons  "Influence Gained!"
+#   dlc27_hef_sotwt_scrolls_gained 202x110  30 particle nodes  0 buttons  "Scrolls of Knowledge Gained!"
 BENIGN_PANELS = frozenset(("units_panel", "settlement_panel", "recruitment_options",
-                           "influence_gained", "cp1_cth_relics_gained",
-                           "dlc27_hef_sotwt_scrolls_gained",
+                           "influence_gained", "dlc27_hef_sotwt_scrolls_gained",
                            "province_publicorder_tooltip"))
 
 DECISION_ROOTS = frozenset(("diplomacy_dropdown", "ally_attacked"))
