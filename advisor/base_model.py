@@ -74,6 +74,53 @@ def grouped_split(n, groups, frac=VAL_FRACTION, seed=SPLIT_SEED):
         return [], list(range(n))
     return val, trn
 
+HOLDOUT_SALT = "gnn3"
+
+
+def stable_split(n, groups, frac=VAL_FRACTION, salt=HOLDOUT_SALT):
+    """Hold out whole campaigns, chosen by hashing the campaign id.
+
+    grouped_split shuffles the campaign LIST with a fixed seed. The seed is stable but
+    the list is not: adding campaigns lengthens it, a longer list permutes differently,
+    and the held-out set is effectively redrawn on every retrain. Measured across one
+    real retrain (532 -> 550 campaigns): the holdout went 79 -> 82 campaigns with only
+    17 in common, so ~79% of what the metric was measured on changed. Two fits with
+    identical code, identical seed and corpora differing by 12 rows in 19,780 moved
+    val_listwise_nll by 0.0945 nats -- larger than most improvements anyone would claim,
+    which makes the metric unable to detect a regression between retrains.
+
+    Here membership is a property of the campaign itself, so a campaign never changes
+    sides and a new one joins whichever side its own hash names. Measured on the same
+    532 -> 550 growth: 2 campaigns of churn, both additions, zero removals.
+
+    grouped_split is left alone because CatBoost's val_rmse series runs through it and
+    changing it would put a discontinuity in that history for no reason.
+
+    Note the holdout still GROWS as campaigns are added, so the absolute level drifts
+    even though membership is stable. Comparing a fixed cohort is what is exactly
+    comparable; comparing all held-out campaigns is what is representative.
+    """
+    import hashlib
+    import random
+    if not groups or len(groups) != n:
+        idx = list(range(n))
+        random.Random(SPLIT_SEED).shuffle(idx)
+        cut = max(1, int(n * frac)) if n > 20 else 0
+        return idx[:cut], idx[cut:]
+    uniq = set(groups)
+    if len(uniq) < 3:
+        return [], list(range(n))
+    cut = int(round(frac * 10000))
+    held = {g for g in uniq
+            if int.from_bytes(hashlib.sha1(("%s|%s" % (salt, g)).encode()).digest()[:4],
+                              "big") % 10000 < cut}
+    val = [i for i, g in enumerate(groups) if g in held]
+    trn = [i for i, g in enumerate(groups) if g not in held]
+    if not val or not trn:
+        return [], list(range(n))
+    return val, trn
+
+
 def params(iterations=None, learning_rate=None):
     return dict(CB_PARAMS,
                 learning_rate=float(learning_rate or CB_LEARNING_RATE),
