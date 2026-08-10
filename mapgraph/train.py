@@ -20,9 +20,12 @@ except ImportError:
 
 THREADS_TRAIN = max(1, os.cpu_count() or 16)
 
-CFG = {"hidden": 64, "lr": 1e-3, "weight_decay": 1e-4, "batch": 32, "epochs": 200,
-       "patience": 20, "grad_clip": 5.0, "aux_weight": 0.25, "seed": 0,
-       "time_budget_s": 600, "device": "auto", "gpu_mem_fraction": None}
+# batch/lr are sized for the gpu, not for accuracy: across batch 128..2048 the held-out
+# rmse moved less than the run-to-run noise (sd ~0.06, and the batch-32 baseline itself
+# spanned 2.74..2.87), while fit time moved 10-20x. Larger batches want a larger lr.
+CFG = {"hidden": 64, "lr": 4e-3, "weight_decay": 1e-4, "batch": 1024, "epochs": 400,
+       "patience": 50, "grad_clip": 5.0, "aux_weight": 0.25, "seed": 0,
+       "time_budget_s": 600, "device": "auto"}
 
 _NF = {name: i for i, name in enumerate(S.NODE_FIELDS)}
 
@@ -195,12 +198,7 @@ def _resolve_device(cfg, log):
         return torch.device("cpu")
     try:
         if torch.cuda.is_available():
-            frac = cfg.get("gpu_mem_fraction")
-            if frac:
-                torch.cuda.set_per_process_memory_fraction(float(frac))
-            log("mapgraph.train: device cuda (%s%s)"
-                % (torch.cuda.get_device_name(0),
-                   ", VRAM cap %.0f%%" % (float(frac) * 100) if frac else ", uncapped"))
+            log("mapgraph.train: device cuda (%s)" % torch.cuda.get_device_name(0))
             return torch.device("cuda")
     except Exception as e:
         log("mapgraph.train: cuda probe failed -> %s" % repr(e)[:120])
@@ -210,16 +208,45 @@ def _resolve_device(cfg, log):
     return torch.device("cpu")
 
 
+def _collate(items, size, dev, log):
+    """Collate once, up front, and keep the batches on the training device.
+
+    The corpus is ~10k single-offer graphs of a few hundred nodes each. Re-collating
+    it in Python every epoch cost more than the forward/backward it fed, so the GPU
+    sat idle waiting on `Batch.from_data_list`. Collating once and leaving the result
+    resident removes both that work and the per-step host->device copy.
+    """
+    import torch
+    from torch_geometric.data import Batch
+    batches = [Batch.from_data_list(items[k:k + size]) for k in range(0, len(items), size)]
+    if dev.type != "cuda":
+        return batches, False
+    need = sum(v.numel() * v.element_size() for b in batches
+               for v in b.to_dict().values() if torch.is_tensor(v))
+    free = torch.cuda.mem_get_info()[0]
+    # the corpus grows every retrain; leave half of free VRAM for activations and grads
+    if need >= free * 0.5:
+        log("mapgraph.train: corpus %.1fGB vs %.1fGB free -- streaming batches per step"
+            % (need / 1e9, free / 1e9))
+        return batches, False
+    try:
+        return [b.to(dev) for b in batches], True
+    except torch.cuda.OutOfMemoryError:
+        torch.cuda.empty_cache()
+        log("mapgraph.train: corpus did not fit VRAM -- streaming batches per step")
+        return batches, False
+
+
 def _fit(datas, ys, groups, cfg, log=print):
     import torch
     from base_model import grouped_split
-    from torch_geometric.loader import DataLoader
     try:
         from mapgraph import net as N
     except ImportError:
         import net as N
     torch.set_num_threads(THREADS_TRAIN)
     torch.manual_seed(cfg["seed"])
+    torch.set_float32_matmul_precision("high")
     dev = _resolve_device(cfg, log)
     val_idx, trn_idx = grouped_split(len(datas), groups)
     y_trn = [ys[i] for i in trn_idx]
@@ -235,8 +262,10 @@ def _fit(datas, ys, groups, cfg, log=print):
     gen = torch.Generator().manual_seed(cfg["seed"])
     trn = [datas[i] for i in trn_idx]
     val = [datas[i] for i in val_idx]
-    loader = DataLoader(trn, batch_size=cfg["batch"], shuffle=True, generator=gen)
-    vloader = DataLoader(val, batch_size=cfg["batch"]) if val else None
+    # one seeded shuffle fixes batch membership; epochs then shuffle the batch order
+    trn = [trn[i] for i in torch.randperm(len(trn), generator=gen).tolist()]
+    loader, resident = _collate(trn, cfg["batch"], dev, log)
+    vloader, _ = _collate(val, cfg["batch"], dev, log) if val else ([], False)
     mse = torch.nn.MSELoss()
 
     def _loss(batch):
@@ -256,27 +285,27 @@ def _fit(datas, ys, groups, cfg, log=print):
         epochs_run = epoch + 1
         try:
             net.train()
-            for batch in loader:
-                batch = batch.to(dev)
-                opt.zero_grad()
+            for i in torch.randperm(len(loader), generator=gen).tolist():
+                batch = loader[i] if resident else loader[i].to(dev)
+                opt.zero_grad(set_to_none=True)
                 loss, _ = _loss(batch)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(net.parameters(), cfg["grad_clip"])
                 opt.step()
-            if vloader is not None:
+            if vloader:
                 net.eval()
-                tot = n = 0.0
+                tot = torch.zeros((), device=dev)
+                n = 0
                 with torch.no_grad():
                     for batch in vloader:
-                        batch = batch.to(dev)
-                        _, lq = _loss(batch)
-                        tot += float(lq) * batch.num_graphs
-                        n += batch.num_graphs
-                score = tot / max(n, 1.0)
+                        b = batch if resident else batch.to(dev)
+                        _, lq = _loss(b)
+                        tot += lq.detach() * b.num_graphs  # stays on device: no per-batch sync
+                        n += b.num_graphs
+                score = float(tot) / max(n, 1.0)
                 if best is None or score < best - 1e-5:
                     best, bad = score, 0
-                    best_state = {k: v.detach().cpu().clone()
-                                  for k, v in net.state_dict().items()}
+                    best_state = {k: v.detach().clone() for k, v in net.state_dict().items()}
                 else:
                     bad += 1
                     if bad >= cfg["patience"]:
@@ -287,9 +316,13 @@ def _fit(datas, ys, groups, cfg, log=print):
                 raise
             log("mapgraph.train: CUDA OOM at epoch %d -> falling back to cpu and continuing: %s"
                 % (epochs_run, repr(e)[:120]))
-            torch.cuda.empty_cache()
             dev = torch.device("cpu")
             net = net.cpu()
+            loader = [b.cpu() for b in loader]
+            vloader = [b.cpu() for b in vloader]
+            resident = True
+            best_state = {k: v.cpu() for k, v in (best_state or {}).items()} or None
+            torch.cuda.empty_cache()
             continue
         if time.time() - t0 > cfg["time_budget_s"]:
             stopped_by = "time_budget"

@@ -96,7 +96,8 @@ class Encoder(nn.Module):
             self.conv3(h, data.edge_index, data.edge_attr), batch)))
         h = h + d
         w = data.own_mask.unsqueeze(1)
-        n_graphs = int(batch.max().item()) + 1 if batch.numel() else 1
+        # graph count from a CPU-side int: batch.max().item() would sync the GPU every forward
+        n_graphs = max(1, int(data.n_offers_t.numel()))
         pool_num = scatter(h * w, batch, dim=0, dim_size=n_graphs, reduce="sum")
         pool_den = scatter(w, batch, dim=0, dim_size=n_graphs, reduce="sum").clamp(min=1.0)
         return h, pool_num / pool_den, batch
