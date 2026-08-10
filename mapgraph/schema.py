@@ -3,9 +3,9 @@ from __future__ import annotations
 import hashlib
 import zlib
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
-NODE_TYPES = ("region", "character", "faction")
+NODE_TYPES = ("region", "settlement", "province", "character", "faction")
 
 RACES = ("brt", "bst", "chd", "chs", "cst", "cth", "dae", "def", "dwf", "emp", "grn", "hef",
          "kho", "ksl", "lzd", "nor", "nur", "ogr", "skv", "sla", "tmb", "tze", "vmp", "wef")
@@ -16,6 +16,8 @@ STANCE_BUCKETS = 24
 STANCE_DIM = 4
 
 AGENT_TYPES = ("general", "champion", "dignitary", "engineer", "runesmith", "spy", "wizard")
+
+CORRUPTION_TYPES = ("chaos", "khorne", "nurgle", "slaanesh", "tzeentch", "skaven", "vampiric")
 
 ACTION_TYPES = ("stance", "building", "research", "skills", "items", "item_unequip", "rites",
                 "recruit_unit", "recruit_lord", "edict", "attack_army", "attack_settlement",
@@ -34,6 +36,8 @@ COORD_SCALE = 1024.0
 COORD_MAX = 4096.0
 UNITS_SCALE = 20.0
 HP_SCALE = 20.0
+STANDING_SCALE = 200.0
+SETTLEMENT_LEVEL_SCALE = 5.0
 
 GIFT_RANK = {"small": 1, "medium": 2, "large": 3}
 
@@ -41,25 +45,31 @@ NODE_TYPE_FIELDS = tuple("type_" + t for t in NODE_TYPES)
 GEO_FIELDS = ("geo_x", "geo_y", "has_pos")
 REGION_FIELDS = ("own_owned", "owner_known", "owner_met", "owner_at_war", "owner_allied",
                  "owner_trade", "owner_their_vassal", "owner_standing", "abandoned", "is_ruin",
-                 "is_prov_capital", "garrison_known", "garrison_units", "degree",
-                 "snap_present", "settlement_level", "buildings", "free_slots", "locked_slots",
-                 "public_order", "corr_total", "corr_max", "is_capital", "can_set_edict",
-                 "has_active_edict", "building_now_n")
+                 "degree")
+SETTLEMENT_FIELDS = ("is_prov_capital", "snap_present", "settlement_level", "buildings",
+                     "free_slots", "locked_slots", "building_now_n", "is_capital",
+                     "garrison_known", "garrison_units", "ruined")
+PROVINCE_FIELDS = ("prov_n_regions", "prov_n_owned", "prov_share_owned", "prov_complete_owner",
+                   "prov_can_set_edict", "prov_has_active_edict", "prov_public_order") \
+    + tuple("prov_corr_" + t for t in CORRUPTION_TYPES) + ("prov_corr_other",)
 CHARACTER_FIELDS = ("is_own", "alleg_enemy", "alleg_neutral", "has_army", "is_general",
                     "is_leader", "units", "units_known", "hp", "hp_known", "ap_pct", "rank",
                     "garrisoned", "besieging", "acted", "pending_recruits", "skill_points",
                     "in_own_territory", "snap_present", "is_garrison") \
     + tuple("agent_" + t for t in AGENT_TYPES) + ("agent_other",)
 FACTION_FIELDS = ("is_player", "met", "excluded", "at_war", "allied", "trade", "their_vassal",
-                  "standing", "n_regions_known", "n_chars_visible", "units_visible")
+                  "standing", "n_regions_known", "n_chars_visible", "units_visible",
+                  "mil_ally", "def_ally", "nap", "mil_access")
 
-NODE_FIELDS = NODE_TYPE_FIELDS + GEO_FIELDS + REGION_FIELDS + CHARACTER_FIELDS + FACTION_FIELDS
+NODE_FIELDS = NODE_TYPE_FIELDS + GEO_FIELDS + REGION_FIELDS + SETTLEMENT_FIELDS \
+    + PROVINCE_FIELDS + CHARACTER_FIELDS + FACTION_FIELDS
 NODE_DIM = len(NODE_FIELDS)
 
-EDGE_TYPES = ("adj", "at", "own_r", "own_c", "dip", "near")
+EDGE_TYPES = ("adj", "at", "own_r", "own_c", "dip", "near", "in_prov", "sett")
 EDGE_FIELDS = tuple("etype_" + t for t in EDGE_TYPES) + (
     "rev", "geo_known", "dist", "dir_sin", "dir_cos", "same_province",
-    "dip_at_war", "dip_allied", "dip_trade", "dip_standing")
+    "dip_at_war", "dip_allied", "dip_trade", "dip_standing",
+    "dip_mil_ally", "dip_def_ally", "dip_nap", "dip_mil_access")
 EDGE_DIM = len(EDGE_FIELDS)
 
 G_CTX_FIELDS = ("turn", "treasury", "income", "settlements", "armies", "characters", "heroes",
@@ -107,6 +117,12 @@ def key_index(action_key):
     return zlib.crc32(str(action_key or "").encode()) % KEY_BUCKETS
 
 
+def corruption_field(key):
+    s = str(key or "")
+    tail = s.rsplit("corruption_", 1)[-1] if "corruption_" in s else s
+    return ("prov_corr_" + tail) if tail in CORRUPTION_TYPES else "prov_corr_other"
+
+
 def agent_type_onehot(agent_type):
     out = [0.0] * (len(AGENT_TYPES) + 1)
     t = str(agent_type or "")
@@ -119,6 +135,6 @@ def agent_type_onehot(agent_type):
 
 def schema_hash():
     text = "|".join((str(SCHEMA_VERSION),) + NODE_FIELDS + EDGE_FIELDS + G_CTX_FIELDS
-                    + OFFER_FIELDS + ACTION_TYPES + RACES
+                    + OFFER_FIELDS + ACTION_TYPES + RACES + CORRUPTION_TYPES
                     + (str(KEY_BUCKETS), str(STANCE_BUCKETS), str(KNN_K), str(MAX_REGIONS)))
     return hashlib.sha1(text.encode()).hexdigest()

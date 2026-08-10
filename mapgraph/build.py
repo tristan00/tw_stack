@@ -51,6 +51,10 @@ def _ap_pct(v):
     return _clip(x, 0.0, 1.0)
 
 
+def _standing(v):
+    return _clip(_f(v) / S.STANDING_SCALE, -1.0, 1.0)
+
+
 def _pos_of(row):
     x, y = row.get("x"), row.get("y")
     if x is None or y is None:
@@ -64,7 +68,7 @@ def _pos_of(row):
 class Graph:
     __slots__ = ("x", "race_idx", "stance_idx", "node_ids", "id2idx", "node_meta",
                  "edge_src", "edge_dst", "edge_attr", "g_ctx", "own_mask", "pos",
-                 "player_faction", "counts")
+                 "player_faction", "region_prov", "counts")
 
     def __init__(self):
         self.x = []
@@ -80,6 +84,7 @@ class Graph:
         self.own_mask = []
         self.pos = []
         self.player_faction = None
+        self.region_prov = {}
         self.counts = {}
 
     def add_node(self, nid, ntype, feats, race=0, stance=0, pos=None, own=False, meta=None):
@@ -121,7 +126,11 @@ class Graph:
             row[_EF["dip_at_war"]] = _f(dip.get("at_war"))
             row[_EF["dip_allied"]] = _f(dip.get("allied"))
             row[_EF["dip_trade"]] = _f(dip.get("trade"))
-            row[_EF["dip_standing"]] = _clip(_f(dip.get("standing")) / 100.0, -1.0, 1.0)
+            row[_EF["dip_standing"]] = _standing(dip.get("standing"))
+            row[_EF["dip_mil_ally"]] = _f(dip.get("mil_ally"))
+            row[_EF["dip_def_ally"]] = _f(dip.get("def_ally"))
+            row[_EF["dip_nap"]] = _f(dip.get("nap"))
+            row[_EF["dip_mil_access"]] = _f(dip.get("mil_access"))
         self.edge_src.append(i)
         self.edge_dst.append(j)
         self.edge_attr.append(row)
@@ -180,15 +189,12 @@ def build_graph(record):
     for key, r in sorted(region_rows.items()):
         owner = str(r.get("owner") or "")
         rel = relations.get(owner)
-        st = prov_snap.get(key)
-        sett = own_setts.get(key)
         feats = {
             "own_owned": 1.0 if owner and owner == me else 0.0,
             "owner_known": 1.0 if owner else 0.0,
             "owner_met": 1.0 if (owner == me or rel is not None) else 0.0,
             "abandoned": _f(r.get("abandoned")),
             "is_ruin": 1.0 if (key in ruin_keys or _f(r.get("abandoned"))) else 0.0,
-            "is_prov_capital": _f(r.get("capital")),
             "degree": len(r.get("adjacent") or ()) / 8.0,
         }
         if rel is not None:
@@ -196,39 +202,88 @@ def build_graph(record):
             feats["owner_allied"] = _f(rel.get("allied"))
             feats["owner_trade"] = _f(rel.get("trade"))
             feats["owner_their_vassal"] = _f(rel.get("their_vassal"))
-            feats["owner_standing"] = _clip(_f(rel.get("standing")) / 100.0, -1.0, 1.0)
-        if sett is not None:
-            feats["garrison_known"] = 1.0
-            feats["garrison_units"] = _f(sett.get("units")) / S.UNITS_SCALE
-        if st is not None:
-            locked = st.get("locked_slots")
-            feats.update({
-                "snap_present": 1.0,
-                "settlement_level": _f(st.get("settlement_level")) / 3.0,
-                "buildings": _f(st.get("buildings")) / 10.0,
-                "free_slots": _f(st.get("free_slots")) / 6.0,
-                "locked_slots": (len(locked) if isinstance(locked, (list, tuple))
-                                 else _f(locked)) / 6.0,
-                "public_order": _clip(_f(st.get("public_order")) / 100.0, -1.0, 1.0),
-                "is_capital": _f(st.get("is_capital")),
-                "can_set_edict": _f(st.get("can_set_edict")),
-                "has_active_edict": 1.0 if str(st.get("active_edict") or "") else 0.0,
-                "building_now_n": len(st.get("building_now") or {}) / 4.0,
-            })
-            corr = st.get("corruption") or {}
-            vals = [_f(v) for v in corr.values()]
-            feats["corr_total"] = _clip(sum(vals) / 100.0, 0.0, 3.0)
-            feats["corr_max"] = _clip((max(vals) if vals else 0.0) / 100.0, 0.0, 1.0)
+            feats["owner_standing"] = _standing(rel.get("standing"))
+        g.region_prov[key] = str(r.get("province") or "")
         g.add_node("r:" + key, "region", feats, race=S.race_index(owner), pos=_pos_of(r),
-                   own=(owner == me), meta={"kind": "region", "key": key,
-                                            "own_snap": st is not None})
+                   own=(owner == me), meta={"kind": "region", "key": key})
 
     for r in world.get("ruins") or []:
         key = str(r.get("region") or "")
         if not key or ("r:" + key) in g.id2idx:
             continue
         g.add_node("r:" + key, "region", {"is_ruin": 1.0, "abandoned": 1.0}, pos=_pos_of(r),
-                   meta={"kind": "region", "key": key, "own_snap": False})
+                   meta={"kind": "region", "key": key})
+        g.region_prov[key] = ""
+
+    for key in sorted(g.region_prov):
+        r = region_rows.get(key) or {}
+        ri = g.id2idx["r:" + key]
+        owner = str(r.get("owner") or "")
+        st = prov_snap.get(key)
+        sett = own_setts.get(key)
+        ruined = 1.0 if (key in ruin_keys or _f(r.get("abandoned"))) else 0.0
+        feats = {
+            "is_prov_capital": _f(r.get("capital")),
+            "ruined": ruined,
+            "snap_present": 1.0 if st is not None else 0.0,
+        }
+        if sett is not None:
+            feats["garrison_known"] = 1.0
+            feats["garrison_units"] = _f(sett.get("units")) / S.UNITS_SCALE
+        if st is not None:
+            locked = st.get("locked_slots")
+            feats.update({
+                "settlement_level": _f(st.get("settlement_level")) / S.SETTLEMENT_LEVEL_SCALE,
+                "buildings": _f(st.get("buildings")) / 10.0,
+                "free_slots": _f(st.get("free_slots")) / 6.0,
+                "locked_slots": (len(locked) if isinstance(locked, (list, tuple))
+                                 else _f(locked)) / 6.0,
+                "building_now_n": len(st.get("building_now") or {}) / 4.0,
+                "is_capital": _f(st.get("is_capital")),
+            })
+        si = g.add_node("s:" + key, "settlement", feats, race=S.race_index(owner),
+                        pos=g.pos[ri], own=(owner == me),
+                        meta={"kind": "settlement", "key": key,
+                              "own_snap": st is not None})
+        g.add_edge(si, ri, "sett", rev=0.0)
+        g.add_edge(ri, si, "sett", rev=1.0)
+
+    provinces = {}
+    for key, prov in g.region_prov.items():
+        if prov:
+            provinces.setdefault(prov, []).append(key)
+    for prov, keys in sorted(provinces.items()):
+        n_known = len(keys)
+        n_owned = sum(1 for k in keys
+                      if str((region_rows.get(k) or {}).get("owner") or "") == me)
+        snap = None
+        for k in sorted(keys):
+            st = prov_snap.get(k)
+            if st is not None and (snap is None or _f(st.get("is_capital"))):
+                snap = st
+        feats = {
+            "prov_n_regions": n_known / 4.0,
+            "prov_n_owned": n_owned / 4.0,
+            "prov_share_owned": n_owned / max(1, n_known),
+        }
+        if snap is not None:
+            feats["prov_complete_owner"] = _f(snap.get("complete_owner"))
+            feats["prov_can_set_edict"] = _f(snap.get("can_set_edict"))
+            feats["prov_has_active_edict"] = 1.0 if str(snap.get("active_edict") or "") else 0.0
+            feats["prov_public_order"] = _clip(_f(snap.get("public_order")) / 100.0, -1.0, 1.0)
+            for ck, cv in (snap.get("corruption") or {}).items():
+                fld = S.corruption_field(ck)
+                feats[fld] = max(feats.get(fld, 0.0), _clip(_f(cv) / 100.0, 0.0, 1.0))
+        pts = [g.pos[g.id2idx["r:" + k]] for k in keys
+               if g.pos[g.id2idx["r:" + k]] is not None]
+        pos = (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts)) \
+            if pts else None
+        pi = g.add_node("p:" + prov, "province", feats, pos=pos, own=(n_owned > 0),
+                        meta={"kind": "province", "key": prov})
+        for k in sorted(keys):
+            ri = g.id2idx["r:" + k]
+            g.add_edge(ri, pi, "in_prov", rev=0.0)
+            g.add_edge(pi, ri, "in_prov", rev=1.0)
 
     def add_char(cqi, feats, faction, stance, pos, own, agent_type, meta):
         base = dict(feats)
@@ -274,7 +329,7 @@ def build_graph(record):
         add_char(cqi, feats, me, a.get("stance"), pos, True,
                  a.get("agent_type"),
                  {"kind": "character", "cqi": cqi, "own_kind": kind,
-                  "region": str(a.get("region") or "")})
+                  "region": str(a.get("region") or ""), "garrison": False})
         char_faction[cqi] = me
 
     for h in world.get("hostiles") or []:
@@ -292,11 +347,12 @@ def build_graph(record):
             skipped["no_pos"] += 1
         alleg, has_army = MOBILE_HOSTILE_KINDS[hk]
         faction = str(h.get("faction") or "")
+        is_garr = bool(h.get("is_armed_citizenry"))
         feats = {
             "alleg_enemy": 1.0 if alleg == "enemy" else 0.0,
             "alleg_neutral": 1.0 if alleg == "neutral" else 0.0,
             "has_army": 1.0 if has_army else 0.0,
-            "is_garrison": _f(h.get("is_armed_citizenry")),
+            "is_garrison": 1.0 if is_garr else 0.0,
             "units": _f(h.get("units")) / S.UNITS_SCALE,
             "units_known": 1.0 if h.get("units") is not None else 0.0,
             "hp": _f(h.get("hp")) / S.HP_SCALE,
@@ -306,7 +362,7 @@ def build_graph(record):
         add_char(cqi, feats, faction, h.get("stance"), pos,
                  False, h.get("agent_type"),
                  {"kind": "character", "cqi": cqi, "own_kind": None,
-                  "region": str(h.get("region") or "")})
+                  "region": str(h.get("region") or ""), "garrison": is_garr})
         char_faction[cqi] = faction
 
     faction_keys = {me} | set(relations)
@@ -323,7 +379,11 @@ def build_graph(record):
                           "allied": _f(rel.get("allied")),
                           "trade": _f(rel.get("trade")),
                           "their_vassal": _f(rel.get("their_vassal")),
-                          "standing": _clip(_f(rel.get("standing")) / 100.0, -1.0, 1.0)})
+                          "standing": _standing(rel.get("standing")),
+                          "mil_ally": _f(rel.get("mil_ally")),
+                          "def_ally": _f(rel.get("def_ally")),
+                          "nap": _f(rel.get("nap")),
+                          "mil_access": _f(rel.get("mil_access"))})
         g.add_node("f:" + fk, "faction", feats, race=S.race_index(fk), own=(fk == me),
                    meta={"kind": "faction", "key": fk})
 
@@ -343,8 +403,7 @@ def build_graph(record):
 
     seen_adj = set()
     for key, r in region_rows.items():
-        nid = "r:" + key
-        i = g.id2idx[nid]
+        i = g.id2idx["r:" + key]
         prov = str(r.get("province") or "")
         for adj in r.get("adjacent") or ():
             j = g.id2idx.get("r:" + str(adj))
@@ -366,8 +425,13 @@ def build_graph(record):
                      key=lambda t: (math.hypot(g.pos[idx][0] - t[1][0],
                                                g.pos[idx][1] - t[1][1]), t[0]))[0]
         if rj is not None:
-            g.add_edge(idx, rj, "at", rev=0.0)
-            g.add_edge(rj, idx, "at", rev=1.0)
+            anchor = rj
+            if meta.get("garrison"):
+                sj = g.id2idx.get("s:" + g.node_meta[rj].get("key", ""))
+                if sj is not None:
+                    anchor = sj
+            g.add_edge(idx, anchor, "at", rev=0.0)
+            g.add_edge(anchor, idx, "at", rev=1.0)
         fk = char_faction.get(meta["cqi"]) or ""
         fj = g.id2idx.get("f:" + fk)
         if fj is not None:
@@ -429,8 +493,18 @@ def build_graph(record):
         _f(campaign.get("is_researching")),
     ]
     g.counts = {"nodes": len(g.x), "edges": len(g.edge_src), "regions": len(region_rows),
-                "chars": len(chars), "factions": len(faction_keys), **skipped}
+                "settlements": sum(1 for m in g.node_meta if m.get("kind") == "settlement"),
+                "provinces": len(provinces), "chars": len(chars),
+                "factions": len(faction_keys), **skipped}
     return g
+
+
+def _node_units(g, idx):
+    if g.x[idx][_NF["type_character"]] == 1.0:
+        return g.x[idx][_NF["units"]] * S.UNITS_SCALE
+    if g.x[idx][_NF["type_settlement"]] == 1.0:
+        return g.x[idx][_NF["garrison_units"]] * S.UNITS_SCALE
+    return 0.0
 
 
 def bind_offer(g, context_kind, context_id, action_type, key, params, available=True):
@@ -439,7 +513,15 @@ def bind_offer(g, context_kind, context_id, action_type, key, params, available=
     if context_kind in ("lord", "hero"):
         ego = g.id2idx.get("c:" + str(context_id))
     elif context_kind == "province":
-        ego = g.id2idx.get("r:" + str(context_id))
+        if action_type == "edict":
+            prov = g.region_prov.get(str(context_id)) or ""
+            ego = g.id2idx.get("p:" + prov)
+            if ego is None:
+                ego = g.id2idx.get("s:" + str(context_id))
+        else:
+            ego = g.id2idx.get("s:" + str(context_id))
+        if ego is None:
+            ego = g.id2idx.get("r:" + str(context_id))
     else:
         ego = me_idx
     ego_miss = ego is None
@@ -450,12 +532,19 @@ def bind_offer(g, context_kind, context_id, action_type, key, params, available=
     if action_type == "attack_army" and params.get("target_cqi") is not None:
         target = g.id2idx.get("c:" + str(params["target_cqi"]))
     elif action_type in ("attack_settlement", "colonize"):
-        target = g.id2idx.get("r:" + str(key))
+        target = g.id2idx.get("s:" + str(key))
+        if target is None:
+            target = g.id2idx.get("r:" + str(key))
     elif action_type == "garrison":
-        target = g.id2idx.get("r:" + str(key).split(":", 1)[-1])
+        tk = str(key).split(":", 1)[-1]
+        target = g.id2idx.get("s:" + tk)
+        if target is None:
+            target = g.id2idx.get("r:" + tk)
     elif action_type == "hero_action":
         if params.get("target_cqi") is not None:
             target = g.id2idx.get("c:" + str(params["target_cqi"]))
+        if target is None and params.get("region"):
+            target = g.id2idx.get("s:" + str(params["region"]))
         if target is None and params.get("region"):
             target = g.id2idx.get("r:" + str(params["region"]))
     elif action_type == "diplomacy" and params.get("faction"):
@@ -485,8 +574,8 @@ def bind_offer(g, context_kind, context_id, action_type, key, params, available=
     feats[fi["reach_max"]] = _f(params.get("reach_max")) / 100.0
 
     if target is not None and ego is not None:
-        eu = g.x[ego][_NF["units"]] * S.UNITS_SCALE
-        tu = g.x[target][_NF["units"]] * S.UNITS_SCALE
+        eu = _node_units(g, ego)
+        tu = _node_units(g, target)
         eh = g.x[ego][_NF["hp"]] * S.HP_SCALE
         th = g.x[target][_NF["hp"]] * S.HP_SCALE
         feats[fi["strength_ratio"]] = _clip(eu / (tu + 1.0), 0.0, 5.0) / 5.0
@@ -494,7 +583,7 @@ def bind_offer(g, context_kind, context_id, action_type, key, params, available=
 
     feats[fi["n_terms"]] = len(params.get("terms") or ()) / 3.0
     feats[fi["gift_rank"]] = S.GIFT_RANK.get(str(params.get("gift")), 0) / 3.0
-    feats[fi["standing"]] = _clip(_f(params.get("standing")) / 100.0, -1.0, 1.0)
+    feats[fi["standing"]] = _standing(params.get("standing"))
     feats[fi["chance"]] = _f(params.get("chance")) / 100.0
     feats[fi["active"]] = _f(params.get("active"))
     feats[fi["slot_index"]] = _f(params.get("slot_index")) / 4.0

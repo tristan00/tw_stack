@@ -1740,7 +1740,12 @@ _LUA_DIPLO_TARGETS = (
     "      local vas=b(function() return f:is_vassal_of(me) end) "
     "      local st=0 local o2,v2=pcall(function() return me:diplomatic_standing_with(nm) end) "
     "      if o2 and type(v2)=='number' then st=v2 end "
-    "      out[#out+1]=nm..'~'..war..'~'..ally..'~'..trade..'~'..vas..'~'..st..'~'..excl "
+    "      local mila=b(function() return me:military_allies_with(f) end) "
+    "      local defa=b(function() return me:defensive_allies_with(f) end) "
+    "      local nap=b(function() return me:non_aggression_pact_with(f) end) "
+    "      local macc=b(function() return me:military_access_pact_with(f) end) "
+    "      out[#out+1]=nm..'~'..war..'~'..ally..'~'..trade..'~'..vas..'~'..st..'~'..excl"
+    "..'~'..mila..'~'..defa..'~'..nap..'~'..macc "
     "    end "
     "  end "
     "end "
@@ -1782,7 +1787,11 @@ def _parse_diplo_targets(raw):
             standing = 0.0
         targets.append({"faction": p[0], "at_war": p[1] == "1", "allied": p[2] == "1",
                         "trade": p[3] == "1", "their_vassal": p[4] == "1", "standing": standing,
-                        "excluded": len(p) > 6 and p[6] == "1"})
+                        "excluded": len(p) > 6 and p[6] == "1",
+                        "mil_ally": len(p) > 7 and p[7] == "1",
+                        "def_ally": len(p) > 8 and p[8] == "1",
+                        "nap": len(p) > 9 and p[9] == "1",
+                        "mil_access": len(p) > 10 and p[10] == "1"})
     return targets
 
 
