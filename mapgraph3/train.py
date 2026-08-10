@@ -48,7 +48,10 @@ THREADS = max(1, os.cpu_count() or 8)
 CFG = {"hidden": 192, "entity_layers": 2, "action_rounds": 2,
        "lr": 2e-3, "weight_decay": 1e-4, "batch": 16, "epochs": 200, "patience": 25,
        "grad_clip": 5.0, "adv_tau": 1.0, "adv_clip": 20.0, "value_weight": 1.0,
-       "seed": 0, "time_budget_s": 7200, "device": "auto"}
+       # In-session budget. session.py retrains between campaigns with the game shut
+       # down, so every second here is a second the run is not collecting data --
+       # 5 retrains x 100 campaigns. Pass a bigger budget explicitly for an offline fit.
+       "seed": 0, "time_budget_s": 900, "device": "auto"}
 
 
 def walk(runs_root=None, limit=None, log=print):
