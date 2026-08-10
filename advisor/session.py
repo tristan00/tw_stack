@@ -958,7 +958,9 @@ def train_events(runs_root=RUNS_ROOT):
                            "sett_total": (trial.get("settlements") or {}).get("total"),
                            "grew": (trial.get("settlements") or {}).get("campaigns_that_gained"),
                            "measured": (trial.get("settlements") or {}).get("campaigns_measured"),
-                           "lord_total": (trial.get("lord_level") or {}).get("total"),
+                           # levels gained per campaign; the raw total just tracks how many
+                           # campaigns the trial happened to play
+                           "lord_per_campaign": (trial.get("lord_level") or {}).get("mean"),
                            "turns_per_campaign": trial.get("turns_per_campaign"),
                            "running": trial.get("running")}})
     out.sort(key=lambda e: e["ts"], reverse=True)
