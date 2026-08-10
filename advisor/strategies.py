@@ -63,12 +63,27 @@ class Gnn:
         self.gnn = gnn
         self.errors = 0
         self.last_scores = {}
+        # Scores the policy computed for this decision before drawing. The gnn now forms
+        # its opinion up front like catboost does, so picking is a lookup, not a second
+        # forward pass -- and the number it chooses on is exactly the number recorded.
+        self.scored = None
 
     @property
     def ready(self):
         return bool(self.gnn is not None and self.gnn.ready)
 
     def pick(self, elig, record):
+        scored, self.scored = self.scored, None
+        if scored:
+            self.last_scores = scored
+            best, best_v = None, None
+            for r in elig:
+                v = scored.get(offer_key(r))
+                if v is not None and (best_v is None or v > best_v):
+                    best, best_v = r, v
+            if best is not None:
+                return best
+        # no precomputed scores (caller is not the policy, or scoring failed) -- score here
         self.last_scores = {}
         try:
             best = self.gnn.pick(elig, record)
@@ -77,8 +92,6 @@ class Gnn:
             sys.stderr.write("strategies: gnn pick failed (%d so far) -> %s\n"
                              % (self.errors, repr(e)[:140]))
             return None
-        # the Q-V the gnn actually ranked on, so the decision can be explained later with
-        # its own number instead of catboost's opinion of an offer catboost did not choose
         impact = getattr(self.gnn, "last_impact", None) or []
         self.last_scores = {offer_key(r): float(v) for r, v in zip(elig, impact)}
         return best

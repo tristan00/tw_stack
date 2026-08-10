@@ -113,7 +113,7 @@ class Policy:
         self.gift_actions = 0
         self.last_drops = []
         self.last_choice = {}
-        self.gnn_shadow_errors = 0
+        self.gnn_score_errors = 0
 
     def new_turn(self):
         self.retired.clear()
@@ -185,15 +185,24 @@ class Policy:
         return out
 
     def choose(self, record, actions_taken=0):
+        # Both models score the same offers, on every decision, before anything is drawn
+        # and before eligibility is even considered. Neither is the pipeline and neither is
+        # a plugin: they are two estimates of the same quantity (an action's advantage over
+        # doing nothing), and a strategy that wants one reads a number that already exists.
+        # catboost is listed first only because its ordering is what defines `rank`.
         ranked = self.ranker.score(record)
         hot = self.ranker.ready
         for i, r in enumerate(ranked):
             r["rank"] = i + 1
+        gnn_scores = self._score_with_gnn(ranked, record)
+        if "gnn" in self.members:
+            self.members["gnn"].scored = gnn_scores
         elig = self.eligible(ranked, actions_taken=actions_taken)
         self.last_choice = {"hot": bool(hot), "n_ranked": len(ranked), "n_eligible": len(elig),
                             "n_dropped": len(self.last_drops), "actions_taken": actions_taken,
                             "drop_reasons": _tally(d["reason"] for d in self.last_drops),
                             "eligible_types": _tally(r["action_type"] for r in elig),
+                            "gnn_scored": len(gnn_scores or {}),
                             "mix": dict(self.strategies), "mode": None, "roll": None}
         if not elig:
             return None, ranked
@@ -208,7 +217,6 @@ class Policy:
             mode = "ruleset(%s)" % member.last_rule
         else:
             mode = drawn
-        self._score_with_gnn(elig, ranked, record, drawn)
         pick = {"context_kind": best["context_kind"], "context_id": best["context_id"],
                 "action_type": best["action_type"], "key": best["key"],
                 "params": best.get("params") or {},
@@ -218,36 +226,34 @@ class Policy:
         self.last_choice["roll"] = round(roll, 4)
         return pick, ranked
 
-    def _score_with_gnn(self, elig, ranked, record, drawn):
-        """Record the gnn's Q-V for every eligible offer, on every decision.
+    def _score_with_gnn(self, ranked, record):
+        """The gnn's half of what `self.ranker.score()` does for catboost.
 
-        catboost scores every offer on every decision. The gnn used to score only the
-        decisions it was drawn to win, so there was no record of what it made of a pick it
-        did not make -- "how did the non-choosing model rank this action" was answerable in
-        one direction only, and the two models could not be correlated at all.
+        Scores the same set catboost scores -- every offer, every decision, before
+        eligibility or the draw -- so `gnn_rank` and `rank` are 1..N over the same N and
+        can be compared directly. Either model can then be asked what it made of an action
+        the other took, which is the only way to judge a model on decisions it did not
+        control.
 
-        This is observation, not choice: it runs after the pick is already decided, it never
-        touches `best`, it consumes no rng (so the draw sequence is unchanged), and it
-        swallows its own failures -- a gnn problem must never be able to end a run.
+        Returns the scores so the gnn strategy picks straight from them: one forward pass
+        per decision serves both the record and the choice, rather than the choice
+        computing numbers the record scavenges afterwards.
+
+        Consumes no rng, so the draw sequence is unchanged, and swallows its own failures
+        -- an unscored decision costs a comparison; a raised one costs the run.
         """
-        if self.gnn is None or not getattr(self.gnn, "ready", False) or not elig:
-            return
+        if self.gnn is None or not getattr(self.gnn, "ready", False) or not ranked:
+            return None
         try:
-            if drawn == "gnn":
-                # the pick already paid for a forward pass over exactly this elig -- reuse it
-                impact = getattr(self.gnn, "last_impact", None)
-                if impact is None:      # gnn pick raised; it fell back to random
-                    return
-            else:
-                impact = self.gnn.score_elig(elig, record)
+            impact = self.gnn.score_elig(ranked, record)
         except Exception as e:
-            self.gnn_shadow_errors += 1
-            sys.stderr.write("policy: gnn shadow scoring failed (%d so far) -> %s\n"
-                             % (self.gnn_shadow_errors, repr(e)[:140]))
-            return
-        scored = {S.offer_key(r): float(v) for r, v in zip(elig, impact)}
+            self.gnn_score_errors += 1
+            sys.stderr.write("policy: gnn scoring failed (%d so far) -> %s\n"
+                             % (self.gnn_score_errors, repr(e)[:140]))
+            return None
+        scored = {S.offer_key(r): float(v) for r, v in zip(ranked, impact)}
         if not scored:
-            return
+            return None
         rank_of = {}
         for i, v in enumerate(sorted(scored.values(), reverse=True)):
             rank_of.setdefault(v, i + 1)     # ties share the better rank
@@ -256,8 +262,7 @@ class Policy:
             if v is not None:
                 r["gnn_impact"] = round(v, 5)
                 r["gnn_rank"] = rank_of[v]
-        self.last_choice["gnn_scored"] = len(scored)
-        self.last_choice["gnn_shadow"] = bool(drawn != "gnn")
+        return scored
 
     def _draw(self, roll):
         names = list(self.strategies)
