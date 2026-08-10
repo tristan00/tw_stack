@@ -464,16 +464,22 @@ _LUA_RECRUITABLE = (_G +
     "local out={} "
     "for i=1,#rl do local k=g(rl[i],'Key') "
     "  if k then local ok,v=pcall(function() return mf:can_recruit_unit(ts(k)) end) "
-    "    if ok and v then out[#out+1]=ts(k) end end end "
+    # Cost and the disabled flag come off the record already in hand -- no extra pass.
+    "    if ok and v then out[#out+1]=ts(k)..'~'..ts(g(rl[i],'Cost'))"
+    "..'~'..ts(g(rl[i],'IsRecruitmentDisabled')) end end end "
     "return table.concat(out,',')")
 
 
-RECRUIT_QUEUES = ("local", "global")
-
-
 def _parse_recruitable(raw):
-    return [{"key": k, "state": "active"}
-            for k in str(raw or "").split(",") if k and k != "nil"]
+    out = []
+    for row in str(raw or "").split(","):
+        p = row.split("~")
+        if not p[0] or p[0] == "nil":
+            continue
+        out.append({"key": p[0], "state": "active",
+                    "cost": _num(p[1]) if len(p) > 1 else None,
+                    "disabled": (p[2] == "true") if len(p) > 2 else None})
+    return out
 
 
 def recruitable_units(bus, cqi):
@@ -621,7 +627,12 @@ _LUA_LORD = (_G +
     "    for i=1,n do pend[#pend+1]=ts(it[i]) end end end "
     "return ts(g(c,'Rank'))..'|'..ts(g(c,'SkillPointsAvailable'))..'|'..ts(mf and g(mf,'UnitCount'))"
     "..'|'..ts(#pend)..'|'..ts(g(c,'ActionPointPercent'))"
-    "..'|'..ts(mf and g(mf,'IsGarrisoned'))..'|'..ts(ch and ch:is_besieging())"
+    # IsGarrisoned off the MilitaryForceContext is structurally nil for a hero, which has
+    # no force -- state:hero.garrisoned was False in 11,096 of 11,096 snapshots for that
+    # reason alone. CcoCampaignCharacter carries the same property and answers for both.
+    # (besieging stays force-shaped on purpose: laying siege really is something only an
+    # army can do, so False for every hero is the game speaking, not the recorder.)
+    "..'|'..ts(g(c,'IsGarrisoned'))..'|'..ts(ch and ch:is_besieging())"
     "..'|'..ts((function() local l=g(mf,'StanceList') if type(l)=='table' then for i=1,#l do "
     "if g(l[i],'IsActive')==true then return g(l[i],'Key') end end end return 'none' end)())"
     "..'|'..ts(ch and ch:performed_action_this_turn())"
@@ -820,6 +831,53 @@ def _move_lua(cqi, state):
     return _LUA_MOVE_CANDIDATES % {"cqi": cqi, "minr": int(MOVE_MIN_R), "n": MOVE_CANDIDATES}
 
 
+def _skill_offers(sk_raw, has_pts):
+    """The skills block, shared by lords and heroes -- it was duplicated verbatim, so a
+    fix to one silently left the other behind. Returns (offers, active_skill_keys)."""
+    offers, active = [], []
+    for row in str(sk_raw or "").split(","):
+        p = row.split("~")
+        if len(p) < 2 or not p[0]:
+            continue
+        key, status = p[0], p[1]
+        lvl = _num(p[2]) if len(p) > 2 else None
+        tot = _num(p[3]) if len(p) > 3 else None
+        if status == "active":
+            active.append(key)
+        ok = (status == "active" and has_pts)
+        offers.append(_offer("skills", key, ok,
+                             None if ok else ("no_points" if not has_pts else status),
+                             level=lvl, total_levels=tot,
+                             tier=_num(p[4]) if len(p) > 4 else None,
+                             background=(p[5] == "true") if len(p) > 5 else None,
+                             at_max=(None if lvl is None or tot is None else lvl >= tot)))
+    return offers, active
+
+
+def _leave_garrison_offer(state, moves):
+    """The inverse of `garrison`, and it was never emitted once in 9,013,360 offers.
+
+    `leave_garrison` is declared in advisor/features.py and mapgraph3/schema.py and has a
+    working executor in launcher/cm_actions.py -- it was simply never offered, so an army
+    that walked into a settlement had no recorded way back out and the action type had 0
+    rows. cm:leave_garrison(lookup, x, y) needs a destination, and the only tiles known to
+    be legal are the move candidates the game itself validated this decision, so the exit
+    is the nearest of those. It is emitted even when unavailable: a gate reason is data,
+    and a type that only appears when it is legal cannot teach when it is not.
+    """
+    lx, ly = state.get("x"), state.get("y")
+    tiles = [m["params"] for m in (moves or [])
+             if (m.get("params") or {}).get("x") is not None]
+    if lx is not None and ly is not None:
+        tiles.sort(key=lambda p: (p["x"] - lx) ** 2 + (p["y"] - ly) ** 2)
+    if not state.get("garrisoned"):
+        return _offer("leave_garrison", "leave_garrison", False, "not_garrisoned")
+    if not tiles:
+        return _offer("leave_garrison", "leave_garrison", False, "no_exit_tile")
+    return _offer("leave_garrison", "leave_garrison", True, None,
+                  x=tiles[0]["x"], y=tiles[0]["y"])
+
+
 def _parse_moves(raw):
     raw = str(raw or "")
     rays_part, _, tiles_part = raw.partition("||")
@@ -877,7 +935,11 @@ _LUA_LORD_OFFERS = (_G +
     "if type(l)=='table' then for i=1,#l do local v=l[i] st[#st+1]=ts(g(v,'Key'))"
     "..'~'..ts(g(v,'IsActive'))..'~'..ts(g(v,'CanBeActivated'))..'~'..ts(g(v,'CanAfford')) end end end "
     "local sk={} local s=g(c,'SkillList') "
-    "if type(s)=='table' then for i=1,#s do sk[#sk+1]=ts(g(s[i],'Key'))..'~'..ts(g(s[i],'Status')) end end "
+    # Key and Status alone left params={} on 100% of 2.13M skills rows, so nothing said
+    # how far up a skill already was or how deep it goes. All four are on the same context.
+    "if type(s)=='table' then for i=1,#s do sk[#sk+1]=ts(g(s[i],'Key'))..'~'..ts(g(s[i],'Status'))"
+    "..'~'..ts(g(s[i],'Level'))..'~'..ts(g(s[i],'TotalLevels'))..'~'..ts(g(s[i],'Tier'))"
+    "..'~'..ts(g(s[i],'IsBackgroundSkill')) end end "
     "return table.concat(st,',')..'||'..table.concat(sk,',')")
 
 
@@ -1000,18 +1062,23 @@ def _lord_offers_assemble(cqi, state, world, stationed, ev_raw, recruit_rows,
                                 "cannot_activate" if not can_act else "cannot_afford")
         offers.append(_offer("stance", key, ok, gate, active=active))
     for c in recruit_rows:
-        for queue in RECRUIT_QUEUES:
-            offers.append(_offer("recruit_unit", "%s@%s" % (c["key"], queue),
-                                 c.get("state") == "active",
-                                 None if c.get("state") == "active" else c.get("state"),
-                                 unit=c["key"], queue=queue))
+        # ONE OFFER PER UNIT. This used to cross-product every unit with
+        # RECRUIT_QUEUES = ("local","global") and mark both rows available=1 -- in all
+        # 221,504 offers. The queue was never read from anywhere: no CCO context and no
+        # script method distinguishes the local pool from the global one headlessly, and
+        # the executor only learns the real pools by reading the recruitment panel. The
+        # cost of inventing it is measurable: of 652 'global' picks the agent made, 371
+        # (56.9%) died in execute_failed because no global pool was there, against 225 of
+        # 1,128 for 'local'. The pool the click lands in is now an execution detail and is
+        # recorded as `queue_used` in the confirm diagnostics, where it is observed
+        # instead of asserted.
+        offers.append(_offer("recruit_unit", c["key"],
+                             c.get("state") == "active",
+                             None if c.get("state") == "active" else c.get("state"),
+                             unit=c["key"], cost=c.get("cost"),
+                             recruitment_disabled=c.get("disabled")))
     has_pts = (state.get("skill_points") or 0) >= 1
-    for row in sk_raw.split(","):
-        if "~" not in row:
-            continue
-        key, status = row.rsplit("~", 1)
-        ok = (status == "active" and has_pts)
-        offers.append(_offer("skills", key, ok, None if ok else ("no_points" if not has_pts else status)))
+    offers.extend(_skill_offers(sk_raw, has_pts)[0])
     armies, esetts, osetts, rsetts = _lord_targets(world)
     marching = str(state.get("stance") or "") in MOVEMENT_STANCES
     recruiting = (state.get("pending_recruits") or 0) > 0
@@ -1044,6 +1111,7 @@ def _lord_offers_assemble(cqi, state, world, stationed, ev_raw, recruit_rows,
                                 else "settlement_occupied" if taken else "cannot_reach")
         offers.append(_offer("garrison", "settlement:%s" % s["region"], ok, gate,
                              x=s.get("x"), y=s.get("y")))
+    offers.append(_leave_garrison_offer(state, moves))
     offers.extend(_item_offers(anc_pool, equipped, equipped_anywhere))
     offers.extend(_horde_building_offers(horde_slots))
     offers.extend(_merc_offers(state, merc_pools))
@@ -1055,7 +1123,11 @@ def _lord_offers_assemble(cqi, state, world, stationed, ev_raw, recruit_rows,
 _LUA_HERO_OFFERS = (_G +
     "local c=cco('CcoCampaignCharacter','%(cqi)s') "
     "local sk={} local s=g(c,'SkillList') "
-    "if type(s)=='table' then for i=1,#s do sk[#sk+1]=ts(g(s[i],'Key'))..'~'..ts(g(s[i],'Status')) end end "
+    # Key and Status alone left params={} on 100% of 2.13M skills rows, so nothing said
+    # how far up a skill already was or how deep it goes. All four are on the same context.
+    "if type(s)=='table' then for i=1,#s do sk[#sk+1]=ts(g(s[i],'Key'))..'~'..ts(g(s[i],'Status'))"
+    "..'~'..ts(g(s[i],'Level'))..'~'..ts(g(s[i],'TotalLevels'))..'~'..ts(g(s[i],'Tier'))"
+    "..'~'..ts(g(s[i],'IsBackgroundSkill')) end end "
     "local tk='' local ch=cm:get_character_by_cqi(%(cqi)s) "
     "if ch then local ok,v=pcall(function() return ch:character_type_key() end) "
     "if ok then tk=ts(v) end end "
@@ -1218,7 +1290,10 @@ def _parse_ancillaries(raw):
     for row in str(raw or "").split("|"):
         p = row.split("~")
         if len(p) == 3 and p[0].isdigit():
-            out.append({"index": int(p[0]), "name": p[1], "key": p[2]})
+            # ts() now yields '' for an unread property, and '' must reach the DB as null
+            # rather than as an empty string that reads like a real, blank key.
+            out.append({"index": int(p[0]), "name": p[1],
+                        "key": p[2] or None})
     return out
 
 
@@ -1227,11 +1302,18 @@ def ancillary_pool(bus, faction_cqi):
                                   timeout=25.0, allow_nil=True))
 
 
+def _anc_id(a):
+    """Identity of an ancillary. The record key when we have it, the display name only as
+    a fallback -- names are not unique ("Warhorse" is 42 distinct rows among 2,671), so
+    counting by name silently merged different items into one pool."""
+    return a["key"] or a["name"]
+
+
 def _free_by_type(pool, equipped_anywhere):
-    held = collections.Counter(a["name"] for a in equipped_anywhere or [])
-    free = collections.Counter(a["name"] for a in pool or [])
-    for name, n in held.items():
-        free[name] -= n
+    held = collections.Counter(_anc_id(a) for a in equipped_anywhere or [])
+    free = collections.Counter(_anc_id(a) for a in pool or [])
+    for ident, n in held.items():
+        free[ident] -= n
     return free
 
 
@@ -1242,10 +1324,10 @@ def _item_offers(pool, equipped, equipped_anywhere=None):
                            "assignability cannot be counted")
     free = _free_by_type(pool, equipped_anywhere)
     for a in pool or []:
-        name = a["name"]
-        ok = free.get(name, 0) > 0
+        name, ident = a["name"], _anc_id(a)
+        ok = free.get(ident, 0) > 0
         if ok:
-            free[name] -= 1
+            free[ident] -= 1
         offers.append(_offer("items", a["key"] or name, ok,
                              None if ok else "already_equipped",
                              pool_index=a["index"], item_name=name, item_key=a["key"]))
@@ -1419,16 +1501,8 @@ def _hero_offers_assemble(cqi, state, ev_raw, moves, world=None, reach_c=None, r
     sk_raw = parts[2] if len(parts) > 2 else ""
     type_key = parts[3].strip() if len(parts) > 3 else ""
     has_pts = (state.get("skill_points") or 0) >= 1
-    active_skills = []
-    for row in sk_raw.split(","):
-        if "~" not in row:
-            continue
-        key, status = row.rsplit("~", 1)
-        if status == "active":
-            active_skills.append(key)
-        ok = (status == "active" and has_pts)
-        offers.append(_offer("skills", key, ok,
-                             None if ok else ("no_points" if not has_pts else status)))
+    sk_offers, active_skills = _skill_offers(sk_raw, has_pts)
+    offers.extend(sk_offers)
     hidden_skills = [k for k in (parts[4] if len(parts) > 4 else "").split(",") if k]
     granted = _granted_actions(active_skills + hidden_skills)
     offers.extend(_hero_action_offers(cqi, state, world or {}, reach_c or {}, reach_s or {},
@@ -1448,9 +1522,17 @@ _LUA_PROVINCE_OFFERS = (_G +
     "local canup=(g(sl,'CanUpgrade')==true) "
     "local p=g(sl,'PossibleUpgradeWithoutConversionsList') "
     "if type(p)=='table' then for j=0,#p-1 do "
-    "o[#o+1]=ts(g(sl,'Index'))..'~'..ts(g(sl,'PossibleUpgradeWithoutConversionsList['..j..'].Key'))"
-    "..'~'..ts(g(sl,'PossibleUpgradeWithoutConversionsList['..j..'].IsActiveForBuildingBrowser(this)'))"
-    "..'~'..ts(empty)..'~'..ts(canup) end end end end end "
+    "local b='PossibleUpgradeWithoutConversionsList['..j..']' "
+    "o[#o+1]=ts(g(sl,'Index'))..'~'..ts(g(sl,b..'.Key'))"
+    "..'~'..ts(g(sl,b..'.IsActiveForBuildingBrowser(this)'))"
+    "..'~'..ts(empty)..'~'..ts(canup)"
+    # Cost was never recorded, so "can I afford this" was not expressible and CanUpgrade
+    # was parsed and thrown away. Arguments are routes relative to the receiver -- the
+    # same shape as CanRecruitUnitForFaction(FactionContext, ...) in _LUA_MERC_POOLS.
+    "..'~'..ts(g(sl,b..'.CreateCost(SettlementContext)'))"
+    "..'~'..ts(g(sl,b..'.UpkeepCost'))"
+    "..'~'..ts(g(sl,b..'.Level'))"
+    "..'~'..ts(g(sl,b..'.CanAffordResourceCostForSlot(this)')) end end end end end "
     "local ed={} local m=g(s,'FactionProvinceManagerContext') "
     "if m then local il=g(m,'InitiativeList') "
     "if type(il)=='table' then for i=1,#il do ed[#ed+1]=ts(g(il[i],'Key')) end end end "
@@ -1463,10 +1545,20 @@ _LUA_SLOT_STATES = (_G +
     "if type(slots)=='table' then for i=1,#slots do local sl=slots[i] "
     "local ci=g(sl,'ConstructionItemContext') "
     "local cl=ci and g(ci,'BuildingLevelRecordContext') "
+    # IsDamaged and DismantleRefundAmount are properties of CcoCampaignBuilding, not of
+    # the slot that holds it, and CanBeCancelled is not a slot property at all -- it is
+    # CcoCampaignMission's. All three were read off CcoCampaignBuildingSlot, where g()
+    # returns nil forever: `damaged` was False and `refund` null in every row of the
+    # corpus, and building_repair/_cancel were therefore unavailable in 100% of 384,148
+    # offers. decisions/cco_audit.py now checks every route against CCO.tsv.
     "o[#o+1]=ts(g(sl,'Index'))"
-    "..'~'..ts(g(sl,'IsDamaged'))..'~'..ts(g(sl,'CanRepair'))..'~'..ts(g(sl,'IsRepairing'))"
-    "..'~'..ts(g(sl,'CanDismantle'))..'~'..ts(g(sl,'DismantleRefundAmount'))"
-    "..'~'..ts(ci~=nil)..'~'..ts(g(sl,'CanBeCancelled'))"
+    "..'~'..ts(g(sl,'BuildingContext.IsDamaged'))"
+    "..'~'..ts(g(sl,'CanRepair'))..'~'..ts(g(sl,'IsRepairing'))"
+    "..'~'..ts(g(sl,'CanDismantle'))"
+    "..'~'..ts(g(sl,'BuildingContext.DismantleRefundAmount'))"
+    # A queued construction item is exactly what cancelling cancels, so its presence is
+    # the availability condition; there is no CanCancel property to ask.
+    "..'~'..ts(ci~=nil)"
     "..'~'..ts(cl and g(cl,'Key'))"
     "..'~'..ts(g(sl,'IsEmpty'))"
     # Field 11: the building actually OCCUPYING the slot. Field 9 above is the QUEUED
@@ -1476,25 +1568,37 @@ _LUA_SLOT_STATES = (_G +
     # structurally null on dismantle, where you most want to know what you are
     # demolishing. The two answer different questions; conflating them caused this.
     # This expression already runs against the same context at collect.py:675.
-    "..'~'..ts(g(sl,'BuildingContext.BuildingLevelRecordContext.Key')) end end "
+    "..'~'..ts(g(sl,'BuildingContext.BuildingLevelRecordContext.Key'))"
+    # Free on contexts already in hand: the state a repair or dismantle decision is
+    # actually about. Health/MaxHealth/IsRuined say how bad it is, RepairCost what it
+    # costs, and IsUpgrading/IsDismantling what the slot is already busy doing.
+    "..'~'..ts(g(sl,'BuildingContext.Health'))"
+    "..'~'..ts(g(sl,'BuildingContext.MaxHealth'))"
+    "..'~'..ts(g(sl,'BuildingContext.IsRuined'))"
+    "..'~'..ts(g(sl,'RepairCost'))"
+    "..'~'..ts(g(sl,'IsUpgrading'))..'~'..ts(g(sl,'IsDismantling')) end end "
     "return table.concat(o,',')")
+
+_SLOT_STATE_FIELDS = 16
 
 
 def _parse_slot_states(raw):
     out = []
     for row in str(raw or "").split(","):
         p = row.split("~")
-        if len(p) < 11 or not p[0] or p[0] == "nil":
+        if len(p) < _SLOT_STATE_FIELDS or not p[0] or p[0] == "nil":
             continue
         out.append({"index": _num(p[0]), "damaged": p[1] == "true", "can_repair": p[2] == "true",
                     "repairing": p[3] == "true", "can_dismantle": p[4] == "true",
-                    "refund": _num(p[5]), "building": p[6] == "true",
-                    "can_cancel": p[7] == "true",
+                    "refund": _num(p[5]), "queued": p[6] == "true",
                     # queued_key: what is being CONSTRUCTED here. key: what is STANDING
                     # here. The slot ops act on the latter.
-                    "queued_key": None if p[8] in ("nil", "") else p[8],
-                    "empty": p[9] == "true",
-                    "key": None if p[10] in ("nil", "") else p[10]})
+                    "queued_key": None if p[7] in ("nil", "") else p[7],
+                    "empty": p[8] == "true",
+                    "key": None if p[9] in ("nil", "") else p[9],
+                    "health": _num(p[10]), "max_health": _num(p[11]),
+                    "ruined": p[12] == "true", "repair_cost": _num(p[13]),
+                    "upgrading": p[14] == "true", "dismantling": p[15] == "true"})
     return out
 
 
@@ -1505,32 +1609,32 @@ def _slot_action_offers(region, slots):
         if idx is None:
             continue
         key = "%s@%s" % (region, int(idx))
+        common_p = dict(region=region, slot_index=idx, building_key=s["key"],
+                        queued_key=s["queued_key"], health=s["health"],
+                        max_health=s["max_health"], ruined=s["ruined"],
+                        upgrading=s["upgrading"], dismantling=s["dismantling"])
         ok = s["can_repair"] and s["damaged"] and not s["repairing"]
         offers.append(_offer("building_repair", key, ok,
                              None if ok else ("not_damaged" if not s["damaged"] else
                                               "already_repairing" if s["repairing"] else
                                               "cannot_repair"),
-                             region=region, slot_index=idx, damaged=s["damaged"],
-                             repairing=s["repairing"], building_key=s["key"], queued_key=s["queued_key"]))
-        ok = s["can_cancel"] and s["building"]
+                             damaged=s["damaged"], repairing=s["repairing"],
+                             repair_cost=s["repair_cost"], **common_p))
+        # There is no CanCancel property; a queued construction item is the condition.
+        ok = s["queued"]
         offers.append(_offer("building_cancel", key, ok,
-                             None if ok else ("nothing_queued" if not s["building"]
-                                              else "cannot_cancel"),
-                             region=region, slot_index=idx, queued=s["building"],
-                             building_key=s["key"], queued_key=s["queued_key"]))
+                             None if ok else "nothing_queued",
+                             queued=s["queued"], **common_p))
         ok = s["can_dismantle"] and not s["empty"]
         offers.append(_offer("building_dismantle", key, ok,
                              None if ok else ("slot_empty" if s["empty"] else "cannot_dismantle"),
-                             region=region, slot_index=idx, refund=s["refund"],
-                             building_key=s["key"], queued_key=s["queued_key"]))
+                             refund=s["refund"], **common_p))
     return offers
 
 
-def province_offers(bus, region, state, campaign):
-    combo = _ev(bus, _LUA_PROVINCE_OFFERS % region, timeout=30.0, allow_nil=True)
-    campaign = dict(campaign, hero_type_counts=hero_type_counts(world))
-    pools = _lord_pools(bus, campaign["faction_cqi"], _lord_subtypes(bus, campaign["faction"]))
-    return _province_offers_assemble(region, state, campaign, combo, pools)
+# (province_offers() lived here: no callers anywhere in the repo, and it referenced an
+# undefined global `world`, so calling it would have raised NameError. The live path is
+# _province_offers_assemble, called from the batched snapshot below.)
 
 
 def _province_offers_assemble(region, state, campaign, combo, lord_pools, slot_states=None):
@@ -1541,27 +1645,47 @@ def _province_offers_assemble(region, state, campaign, combo, lord_pools, slot_s
         raise CollectError("province offers malformed for %s: %r" % (region, combo[:120]))
     raw = cparts[1]
     edicts = [k for k in cparts[2].split(",") if k and k != "nil"]
+    # ONE OFFER PER (slot, building). This loop used to hold `seen` on the building key
+    # alone, so a building constructible in two slots produced a single offer carrying
+    # whichever slot happened to come first -- and the other slot, a genuinely different
+    # action with a different cost and a different consequence, was dropped. The slot is
+    # already in params and the executor already builds from params.slot_index, so the
+    # only thing the dedupe ever did was delete work.
     seen = set()
     for row in str(raw or "").split(","):
         p = row.split("~")
-        if len(p) < 5:
+        if len(p) < 9:
             continue
-        slot, key, active, empty, canup = p[0], p[1], p[2] == "true", p[3] == "true", p[4] == "true"
-        if key in seen:
+        slot, key = p[0], p[1]
+        active, empty, canup = p[2] == "true", p[3] == "true", p[4] == "true"
+        slot_i = int(float(slot)) if slot not in ("nil", "") else None
+        if (slot_i, key) in seen:
             continue
-        seen.add(key)
+        seen.add((slot_i, key))
         ok = active
         gate = None if ok else ("not_buildable_now" if empty else "not_upgradeable_now")
         offers.append(_offer("building", key, ok, gate,
-                             slot_index=int(float(slot)) if slot not in ("nil", "") else None,
-                             is_upgrade=(not empty)))
+                             slot_index=slot_i, is_upgrade=(not empty),
+                             can_upgrade=canup, cost=_num(p[5]), upkeep=_num(p[6]),
+                             level=_num(p[7]), can_afford=(p[8] == "true")))
+    # An edict applies to the whole PROVINCE, but this assemble runs per REGION, so a
+    # province with two owned regions offered every one of its edicts twice -- 748 of
+    # 3,310 (22.6%) were literal repeats, splitting the listwise softmax between two
+    # candidates that do the identical thing. The capital is the canonical emitter, and
+    # the province is now in params so the offer says what it actually scopes to.
     complete = bool(state.get("complete_owner"))
     sel = state.get("selected_edict")
-    for key in edicts:
-        ok = complete and key != sel
-        offers.append(_offer("edict", key, ok,
-                             None if ok else ("province_not_complete" if not complete else "already_selected")))
-    for sub, (n, can, traits, ranks, agents) in (lord_pools or {}).items():
+    if state.get("is_capital"):
+        for key in edicts:
+            ok = complete and key != sel
+            offers.append(_offer("edict", key, ok,
+                                 None if ok else ("province_not_complete" if not complete
+                                                  else "already_selected"),
+                                 province=state.get("province"), region=region,
+                                 can_set=bool(state.get("can_set_edict")),
+                                 is_selected=(key == sel)))
+    for sub, pool in (lord_pools or {}).items():
+        n = pool["n"]
         if not n:
             continue
         # ONE OFFER PER CANDIDATE. This loop used to pick a single index --
@@ -1571,28 +1695,48 @@ def _province_offers_assemble(region, state, campaign, combo, lord_pools, slot_s
         # 1..6. The other candidates were fetched across the bus and dropped in python:
         # 671,186 of them. They are different game actions with different traits, ranks
         # and mounts, and the agent could never choose between them.
-        oks = [bool(can[i]) if i < len(can) else False for i in range(n)]
         agent_type = (_hero_subtype_types(campaign.get("faction")) or {}).get(sub)
         fielded = (campaign.get("hero_type_counts") or {}).get(agent_type or "", 0)
+
+        def _at(field, i, default=None):
+            col = pool[field]
+            return col[i] if i < len(col) else default
+
         for i in range(n):
-            tr = traits[i] if i < len(traits) else []
-            is_agent = (bool(agents[i]) if i < len(agents) and agents[i] is not None
-                        else False)
+            tr = _at("traits", i, [])
+            is_agent = bool(_at("agents", i) or False)
             if is_agent:
-                ok = bool(oks[i] and agent_type)
+                ok = bool(_at("can", i) and agent_type)
                 gate = (None if ok else
                         "agent_type_unknown" if not agent_type else
                         "cannot_recruit_character")
             else:
-                ok = oks[i]
+                ok = bool(_at("can", i))
                 gate = None if ok else "cannot_recruit_character"
+            # `is_agent` is not recorded: it restates action_type exactly (True in
+            # 100% of recruit_hero rows, False in 100% of recruit_lord), so it is a
+            # constant per type by construction rather than a fact about the candidate.
+            # `cand_rank` is not recorded either -- a pool entry is not yet a character,
+            # and Rank read back 0.0 in all 349,934 rows of the corpus while a failed
+            # read would have produced None, so the value is a real, invariant zero.
+            # What actually differs between two cards on the recruitment panel is the
+            # background skill, the unit/mount, and (rarely) traits.
+            # `region` matters and was never recorded: _lord_execute_inner opens the
+            # settlement panel for the entity it was offered on, so raising this candidate
+            # at region A and at region B put the character in different places. The pool
+            # is faction-wide, so the same candidate was offered once per owned region --
+            # 159,336 rows over 103,606 distinct (decision, key) pairs, a 1.54x split --
+            # and the two rows were byte-identical in action_key and params. They are
+            # different actions; now they say so.
             offers.append(_offer("recruit_hero" if is_agent else "recruit_lord",
                                  "%s@%d" % (sub, i), ok, gate,
-                                 candidate_index=i, n_candidates=n, traits=tr,
-                                 trait=(tr[0] if tr else None), n_traits=len(tr),
-                                 is_agent=is_agent, agent_type=agent_type,
-                                 type_fielded=fielded,
-                                 cand_rank=(ranks[i] if i < len(ranks) else None)))
+                                 region=region, candidate_index=i, n_candidates=n,
+                                 traits=tr, trait=(tr[0] if tr else None),
+                                 n_traits=(None if tr is None else len(tr)),
+                                 bg_skill=_at("bg_skills", i), cqi=_at("cqis", i),
+                                 unit_key=_at("units", i),
+                                 cand_subtype=_at("subtypes", i),
+                                 agent_type=agent_type, type_fielded=fielded))
     offers.extend(_slot_action_offers(region, slot_states))
     offers.append(_offer("noop", "noop", True))
     return offers
@@ -1646,48 +1790,86 @@ def _lord_subtypes(bus, faction):
     return _SUBTYPE_CACHE[key]
 
 
+# A read that failed and a list that is genuinely empty must not look alike. TRAITS_UNREAD
+# is what the Lua emits when it could not read TraitsList at all; an empty string is a
+# candidate the game says has no traits. Without the distinction, `traits: []` in 100% of
+# rows is unfalsifiable -- exactly the shape that let campaign.defeated survive a corpus.
+TRAITS_UNREAD = "!"
+
+# Hoisted to module scope so decisions/cco_audit.py can see it. While this was built
+# inline inside the function, none of its routes were ever checked against CCO.tsv -- and
+# this is the read behind both recruit_lord and recruit_hero.
+_LUA_LORD_POOLS = (_G +
+    "local f=cco('CcoCampaignFaction','%(cqi)s') local out={} "
+    "for _,sub in ipairs({%(subs)s}) do "
+    "local e='CharacterRecruitmentPoolEntriesForAgentSubtype(DatabaseRecordContext(\"CcoAgentSubtypeRecord\",\"'..sub..'\"))' "
+    "local ok,n=pcall(function() return f:Call(e..'.Size') end) "
+    "if not ok or not n then n=0 end local o={} "
+    "for i=0,n-1 do local base=e..'['..i..']' "
+    "local can=ts(f:Call(base..'.CanRecruitCharacter')) "
+    "local trs='' local tr={} "
+    "local okt,nt=pcall(function() return f:Call(base..'.CharacterContext.TraitsList.Size') end) "
+    "if not okt or nt==nil then trs='" + TRAITS_UNREAD + "' else "
+    "for j=0,nt-1 do "
+    "local okk,k=pcall(function() return f:Call(base..'.CharacterContext.TraitsList['..j..'].TraitRecordContext.Key') end) "
+    "if okk and k then tr[#tr+1]=ts(k) end end trs=table.concat(tr,'+') end "
+    "local oka,ia=pcall(function() return f:Call(base..'.CharacterContext.IsAgent') end) "
+    # The differentiators an actual recruitment card shows. Rank is not among them: a pool
+    # entry has no rank until it becomes a character.
+    "local bg=ts(g(f,e..'['..i..'].CharacterContext.BackgroundSkillContext.Key')) "
+    "local cq=ts(g(f,e..'['..i..'].CharacterContext.CQI')) "
+    "local st=ts(g(f,e..'['..i..'].CharacterContext.AgentSubtypeRecordContext.Key')) "
+    "local un=ts(g(f,e..'['..i..'].MainUnitRecordContext.Key')) "
+    "o[#o+1]=can..'^'..trs..'^'..ts(oka and ia)..'^'..bg..'^'..cq..'^'..st..'^'..un end "
+    "out[#out+1]=sub..'='..n..':'..table.concat(o,',') end "
+    "return table.concat(out,';;')")
+
+
+def _pool_cols():
+    return {"n": 0, "can": [], "traits": [], "agents": [], "bg_skills": [],
+            "cqis": [], "subtypes": [], "units": []}
+
+
 def _lord_pools(bus, faction_cqi, subtypes):
     if not subtypes:
         return {}
-    lst = ",".join("'%s'" % s for s in subtypes)
-    raw = _ev(bus, _G + "local f=cco('CcoCampaignFaction','%s') local out={} "
-                        "for _,sub in ipairs({%s}) do "
-                        "local e='CharacterRecruitmentPoolEntriesForAgentSubtype(DatabaseRecordContext(\"CcoAgentSubtypeRecord\",\"'..sub..'\"))' "
-                        "local ok,n=pcall(function() return f:Call(e..'.Size') end) "
-                        "if not ok or not n then n=0 end local o={} "
-                        "for i=0,n-1 do local base=e..'['..i..']' "
-                        "local can=ts(f:Call(base..'.CanRecruitCharacter')) "
-                        "local okr,rk=pcall(function() return f:Call(base..'.CharacterContext.Rank') end) "
-                        "if not okr or rk==nil then rk='' end "
-                        "local tr={} local okt,nt=pcall(function() return f:Call(base..'.CharacterContext.TraitsList.Size') end) "
-                        "if okt and nt then for j=0,nt-1 do "
-                        "local okk,k=pcall(function() return f:Call(base..'.CharacterContext.TraitsList['..j..'].TraitRecordContext.Key') end) "
-                        "if okk and k then tr[#tr+1]=ts(k) end end end "
-                        "local oka,ia=pcall(function() return f:Call(base..'.CharacterContext.IsAgent') end) "
-                        "o[#o+1]=can..'^'..table.concat(tr,'+')..'^'..ts(rk)..'^'..ts(oka and ia) end "
-                        "out[#out+1]=sub..'='..n..':'..table.concat(o,',') end "
-                        "return table.concat(out,';;')" % (faction_cqi, lst), timeout=40.0,
-             allow_nil=True)
+    return _parse_lord_pools(
+        _ev(bus, _LUA_LORD_POOLS % {"cqi": faction_cqi,
+                                    "subs": ",".join("'%s'" % s for s in subtypes)},
+            timeout=40.0, allow_nil=True))
+
+
+def _parse_lord_pools(raw):
     out = {}
     for chunk in str(raw or "").split(";;"):
         if "=" not in chunk or ":" not in chunk:
             continue
         sub, rest = chunk.split("=", 1)
         n, flags = rest.split(":", 1)
-        can, traits, ranks, agents = [], [], [], []
+        col = _pool_cols()
         for f in flags.split(","):
             if not f:
                 continue
-            bits = f.split("^")
-            can.append(bits[0] == "true")
-            tr = bits[1] if len(bits) > 1 else ""
-            traits.append([t for t in tr.split("+") if t and t != "nil"])
-            ranks.append(_num(bits[2]) if len(bits) > 2 else None)
-            agents.append(bits[3] == "true" if len(bits) > 3 else None)
+            b = f.split("^")
+
+            def _s(i):
+                v = b[i] if len(b) > i else ""
+                return None if v in ("", "nil") else v
+
+            col["can"].append(b[0] == "true")
+            tr = b[1] if len(b) > 1 else ""
+            col["traits"].append(None if tr == TRAITS_UNREAD else
+                                 [t for t in tr.split("+") if t])
+            col["agents"].append(b[2] == "true" if len(b) > 2 else None)
+            col["bg_skills"].append(_s(3))
+            col["cqis"].append(_s(4))
+            col["subtypes"].append(_s(5))
+            col["units"].append(_s(6))
         try:
-            out[sub] = (int(float(n)), can, traits, ranks, agents)
+            col["n"] = int(float(n))
         except ValueError:
-            out[sub] = (0, [], [], [], [])
+            col = _pool_cols()
+        out[sub] = col
     return out
 
 

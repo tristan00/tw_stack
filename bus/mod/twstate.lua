@@ -36,9 +36,24 @@ local function q(s) return '"' .. tostring(s or ""):gsub('"', '\\"') .. '"' end
 
 
 
+-- try() returned nil on failure and said nothing, so a read that raised was
+-- indistinguishable from a game with nothing to say. Three emitters in this file produced
+-- zero rows for an entire corpus and nothing ever complained. Failures are now counted,
+-- deduplicated by message, and flushed as a try_fails line at the end of each dump.
+local TRY_FAILS, TRY_FAIL_N = {}, 0
+local TRY_FAIL_CAP = 24            -- a failing loop must not flood the stream
+
 local function try(f)
   local ok, v = pcall(f)
   if ok then return v end
+  local msg = tostring(v)
+  if #msg > 160 then msg = msg:sub(1, 160) end
+  if TRY_FAILS[msg] == nil then
+    if TRY_FAIL_N >= TRY_FAIL_CAP then return nil end
+    TRY_FAIL_N = TRY_FAIL_N + 1
+    TRY_FAILS[msg] = 0
+  end
+  TRY_FAILS[msg] = TRY_FAILS[msg] + 1
   return nil
 end
 
@@ -83,6 +98,17 @@ local function jv(v)
 end
 
 local function emit(t) out("TWSTATE " .. t) end
+
+local function flush_try_fails(turn, where)
+  if TRY_FAIL_N == 0 then return end
+  local rows = {}
+  for msg, n in pairs(TRY_FAILS) do
+    rows[#rows + 1] = '{"err":' .. q(msg) .. ',"n":' .. n .. '}'
+  end
+  TRY_FAILS, TRY_FAIL_N = {}, 0
+  emit('{"kind":"try_fails","turn":' .. jv(turn) .. ',"where":' .. q(where) ..
+    ',"fails":[' .. table.concat(rows, ",") .. ']}')
+end
 
 
 
@@ -797,6 +823,7 @@ local function dump_round()
     emit('{"kind":"round_begin","turn":' .. turn .. "}")
     scrape_all_factions(turn)
     emit('{"kind":"round_end","turn":' .. turn .. "}")
+    flush_try_fails(turn, "dump_round")
   end)
   if not ok then emit('{"kind":"error","msg":' .. q(tostring(err)) .. "}") end
 end
@@ -816,6 +843,7 @@ local function dump_round_end()
     last_end_turn = turn
     emit('{"kind":"round_end","turn":' .. turn .. "}")
     scrape_all_factions(turn)
+    flush_try_fails(turn, "dump_round_end")
   end)
   if not ok then emit('{"kind":"error","msg":' .. q(tostring(err)) .. "}") end
 end
@@ -885,6 +913,7 @@ local function dump_player(turn, reason)
       local rl = f:region_list()
       for i = 0, rl:num_items() - 1 do dump_region(turn, rl:item_at(i)) end
     end)
+    flush_try_fails(turn, "dump_player")
   end)
   if not ok then emit('{"kind":"error","msg":' .. q(tostring(err)) .. "}") end
 end

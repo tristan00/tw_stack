@@ -70,10 +70,28 @@ local function now_clock()
   if ok and v then return v end
   return nil
 end
+-- Every read in this mod goes through try(), and try() used to return nil on failure and
+-- say nothing. A caller cannot tell "the game had nothing to report" from "that call
+-- raised" -- which is how emitters produced zero rows for an entire corpus without one
+-- complaint. Failures are counted here, deduplicated by message, and drained onto the
+-- reply of the command they happened during, so a broken read is attributable to the
+-- command that broke rather than discovered a corpus later.
+local TRY_FAILS, TRY_FAIL_N = {}, 0
+local TRY_FAIL_CAP = 24            -- a failing loop must not flood the log
+
+local function drain_try_fails()
+  if TRY_FAIL_N == 0 then return nil end
+  local out = {}
+  for msg, n in pairs(TRY_FAILS) do out[#out + 1] = { err = msg, n = n } end
+  TRY_FAILS, TRY_FAIL_N = {}, 0
+  return out
+end
+
 local function log(tbl)
   if type(tbl) == "table" then
     if tbl.ts == nil then tbl.ts = now_epoch() end
     if tbl.clk == nil then tbl.clk = now_clock() end
+    if tbl.try_fails == nil then tbl.try_fails = drain_try_fails() end
   end
   local ok, line = pcall(encode, tbl)
   if not ok then say("encode failed"); return end
@@ -82,7 +100,19 @@ local function log(tbl)
 end
 
 
-local function try(fn) local ok, v = pcall(fn); if ok then return v end return nil end
+local function try(fn)
+  local ok, v = pcall(fn)
+  if ok then return v end
+  local msg = tostring(v)
+  if #msg > 160 then msg = msg:sub(1, 160) end
+  if TRY_FAILS[msg] == nil then
+    if TRY_FAIL_N >= TRY_FAIL_CAP then return nil end
+    TRY_FAIL_N = TRY_FAIL_N + 1
+    TRY_FAILS[msg] = 0
+  end
+  TRY_FAILS[msg] = TRY_FAILS[msg] + 1
+  return nil
+end
 local function turn() return try(function() return cm:turn_number() end) or -1 end
 
 local function human_faction()
@@ -200,10 +230,16 @@ end
 
 
 
+-- Every name here is a context type asked of GetContextObjectId. A name the game does not
+-- have can never match, so the panel it was meant to identify silently reports no context
+-- at all. Two of these were invented: CcoCampaignRegion (the real one is
+-- CcoCampaignModelRegion) and CcoCampaignBuildingChainRecord (CcoBuildingChainRecord).
+-- Checked against reference/ui3_extraction/CCO.tsv; see decisions/cco_audit.py.
 local CCO_TYPES = {
   "CcoCampaignUnit", "CcoCampaignCharacter", "CcoMainUnitRecord",
-  "CcoCampaignSettlement", "CcoCampaignRegion", "CcoCampaignAncillary", "CcoCampaignRitual",
-  "CcoCampaignBuildingChainRecord", "CcoCampaignFaction", "CcoCampaignProvince",
+  "CcoCampaignSettlement", "CcoCampaignModelRegion", "CcoCampaignAncillary",
+  "CcoCampaignRitual", "CcoBuildingChainRecord", "CcoCampaignFaction",
+  "CcoCampaignProvince",
 }
 
 
@@ -846,6 +882,14 @@ end
 
 
 
+-- Character rows are emitted only when is_visible_to_faction() is true, so the `visible =
+-- true` this used to carry was a restatement of the filter that produced the row: True in
+-- 97,874 of 97,874 rows that had it, absent from the 66,602 that did not. That is the
+-- campaign.defeated shape -- a literal that reads as data -- so the field is gone.
+-- Settlements are deliberately NOT visibility-filtered: attack_settlement offers are built
+-- from these rows (0 of 2,571 targets were missing from the snapshot), and filtering them
+-- would delete real actions. Whether the agent should see undiscovered settlements at all
+-- is a modelling question, not a collector bug.
 function handlers.hostiles(seq)
   local f = human_faction()
   local out = {}
@@ -882,7 +926,6 @@ function handlers.hostiles(seq)
               local hy = try(function() return c:logical_position_y() end)
               out[#out + 1] = { kind = (at_war and "hero" or "neutral_hero"), faction = or_null(fname),
                 cqi = or_null(try(function() return c:command_queue_index() end)),
-                visible = true,
                 subtype = or_null(try(function() return c:character_subtype_key() end)),
                 agent_type = or_null(try(function() return c:character_type_key() end)),
                 province = or_null(try(function()
@@ -906,7 +949,6 @@ function handlers.hostiles(seq)
               local y = try(function() return c:logical_position_y() end)
               out[#out + 1] = { kind = (at_war and "army" or "neutral_army"), faction = or_null(fname),
                 cqi = or_null(try(function() return c:command_queue_index() end)),
-                visible = true,
                 is_armed_citizenry = (try(function() return c:military_force():is_armed_citizenry() end) == true),
 
 

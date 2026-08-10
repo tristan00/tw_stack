@@ -733,7 +733,11 @@ _LUA_SLOT_OP = (_G +
     "if not s then return 'NO-CTX' end local slots=g(s,'BuildingSlotList') "
     "if type(slots)~='table' then return 'NO-SLOTLIST' end "
     "for i,x in ipairs(slots) do if g(x,'Index')==%(slot)d then "
-    "  if g(x,'%(guard)s')~=true then return 'REFUSED-'..ts(g(x,'%(guard)s')) end "
+    # Truthiness, not `==true`: a Bool guard still has to be true, but the cancel guard is
+    # the presence of the queued ConstructionItemContext -- there is no CanCancel property
+    # to ask, and the CanBeCancelled this used to name belongs to CcoCampaignMission, so
+    # every cancel returned 'REFUSED-nil' for the life of the corpus.
+    "  if not g(x,'%(guard)s') then return 'REFUSED-'..ts(g(x,'%(guard)s')) end "
     "  pcall(function() x:Call('%(cmd)s') end) return 'called' end end return 'NO-SLOT'")
 
 _LUA_SLOT_FLAGS = (_G +
@@ -742,8 +746,10 @@ _LUA_SLOT_FLAGS = (_G +
     "if type(slots)~='table' then return 'NO-SLOTLIST' end "
     "for i,x in ipairs(slots) do if g(x,'Index')==%(slot)d then "
     "  local ci=g(x,'ConstructionItemContext') "
-    "  return ts(g(x,'IsDamaged'))..'~'..ts(g(x,'IsRepairing'))..'~'..ts(ci~=nil)"
-    "..'~'..ts(g(x,'IsEmpty')) end end return 'NO-SLOT'")
+    # IsDamaged is CcoCampaignBuilding's, not the slot's -- read off the slot it was nil
+    # forever, so building_repair's confirm could never see a damaged building.
+    "  return ts(g(x,'BuildingContext.IsDamaged'))..'~'..ts(g(x,'IsRepairing'))"
+    "..'~'..ts(ci~=nil)..'~'..ts(g(x,'IsEmpty')) end end return 'NO-SLOT'")
 
 
 def _slot_flags(bus, region, slot):
@@ -810,7 +816,7 @@ register("building_repair", {
 register("building_cancel", {
     "layer": "cco", "signal": "construction_item_cleared",
     "snapshot": _slot_snapshot,
-    "execute": _slot_exec("CancelConstruction", "CanBeCancelled"),
+    "execute": _slot_exec("CancelConstruction", "ConstructionItemContext"),
     "confirm": _slot_confirm("queued", False),
     "timeout_s": 6.0, "poll_s": 1.0,
 })
