@@ -57,7 +57,8 @@ def sequence(con, limit=SEQ_PAGE, offset=0):
     return [dict(r) for r in con.execute(
         "SELECT d.decision_id, d.turn, d.decision_seq, d.n_entities, d.n_offers,"
         " t.context_kind, t.context_id, t.action_type, t.action_key, t.counted, t.refusal, t.policy,"
-        " o.score, o.exploit, o.pct_global, o.pct_local, o.rank"
+        " o.score, o.exploit, o.pct_global, o.pct_local, o.rank,"
+        " o.gnn_impact, o.gnn_rank"
         " FROM decision_points d LEFT JOIN action_taken t ON t.decision_id=d.decision_id"
         " LEFT JOIN action_offers o ON o.rowid ="
         "   (SELECT MIN(o2.rowid) FROM action_offers o2 WHERE o2.decision_id=t.decision_id"
@@ -78,7 +79,7 @@ def ranking(con, did, limit=80):
                         " FROM action_taken WHERE decision_id=?", (did,)).fetchone()
     rows = [dict(r) for r in con.execute(
         "SELECT context_kind,context_id,action_type,action_key,available,gate,score,exploit,"
-        "pct_global,pct_local,rank"
+        "pct_global,pct_local,rank,gnn_impact,gnn_rank"
         " FROM action_offers WHERE decision_id=?"
         " ORDER BY (score IS NULL), score DESC, available DESC LIMIT ?", (did, limit))]
     tk = (dict(taken) if taken else None)
@@ -984,6 +985,40 @@ def render_actions(con, q):
     return cards + per_type + prov
 
 
+def _why(r):
+    """Explain a pick with the number the deciding strategy actually ranked on.
+
+    Every strategy in the portfolio decides differently, so a single set of catboost
+    columns describes only the exploit_tree picks. Showing them against a gnn, random
+    or ruleset pick implies a reason that was never used.
+    """
+    pol = r.get("policy") or ""
+    base = pol.split("(")[0]
+    if base == "gnn" and r.get("gnn_impact") is not None:
+        gr = r.get("gnn_rank")
+        return ("<span class=ok>Q&minus;V %+0.4f</span>%s"
+                % (float(r["gnn_impact"]),
+                   (" <span class=dim>rank %s of %s</span>" % (gr, r["n_offers"]))
+                   if gr else ""))
+    if base == "gnn":
+        return "<span class=dim>graph score not recorded (pre-dates gnn score capture)</span>"
+    if base == "exploit_tree":
+        if r.get("exploit") is None:
+            return "<span class=dim>no model score on this offer</span>"
+        pl = r.get("pct_local")
+        return ("exploit <b>%s</b> <span class=dim>global %s &middot; local %s</span>"
+                % (_num(r.get("exploit")), _num(r.get("pct_global")),
+                   _num(pl) if pl is not None else "n/a"))
+    if pol.startswith("ruleset("):
+        return "rule <b>%s</b> matched" % _esc(pol[8:-1])
+    if base == "random":
+        return "<span class=dim>drawn at random &mdash; no score</span>"
+    if pol.endswith("_random_fallback"):
+        return ("<span class=warn>%s could not pick</span> <span class=dim>&mdash; fell back "
+                "to random</span>" % _esc(pol[:-len("_random_fallback")]))
+    return "<span class=dim>-</span>"
+
+
 def render_decisions(con, q):
     seq = []
     seq_total = sequence_total(con)
@@ -1001,21 +1036,19 @@ def render_decisions(con, q):
             mark, cls = "OK", "ok"
         else:
             mark, cls = "FAIL", "bad"
-        pl = r.get("pct_local")
-        pl_cell = _num(pl) if pl is not None else "<span class=dim>n/a</span>"
+        pol = _esc(r["policy"])
+        if r["policy"] and str(r["policy"]).endswith("_random_fallback"):
+            pol = "<span class=warn>%s</span>" % pol
         seq.append("<tr><td><a href='/d/%d'>#%d</a></td><td>%s</td><td>%s</td>"
                    "<td class=gsep>%s:%s</td><td>%s</td><td>%s</td>"
                    "<td class='%s gsep'>%s</td><td class=dim style='white-space:normal'>%s</td>"
-                   "<td class=gsep>%s</td><td class=dim>%s</td><td class=dim>%s</td>"
-                   "<td class=dim>%s</td>"
-                   "<td class=gsep>%s</td></tr>"
+                   "<td class=gsep>%s</td>"
+                   "<td class=gsep style='white-space:normal'>%s</td></tr>"
                    % (r["decision_id"], r["decision_id"], _esc(r["turn"]), r["n_offers"],
                       _esc(r["context_kind"]), _esc(str(r["context_id"])[:26]),
                       _esc(r["action_type"]), _esc(str(r["action_key"])[:38]), cls, mark,
                       _esc(r["refusal"]),
-                      _num(r.get("score")), _num(r.get("exploit")),
-                      _num(r.get("pct_global")), pl_cell,
-                      _esc(r["policy"])))
+                      pol, _why(r)))
     _first = seq_offset + 1 if seq else 0
     _last = seq_offset + len(seq)
     _prev = max(0, seq_offset - SEQ_PAGE)
@@ -1027,20 +1060,22 @@ def render_decisions(con, q):
               % (_first, _last, seq_total, _prev,
                  _next if _next < seq_total else seq_offset))
     if not seq:
-        seq = ["<tr><td colspan=14 class=dim>no decisions recorded yet</tr>"]
+        seq = ["<tr><td colspan=10 class=dim>no decisions recorded yet</tr>"]
     seqtbl = ("<h2>every decision, newest first</h2>"
-              "<div class=legend>one row per decision point. <b>score</b> is the value "
-              "percentile the pick was ranked on, <b>global</b>/<b>local</b> are its "
-              "percentile within the whole faction and within its own entity kind. "
-              "Click a <b>#</b> for the full ranking behind that decision.</div>" + _pager +
+              "<div class=legend>one row per decision point. <b>why</b> is the number the "
+              "deciding strategy actually ranked on &mdash; <b>gnn</b> shows its graph "
+              "Q&minus;V impact, <b>exploit_tree</b> catboost's value percentile and its "
+              "global/local components, <b>ruleset</b> the rule that matched, and "
+              "<b>random</b> nothing, because nothing was scored. A "
+              "<span class=warn>*_random_fallback</span> means that strategy was drawn but "
+              "could not pick. Click a <b>#</b> for the full ranking behind a decision.</div>"
+              + _pager +
               "<div class=scroll><table>"
               "<tr><th colspan=3>decision<th class=grp colspan=3>what it chose"
-              "<th class=grp colspan=2>outcome<th class=grp colspan=4>why"
-              "<th class=grp>picked by</tr>"
+              "<th class=grp colspan=2>outcome<th class=grp colspan=2>why</tr>"
               "<tr><th>#<th>turn<th>offers<th class=gsep>entity<th>action<th>key"
               "<th class=gsep>result<th>refusal"
-              "<th class=gsep>score<th>exploit<th>global<th>local"
-              "<th class=gsep>policy</tr>"
+              "<th class=gsep>picked by<th>on what basis</tr>"
               "%s</table></div>" % "".join(seq)) + _pager
     return seqtbl
 
@@ -1262,17 +1297,27 @@ def render_decision(con, did):
         fmt = lambda v: ("%.4f" % v) if isinstance(v, float) else ("" if v is None else str(v))
         pl = o.get("pct_local")
         pl_cell = fmt(pl) if pl is not None else "<span class=dim>n/a</span>"
+        gi = o.get("gnn_impact")
         rows.append("<tr class='%s'><td>%s</td><td>%s:%s</td><td>%s</td><td>%s</td><td>%s</td>"
-                    "<td>%s</td><td>%s</td><td>%s</td><td>%s</td>"
+                    "<td>%s</td><td>%s</td><td>%s</td>"
+                    "<td class=gsep>%s</td><td>%s</td>"
                     "<td class=dim>%s</td></tr>"
                     % (cls, _esc(o["rank"]), _esc(o["context_kind"]),
                        _esc(str(o["context_id"])[:22]), _esc(o["action_type"]),
-                       _esc(str(o["action_key"])[:44]), avail, fmt(o["score"]),
+                       _esc(str(o["action_key"])[:44]), avail,
                        fmt(o["exploit"]), fmt(o.get("pct_global")), pl_cell,
+                       ("%+0.4f" % float(gi)) if gi is not None else "<span class=dim>-</span>",
+                       _esc(o.get("gnn_rank") if o.get("gnn_rank") is not None else "-"),
                        _esc(o["gate"])))
-    tbl = ("<h2>the ranking it produced over the whole faction</h2><div class=scroll><table>"
-           "<tr><th>rank<th>entity<th>action<th>key<th>available<th>score<th>exploit"
-           "<th>&nbsp;&nbsp;global<th>&nbsp;&nbsp;local<th>gate</tr>"
+    tbl = ("<h2>the ranking it produced over the whole faction</h2>"
+           "<div class=legend>catboost ranks every offer each decision; the gnn columns are "
+           "filled only on decisions the gnn was drawn for, since that is when it scores.</div>"
+           "<div class=scroll><table>"
+           "<tr><th colspan=5>offer<th class=grp colspan=3>catboost"
+           "<th class=grp colspan=2>gnn<th class=grp>&nbsp;</tr>"
+           "<tr><th>rank<th>entity<th>action<th>key<th>available"
+           "<th class=gsep>exploit<th>global<th>local"
+           "<th class=gsep>Q&minus;V<th>rank<th class=gsep>gate</tr>"
            "%s</table></div>" % "".join(rows))
     ent = []
     for e in d["entities"]:
@@ -1395,11 +1440,6 @@ def render_infra(run_dir):
     svc = ("<h2>services</h2><div class=scroll><table>"
            "<tr><th>service<th>state<th>pid<th>started</tr>%s</table></div>" % "".join(rows))
 
-    g = _meta(r"D:\twdata\models\global\meta.json")
-    l = _meta(r"D:\twdata\models\local\meta.json")
-    ga, gt = _age(r"D:\twdata\models\global\meta.json")
-    la, lt = _age(r"D:\twdata\models\local\meta.json")
-
     def ago(s):
         if s is None:
             return "never"
@@ -1418,34 +1458,7 @@ def render_infra(run_dir):
                                for kv in sorted(_P.normalize_strategies(None).items())))
     except Exception as e:
         pol_cfg = "unreadable: %s" % repr(e)[:60]
-    mrows = [
-        "<tr><td>pick policy<td class=dim>-<td class=dim>-<td class=dim>-<td>%s</tr>" % _esc(pol_cfg),
-        "<tr><td>global (E1/E2)<td>%s<td>%s<td>%s<td>%s</tr>"
-        % (_esc(g.get("rows", "-")), _esc(gt), _esc(ago(ga)),
-           _esc("w_local=%s" % g.get("w_local"))),
-        "<tr><td>local (E1/E2)<td>%s<td>%s<td>%s<td>%s</tr>"
-        % (_esc(l.get("rows", "-")), _esc(lt), _esc(ago(la)),
-           _esc("kinds=%s" % ",".join(l.get("kinds") or []) if l else "not trained")),
-    ]
-    im = _meta(r"D:\twdata\models\interrupt\meta.json")
-    ia, it = _age(r"D:\twdata\models\interrupt\meta.json")
-    sr = im.get("screen_rows") or {}
-    mrows.append("<tr><td>interrupt<td>%s<td>%s<td>%s<td>%s</tr>"
-                 % (_esc(im.get("rows", "-")), _esc(it), _esc(ago(ia)),
-                    _esc(" ".join("%s:%s" % (k, v) for k, v in sorted(sr.items()))
-                         or "screens=%s" % ",".join(im.get("screens") or []))))
-    gm = _meta(r"D:\twdata\models\gnn\meta.json")
-    ga2, gt2 = _age(r"D:\twdata\models\gnn\meta.json")
-    gfit = gm.get("fit") or {}
-    mrows.append("<tr><td>gnn (graph Q-V)<td>%s<td>%s<td>%s<td>%s</tr>"
-                 % (_esc(gm.get("rows", "-")), _esc(gt2), _esc(ago(ga2)),
-                    _esc("val_rmse=%s epochs=%s aux_nodes=%s"
-                         % (gfit.get("val_rmse_raw", "-"), gfit.get("epochs_run", "-"),
-                            (gm.get("aux") or {}).get("n_labelled_nodes", "-"))
-                         if gm else "not trained")))
-    models = ("<h2>models</h2><div class=scroll><table>"
-              "<tr><th>model<th>rows<th>trained at<th>age<th>config</tr>%s</table></div>"
-              % "".join(mrows))
+    policy_html = ("<h2>pick policy</h2><div class=legend>%s</div>" % _esc(pol_cfg))
 
     watch = [("session log", (open(CURRENT_LOG, encoding="utf-8-sig").read().strip()
                               if os.path.isfile(CURRENT_LOG) else ""), 90, 420)]
@@ -1555,7 +1568,9 @@ def render_infra(run_dir):
            "el.type==='checkbox'?(el.checked?'1':'0'):el.value)};"
            "el.addEventListener('change',save);el.addEventListener('input',save)})})})();"
            "</script>")
-    return svc + models + _trials_table() + activity + ctl + tail
+    # models moved to the models tab, the experiment ledger to training -- infra is the
+    # box itself: what is running, what is writing, and the controls.
+    return svc + activity + ctl + tail
 
 
 def _kill_session():
@@ -1830,12 +1845,13 @@ def _fit_config_table():
             "<tr><td>catboost<td>global / local / interrupt<td>lr %s &middot; "
             "early stop %s &middot; cap %s iters &middot; depth %s &middot; %s &middot; %s "
             "&middot; loss %s &middot; holdout %.0f%% of campaigns"
+            "<br><span class=dim>tuned from %s</span>"
             "<td class=dim>cpu &mdash; measured faster than gpu on this corpus "
             "(14.6s vs 21.6s)</tr>"
             % (BM.CB_LEARNING_RATE, BM.CB_EARLY_STOPPING, BM.CB_ITERATIONS, BM.CB_DEPTH,
                _esc(str(BM.CB_PARAMS.get("grow_policy"))),
                _esc(str(BM.CB_PARAMS.get("bootstrap_type"))),
-               BM.CB_LOSS, 100 * BM.VAL_FRACTION))
+               BM.CB_LOSS, 100 * BM.VAL_FRACTION, _esc(str(BM.CB_TUNED_FROM))))
     except Exception as e:
         body.append("<tr><td>catboost<td colspan=3 class=bad>config unreadable: %s</tr>"
                     % _esc(repr(e)[:90]))
@@ -1927,17 +1943,18 @@ def render_training():
                             "ok" if gn_dev == "cuda" else "warn" if gn_dev else "dim",
                             _esc(str(gn_dev or "-"))))
         out.append(
-            "<tr><td class=dim>%s<td title='%s'>%s%s<td class=gsep>%s<td>%s<td class=dim>%s<td>%s"
+            "<tr><td class=dim>%s<td>%s%s<td class=gsep>%s<td>%s<td class=dim>%s<td>%s"
+            "<td class=dim>%s<td class=dim>%s"
             "<td class=gsep>%s<td>%s<td>%s%s<td class=dim>%s<td class=dim>%s"
             "<td class=gsep>%s<td>%s<td class=gsep>%s<td>%s%s"
-            "<td class=gsep>%s<td>%s<td>%s</tr>"
+            "<td class=gsep>%s<td>%s<td>%s<td>%s<td>%s<td>%s</tr>"
             % (_esc(e["when"][5:16]),
-               _esc("lr=%s early_stopping=%s" % (par.get("learning_rate", "?"),
-                                                 par.get("early_stopping_rounds", "?"))),
                _esc(e["trial"]), badge,
                _esc(str(e.get("rows", "-"))), _esc(str(e.get("campaigns", "-"))),
                _esc(str(e.get("n_decisions", "-"))),
                _esc(str(e.get("seconds", "-"))),
+               _esc(str(par.get("learning_rate", "?"))),
+               _esc(str(par.get("early_stopping_rounds", "?"))),
                _esc(str(g["e1"].get("val_rows", "-"))),
                _fmt(g["e1"].get("val_rmse"), 4), _fmt(g["e2"].get("val_rmse"), 4),
                _lift(g["e2"].get("val_rmse"), g["e1"].get("val_rmse")),
@@ -1948,23 +1965,30 @@ def render_training():
                gnn_cells,
                _esc(str(p.get("campaigns") if p.get("campaigns") is not None else "-")),
                _fmt(p.get("sett_per_campaign")),
+               _esc(str(p.get("sett_total") if p.get("sett_total") is not None else "-")),
+               _esc(str(p.get("lord_total") if p.get("lord_total") is not None else "-")),
+               _fmt(p.get("turns_per_campaign")),
                "-" if p.get("grew") is None else "%s/%s" % (p["grew"], p.get("measured", "?"))))
     if not out:
         out = ["<tr><td colspan=20 class=dim>no training runs recorded</tr>"]
-    return ("<h2>training history</h2>"
-            "<div class=legend>one row per retrain window, newest first. "
-            "<b>lift</b> is e2&minus;e1: how much better the model is than its own "
-            "counterfactual baseline &mdash; at or below zero the model adds nothing.</div>"
+    return (_trials_table()
+            + "<h2>training history</h2>"
+            "<div class=legend>one row per retrain window, newest first &mdash; the fit half of "
+            "each trial above, keyed on the same trial id. <b>lift</b> is e2&minus;e1: how much "
+            "better the model is than its own counterfactual baseline &mdash; at or below zero "
+            "the model adds nothing.</div>"
             "<div class=scroll><table>"
-            "<tr><th colspan=2>run<th class=grp colspan=4>corpus"
+            "<tr><th colspan=2>run<th class=grp colspan=6>corpus"
             "<th class=grp colspan=6>catboost global<th class=grp colspan=2>local"
             "<th class=grp colspan=2>interrupt<th class=grp colspan=3>gnn"
-            "<th class=grp colspan=3>what it played</tr>"
+            "<th class=grp colspan=6>what it played</tr>"
             "<tr><th>when<th>trial<th class=gsep>rows<th>camps<th>decisions<th>secs"
+            "<th>lr<th>ES"
             "<th class=gsep>val rows<th>e1 rmse<th>e2 rmse<th>lift<th>best iter<th>MAE"
             "<th class=gsep>rows<th>e1 rmse<th class=gsep>rows<th>e1 rmse"
             "<th class=gsep>rmse<th>rows<th>device"
-            "<th class=gsep>camps<th>sett/camp<th>grew</tr>%s</table></div>"
+            "<th class=gsep>camps<th>sett/camp<th>sett total<th>lord total<th>turns/camp"
+            "<th>grew</tr>%s</table></div>"
             % "".join(out))
 
 

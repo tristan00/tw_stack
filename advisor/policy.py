@@ -207,6 +207,18 @@ class Policy:
             mode = "ruleset(%s)" % member.last_rule
         else:
             mode = drawn
+        if drawn == "gnn":
+            # record the gnn's own Q-V on the offers it ranked, so the decision log can
+            # explain a gnn pick with the number the gnn used rather than catboost's
+            scored = getattr(member, "last_scores", None) or {}
+            if scored:
+                ordered = sorted(scored.values(), reverse=True)
+                for r in ranked:
+                    v = scored.get(S.offer_key(r))
+                    if v is None:
+                        continue
+                    r["gnn_impact"] = round(v, 5)
+                    r["gnn_rank"] = ordered.index(v) + 1
         pick = {"context_kind": best["context_kind"], "context_id": best["context_id"],
                 "action_type": best["action_type"], "key": best["key"],
                 "params": best.get("params") or {},
@@ -231,5 +243,6 @@ def scores_for_store(ranked, limit=None):
     return [{"context_kind": r["context_kind"], "context_id": r["context_id"],
              "action_type": r["action_type"], "key": r["key"], "score": r.get("score"),
              "exploit": r.get("exploit"), "rank": r.get("rank"),
-             "pct_global": r.get("pct_global"), "pct_local": r.get("pct_local")}
+             "pct_global": r.get("pct_global"), "pct_local": r.get("pct_local"),
+             "gnn_impact": r.get("gnn_impact"), "gnn_rank": r.get("gnn_rank")}
             for r in rows]

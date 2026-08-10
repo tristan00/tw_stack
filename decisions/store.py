@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS action_offers(
   context_kind TEXT NOT NULL, context_id TEXT NOT NULL,
   action_type TEXT NOT NULL, action_key TEXT NOT NULL,
   available INTEGER NOT NULL, gate TEXT, params TEXT,
-  score REAL, exploit REAL, rank INTEGER);
+  score REAL, exploit REAL, rank INTEGER, gnn_impact REAL, gnn_rank INTEGER);
 
 CREATE TABLE IF NOT EXISTS action_taken(
   taken_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -118,7 +118,9 @@ class DecisionStore:
                    ("action_offers", "exploit", "REAL"),
                    ("action_offers", "rank", "INTEGER"),
                    ("action_offers", "pct_global", "REAL"),
-                   ("action_offers", "pct_local", "REAL"))
+                   ("action_offers", "pct_local", "REAL"),
+                   ("action_offers", "gnn_impact", "REAL"),
+                   ("action_offers", "gnn_rank", "INTEGER"))
 
     _REQUIRED = (("action_offers", "decision_id"), ("entity_snapshots", "decision_id"))
 
@@ -220,14 +222,15 @@ class DecisionStore:
 
     def attach_scores(self, decision_id, scores):
         rows = [(s.get("score"), s.get("exploit"), s.get("rank"),
-                 s.get("pct_global"), s.get("pct_local"), decision_id,
+                 s.get("pct_global"), s.get("pct_local"),
+                 s.get("gnn_impact"), s.get("gnn_rank"), decision_id,
                  s.get("context_kind"), str(s.get("context_id")), s.get("action_type"),
                  str(s.get("key"))) for s in (scores or [])]
         if not rows:
             return 0
         cur = self.con.executemany(
             "UPDATE action_offers SET score=?,exploit=?,rank=?,"
-            "pct_global=?,pct_local=? WHERE decision_id=? "
+            "pct_global=?,pct_local=?,gnn_impact=?,gnn_rank=? WHERE decision_id=? "
             "AND context_kind=? AND context_id=? AND action_type=? AND action_key=?", rows)
         self.con.commit()
         return cur.rowcount
