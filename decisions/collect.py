@@ -25,7 +25,13 @@ MOVE_MIN_R = 3.0
 
 _G = ("local function g(c,p) local ok,v=pcall(function() return c:Call(p) end);"
       "if ok and v~=nil then return v end return nil end "
-      "local function ts(v) return tostring(v) end ")
+      # ts(nil) must NOT be the string "nil". tostring(nil) is "nil", a non-empty and
+      # therefore TRUTHY string, so a mistyped CCO property name landed in the database
+      # looking exactly like data -- params.item_key was "nil" in 95,178 of 95,178 rows
+      # because CcoCampaignAncillary has no 'Key' property, and the `a["key"] or name`
+      # fallback never fired. 42 call sites use ts(g(...)); one wrong property name
+      # anywhere is silent. Empty is falsy, so a missing value now reads as missing.
+      "local function ts(v) if v==nil then return '' end return tostring(v) end ")
 
 
 class CollectError(RuntimeError):
@@ -1168,13 +1174,13 @@ def _hero_action_matrix(action):
 _LUA_ANCILLARY_POOL = (_G +
     "local f=cco('CcoCampaignFaction','%(fac)s') local l=g(f,'AncillaryList') "
     "if type(l)~='table' then return '' end local o={} "
-    "for i=1,#l do o[#o+1]=i..'~'..ts(g(l[i],'Name'))..'~'..ts(g(l[i],'Key')) end "
+    "for i=1,#l do o[#o+1]=i..'~'..ts(g(l[i],'Name'))..'~'..ts(g(l[i],'AncillaryRecordContext.Key')) end "
     "return table.concat(o,'|')")
 
 _LUA_EQUIPPED = (_G +
     "local c=cco('CcoCampaignCharacter','%(cqi)s') local l=g(c,'AncillaryList') "
     "if type(l)~='table' then return '' end local o={} "
-    "for i=1,#l do o[#o+1]=i..'~'..ts(g(l[i],'Name'))..'~'..ts(g(l[i],'Key')) end "
+    "for i=1,#l do o[#o+1]=i..'~'..ts(g(l[i],'Name'))..'~'..ts(g(l[i],'AncillaryRecordContext.Key')) end "
     "return table.concat(o,'|')")
 
 _LUA_AP_ALL = (
@@ -1203,7 +1209,7 @@ _LUA_EQUIPPED_ALL = (_G +
     "  local cq=ts(c:command_queue_index()) "
     "  local l=g(cco('CcoCampaignCharacter',cq),'AncillaryList') "
     "  if type(l)=='table' then for j=1,#l do "
-    "    o[#o+1]=j..'~'..ts(g(l[j],'Name'))..'~'..ts(g(l[j],'Key')) end end end "
+    "    o[#o+1]=j..'~'..ts(g(l[j],'Name'))..'~'..ts(g(l[j],'AncillaryRecordContext.Key')) end end end "
     "return table.concat(o,'|')")
 
 
@@ -1462,7 +1468,15 @@ _LUA_SLOT_STATES = (_G +
     "..'~'..ts(g(sl,'CanDismantle'))..'~'..ts(g(sl,'DismantleRefundAmount'))"
     "..'~'..ts(ci~=nil)..'~'..ts(g(sl,'CanBeCancelled'))"
     "..'~'..ts(cl and g(cl,'Key'))"
-    "..'~'..ts(g(sl,'IsEmpty')) end end "
+    "..'~'..ts(g(sl,'IsEmpty'))"
+    # Field 11: the building actually OCCUPYING the slot. Field 9 above is the QUEUED
+    # construction item, which is what building_repair/cancel/dismantle were labelled
+    # with -- and nothing is queued in most slots, so params.building_key was null in
+    # 181,026 of 192,074 rows (94.2%) for each of those three action types, and
+    # structurally null on dismantle, where you most want to know what you are
+    # demolishing. The two answer different questions; conflating them caused this.
+    # This expression already runs against the same context at collect.py:675.
+    "..'~'..ts(g(sl,'BuildingContext.BuildingLevelRecordContext.Key')) end end "
     "return table.concat(o,',')")
 
 
@@ -1470,14 +1484,17 @@ def _parse_slot_states(raw):
     out = []
     for row in str(raw or "").split(","):
         p = row.split("~")
-        if len(p) != 10 or not p[0] or p[0] == "nil":
+        if len(p) < 11 or not p[0] or p[0] == "nil":
             continue
         out.append({"index": _num(p[0]), "damaged": p[1] == "true", "can_repair": p[2] == "true",
                     "repairing": p[3] == "true", "can_dismantle": p[4] == "true",
                     "refund": _num(p[5]), "building": p[6] == "true",
                     "can_cancel": p[7] == "true",
-                    "key": None if p[8] in ("nil", "") else p[8],
-                    "empty": p[9] == "true"})
+                    # queued_key: what is being CONSTRUCTED here. key: what is STANDING
+                    # here. The slot ops act on the latter.
+                    "queued_key": None if p[8] in ("nil", "") else p[8],
+                    "empty": p[9] == "true",
+                    "key": None if p[10] in ("nil", "") else p[10]})
     return out
 
 
@@ -1494,18 +1511,18 @@ def _slot_action_offers(region, slots):
                                               "already_repairing" if s["repairing"] else
                                               "cannot_repair"),
                              region=region, slot_index=idx, damaged=s["damaged"],
-                             repairing=s["repairing"], building_key=s["key"]))
+                             repairing=s["repairing"], building_key=s["key"], queued_key=s["queued_key"]))
         ok = s["can_cancel"] and s["building"]
         offers.append(_offer("building_cancel", key, ok,
                              None if ok else ("nothing_queued" if not s["building"]
                                               else "cannot_cancel"),
                              region=region, slot_index=idx, queued=s["building"],
-                             building_key=s["key"]))
+                             building_key=s["key"], queued_key=s["queued_key"]))
         ok = s["can_dismantle"] and not s["empty"]
         offers.append(_offer("building_dismantle", key, ok,
                              None if ok else ("slot_empty" if s["empty"] else "cannot_dismantle"),
                              region=region, slot_index=idx, refund=s["refund"],
-                             building_key=s["key"]))
+                             building_key=s["key"], queued_key=s["queued_key"]))
     return offers
 
 
@@ -1673,7 +1690,18 @@ _LUA_CAMPAIGN_OFFERS = (_G +
     "..'~'..ts(g(l[i],'IsResearched'))..'~'..ts(g(l[i],'CanResearch'))"
     "..'~'..ts(g(l[i],'Cost')) end end "
     "local rites={} local r=g(f,'AvailableRitualList') "
-    "if type(r)=='table' then for i=1,#r do rites[#rites+1]=ts(g(r[i],'CanPerformRitual')) end end "
+    # The ritual KEY, not just whether it can be performed. Until now the only identity a
+    # rite offer carried was its position in this list ("rite_index_7"), which is a UI
+    # ordinal: 0 of 109 joined the 1,326-row rituals table, rite_index_1 was offered by 88
+    # factions across 23 races and shared one embedding row, and the list length changes
+    # mid-campaign in 68 of 497 campaigns so the index aliases across turns too.
+    # RitualContext -> CcoRitualRecord -> Key, verified against CCO.tsv. The index stays
+    # in params because cco_actions.py performs a rite by indexing this same list.
+    # InvalidRitualReason is the game's own localised explanation, which beats the
+    # hand-rolled gate string it replaces.
+    "if type(r)=='table' then for i=1,#r do rites[#rites+1]="
+    "ts(g(r[i],'CanPerformRitual'))..'~'..ts(g(r[i],'RitualContext.Key'))"
+    "..'~'..ts(g(r[i],'InvalidRitualReason')) end end "
     "return cur..'||'..table.concat(tech,',')..'||'..table.concat(rites,',')..'||'..pts")
 
 
@@ -1714,11 +1742,21 @@ def _campaign_offers_assemble(raw, diplo_offers):
             can, gate = False, "already_researching"
         offers.append(_offer("research", key, can, gate, in_progress=(key == current),
                              cost=cost, points_available=points, current_research=current))
-    for i, flag in enumerate(rites_raw.split(",")):
+    for i, row in enumerate(rites_raw.split(",")):
+        p = row.split("~")
+        flag = p[0] if p else ""
         if flag not in ("true", "false"):
             continue
-        offers.append(_offer("rites", "rite_index_%d" % (i + 1), flag == "true",
-                             None if flag == "true" else "cannot_perform", rite_index=i + 1))
+        # The real ritual key is the identity; the index is only the execution handle.
+        # An empty key means the CCO read failed -- recorded as None so a coverage check
+        # can see it, never silently backfilled with the ordinal.
+        key = (p[1] or None) if len(p) > 1 else None
+        reason = (p[2] or None) if len(p) > 2 else None
+        ok = flag == "true"
+        offers.append(_offer("rites", key or ("rite_index_%d" % (i + 1)), ok,
+                             None if ok else (reason or "cannot_perform"),
+                             rite_index=i + 1, ritual_key=key,
+                             invalid_reason=reason))
     offers.extend(diplo_offers or [])
     offers.append(_offer("end_turn", "end_turn", True))
     offers.append(_offer("noop", "noop", True))
