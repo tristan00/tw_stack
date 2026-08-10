@@ -218,7 +218,7 @@ def train(runs_root=None, log=print, **over):
     net = _build_net(len(num), prep["cards"], cfg)
     preds, stats = _fit(net, Xn, Xc, yz, cfg, log, groups=data.get("groups"))
     meta = {"backend": "nn", "cfg": cfg, "num": num, "cat": cat,
-            "cards": prep["cards"], "rows": len(rows), "fit": stats, "explore": "random",
+            "cards": prep["cards"], "rows": len(rows), "fit": stats,
             "pred_lo": min(preds), "pred_hi": max(preds),
             "target_transform": "probit(percentile) -> N(0,1)",
             "input_transform": "per-column quantile -> N(0,1), NaN -> 0, clip +/-%s" % cfg["clip"],
@@ -275,7 +275,7 @@ class Ranker:
                      "action_type": o["action_type"], "key": o["key"],
                      "available": o["available"], "gate": o["gate"],
                      "params": o.get("params") or {},
-                     "exploit": None, "explore": None, "impact": None, "score": None}
+                     "exploit": None, "impact": None, "score": None}
                     for e, o, _r in triples]
         m = self.meta
         rows = [r for _e, _o, r in triples]
@@ -289,9 +289,7 @@ class Ranker:
                         "params": o.get("params") or {},
                         "impact": round(preds[i], 5), "impact_local": None,
                         "pct_global": None, "pct_local": None, "w_local": None,
-                        "exploit": round(preds[i], 5),
-                        "explore": round(self.rng.random(), 4),
-                        "score": round(preds[i], 5)})
+                        "exploit": round(preds[i], 5), "score": round(preds[i], 5)})
         out.sort(key=lambda r: -(r["score"] if r["score"] is not None else -1))
         return out
 

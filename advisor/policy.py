@@ -230,6 +230,6 @@ def scores_for_store(ranked, limit=None):
     rows = ranked if limit is None else ranked[:limit]
     return [{"context_kind": r["context_kind"], "context_id": r["context_id"],
              "action_type": r["action_type"], "key": r["key"], "score": r.get("score"),
-             "exploit": r.get("exploit"), "explore": r.get("explore"), "rank": r.get("rank"),
+             "exploit": r.get("exploit"), "rank": r.get("rank"),
              "pct_global": r.get("pct_global"), "pct_local": r.get("pct_local")}
             for r in rows]

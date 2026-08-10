@@ -66,10 +66,6 @@ def grouped_split(n, groups, frac=VAL_FRACTION, seed=SPLIT_SEED):
         return [], list(range(n))
     return val, trn
 
-ISO_ESTIMATORS = 200
-ISO_SEED = 0
-
-
 def params(iterations=None, learning_rate=None):
     return dict(CB_PARAMS,
                 learning_rate=float(learning_rate or CB_LEARNING_RATE),
@@ -86,11 +82,6 @@ def regressor(iterations=None, learning_rate=None):
         p["learning_rate"] = float(learning_rate)
     return CatBoostRegressor(iterations=int(iterations or CB_ITERATIONS),
                              loss_function=CB_LOSS, verbose=0, train_dir=CB_TRAIN_DIR, **p)
-
-
-def isolation_forest():
-    from sklearn.ensemble import IsolationForest
-    return IsolationForest(n_estimators=ISO_ESTIMATORS, random_state=ISO_SEED, n_jobs=-1)
 
 
 def fit_es(X, y, cat_idx, groups, tag, report, iterations=None, learning_rate=None):
@@ -115,14 +106,6 @@ def fit_es(X, y, cat_idx, groups, tag, report, iterations=None, learning_rate=No
                    "iterations": int(m.tree_count_),
                    "val_rmse": round(float((best.get("validation") or {}).get("RMSE", 0.0)), 6)}
     return m
-
-
-def _mm0(v, lo, hi):
-    return max(0.0, min(1.0, (v - lo) / (hi - lo))) if hi > lo else 0.0
-
-
-def _mm(v, lo, hi):
-    return max(0.0, min(1.0, (v - lo) / (hi - lo))) if hi > lo else 0.5
 
 
 def _pct(v, sample):
@@ -211,15 +194,3 @@ def turns_left(turns, turn):
 
 
 
-def _encode(rows, num, cat, cat_maps=None):
-    if cat_maps is None:
-        cat_maps = {c: {v: i for i, v in enumerate(sorted({str(r.get(c, "?")) for r in rows}))}
-                    for c in cat}
-    X = []
-    for r in rows:
-        v = [(F._f(r.get(c)) or 0.0) for c in num]
-        for c in cat:
-            mp = cat_maps[c]
-            v.append(mp.get(str(r.get(c, "?")), len(mp)))
-        X.append(v)
-    return X, cat_maps

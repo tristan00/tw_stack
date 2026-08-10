@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS action_offers(
   context_kind TEXT NOT NULL, context_id TEXT NOT NULL,
   action_type TEXT NOT NULL, action_key TEXT NOT NULL,
   available INTEGER NOT NULL, gate TEXT, params TEXT,
-  score REAL, exploit REAL, explore REAL, rank INTEGER);
+  score REAL, exploit REAL, rank INTEGER);
 
 CREATE TABLE IF NOT EXISTS action_taken(
   taken_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -116,7 +116,6 @@ class DecisionStore:
                    ("interrupt_decisions", "panel_json", "TEXT"),
                    ("action_offers", "score", "REAL"),
                    ("action_offers", "exploit", "REAL"),
-                   ("action_offers", "explore", "REAL"),
                    ("action_offers", "rank", "INTEGER"),
                    ("action_offers", "pct_global", "REAL"),
                    ("action_offers", "pct_local", "REAL"))
@@ -220,14 +219,14 @@ class DecisionStore:
         return 1
 
     def attach_scores(self, decision_id, scores):
-        rows = [(s.get("score"), s.get("exploit"), s.get("explore"), s.get("rank"),
+        rows = [(s.get("score"), s.get("exploit"), s.get("rank"),
                  s.get("pct_global"), s.get("pct_local"), decision_id,
                  s.get("context_kind"), str(s.get("context_id")), s.get("action_type"),
                  str(s.get("key"))) for s in (scores or [])]
         if not rows:
             return 0
         cur = self.con.executemany(
-            "UPDATE action_offers SET score=?,exploit=?,explore=?,rank=?,"
+            "UPDATE action_offers SET score=?,exploit=?,rank=?,"
             "pct_global=?,pct_local=? WHERE decision_id=? "
             "AND context_kind=? AND context_id=? AND action_type=? AND action_key=?", rows)
         self.con.commit()
@@ -495,7 +494,7 @@ if __name__ == "__main__":
     d1 = s.write_decision(snap)
     print("attach_scores:", s.attach_scores(d1, [
         {"context_kind": "lord", "context_id": "56", "action_type": "attack_army",
-         "key": "cqi:99", "score": 0.9, "exploit": 0.8, "explore": 0.4, "rank": 1}]), "offers scored")
+         "key": "cqi:99", "score": 0.9, "exploit": 0.8, "rank": 1}]), "offers scored")
     s.attach_taken(d1, {"context_kind": "lord", "context_id": "56", "action_type": "attack_army",
                         "key": "cqi:99", "executed": True, "confirmed": True, "counted": True,
                         "confirm": {"signal": "pre_battle_popup"}})

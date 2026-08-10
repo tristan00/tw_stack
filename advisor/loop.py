@@ -475,7 +475,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None, act_hist
         t_scored = time.time()
         TR.advisor(pick, ranked_top=[{k: r.get(k) for k in
                                       ("context_kind", "context_id", "action_type", "key",
-                                       "score", "exploit", "explore", "rank")}
+                                       "score", "exploit", "rank")}
                                      for r in (ranked or [])[:10]],
                    turn=turn, decision_id=decision_id, actions_taken=actions,
                    n_offers=len(ranked or []),
