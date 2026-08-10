@@ -477,17 +477,34 @@ def _recruit_execute_inner(bus, ctx, pick, before):
             sys.stderr.write("click_actions: %s offered in %s but %r was asked for\n"
                              % (unit, [c.get("queue") for c in same_key], want_q))
             return False
-    elif len(same_key) > 1:
-        sys.stderr.write("click_actions: %s is in %d pools %s and the pick names no queue -- "
-                         "refusing to guess which one\n"
-                         % (unit, len(same_key), [c.get("queue") for c in same_key]))
-        return False
     else:
-        card = same_key[0] if same_key else None
+        # The collector no longer names a queue, because nothing it can read knows one:
+        # neither CCO nor the script API distinguishes the local pool from the global one,
+        # and asserting it anyway killed 56.9% of 'global' picks in execute_failed. The
+        # pools are visible here and nowhere else, so the choice is made here -- cheapest
+        # first, which is the local pool whenever it carries the unit -- and written into
+        # the confirm payload as `queue_used` so the corpus records what happened rather
+        # than what was assumed.
+        card = _cheapest_pool(same_key)
     if card is None:
         sys.stderr.write("click_actions: unit %r not among recruitable cards\n" % pick["key"])
         return False
+    pick.setdefault("params", {})["queue_used"] = card.get("queue")
     return _click(bus, card["path"])
+
+
+def _cheapest_pool(cards):
+    """Among the pools offering one unit, the one that costs the fewest turns, then the
+    least gold. Ties keep panel order, so the choice is deterministic."""
+    if not cards:
+        return None
+
+    def _rank(c):
+        turns, cost = c.get("turns"), c.get("cost")
+        return (turns if turns is not None else 1e9,
+                cost if cost is not None else 1e9)
+
+    return sorted(cards, key=_rank)[0]
 
 
 def _recruit_confirm(bus, ctx, pick, before):
@@ -498,7 +515,9 @@ def _recruit_confirm(bus, ctx, pick, before):
     queued = after.count(want) > prior.count(want)
     dropped = (t is not None and before.get("treasury") is not None and t < before["treasury"])
     return queued, {"treasury": t, "pending": after, "pending_before": prior,
-                    "treasury_dropped": dropped}
+                    "treasury_dropped": dropped,
+                    # which pool the click actually landed in -- observed, not asserted
+                    "queue_used": (pick.get("params") or {}).get("queue_used")}
 
 
 register("recruit_unit", {

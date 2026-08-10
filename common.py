@@ -139,6 +139,9 @@ MODEL_COLD_START = os.path.join(MODELS, "__cold_start__")
 REFERENCE_DIR = os.path.join(TWDATA, "reference")
 REFERENCE_DB = os.path.join(REFERENCE_DIR, "reference.sqlite")
 UNLOCK_DB = os.path.join(REFERENCE_DIR, "agent_action_unlocks.sqlite")
+# CA's own dump of every CCO context and property. decisions/cco_audit.py checks the
+# collector's routes against it; a property read off the wrong context is silent.
+CCO_TSV = os.path.join(REFERENCE_DIR, "ui3_extraction", "CCO.tsv")
 WIKI_ROOT = _TD + "/wiki"
 
 # scratch, metrics, archive

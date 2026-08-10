@@ -44,6 +44,25 @@ JUSTIFIED = {
     ("state:province", "settlement_present"):
         "the recorder only emits provinces that have a settlement, so this is a "
         "tautology of the filter -- remove the field or widen the filter",
+    ("state:hero", "besieging"):
+        "laying siege is a property of an army (CcoCampaignMilitaryForce.IsLayingSiege) "
+        "and a hero commands none, so False for every hero is the game speaking. Note "
+        "this is NOT the reason state:hero.garrisoned was constant: IsGarrisoned exists "
+        "on CcoCampaignCharacter too, we were simply reading it off the force",
+    ("world:relations", "def_ally"):
+        "no defensive alliance ever existed to report. The read works -- the identical "
+        "b() helper over the same faction list returns mil_ally 95, nap 1,843 and "
+        "mil_access 353 -- and the agent's 105 defensive_alliance proposals were accepted "
+        "0 times, in company with 0/95 military_alliance, 0/103 vassal and 0/97 "
+        "confederation. The AI accepting nothing is a fact about the game; if that "
+        "changes, this entry should be deleted rather than kept",
+    ("offer:recruit_hero", "traits"):
+        "an agent pool candidate carries no traits until it is recruited. The route is "
+        "proven live by the identical read on lords, which returned traits for 241 of "
+        "159,336 candidates -- so this is an empty list, not a failed read, and the "
+        "collector now emits TRAITS_UNREAD when it actually cannot read the list",
+    ("offer:recruit_hero", "n_traits"): "see offer:recruit_hero.traits",
+    ("offer:recruit_hero", "trait"): "see offer:recruit_hero.traits",
 }
 
 
@@ -79,28 +98,49 @@ def _norm(scope):
     return "campaign" if scope == "state:campaign" else scope
 
 
+def _rows(con, col, table, where=(), args=(), sample=None):
+    """A uniform sample, not the first N.
+
+    `LIMIT N` with no ORDER BY returns the N lowest rowids -- the earliest decisions of
+    the earliest campaigns. Anything that only happens later in a campaign is then absent
+    from the sample by construction and gets reported as a dead field. That is not
+    hypothetical: `diplomacy.their_vassal` was flagged constant-False off the first 40,000
+    rows and is in fact true in 8,256 of 2,131,584 -- vassals do not exist on turn 1. A
+    checker that manufactures its own false positives cannot be an acceptance gate, so
+    this strides across the whole rowid range instead.
+    """
+    sql = "SELECT %s FROM %s" % (col, table)
+    cond = list(where)
+    if sample:
+        n = con.execute("SELECT count(*) FROM %s%s"
+                        % (table, (" WHERE " + " AND ".join(where)) if where else ""),
+                        args).fetchone()[0]
+        step = max(1, n // sample)
+        if step > 1:
+            cond.append("rowid %% %d = 0" % step)
+    if cond:
+        sql += " WHERE " + " AND ".join(cond)
+    return (r[0] for r in con.execute(sql, args))
+
+
 def check(db=None, sample=None, min_rows=200, verbose=True):
     import sqlite3
     db = db or os.path.join(common.RUNS_ROOT.replace("/", os.sep), "run",
                             "decisions.sqlite")
     con = sqlite3.connect("file:%s?mode=ro" % db.replace("\\", "/"), uri=True, timeout=300)
     out = defaultdict(_blank)
-    lim = (" LIMIT %d" % sample) if sample else ""
 
-    _scan((r[0] for r in con.execute("SELECT campaign FROM decision_points" + lim)),
-          "campaign", out)
+    _scan(_rows(con, "campaign", "decision_points", sample=sample), "campaign", out)
     for (kind,) in con.execute("SELECT DISTINCT context_kind FROM entity_snapshots"):
-        _scan((r[0] for r in con.execute(
-            "SELECT features FROM entity_snapshots WHERE context_kind=?" + lim, (kind,))),
-            "state:%s" % kind, out)
+        _scan(_rows(con, "features", "entity_snapshots", ["context_kind=?"], (kind,),
+                    sample), "state:%s" % kind, out)
     for (at,) in con.execute("SELECT DISTINCT action_type FROM action_offers"):
-        _scan((r[0] for r in con.execute(
-            "SELECT params FROM action_offers WHERE action_type=?" + lim, (at,))),
-            "offer:%s" % at, out)
+        _scan(_rows(con, "params", "action_offers", ["action_type=?"], (at,), sample),
+              "offer:%s" % at, out)
 
     # world holds lists of dicts, one level in
     wrows = defaultdict(_blank)
-    for (w,) in con.execute("SELECT world FROM decision_points" + lim):
+    for w in _rows(con, "world", "decision_points", sample=sample):
         try:
             d = json.loads(w or "{}")
         except (ValueError, TypeError):
@@ -112,9 +152,17 @@ def check(db=None, sample=None, min_rows=200, verbose=True):
     out.update(wrows)
     con.close()
 
+    # decision_points.campaign and entity_snapshots[campaign].features are the same blob
+    # written twice, so the same field arrives under two scopes and was reported twice.
+    merged = defaultdict(_blank)
+    for (scope0, field), s in out.items():
+        m = merged[(_norm(scope0), field)]
+        m["n"] += s["n"]
+        m["empty"] += s["empty"]
+        m["vals"].update(s["vals"])
+
     dead, thin = [], []
-    for (scope0, field), s in sorted(out.items()):
-        scope = _norm(scope0)
+    for (scope, field), s in sorted(merged.items()):
         if s["n"] < min_rows:
             thin.append((scope, field, s["n"]))
             continue
@@ -125,7 +173,7 @@ def check(db=None, sample=None, min_rows=200, verbose=True):
 
     if verbose:
         unjust = [d for d in dead if not d[4]]
-        print("fields examined      : %d" % len(out))
+        print("fields examined      : %d" % len(merged))
         print("constant fields      : %d  (%d justified, %d NOT)"
               % (len(dead), len(dead) - len(unjust), len(unjust)))
         print("below --min-rows %-4d: %d (not judged)" % (min_rows, len(thin)))
