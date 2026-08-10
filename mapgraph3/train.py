@@ -47,7 +47,7 @@ THREADS = max(1, os.cpu_count() or 8)
 
 CFG = {"hidden": 192, "entity_layers": 2, "action_rounds": 2,
        "lr": 2e-3, "weight_decay": 1e-4, "batch": 16, "epochs": 200, "patience": 25,
-       "grad_clip": 5.0, "adv_tau": 1.0, "adv_clip": 20.0, "value_weight": 1.0,
+       "grad_clip": 5.0, "adv_tau": 1.0, "adv_clip": 20.0, "value_weight": 1.0, "bf16": True,
        # In-session budget. session.py retrains between campaigns with the game shut
        # down, so every second here is a second the run is not collecting data --
        # 5 retrains x 100 campaigns. Pass a bigger budget explicitly for an offline fit.
@@ -167,13 +167,22 @@ def _fit(datas, ys, groups, cfg, log=print):
         return [Batch.from_data_list([datas[i] for i in order[k:k + cfg["batch"]]])
                 for k in range(0, len(order), cfg["batch"])]
 
+    # bf16 on the message passing. The 5090 has an order of magnitude more bf16 throughput
+    # than fp32, and bf16 keeps fp32's exponent range so no loss scaler is needed. The
+    # losses are computed in fp32: a softmax over up to ~1300 candidates and an MSE are
+    # exactly where reduced precision would bite.
+    amp = (dev.type == "cuda") and bool(cfg.get("bf16", True))
+
     def step(b, train):
         b = b.to(dev)
-        out = net(b)
+        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=amp):
+            out = net(b)
+        q = out["q"].float()
+        v = out["v"].float()
         n = int(b.n_actions.numel())
-        nll = N.listwise_nll(out["q"], out["action_graph"], b.is_taken, n)
-        vloss = torch.nn.functional.mse_loss(out["v"], b.y_z)
-        adv = (b.y_z - out["v"].detach()) / cfg["adv_tau"]
+        nll = N.listwise_nll(q, out["action_graph"], b.is_taken, n)
+        vloss = torch.nn.functional.mse_loss(v, b.y_z)
+        adv = (b.y_z - v.detach()) / cfg["adv_tau"]
         w = torch.exp(adv.clamp(max=3.0)).clamp(max=cfg["adv_clip"])
         rank = (nll * w).mean()
         return rank + cfg["value_weight"] * vloss, nll.mean(), vloss
@@ -315,6 +324,11 @@ if __name__ == "__main__":
         def _log(s):
             sys.stdout.write(str(s) + "\n")
             sys.stdout.flush()
-        print(json.dumps(train(log=_log), indent=2, default=str))
+        over = {}
+        for k, cast in (("--budget", int), ("--batch", int), ("--epochs", int)):
+            if k in a:
+                over[{"--budget": "time_budget_s", "--batch": "batch",
+                      "--epochs": "epochs"}[k]] = cast(a[a.index(k) + 1])
+        print(json.dumps(train(cfg=over or None, log=_log), indent=2, default=str))
     else:
         raise SystemExit("usage: train.py overfit [--limit N] | report | train")
