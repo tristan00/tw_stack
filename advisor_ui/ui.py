@@ -81,13 +81,78 @@ def sequence(con, limit=SEQ_PAGE, offset=0):
         "SELECT d.decision_id, d.turn, d.decision_seq, d.n_entities, d.n_offers,"
         " t.context_kind, t.context_id, t.action_type, t.action_key, t.counted, t.refusal, t.policy,"
         " o.score, o.exploit, o.pct_global, o.pct_local, o.rank"
-        + "".join(", o.%s" % c for c in gnn) +
+        + "".join(", o.%s" % c for c in gnn)
+        # how many offers the gnn scored on this decision -- the denominator its rank is
+        # out of. catboost ranks all n_offers, the gnn only the eligible ones, so the two
+        # ranks are on different scales and cannot be compared without both denominators.
+        + (", (SELECT COUNT(*) FROM action_offers g WHERE g.decision_id=d.decision_id"
+           " AND g.gnn_rank IS NOT NULL) AS n_gnn" if "gnn_rank" in gnn else "") +
         " FROM decision_points d LEFT JOIN action_taken t ON t.decision_id=d.decision_id"
         " LEFT JOIN action_offers o ON o.rowid ="
         "   (SELECT MIN(o2.rowid) FROM action_offers o2 WHERE o2.decision_id=t.decision_id"
         "    AND o2.context_kind=t.context_kind AND o2.context_id=t.context_id"
         "    AND o2.action_type=t.action_type AND o2.action_key=t.action_key)"
         " ORDER BY d.decision_id DESC LIMIT ? OFFSET ?", (limit, offset))]
+
+
+def _pctile(rank, n):
+    """Where a 1-based rank sits among n items, 100 = the model's own top pick.
+
+    catboost ranks every offer and the gnn only the eligible ones, so rank 5 means very
+    different things to each. Normalising to a percentile is the only way the two are
+    comparable on one row.
+    """
+    try:
+        rank, n = float(rank), float(n)
+    except (TypeError, ValueError):
+        return None
+    if rank <= 0 or n < 2:
+        return None
+    return 100.0 * (1.0 - (rank - 1.0) / (n - 1.0))
+
+
+def _spearman(xs, ys):
+    """Rank correlation, ties averaged. None when there is too little to say."""
+    n = len(xs)
+    if n < 3:
+        return None
+
+    def ranks(v):
+        order = sorted(range(n), key=lambda i: v[i])
+        out = [0.0] * n
+        i = 0
+        while i < n:
+            j = i
+            while j + 1 < n and v[order[j + 1]] == v[order[i]]:
+                j += 1
+            avg = (i + j) / 2.0 + 1.0
+            for k in range(i, j + 1):
+                out[order[k]] = avg
+            i = j + 1
+        return out
+
+    rx, ry = ranks(xs), ranks(ys)
+    mx, my = sum(rx) / n, sum(ry) / n
+    num = sum((a - mx) * (b - my) for a, b in zip(rx, ry))
+    dx = sum((a - mx) ** 2 for a in rx) ** 0.5
+    dy = sum((b - my) ** 2 for b in ry) ** 0.5
+    return (num / (dx * dy)) if dx and dy else None
+
+
+def agreement(con, did):
+    """Both models' rankings of the same decision, for the offers both scored."""
+    if "gnn_rank" not in _optional_cols(con, "action_offers", ("gnn_rank",)):
+        return None
+    rows = con.execute(
+        "SELECT rank, gnn_rank FROM action_offers WHERE decision_id=?"
+        " AND rank IS NOT NULL AND gnn_rank IS NOT NULL", (did,)).fetchall()
+    if len(rows) < 3:
+        return None
+    cat = [r[0] for r in rows]
+    gnn = [r[1] for r in rows]
+    top_cat = min(range(len(rows)), key=lambda i: cat[i])
+    top_gnn = min(range(len(rows)), key=lambda i: gnn[i])
+    return {"n": len(rows), "rho": _spearman(cat, gnn), "same_top": top_cat == top_gnn}
 
 
 def sequence_total(con):
@@ -1326,28 +1391,33 @@ def render_decisions(con, q):
         pol = _esc(r["policy"])
         if r["policy"] and str(r["policy"]).endswith("_random_fallback"):
             pol = "<span class=warn>%s</span>" % pol
-        decider = str(r["policy"] or "").split("(")[0]
         gi = r.get("gnn_impact")
-        # highlight the numbers the deciding strategy actually used; the rest are stored
-        # for every offer regardless of who picked, so they stay legible but dim
-        cb = "num" if decider == "exploit_tree" else "num dim"
-        gn = "num" if decider == "gnn" else "num dim"
+        # Both groups are bright. They used to dim whichever model did not decide, which
+        # made sense while the gnn only scored its own decisions -- but the other model's
+        # opinion of the action taken is now exactly what this table is for.
+        cat_p = _pctile(r.get("rank"), r.get("n_offers"))
+        gnn_p = _pctile(r.get("gnn_rank"), r.get("n_gnn"))
+        delta = ("%+0.1f" % (gnn_p - cat_p)) if (cat_p is not None
+                                                 and gnn_p is not None) else "-"
         seq.append("<tr><td><a href='/d/%d'>#%d</a></td><td>%s</td><td>%s</td>"
                    "<td class=gsep>%s:%s</td><td>%s</td><td>%s</td>"
                    "<td class='%s gsep'>%s</td><td class=dim style='white-space:normal'>%s</td>"
-                   "<td class='%s gsep'>%s</td><td class='%s'>%s</td><td class='%s'>%s</td>"
-                   "<td class='%s gsep'>%s</td><td class='%s'>%s</td>"
+                   "<td class='num gsep'>%s</td><td class=num>%s</td><td class=num>%s</td>"
+                   "<td class=num>%s</td>"
+                   "<td class='num gsep'>%s</td><td class=num>%s</td>"
+                   "<td class='num gsep'>%s</td>"
                    "<td class=gsep>%s</td></tr>"
                    % (r["decision_id"], r["decision_id"], _esc(r["turn"]), r["n_offers"],
                       _esc(r["context_kind"]), _esc(str(r["context_id"])[:26]),
                       _esc(r["action_type"]), _esc(str(r["action_key"])[:38]), cls, mark,
                       _esc(r["refusal"]),
-                      cb, _num(r.get("exploit")), cb, _num(r.get("pct_global")),
-                      cb, (_num(r.get("pct_local")) if r.get("pct_local") is not None
-                           else "<span class=dim>n/a</span>"),
-                      gn, ("%+0.4f" % float(gi)) if gi is not None else "-",
-                      gn, _esc(r.get("gnn_rank") if r.get("gnn_rank") is not None else "-"),
-                      pol))
+                      _num(r.get("exploit")), _num(r.get("pct_global")),
+                      (_num(r.get("pct_local")) if r.get("pct_local") is not None
+                       else "<span class=dim>n/a</span>"),
+                      _esc(r.get("rank") if r.get("rank") is not None else "-"),
+                      ("%+0.4f" % float(gi)) if gi is not None else "-",
+                      _esc(r.get("gnn_rank") if r.get("gnn_rank") is not None else "-"),
+                      delta, pol))
     _first = seq_offset + 1 if seq else 0
     _last = seq_offset + len(seq)
     _prev = max(0, seq_offset - SEQ_PAGE)
@@ -1359,30 +1429,38 @@ def render_decisions(con, q):
               % (_first, _last, seq_total, _prev,
                  _next if _next < seq_total else seq_offset))
     if not seq:
-        seq = ["<tr><td colspan=14 class=dim>no decisions recorded yet</tr>"]
+        seq = ["<tr><td colspan=16 class=dim>no decisions recorded yet</tr>"]
     seqtbl = ("<h2>every decision, newest first</h2>"
-              "<div class=legend>one row per decision point. The scores are grouped by which "
-              "model produced them, and <b>the group belonging to the strategy that actually "
-              "picked is shown bright</b> &mdash; the dim one was computed but not used. "
-              "catboost scores every offer on every decision, so its columns are always "
-              "filled; the gnn only scores when it is the strategy drawn, so its columns are "
-              "blank otherwise. <b>ruleset</b> and <b>random</b> picks rank on no score at "
-              "all &mdash; the rule that fired is named in <b>picked by</b>, and "
+              "<div class=legend>one row per decision point, showing what <b>both</b> models "
+              "made of the action that was actually taken. Each model's <b>rank</b> is that "
+              "action's position in its own ranking &mdash; but catboost ranks every offer "
+              "and the gnn only the eligible ones, so the raw ranks are on different scales. "
+              "<b>&Delta;pct</b> is the honest comparison: each rank as a percentile of its "
+              "own model's ranking, gnn minus catboost. <b>+</b> means the gnn rated the "
+              "chosen action higher than catboost did, <b>-</b> means lower, near zero means "
+              "they agreed about it. Decisions recorded before the gnn began scoring every "
+              "decision show <b>-</b> in the gnn columns, because it only ran when drawn. "
+              "<b>ruleset</b> and <b>random</b> picks rank on no score at all &mdash; the "
+              "rule that fired is named in <b>picked by</b>, and "
               "<span class=warn>*_random_fallback</span> means that strategy was drawn but "
               "could not pick. Click a <b>#</b> for the full ranking behind a decision.</div>"
               + _pager +
               "<div class=scroll><table>"
               "<tr><th colspan=3>decision<th class=grp colspan=3>what it chose"
               "<th class=grp colspan=2>outcome"
-              "<th class=grp colspan=3 title='E1-E2 impact percentiles; stored for every "
-              "offer whichever strategy picked'>catboost"
-              "<th class=grp colspan=2 title='twin-head Q minus V; recorded only on decisions "
-              "the gnn was drawn for'>gnn"
+              "<th class=grp colspan=4 title='E1-E2 impact percentiles and the rank of the "
+              "taken action; computed for every offer on every decision'>catboost"
+              "<th class=grp colspan=2 title='twin-head Q minus V and the rank of the taken "
+              "action, over the offers the gnn scored'>gnn"
+              "<th class=grp title='gnn percentile minus catboost percentile for the action "
+              "taken; + means the gnn rated it higher'>agree"
               "<th class=grp>picked by</tr>"
               "<tr><th>#<th>turn<th>offers<th class=gsep>entity<th>action<th>key"
               "<th class=gsep>result<th>refusal"
               "<th class='gsep num'>exploit<th class=num>global<th class=num>local"
+              "<th class=num>rank"
               "<th class='gsep num'>Q&minus;V<th class=num>rank"
+              "<th class='gsep num'>&Delta;pct"
               "<th class=gsep>strategy</tr>"
               "%s</table></div>" % "".join(seq)) + _pager
     return seqtbl
@@ -1434,6 +1512,144 @@ def render_reward(con, limit=REWARD_CAMPAIGNS):
             % (len(recent), n_camps, n_camps, vas or 0, tot or 0, "".join(lanes)))
 
 
+AGREE_LOOKBACK = 600
+
+
+def _median(vals):
+    vals = sorted(v for v in vals if v is not None)
+    if not vals:
+        return None
+    n = len(vals)
+    return vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2.0
+
+
+def _agreement_window(con):
+    """Both models' rankings over the most recent AGREE_LOOKBACK decisions.
+
+    Bounded by decision_id on purpose: an unbounded "WHERE gnn_rank IS NOT NULL" would
+    walk all 7M+ offer rows on every page load. The bound keeps it on ix_offer_dp.
+    """
+    if "gnn_rank" not in _optional_cols(con, "action_offers", ("gnn_rank",)):
+        return None
+    top = con.execute("SELECT MAX(decision_id) FROM decision_points").fetchone()[0]
+    if not top:
+        return None
+    lo = top - AGREE_LOOKBACK
+    per = {}
+    for did, crank, grank in con.execute(
+            "SELECT decision_id, rank, gnn_rank FROM action_offers"
+            " WHERE decision_id > ? AND rank IS NOT NULL AND gnn_rank IS NOT NULL", (lo,)):
+        per.setdefault(did, []).append((crank, grank))
+    taken = con.execute(
+        "SELECT t.decision_id, t.policy, d.n_offers, o.rank, o.gnn_rank"
+        " FROM action_taken t JOIN decision_points d ON d.decision_id=t.decision_id"
+        " LEFT JOIN action_offers o ON o.rowid ="
+        "   (SELECT MIN(o2.rowid) FROM action_offers o2 WHERE o2.decision_id=t.decision_id"
+        "    AND o2.context_kind=t.context_kind AND o2.context_id=t.context_id"
+        "    AND o2.action_type=t.action_type AND o2.action_key=t.action_key)"
+        " WHERE t.decision_id > ?", (lo,)).fetchall()
+    return {"lo": lo, "top": top, "per": per, "taken": taken}
+
+
+def render_agreement(con):
+    w = _agreement_window(con)
+    per = (w or {}).get("per") or {}
+    usable = {d: p for d, p in per.items() if len(p) >= 3}
+    if not usable:
+        return ("<h2>do the two models agree?</h2>"
+                "<div class=legend>Nothing to compare yet. This panel needs decisions where "
+                "<b>both</b> models ranked the same offers. The gnn only records a ranking "
+                "on decisions it actually scored &mdash; until it scores every decision, "
+                "the only overlap is the decisions it was drawn to win, which is a biased "
+                "sample and deliberately not reported here.</div>")
+    rhos, tops, sizes = [], [], []
+    for pairs in usable.values():
+        cat = [p[0] for p in pairs]
+        gnn = [p[1] for p in pairs]
+        r = _spearman(cat, gnn)
+        if r is not None:
+            rhos.append(r)
+        sizes.append(len(pairs))
+        tops.append(min(range(len(pairs)), key=lambda i: cat[i])
+                    == min(range(len(pairs)), key=lambda i: gnn[i]))
+    agree_pct = 100.0 * sum(1 for t in tops if t) / len(tops)
+    summary = [("decisions compared", "%d" % len(usable)),
+               ("offers both models ranked (median)", "%.0f" % (_median(sizes) or 0)),
+               ("Spearman rho, median", "%+0.3f" % (_median(rhos) or 0.0)),
+               ("Spearman rho, mean", "%+0.3f" % ((sum(rhos) / len(rhos)) if rhos else 0.0)),
+               ("both picked the same best action", "%.0f%% (%d of %d)"
+                % (agree_pct, sum(1 for t in tops if t), len(tops)))]
+    stbl = ("<div class=scroll><table><tr><th>measure<th class=num>value</tr>%s</table></div>"
+            % "".join("<tr><td>%s</td><td class=num>%s</td></tr>" % (_esc(k), _esc(v))
+                      for k, v in summary))
+
+    by = {}
+    for did, pol, n_offers, crank, grank in (w.get("taken") or []):
+        b = by.setdefault(str(pol), {"n": 0, "cat": [], "catp": [], "gnn": [], "gnnp": [],
+                                     "delta": []})
+        b["n"] += 1
+        n_gnn = len(per.get(did, []))
+        cp = _pctile(crank, n_offers)
+        gp = _pctile(grank, n_gnn)
+        if crank is not None:
+            b["cat"].append(crank)
+        if cp is not None:
+            b["catp"].append(cp)
+        if grank is not None:
+            b["gnn"].append(grank)
+        if gp is not None:
+            b["gnnp"].append(gp)
+        if cp is not None and gp is not None:
+            b["delta"].append(gp - cp)
+    dash = "<span class=dim>-</span>"
+
+    def cell(v, fmt):
+        return (fmt % v) if v is not None else dash
+    rows = []
+    for pol, b in sorted(by.items(), key=lambda x: -x[1]["n"]):
+        rows.append("<tr><td>%s</td><td class=num>%d</td>"
+                    "<td class='num gsep'>%s</td><td class=num>%s</td>"
+                    "<td class='num gsep'>%s</td><td class=num>%s</td>"
+                    "<td class='num gsep'>%s</td></tr>"
+                    % (_esc(pol[:34]), b["n"],
+                       cell(_median(b["cat"]), "%.0f"), cell(_median(b["catp"]), "%.1f%%"),
+                       cell(_median(b["gnn"]), "%.0f"), cell(_median(b["gnnp"]), "%.1f%%"),
+                       cell(_median(b["delta"]), "%+0.1f")))
+    ptbl = ("<div class=scroll><table>"
+            "<tr><th colspan=2>&nbsp;<th class=grp colspan=2>catboost"
+            "<th class=grp colspan=2>gnn<th class=grp>agree</tr>"
+            "<tr><th>picked by<th class=num>decisions"
+            "<th class='gsep num'>rank<th class=num>pct"
+            "<th class='gsep num'>rank<th class=num>pct"
+            "<th class='gsep num'>&Delta;pct</tr>%s</table></div>" % "".join(rows))
+    # If the gnn only ever scored the decisions it won, every row here is drawn from its
+    # own picks and the per-strategy table cannot say anything about catboost's. Saying so
+    # loudly beats letting the page read as a fair comparison when it is not one.
+    shadow = sum(1 for _d, pol, _n, _cr, gr in (w.get("taken") or [])
+                 if gr is not None and str(pol).split("(")[0] != "gnn")
+    warn = ("" if shadow else
+            "<div class=legend style='border-left:3px solid #b58900'><b>Every decision below "
+            "is one the gnn was drawn to win.</b> It is not yet scoring decisions it did not "
+            "win, so this sample can only show what catboost made of the gnn's picks &mdash; "
+            "never what the gnn made of catboost's. The per-strategy rows below are blank in "
+            "the gnn columns for exactly that reason, and &rho; here is measured only on the "
+            "gnn's own decisions.</div>")
+    return ("<h2>do the two models agree?</h2>"
+            "<div class=legend>Rank correlation between catboost and the gnn over the last "
+            "%d decisions (#%d onward), counting only offers <b>both</b> models ranked. "
+            "&rho; near 0 means they are ranking on effectively unrelated criteria; near 1 "
+            "means they are redundant. A decision the gnn never scored cannot appear here "
+            "at all.</div>%s%s"
+            "<h2>where each model ranked the action that was taken</h2>"
+            "<div class=legend>Grouped by the strategy that actually chose. <b>rank</b> is "
+            "the taken action's position in that model's own ranking and <b>pct</b> is the "
+            "same as a percentile, since catboost ranks every offer and the gnn only the "
+            "eligible ones. The row for a strategy shows what the <b>other</b> model thought "
+            "of its pick &mdash; that is the point of the table. <b>&Delta;pct</b> is gnn "
+            "minus catboost.</div>%s"
+            % (AGREE_LOOKBACK, (w or {}).get("lo", 0) + 1, warn, stbl, ptbl))
+
+
 PANELS = (
     ("live", "live", lambda con, run, q: render_live(run)),
     ("overview", "overview",
@@ -1445,6 +1661,7 @@ PANELS = (
     ("timing", "timing", lambda con, run, q: render_timing(run)),
     ("actions", "actions", lambda con, run, q: render_actions(con, q)),
     ("decisions", "decision log", lambda con, run, q: render_decisions(con, q)),
+    ("agreement", "model agreement", lambda con, run, q: render_agreement(con)),
     ("timeline", "timeline", lambda con, run, q: render_timeline(con)),
     ("reward", "reward", lambda con, run, q: render_reward(con)),
     ("models", "models", lambda con, run, q: render_models()),
@@ -1657,6 +1874,12 @@ def render_decision(con, did):
                _esc("%s %s (%s)" % (tk["action_type"], tk["action_key"],
                                     "confirmed" if tk["counted"] else (tk["refusal"] or "?")))
                if tk else "nothing"))
+    agr = agreement(con, did)
+    if agr and agr["rho"] is not None:
+        head += ("<div class=dim>both models ranked %d of these offers &mdash; Spearman "
+                 "&rho; <b>%+0.3f</b>, and they %s on the best one</div>"
+                 % (agr["n"], agr["rho"],
+                    "agreed" if agr["same_top"] else "<b>disagreed</b>"))
     rows = []
     for o in d["offers"]:
         cls = "take" if o["taken"] else ""
@@ -1677,8 +1900,11 @@ def render_decision(con, did):
                        _esc(o.get("gnn_rank") if o.get("gnn_rank") is not None else "-"),
                        _esc(o["gate"])))
     tbl = ("<h2>the ranking it produced over the whole faction</h2>"
-           "<div class=legend>catboost ranks every offer each decision; the gnn columns are "
-           "filled only on decisions the gnn was drawn for, since that is when it scores.</div>"
+           "<div class=legend>catboost ranks every offer each decision; the gnn ranks the "
+           "eligible ones, so its rank is out of a smaller set and the two are not the same "
+           "scale. On decisions recorded before the gnn began scoring every decision, its "
+           "columns are blank &mdash; back then it only ran when it was the strategy drawn."
+           "</div>"
            "<div class=scroll><table>"
            "<tr><th colspan=5>offer<th class=grp colspan=3>catboost"
            "<th class=grp colspan=2>gnn<th class=grp>&nbsp;</tr>"
