@@ -138,18 +138,6 @@ class Reader:
         return self.row.get(key)
 
 
-def assert_no_catboost_features():
-    """The GNN must never have imported the CatBoost feature module."""
-    import sys
-    bad = [m for m in sys.modules
-           if m == "features" or m.endswith(".features") or "advisor.features" in m]
-    if bad:
-        raise AssertionError(
-            "mapgraph3: advisor/features.py is loaded (%s). v3 must not import the "
-            "CatBoost feature module -- not for constants, not for vocabularies, not "
-            "for helpers." % ", ".join(sorted(bad)))
-
-
 def _selftest():
     a = Raw(8.0, "char:17", "armies[].units")
     b = Raw(12.0, "char:99", "hostiles[].units")

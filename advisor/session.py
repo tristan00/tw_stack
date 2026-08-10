@@ -343,9 +343,13 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                 log("   interrupt model: %s" % json.dumps(irep)[:200])
                 if "gnn" in mix:
                     try:
-                        if r"D:\tw_stack" not in sys.path:
-                            sys.path.insert(0, r"D:\tw_stack")
-                        from mapgraph import train as GT
+                        # against this checkout, not a hardcoded one -- see policy.py
+                        _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                        if not os.path.isdir(os.path.join(_root, "mapgraph3")):
+                            _root = r"D:\tw_stack"
+                        if _root not in sys.path:
+                            sys.path.insert(0, _root)
+                        from mapgraph3 import train as GT
                         t1 = time.time()
                         grep = GT.train(log=log)
                         grep["seconds"] = round(time.time() - t1, 1)
@@ -1106,7 +1110,7 @@ def main():
                          "normalized)\n"
                          "  --ruleset   -- rule file name under D:\\twdata\\rules\\<name>.json "
                          "(required when 'ruleset' is in the mix)\n"
-                         "  'gnn'       -- graph offer-scorer (D:\\twdata\\models\\gnn); "
+                         "  'gnn'       -- graph offer-scorer (D:\\twdata\\models\\gnn3); "
                          "untrained -> gnn_random_fallback\n"
                          "  --epsilon E -- legacy sugar for exploit_tree=1-E,random=E\n"
                          % ("|".join(B.names()), B.DEFAULT,
