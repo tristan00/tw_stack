@@ -10,15 +10,19 @@ floats from the bus can print as "4.0" where a turn number belongs.
 Run it after touching any panel. A column flagged "empty in every row" is either dead
 weight or a field nobody populates -- both worth knowing before shipping the tab.
 """
+import os
 import re
 import sys
 
-W = sys.argv[1] if len(sys.argv) > 1 else r"D:\tw_stack"
-for p in (W + r"\advisor_ui", W + r"\advisor", r"D:\tw_stack\decisions", r"D:\tw_stack"):
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import common
+
+W = sys.argv[1] if len(sys.argv) > 1 else common.ROOT
+for p in (W + r"\advisor_ui", W + r"\advisor", common.DECISIONS, common.ROOT):
     sys.path.insert(0, p)
 import ui
 
-run = r"D:/twdata/runs/human/run"
+run = common.RUN_DIR
 con = ui._con(run)
 
 # ROW yields the content BETWEEN <tr> and </tr>, so </tr> is not in the string the cell

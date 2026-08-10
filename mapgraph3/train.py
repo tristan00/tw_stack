@@ -59,22 +59,24 @@ import shutil
 import sys
 import time
 
-# Resolve advisor/ and decisions/ against the checkout this file lives in, not a
-# hardcoded D:\tw_stack. In the live checkout that is the same path; in a worktree it is
-# the difference between testing your own edits and silently importing the main
-# checkout's copies alongside your own mapgraph3.
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if not os.path.isdir(os.path.join(_ROOT, "decisions")):
-    _ROOT = r"D:\tw_stack"
-sys.path.insert(0, os.path.join(_ROOT, "advisor"))
-sys.path.insert(0, os.path.join(_ROOT, "decisions"))
-
 try:
     from mapgraph3 import schema as S
     from mapgraph3 import build as B
 except ImportError:
     import schema as S
     import build as B
+
+# Resolve advisor/ and decisions/ against the checkout this file lives in -- common.py
+# derives ROOT from its own location -- not a hardcoded D:\tw_stack. In the live checkout
+# that is the same path; in a worktree it is the difference between testing your own edits
+# and silently importing the main checkout's copies alongside your own mapgraph3.
+# This block sits AFTER the import above on purpose: putting the repo root on sys.path
+# earlier would change which of the two branches wins when train.py is run as a script.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import common
+
+sys.path.insert(0, common.ADVISOR)
+sys.path.insert(0, common.DECISIONS)
 
 THREADS = max(1, os.cpu_count() or 8)
 
@@ -120,9 +122,10 @@ def _shard(args):
                "NUMEXPR_NUM_THREADS"):
         _os.environ[_v] = "1"
     root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-    if not _os.path.isdir(_os.path.join(root, "decisions")):
-        root = r"D:\tw_stack"
-    for p in (_os.path.join(root, "decisions"), _os.path.join(root, "advisor"), root):
+    if root not in _sys.path:
+        _sys.path.insert(0, root)
+    import common as _common
+    for p in (_common.DECISIONS, _common.ADVISOR, _common.ROOT):
         if p not in _sys.path:
             _sys.path.insert(0, p)
     from store import DecisionStore

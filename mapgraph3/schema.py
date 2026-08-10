@@ -26,7 +26,12 @@ Nothing here is imported from advisor/features.py.
 """
 
 import hashlib
+import os
+import sys
 import zlib
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import common
 
 SCHEMA_VERSION = 3
 
@@ -192,8 +197,8 @@ CORRUPT_SCALE = 100.0
 TREASURY_SCALE = 10000.0
 
 KNN_K = 4
-MODEL_DIR = r"D:\twdata\models\gnn3"
-REFERENCE_DB = r"D:\twdata\reference\reference.sqlite"
+MODEL_DIR = common.MODEL_GNN3
+REFERENCE_DB = common.REFERENCE_DB
 MIN_ROWS = 40
 
 

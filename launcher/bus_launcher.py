@@ -7,11 +7,14 @@ import subprocess
 import sys
 import time
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bus"))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import common
+
+sys.path.insert(0, common.BUS)
 from bus import Bus, OUT_PATH
 from errors import TWError
 
-GAME_DIR = r"D:\SteamLibrary\steamapps\common\Total War WARHAMMER III"
+GAME_DIR = common.GAME_DIR
 EXE = os.path.join(GAME_DIR, "Warhammer3.exe")
 PACK_SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "bus", "dist", "tw.pack")
@@ -69,7 +72,7 @@ class BusLauncher:
         if _bus._game_alive():
             raise TWError("bus rotation refused: Warhammer3 is still running -- spawning a second "
                           "instance over a live mod is forbidden")
-        dst = r"D:\twdata\archive\bus"
+        dst = common.ARCHIVE_BUS
         os.makedirs(dst, exist_ok=True)
         stamp = time.strftime("%Y%m%d_%H%M%S")
         last = None

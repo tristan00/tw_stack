@@ -36,15 +36,19 @@ except ImportError:
     import schema as S
     import build as B
 
-sys.path.insert(0, os.path.join(r"D:\tw_stack", "advisor"))
-sys.path.insert(0, os.path.join(r"D:\tw_stack", "decisions"))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import common
+
+sys.path.insert(0, common.ADVISOR)
+sys.path.insert(0, common.DECISIONS)
 
 
 def _load(limit=120):
     from base_model import decision_deltas, target
     from store import DecisionStore
     out = []
-    for db in sorted(glob.glob(r"D:\twdata\runs\human\*\decisions.sqlite")):
+    for db in sorted(glob.glob(os.path.join(common.native(common.RUNS_ROOT), "*",
+                                            "decisions.sqlite"))):
         s = DecisionStore(os.path.dirname(db), readonly=True)
         try:
             with s.snapshot_read():

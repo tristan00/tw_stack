@@ -9,7 +9,10 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
-sys.path.insert(0, os.path.join(r"D:\tw_stack", "decisions"))
+sys.path.insert(0, os.path.dirname(_HERE))
+import common
+
+sys.path.insert(0, common.DECISIONS)
 
 import features as F
 from base_model import (RUNS_ROOT, TARGET_PARTS, target, SHORT_HORIZON, SHORT_WEIGHT,
@@ -17,8 +20,8 @@ from base_model import (RUNS_ROOT, TARGET_PARTS, target, SHORT_HORIZON, SHORT_WE
                         regressor, _pct, _ranks, _sd)
 from store import DecisionStore, IncompatibleStore
 
-MODEL_DIR = r"D:\twdata\models\global"
-LOCAL_MODEL_DIR = r"D:\twdata\models\local"
+MODEL_DIR = common.MODEL_GLOBAL
+LOCAL_MODEL_DIR = common.MODEL_LOCAL
 W_LOCAL = 0.25
 LOCAL_KINDS = ("lord", "hero", "province")
 MIN_ROWS = 40

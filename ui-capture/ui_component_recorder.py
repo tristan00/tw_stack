@@ -355,8 +355,10 @@ try:
     import config as _config
     _GAME_DIR = _config.GAME_DIR
 except Exception as e:
-    _GAME_DIR = r"D:\SteamLibrary\steamapps\common\Total War WARHAMMER III"
-    sys.stderr.write("ui-capture: config import failed, using hardcoded game dir -> %s\n" % repr(e)[:80])
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    import common
+    _GAME_DIR = common.GAME_DIR
+    sys.stderr.write("ui-capture: config import failed, using common.py game dir -> %s\n" % repr(e)[:80])
 
 
 def _extract_key(component_id: str) -> str:

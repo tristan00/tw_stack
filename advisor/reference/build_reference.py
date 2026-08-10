@@ -3,10 +3,14 @@ import os
 import re
 import sqlite3
 import struct
+import sys
 
 import zstandard as zstd
 
-GAME = r"D:/SteamLibrary/steamapps/common/Total War WARHAMMER III/data"
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+import common
+
+GAME = common.GAME_DATA_DIR
 HAS_INDEX_WITH_TIMESTAMPS = 0x40
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -532,7 +536,7 @@ def _merc_reference(cur, files, d, schema, report):
 
 
 def build():
-    out = r"D:\twdata\reference\reference.sqlite"
+    out = common.REFERENCE_DB
     os.makedirs(os.path.dirname(out), exist_ok=True)
     con = sqlite3.connect(out)
     cur = con.cursor()

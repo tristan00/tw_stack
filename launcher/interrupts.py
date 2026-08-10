@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import time
 
-sys.path.insert(0, r"D:\tw_stack\bus")
-sys.path.insert(0, r"D:\tw_stack\launcher")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import common
+
+sys.path.insert(0, common.BUS)
+sys.path.insert(0, common.LAUNCHER)
 
 import nav
 
@@ -154,7 +158,7 @@ def _fmt_scores(scores):
     return out
 
 
-UNHANDLED_LOG = r"D:/twdata/runs/human/unhandled_screens.jsonl"
+UNHANDLED_LOG = common.UNHANDLED_LOG
 
 
 def _report_unhandled(bus, screen, unknown, offered, root=None):
@@ -313,7 +317,7 @@ def evidence(bus, why, shots_dir=None):
            "clicks": [(round(t, 1), p, c) for t, p, c in CLICK_LOG[-12:]]}
     rep["dumps"] = [p for p in (nav.dump_screen(bus, r, "stuck_" + why.replace(":", "_")[:24])
                                 for r in rep["roots"] if r not in nav.BASE_ROOTS) if p]
-    shots_dir = shots_dir or r"D:\twdata\logs\launcher\v7_shots"
+    shots_dir = shots_dir or common.V7_SHOTS_DIR
     path = os.path.join(shots_dir, "stuck_%s_%d.png" % (why.replace(":", "_")[:40], int(time.time())))
     try:
         os.makedirs(shots_dir, exist_ok=True)

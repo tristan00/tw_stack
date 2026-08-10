@@ -7,11 +7,13 @@ import subprocess
 import sys
 import time
 
-TW_STACK = r"D:\tw_stack"
-VENV_PY = r"D:\totalwar_runner\.venv\Scripts\python.exe"
-LOG_DIR = r"D:\twdata\logs\advisor"
-SERVICES_LOG_DIR = r"D:\twdata\logs\services"
-CURRENT_LOG = os.path.join(LOG_DIR, "CURRENT_SESSION_LOG.txt")
+import common
+
+TW_STACK = common.ROOT
+VENV_PY = common.VENV_PY
+LOG_DIR = common.LOGS_ADVISOR
+SERVICES_LOG_DIR = common.LOGS_SERVICES
+CURRENT_LOG = common.CURRENT_SESSION_LOG
 
 DEFAULT_PORT = 8777
 DEFAULT_SHOTS = 60

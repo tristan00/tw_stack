@@ -8,7 +8,10 @@ import threading
 import time
 from collections import deque
 
-DEFAULT_DB_PATH = "D:/totalwar_runner/data/bus_stats.sqlite"
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import common
+
+DEFAULT_DB_PATH = common.BUS_STATS_DB
 KEY_MAXLEN = 400
 FLUSH_EVERY_N = 200
 FLUSH_EVERY_S = 10.0

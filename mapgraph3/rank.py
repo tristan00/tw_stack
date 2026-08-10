@@ -30,6 +30,9 @@ except ImportError:
     import schema as S
     import build as B
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import common
+
 THREADS_INFER = 2
 
 
@@ -132,8 +135,8 @@ class Ranker:
         return elig[max(range(len(elig)), key=lambda i: impact[i])]
 
 
-def _smoke(run_dir=r"D:/twdata/runs/human/run"):
-    sys.path.insert(0, os.path.join(r"D:\tw_stack", "decisions"))
+def _smoke(run_dir=common.RUN_DIR):
+    sys.path.insert(0, common.DECISIONS)
     from store import DecisionStore
     r = Ranker()
     print("ranker ready:", r.ready, "dir:", r.model_dir)
@@ -170,6 +173,6 @@ def _smoke(run_dir=r"D:/twdata/runs/human/run"):
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "smoke":
-        _smoke(sys.argv[2] if len(sys.argv) > 2 else r"D:/twdata/runs/human/run")
+        _smoke(sys.argv[2] if len(sys.argv) > 2 else common.RUN_DIR)
     else:
         raise SystemExit("usage: rank.py smoke [run_dir]")

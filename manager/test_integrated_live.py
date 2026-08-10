@@ -5,6 +5,9 @@ import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _STACK = os.path.dirname(_HERE)
+sys.path.insert(0, _STACK)
+import common
+
 for _repo in ("input", "shots", "logs", "ui-capture", "bus"):
     sys.path.insert(0, os.path.join(_STACK, _repo))
 
@@ -14,9 +17,9 @@ import shots_stream
 import logs_stream
 import ui_capture_stream
 
-GAME_DIR = r"D:\SteamLibrary\steamapps\common\Total War WARHAMMER III"
+GAME_DIR = common.GAME_DIR
 APPDATA = os.path.expandvars(r"%APPDATA%/The Creative Assembly/Warhammer3/logs")
-OUT_ROOT = "D:/twdata/runs/_decomp_livetest"
+OUT_ROOT = common.DECOMP_LIVETEST_ROOT
 
 
 def main():

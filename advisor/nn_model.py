@@ -6,13 +6,16 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
-sys.path.insert(0, os.path.join(r"D:\tw_stack", "decisions"))
+sys.path.insert(0, os.path.dirname(_HERE))
+import common
+
+sys.path.insert(0, common.DECISIONS)
 
 import features as F
 from base_model import TARGET_PARTS
 from model import MIN_ROWS, gather, _counts
 
-MODEL_DIR = r"D:\twdata\models\nn_global"
+MODEL_DIR = common.MODEL_NN_GLOBAL
 
 HIDDEN = (256,)
 DROPOUT = 0.2

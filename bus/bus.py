@@ -21,9 +21,14 @@ except Exception as _stats_exc:
     sys.stderr.write("bus: bus_stats instrumentation unavailable (running uninstrumented) -> %s\n"
                      % repr(_stats_exc)[:80])
 
-CMD_PATH = "D:/totalwar_runner/data/commands.txt"
-OUT_PATH = "D:/totalwar_runner/data/twcontrol.jsonl"
-SEND_LOG_PATH = "D:/totalwar_runner/data/bus_send.jsonl"
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import common
+
+# The lua mod inside the game writes these two and carries its own copies of the
+# literals -- see the note in bus/mod/twcontrol.lua. They have to stay in step.
+CMD_PATH = common.BUS_CMD_PATH
+OUT_PATH = common.BUS_OUT_PATH
+SEND_LOG_PATH = common.BUS_SEND_LOG
 _send_log_lock = threading.Lock()
 
 

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import os
 import sys
 import time
 
-sys.path.insert(0, r"D:\tw_stack\bus")
-sys.path.insert(0, r"D:\tw_stack\ui-capture")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import common
+
+sys.path.insert(0, common.BUS)
+sys.path.insert(0, common.UI_CAPTURE)
 from bus import Bus
 import cco_queries as CQ
 

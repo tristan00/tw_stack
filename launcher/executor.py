@@ -5,8 +5,11 @@ import subprocess
 import sys
 import time
 
-sys.path.insert(0, r"D:\tw_stack\bus")
-sys.path.insert(0, r"D:\tw_stack\launcher")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import common
+
+sys.path.insert(0, common.BUS)
+sys.path.insert(0, common.LAUNCHER)
 
 import cco_actions as CCO
 import cm_actions
@@ -24,7 +27,7 @@ _ENTITY_KIND = {"lord": "lord", "province": "settlement", "campaign": "campaign"
 class Executor:
     def __init__(self, bus, shots_dir=None):
         self.bus = bus
-        self.shots_dir = shots_dir or r"D:\twdata\logs\launcher\v7_shots"
+        self.shots_dir = shots_dir or common.V7_SHOTS_DIR
         self.executed = 0
         self.counted = 0
 

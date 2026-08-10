@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import collections
 import json
+import os
 import sys
 import time
 
-sys.path.insert(0, r"D:\tw_stack\bus")
-sys.path.insert(0, r"D:\tw_stack\launcher")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import common
+
+sys.path.insert(0, common.BUS)
+sys.path.insert(0, common.LAUNCHER)
 
 TREASURY_FLOOR = 500
 try:
@@ -320,7 +324,7 @@ register("stance", {
 
 def _build_cost(key):
     try:
-        sys.path.insert(0, r"D:\tw_stack\advisor\reference")
+        sys.path.insert(0, common.REFERENCE)
         import features_db as _DB
         return _DB.building_features(key).get("create_cost")
     except Exception as e:
@@ -867,7 +871,7 @@ _LUA_CAM = ("local a,b,c,d,e = cm:get_camera_position() "
 
 
 def _collect_mod():
-    sys.path.insert(0, r"D:\tw_stack\decisions")
+    sys.path.insert(0, common.DECISIONS)
     import collect as _C
     return _C
 
@@ -876,7 +880,7 @@ def _hero_action_method_name(action):
     spec = _collect_mod().HERO_ACTIONS.get(action)
     if not spec:
         return None
-    sys.path.insert(0, r"D:\tw_stack\advisor\reference")
+    sys.path.insert(0, common.REFERENCE)
     import features_db as _DB
     for key in _DB.agent_action_keys(spec["loc_suffix"]):
         name = _DB.agent_action_label(key)
@@ -925,7 +929,7 @@ _assist_payloads = {}
 def _assist_payload(action):
     if action not in _assist_payloads:
         spec = _collect_mod().HERO_ACTIONS.get(action) or {}
-        sys.path.insert(0, r"D:\tw_stack\advisor\reference")
+        sys.path.insert(0, common.REFERENCE)
         import features_db as _DB
         _assist_payloads[action] = _DB.agent_action_payload(spec.get("loc_suffix"))
     return _assist_payloads[action]

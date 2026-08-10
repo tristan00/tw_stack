@@ -6,7 +6,10 @@ import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
-sys.path.insert(0, r"D:\tw_stack\bus")
+sys.path.insert(0, os.path.dirname(_HERE))
+import common
+
+sys.path.insert(0, common.BUS)
 
 import collect
 import journal

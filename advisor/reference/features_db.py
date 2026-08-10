@@ -5,7 +5,10 @@ import sys
 
 _EMPTY_SUFFIX_WARNED = set()
 
-DB = r"D:\twdata\reference\reference.sqlite"
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+import common
+
+DB = common.REFERENCE_DB
 
 _con = None
 
@@ -373,7 +376,7 @@ def agent_subtypes(race_tokens):
     return [(sub, txt) for tok, sub, txt in _subtype_cache if tok in toks]
 
 
-UNLOCK_DB = r"D:\twdata\reference\agent_action_unlocks.sqlite"
+UNLOCK_DB = common.UNLOCK_DB
 _unlock_con = None
 _unlock_cache = {}
 

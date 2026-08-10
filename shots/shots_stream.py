@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import ctypes
 import os
+import sys
 import time
 from ctypes import wintypes
 
-BULK_ROOT = "D:/twdata/stream"
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import common
+
+BULK_ROOT = common.STREAM_ROOT
 
 SHOT_EVERY = 60.0
 SHOT_QUALITY = 90

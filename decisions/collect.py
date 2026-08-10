@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import collections
 import math
+import os
 import random
 import re
 import sqlite3
 import sys
 import time
 
-sys.path.insert(0, r"D:\tw_stack\bus")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import common
+
+sys.path.insert(0, common.BUS)
 
 MOVEMENT_STANCES = frozenset((
     "MILITARY_FORCE_ACTIVE_STANCE_TYPE_MARCH",
@@ -214,7 +218,7 @@ def _game_version():
     try:
         import ctypes
         import os
-        sys.path.insert(0, r"D:\tw_stack\launcher")
+        sys.path.insert(0, common.LAUNCHER)
         from bus_launcher import GAME_DIR
         path = os.path.join(GAME_DIR, "Warhammer3.exe")
         size = ctypes.windll.version.GetFileVersionInfoSizeW(path, None)
@@ -498,7 +502,7 @@ MERC_FLAVOR_ACTIONS = {"raise_dead": "raise_dead", "renown": "recruit_ror",
                        "blessed_spawning": "recruit_blessed",
                        "imperial_supply": "recruit_imperial"}
 
-_MERC_REFERENCE_DB = r"D:\twdata\reference\reference.sqlite"
+_MERC_REFERENCE_DB = common.REFERENCE_DB
 _merc_flavor_map = None
 _merc_drop_logged = set()
 
@@ -1078,7 +1082,7 @@ NEEDS_SUBPICK = frozenset((
 def _build_hero_actions():
     out = {}
     try:
-        sys.path.insert(0, r"D:\tw_stack\advisor\reference")
+        sys.path.insert(0, common.REFERENCE)
         import features_db as _DB
         entries = _DB.agent_action_catalogue()
     except Exception as e:
@@ -1118,7 +1122,7 @@ def _hero_subtype_types(faction):
     key = str(faction or "")
     if key not in _subtype_types:
         try:
-            sys.path.insert(0, r"D:\tw_stack\advisor\reference")
+            sys.path.insert(0, common.REFERENCE)
             import features_db as _DB
             _subtype_types[key] = {sub: agent for agent, sub in _DB.permitted_agent_subtypes(key)}
         except Exception as e:
@@ -1131,7 +1135,7 @@ def _hero_action_matrix(action):
     if action not in _hero_matrix:
         spec = HERO_ACTIONS.get(action) or {}
         try:
-            sys.path.insert(0, r"D:\tw_stack\advisor\reference")
+            sys.path.insert(0, common.REFERENCE)
             import features_db as _DB
             rows = _DB.agent_action_rows(spec.get("loc_suffix") or "")
             ability = rows[0]["ability"] if rows else None
@@ -1306,7 +1310,7 @@ def _same_tile(state, x, y):
 
 def _granted_actions(skill_keys):
     try:
-        sys.path.insert(0, r"D:\tw_stack\advisor\reference")
+        sys.path.insert(0, common.REFERENCE)
         import features_db as _DB
         return _DB.actions_for_skills(skill_keys)
     except Exception as e:
@@ -1588,7 +1592,7 @@ def _lord_subtypes(bus, faction):
         extra = []
         if toks:
             try:
-                sys.path.insert(0, "D:/tw_stack/advisor/reference")
+                sys.path.insert(0, common.REFERENCE)
                 import features_db as DB
                 extra = [sub for sub, _label in DB.agent_subtypes(toks)]
             except Exception as e:
