@@ -5,7 +5,14 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
-sys.path.insert(0, os.path.join(r"D:\tw_stack", "decisions"))
+# Resolve decisions/ against the checkout this file lives in. Hardcoding D:\tw_stack
+# here meant a worktree silently imported the MAIN checkout's store.py underneath its
+# own edits -- and since this insert lands at position 0, it overrode whatever the
+# caller had already set up. Identical path in the live checkout.
+_ROOT = os.path.dirname(_HERE)
+if not os.path.isdir(os.path.join(_ROOT, "decisions")):
+    _ROOT = r"D:\tw_stack"
+sys.path.insert(0, os.path.join(_ROOT, "decisions"))
 
 import features as F
 

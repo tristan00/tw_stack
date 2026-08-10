@@ -24,6 +24,32 @@ Two supervision channels, and they do different jobs:
 There is deliberately no `mse(q, y_z)`. That term is what made v2's advantage a capacity
 artifact: q and v regressed to the same scalar, so q-v was zero by construction and
 non-zero only because v underfits.
+
+BUDGET. A retrain must fit in `time_budget_s` end to end, walk included, because it runs
+between campaigns with the game shut down. Measured on 20.4k graphs / RTX 5090:
+
+    corpus walk + tensorize   125s      <- now the dominant cost
+    fit                       130s      18 epochs at ~7.3s each
+    total                     256s
+
+Before this pass the same retrain got 4 epochs in 989s. What moved:
+  - the backward of `param[node_type]` in TypeNorm/TypeEncoders was 90% of all gpu time
+    (an atomic scatter from ~22k rows into 19); F.embedding's segment-reduced backward
+    is the same maths ~50x cheaper. 75s/epoch -> 10.9s at batch 64.
+  - collate once and keep batches resident instead of re-collating every epoch (v2 knew
+    this; v3 had lost it), batch 16 -> 128, fused AdamW, one val sync per epoch not 364.
+  - to_data splits edges with array masks instead of a python loop over 61M edges.
+
+CORPUS CACHE -- the next thing, and the one that matters at scale. The walk is now 49%
+of the budget and it is pure repetition: every retrain rebuilds graphs for decisions that
+have not changed. decision_points / entity_snapshots / action_offers are append-only, so
+everything at or below a frozen max(decision_id) is immutable and its graph is a pure
+function of the record plus build.py/schema.py/the reference DB. Cache the TENSORIZED
+graph keyed by a fingerprint over those sources -- but NOT the label (decision_deltas
+reads future turns, so y changes as a campaign advances) and NOT the taken mask
+(attach_taken can rewrite it; store a hash and rebuild that one graph if it moved).
+Steady-state cost then becomes O(new decisions), not O(corpus), which is what a 250k
+corpus needs. Sharded parallel reads are NOT the answer and were measured: see walk().
 """
 
 import glob
@@ -33,8 +59,15 @@ import shutil
 import sys
 import time
 
-sys.path.insert(0, os.path.join(r"D:\tw_stack", "advisor"))
-sys.path.insert(0, os.path.join(r"D:\tw_stack", "decisions"))
+# Resolve advisor/ and decisions/ against the checkout this file lives in, not a
+# hardcoded D:\tw_stack. In the live checkout that is the same path; in a worktree it is
+# the difference between testing your own edits and silently importing the main
+# checkout's copies alongside your own mapgraph3.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if not os.path.isdir(os.path.join(_ROOT, "decisions")):
+    _ROOT = r"D:\tw_stack"
+sys.path.insert(0, os.path.join(_ROOT, "advisor"))
+sys.path.insert(0, os.path.join(_ROOT, "decisions"))
 
 try:
     from mapgraph3 import schema as S
@@ -46,26 +79,110 @@ except ImportError:
 THREADS = max(1, os.cpu_count() or 8)
 
 CFG = {"hidden": 192, "entity_layers": 2, "action_rounds": 2,
-       "lr": 2e-3, "weight_decay": 1e-4, "batch": 16, "epochs": 200, "patience": 25,
+       # batch 16 left the 5090 idle: ~1200 launch-bound steps an epoch. Measured on
+       # 20.4k graphs, resident: b16 87s/epoch, b64 10.9s, b128 8.4s, b256 13.9s.
+       # NOTE lr is unchanged at 2e-3 -- 8x fewer optimizer steps per epoch is a real
+       # change to the optimisation and the right lr for b128 has NOT been measured yet.
+       "lr": 2e-3, "weight_decay": 1e-4, "batch": 128, "epochs": 200, "patience": 25,
        "grad_clip": 5.0, "adv_tau": 1.0, "adv_clip": 20.0, "value_weight": 1.0, "bf16": True,
-       # In-session budget. session.py retrains between campaigns with the game shut
-       # down, so every second here is a second the run is not collecting data --
-       # 5 retrains x 100 campaigns. Pass a bigger budget explicitly for an offline fit.
-       "seed": 0, "time_budget_s": 900, "device": "auto"}
+       # TOTAL budget for a retrain -- corpus walk AND fit, not the fit alone. session.py
+       # retrains between campaigns with the game shut down, so every second here is a
+       # second the run is not collecting data. The fit gets whatever the walk leaves.
+       "seed": 0, "time_budget_s": 300, "device": "auto"}
+
+MIN_FIT_S = 30
 
 
-def walk(runs_root=None, limit=None, log=print):
+def _shard(args):
+    """Worker: read one decision_id range, build and tensorize its graphs.
+
+    Runs in a separate process, so it re-derives sys.path rather than inheriting it.
+    Returns one slot per decision including the rejected ones -- the parent needs them
+    to reproduce the tally, and it applies the no_label check first, in the same order
+    the serial walk did.
+    """
+    db_path, lo, hi = args
+    import os as _os
+    import sys as _sys
+    # One thread per worker. torch and numpy each default to a pool the width of the
+    # box, so N workers spin N*24 threads over 24 cores and burn far more CPU spinning
+    # in barriers than the work costs: measured 1195s of worker CPU for a walk that
+    # takes 141s single-threaded. This stage is python and sqlite, not BLAS.
+    for _v in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
+               "NUMEXPR_NUM_THREADS"):
+        _os.environ[_v] = "1"
+    root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+    if not _os.path.isdir(_os.path.join(root, "decisions")):
+        root = r"D:\tw_stack"
+    for p in (_os.path.join(root, "decisions"), _os.path.join(root, "advisor"), root):
+        if p not in _sys.path:
+            _sys.path.insert(0, p)
+    from store import DecisionStore
+    try:
+        from mapgraph3 import build as B2
+        from mapgraph3 import net as N2
+    except ImportError:
+        import build as B2
+        import net as N2
+    import torch as _t
+    _t.set_num_threads(1)
+
+    st = DecisionStore(_os.path.dirname(db_path), readonly=True)
+    try:
+        # No snapshot_read: decision_points / entity_snapshots / action_offers are
+        # append-only and `hi` was frozen by the parent, so every worker sees exactly
+        # the same rows without needing a shared transaction.
+        rows = st.labelled_decisions(after=lo, before=hi)
+    finally:
+        st.close()
+
+    out = []
+    for rec, taken, counted in rows:
+        head = (rec.get("decision_id"), rec.get("campaign_id"), rec.get("campaign"),
+                rec.get("turn"))
+        g = B2.build_graph(rec)
+        if g is None:
+            out.append(head + ("no_graph", None, None))
+            continue
+        if not g.action_nodes:
+            out.append(head + ("no_actions", None, None))
+            continue
+        want = (str(taken[0]), str(taken[1]), str(taken[2]), str(taken[3]))
+        mask = [1.0 if k == want else 0.0 for k in g.action_keys]
+        if sum(mask) != 1.0:
+            out.append(head + ("taken_missing", None, None))
+            continue
+        out.append(head + (None, N2.to_data(g, taken=mask), g.counts))
+    return out
+
+
+# Small enough that a slow shard cannot stall the pool at the tail: graph cost varies a
+# lot with turn number, so a few big shards leave most workers idle at the end.
+SHARD = 400
+
+
+def walk(runs_root=None, limit=None, log=print, workers=None):
     """Corpus -> (graph, y, taken-mask) examples.
 
     Note what is NOT here: v2 called features.stamp_prev_actions and
     stamp_action_counts to write CatBoost history features into the record before
     building the graph. v3 does not. The only advisor code touched is the label.
     """
+    import concurrent.futures as cf
+    import torch
     from base_model import RUNS_ROOT, decision_deltas, target
     from store import DecisionStore, IncompatibleStore
     runs_root = runs_root or RUNS_ROOT
     dbs = sorted(glob.glob(os.path.join(runs_root, "*", "decisions.sqlite")))
-    decisions, series, skipped = [], {}, []
+
+    try:
+        from mapgraph3 import corpus as CO
+    except ImportError:
+        import corpus as CO
+
+    # pass 1: label series, the frozen watermark, and what each decision played. All
+    # small tables -- target_series is ~2k rows and action_taken ~22k, against 9M offers.
+    series, skipped, live = {}, [], []
     for db in dbs:
         run_dir = os.path.dirname(db)
         try:
@@ -75,55 +192,106 @@ def walk(runs_root=None, limit=None, log=print):
             log("mapgraph3.train: skipping %s -> %s" % (run_dir, str(e)[:100]))
             continue
         try:
-            with st.snapshot_read():
-                for rec, taken, counted in st.labelled_decisions():
-                    decisions.append((rec, taken))
-                for camp, turns in st.target_series().items():
-                    series.setdefault(camp, {}).update(turns)
+            for camp, turns in st.target_series().items():
+                series.setdefault(camp, {}).update(turns)
+            live.append((db, st.max_decision_id(), st.taken_map()))
         finally:
             st.close()
 
+    # pass 2: build the graphs. The corpus walk is the single largest cost in a retrain
+    # and it is embarrassingly parallel over decision_id ranges: the tables are
+    # append-only and the watermark is frozen above, so each shard is a stable slice.
+    # Shards are consumed in ascending decision_id, which is the order the serial walk
+    # produced, so the example sequence -- and therefore batch composition -- is
+    # unchanged.
+    # Sharded reads default OFF because they measured SLOWER, not faster. Serial walk:
+    # 141s wall, ~141s cpu. 12 workers over 400-decision shards: 256s wall and 381s cpu
+    # and still unfinished. Bounding decision_id turns one sequential scan of
+    # action_offers into ~9M index-then-rowid fetches, and 12 readers thrash the page
+    # cache on a 4.8GB file, so total cpu goes UP and parallelism does not pay for it.
+    # Left reachable via workers=N because the sharding itself is sound -- what is wrong
+    # is re-reading the whole database at all. The fix is not more workers, it is not
+    # re-reading rows that were already turned into graphs (see CORPUS CACHE below).
+    n_workers = 1 if workers is None else workers
+    t_walk = time.time()
+    slots, built, reused = [], 0, 0
+    for db, hi, taken_now in live:
+        run_key = os.path.basename(os.path.dirname(db))
+        cached, cdir = ({}, None) if limit else CO.load(run_key, log=log)
+
+        # Rebuild a decision if it is not cached, or if what it played has changed since
+        # it was cached. Everything else is reused as-is: the tables it was built from
+        # are append-only, so its record cannot have moved.
+        want = {}
+        for did, (tup, _counted) in taken_now.items():
+            th = CO.taken_hash(tup)
+            hit = cached.get(did)
+            if hit is None or hit[7] != th:
+                want[did] = th
+        if limit:
+            want = dict(sorted(want.items())[:max(limit * 8, 400)])
+
+        jobs = []
+        if want:
+            if len(want) > 0.5 * max(1, len(taken_now)):
+                # most of the corpus is stale: one unbounded read beats thousands of
+                # indexed range lookups (measured -- see the note above)
+                jobs = [(db, None, None)]
+            else:
+                jobs = [(db, lo - 1, hi2) for lo, hi2 in CO.ranges(want)]
+
+        fresh = {}
+        if jobs and (n_workers <= 1 or len(jobs) <= 1):
+            for j in jobs:
+                for rec in _shard(j):
+                    fresh[rec[0]] = rec
+        elif jobs:
+            with cf.ProcessPoolExecutor(max_workers=n_workers) as ex:
+                for part in ex.map(_shard, jobs, chunksize=1):
+                    for rec in part:
+                        fresh[rec[0]] = rec
+
+        merged = {}
+        for did in taken_now:
+            rec = fresh.get(did)
+            if rec is not None:
+                merged[did] = rec + (want.get(did) or CO.taken_hash(taken_now[did][0]),)
+                built += 1
+            elif did in cached:
+                merged[did] = cached[did]
+                reused += 1
+        if cdir is not None and merged and fresh:
+            CO.save(cdir, merged, dirty=set(fresh), log=log)
+        slots.extend(merged[k] for k in sorted(merged))
+
+    log("mapgraph3.train: walk %.1fs -- %d graphs built, %d reused from cache"
+        % (time.time() - t_walk, built, reused))
+
     examples = []
     tally = {"no_graph": 0, "no_label": 0, "taken_missing": 0, "no_actions": 0}
-    for rec, taken in decisions:
-        turns = series.get(rec.get("campaign_id")) or {}
-        y = target(decision_deltas(rec.get("campaign"), turns, rec.get("turn")))
+    for did, camp_id, campaign, turn, drop, data, counts, _thash in slots:
+        # label first, exactly as the serial walk did, so a decision that is both
+        # unlabelled and ungraphable is still counted as no_label
+        y = target(decision_deltas(campaign, series.get(camp_id) or {}, turn))
         if y is None:
             tally["no_label"] += 1
             continue
-        g = B.build_graph(rec)
-        if g is None:
-            tally["no_graph"] += 1
+        if drop is not None:
+            tally[drop] += 1
             continue
-        if not g.action_nodes:
-            tally["no_actions"] += 1
-            continue
-        want = (str(taken[0]), str(taken[1]), str(taken[2]), str(taken[3]))
-        mask = [1.0 if k == want else 0.0 for k in g.action_keys]
-        if sum(mask) != 1.0:
-            # a softmax with no positive (or two) is undefined; drop rather than fudge
-            tally["taken_missing"] += 1
-            continue
-        examples.append({"g": g, "y": float(y), "taken": mask,
-                         "campaign_id": rec.get("campaign_id"),
-                         "counts": g.counts})
+        data.y = torch.tensor([float(y)], dtype=torch.float32)
+        examples.append({"data": data, "y": float(y), "campaign_id": camp_id,
+                         "counts": counts})
         if limit and len(examples) >= limit:
             break
     return {"examples": examples, "tally": tally, "runs": len(dbs) - len(skipped),
-            "n_decisions": len(decisions),
+            "n_decisions": len(slots),
             "campaigns": sorted({e["campaign_id"] for e in examples})}
 
 
 def _tensorize(examples):
-    try:
-        from mapgraph3 import net as N
-    except ImportError:
-        import net as N
-    out = []
-    for ex in examples:
-        out.append(N.to_data(ex["g"], y=ex["y"], taken=ex["taken"]))
-        ex["g"] = None
-    return out
+    """Graphs are tensorized in the shard workers now, so this just collects them."""
+    return [ex["data"] for ex in examples]
 
 
 def _device(cfg, log):
@@ -138,9 +306,49 @@ def _device(cfg, log):
     return torch.device("cpu")
 
 
-def _fit(datas, ys, groups, cfg, log=print):
+def _corpus_bytes(batches):
+    import torch
+    return sum(v.numel() * v.element_size() for b in batches
+               for v in b.to_dict().values() if torch.is_tensor(v))
+
+
+def _collate(items, size, dev, log, tag):
+    """Collate ONCE, up front, and keep the batches on the training device.
+
+    The graphs are immutable after _tensorize, so re-running Batch.from_data_list every
+    epoch -- which is what this did, ~160 times an epoch -- recomputes a result that
+    cannot have changed, and re-crosses PCIe with it. v2 had learned this and v3 had
+    lost it again.
+
+    Residency is measured against free VRAM, never assumed: the corpus grows at every
+    retrain, so the streaming path is the one that has to survive. Half of free VRAM is
+    left for activations, which at batch 128 are larger than the corpus itself.
+    """
     import torch
     from torch_geometric.data import Batch
+    batches = [Batch.from_data_list(items[k:k + size])
+               for k in range(0, len(items), size)]
+    if dev.type != "cuda" or not batches:
+        return batches, False
+    need, free = _corpus_bytes(batches), torch.cuda.mem_get_info()[0]
+    if need >= free * 0.5:
+        log("mapgraph3.train: %s corpus %.2fGB vs %.2fGB free -- streaming batches"
+            % (tag, need / 1e9, free / 1e9))
+        return batches, False
+    try:
+        out = [b.to(dev, non_blocking=True) for b in batches]
+        torch.cuda.synchronize()
+        log("mapgraph3.train: %s %d batches resident on gpu (%.2fGB of %.2fGB free)"
+            % (tag, len(out), need / 1e9, free / 1e9))
+        return out, True
+    except torch.cuda.OutOfMemoryError:
+        torch.cuda.empty_cache()
+        log("mapgraph3.train: %s did not fit VRAM -- streaming batches" % tag)
+        return batches, False
+
+
+def _fit(datas, ys, groups, cfg, log=print):
+    import torch
     from base_model import grouped_split
     try:
         from mapgraph3 import net as N
@@ -149,6 +357,7 @@ def _fit(datas, ys, groups, cfg, log=print):
 
     torch.set_num_threads(THREADS)
     torch.manual_seed(cfg["seed"])
+    torch.set_float32_matmul_precision("high")
     dev = _device(cfg, log)
     val_idx, trn_idx = grouped_split(len(datas), groups)
     y_trn = [ys[i] for i in trn_idx]
@@ -159,13 +368,21 @@ def _fit(datas, ys, groups, cfg, log=print):
 
     net = N.Net(cfg["hidden"], cfg["entity_layers"], cfg["action_rounds"]).to(dev)
     opt = torch.optim.AdamW(net.parameters(), lr=cfg["lr"],
-                            weight_decay=cfg["weight_decay"])
+                            weight_decay=cfg["weight_decay"],
+                            fused=(dev.type == "cuda"))
     gen = torch.Generator().manual_seed(cfg["seed"])
 
-    def batches(idx):
-        order = [idx[i] for i in torch.randperm(len(idx), generator=gen).tolist()]
-        return [Batch.from_data_list([datas[i] for i in order[k:k + cfg["batch"]]])
-                for k in range(0, len(order), cfg["batch"])]
+    # One seeded shuffle fixes batch MEMBERSHIP for the run; each epoch then permutes
+    # batch ORDER. This is a real change to the optimisation and not a free win: the
+    # model now draws from a fixed set of minibatch gradients instead of resampling a
+    # fresh partition every epoch. It is what makes collate-once possible, and it is
+    # what v2 shipped. Validation is never shuffled -- the reported score is a
+    # graph-weighted mean, so it does not depend on batching or order.
+    order0 = torch.randperm(len(trn_idx), generator=gen).tolist()
+    trn = [datas[trn_idx[i]] for i in order0]
+    loader, resident = _collate(trn, cfg["batch"], dev, log, "train")
+    vloader, v_resident = (_collate([datas[i] for i in val_idx], cfg["batch"], dev, log,
+                                    "val") if val_idx else ([], False))
 
     # bf16 on the message passing. The 5090 has an order of magnitude more bf16 throughput
     # than fp32, and bf16 keeps fp32's exponent range so no loss scaler is needed. The
@@ -174,7 +391,8 @@ def _fit(datas, ys, groups, cfg, log=print):
     amp = (dev.type == "cuda") and bool(cfg.get("bf16", True))
 
     def step(b, train):
-        b = b.to(dev)
+        if b.x.device != dev:               # no-op when the batch is already resident
+            b = b.to(dev, non_blocking=True)
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=amp):
             out = net(b)
         q = out["q"].float()
@@ -188,29 +406,50 @@ def _fit(datas, ys, groups, cfg, log=print):
         return rank + cfg["value_weight"] * vloss, nll.mean(), vloss
 
     best, best_state, bad, stopped = None, None, 0, "epochs"
+    best_v, curve = None, []
+    # The budget has to cover the validation pass that follows the last training step,
+    # otherwise a fit that stops exactly at the limit overruns it by a whole val pass.
+    # Seeded with a guess, replaced by the measured cost after the first epoch.
+    val_s = 6.0
     t0 = time.time()
     for epoch in range(cfg["epochs"]):
         net.train()
-        for b in batches(trn_idx):
+        for i in torch.randperm(len(loader), generator=gen).tolist():
             opt.zero_grad(set_to_none=True)
-            loss, _, _ = step(b, True)
+            loss, _, _ = step(loader[i], True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(net.parameters(), cfg["grad_clip"])
             opt.step()
-        if val_idx:
+            # Checked per step, not per epoch: an epoch that overshoots the budget by a
+            # whole epoch is fatal against a 300s target. Breaks to validation -- and
+            # leaves room for it -- so best_state still reflects a scored model.
+            if time.time() - t0 > cfg["time_budget_s"] - val_s:
+                stopped = "time_budget"
+                break
+        if vloader:
             net.eval()
-            tot_n, tot_v, n = 0.0, 0.0, 0
+            t_val = time.time()
+            # Accumulated on-device: float(nll) per batch forced a gpu->cpu sync on
+            # every validation batch and serialised the whole pass. One sync per epoch.
+            tot_n = torch.zeros((), device=dev)
+            tot_v = torch.zeros((), device=dev)
+            n = 0
             with torch.no_grad():
-                for b in batches(val_idx):
+                for b in vloader:
                     _, nll, vl = step(b, False)
-                    k = int(b.n_actions.numel())
-                    tot_n += float(nll) * k
-                    tot_v += float(vl) * k
+                    k = int(b.n_actions.numel())    # metadata, not a sync
+                    tot_n += nll.detach() * k
+                    tot_v += vl.detach() * k
                     n += k
-            score = tot_n / max(n, 1)
+            score = float(tot_n) / max(n, 1)
+            val_s = max(val_s, time.time() - t_val)
+            # Kept in meta so "what does the time cap cost us" is answerable later from
+            # stored evidence instead of from a console log that is gone.
+            curve.append([epoch + 1, round(time.time() - t0, 1), round(score, 5)])
             improved = best is None or score < best - 1e-5
             if improved:
                 best, bad = score, 0
+                best_v = float(tot_v) / max(n, 1)
                 best_state = {k: v.detach().cpu().clone()
                               for k, v in net.state_dict().items()}
             else:
@@ -229,8 +468,11 @@ def _fit(datas, ys, groups, cfg, log=print):
     if best_state:
         net.load_state_dict(best_state)
     fit = {"val_listwise_nll": round(best, 5) if best is not None else None,
+           "val_value_mse": round(best_v, 5) if best_v is not None else None,
            "epochs_run": epoch + 1, "stopped_by": stopped, "device": dev.type,
            "val_rows": len(val_idx), "train_rows": len(trn_idx),
+           "resident": bool(resident and v_resident),
+           "curve": curve,          # [epoch, seconds, val_listwise_nll] per epoch
            "seconds": round(time.time() - t0, 1)}
     return net, fit, y_mean, y_sd
 
@@ -245,8 +487,15 @@ def train(runs_root=None, cfg=None, log=None):
         return {"trained": False, "rows": len(ex), "need": S.MIN_ROWS,
                 "tally": w["tally"], "n_decisions": w["n_decisions"]}
     datas = _tensorize(ex)
+    # The budget is for the whole retrain, so the fit gets what the walk left. MIN_FIT_S
+    # is a floor: a walk that overruns the budget should still produce a model rather
+    # than silently return an untrained one.
+    walked = time.time() - t0
+    fit_cfg = dict(cfg, time_budget_s=max(MIN_FIT_S, cfg["time_budget_s"] - walked))
+    log("mapgraph3.train: walk+tensorize %.1fs, %.1fs left of the %ds budget for the fit"
+        % (walked, fit_cfg["time_budget_s"], cfg["time_budget_s"]))
     net, fit, y_mean, y_sd = _fit(datas, [e["y"] for e in ex],
-                                  [e["campaign_id"] for e in ex], cfg, log=log)
+                                  [e["campaign_id"] for e in ex], fit_cfg, log=log)
     import torch
     meta = {"backend": "gnn3", "schema_version": S.SCHEMA_VERSION,
             "schema_hash": S.schema_hash(), "cfg": cfg, "rows": len(datas),
