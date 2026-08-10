@@ -1372,6 +1372,15 @@ def render_infra(run_dir):
                  % (_esc(im.get("rows", "-")), _esc(it), _esc(ago(ia)),
                     _esc(" ".join("%s:%s" % (k, v) for k, v in sorted(sr.items()))
                          or "screens=%s" % ",".join(im.get("screens") or []))))
+    gm = _meta(r"D:\twdata\models\gnn\meta.json")
+    ga2, gt2 = _age(r"D:\twdata\models\gnn\meta.json")
+    gfit = gm.get("fit") or {}
+    mrows.append("<tr><td>gnn (graph Q-V)<td>%s<td>%s<td>%s<td>%s</tr>"
+                 % (_esc(gm.get("rows", "-")), _esc(gt2), _esc(ago(ga2)),
+                    _esc("val_rmse=%s epochs=%s aux_nodes=%s"
+                         % (gfit.get("val_rmse_raw", "-"), gfit.get("epochs_run", "-"),
+                            (gm.get("aux") or {}).get("n_labelled_nodes", "-"))
+                         if gm else "not trained")))
     models = ("<h2>models</h2><div class=scroll><table>"
               "<tr><th>model<th>rows<th>trained at<th>age<th>config</tr>%s</table></div>"
               % "".join(mrows))
