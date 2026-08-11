@@ -31,7 +31,7 @@ def collect(since):
                                             "refusals": collections.Counter()})
     inter = collections.defaultdict(lambda: {"seen": 0, "ok": 0, "lat": []})
     camps, turns_by_camp = {}, {}
-    for db in sorted(glob.glob(os.path.join(RUNS, "*", "decisions.sqlite"))):
+    for db in common.run_dbs(RUNS):
         try:
             con = dbopen.connect(db, timeout=5.0)
         except sqlite3.Error:

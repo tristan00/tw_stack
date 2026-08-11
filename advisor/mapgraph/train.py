@@ -177,7 +177,7 @@ def walk(runs_root=None, limit=None, log=print, workers=None):
     from base_model import RUNS_ROOT, decision_deltas, target
     from store import DecisionStore, IncompatibleStore
     runs_root = runs_root or RUNS_ROOT
-    dbs = sorted(glob.glob(os.path.join(runs_root, "*", "decisions.sqlite")))
+    dbs = common.run_dbs(runs_root)
 
     try:
         from advisor.mapgraph import corpus as CO

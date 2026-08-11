@@ -47,7 +47,7 @@ def _local_delta(eseries, rec, taken):
 
 
 def gather(runs_root=RUNS_ROOT):
-    dbs = sorted(glob.glob(os.path.join(runs_root, "*", "decisions.sqlite")))
+    dbs = common.run_dbs(runs_root)
     decisions, series, eseries, skipped_dbs = [], {}, {}, []
     for db in dbs:
         run_dir = os.path.dirname(db)

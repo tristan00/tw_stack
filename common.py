@@ -108,6 +108,24 @@ _TD = posix(TWDATA)
 # spelling and call native() on it.
 RUNS_ROOT = _TD + "/runs/human"
 RUN_DIR = RUNS_ROOT + "/run"
+DECISIONS_DB = "decisions.sqlite"
+
+
+def run_dbs(runs_root=None):
+    """The decision databases a trainer reads. There is exactly ONE run dir.
+
+    Every trainer used to glob `RUNS_ROOT/*/decisions.sqlite`. That silently widened the
+    corpus to whatever happened to be sitting in the runs root -- an archived 15GB v1
+    corpus sat beside the live one and was opened by model.gather, mapgraph.train.walk,
+    batch_metrics and interrupt_model alike. An incompatible store raises and is skipped,
+    so that failure reads as "no data" rather than as a misconfiguration -- and a
+    COMPATIBLE stale one would have been trained on without a word.
+
+    Returns a list because the callers iterate, not because there can be more than one.
+    """
+    root = native(runs_root) if runs_root else native(RUNS_ROOT)
+    p = os.path.join(root, "run", DECISIONS_DB)
+    return [p] if os.path.exists(p) else []
 SCREEN_DUMP_DIR = RUNS_ROOT + "/screens"
 UNHANDLED_LOG = RUNS_ROOT + "/unhandled_screens.jsonl"
 CLEAR_SCREEN_TRACE = os.path.join(native(RUN_DIR), "clear_screen_trace.jsonl")
