@@ -268,9 +268,9 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
     if ruleset and "ruleset" not in mix:
         raise SystemExit("--ruleset %r given but 'ruleset' is not in the strategy mix %s"
                          % (ruleset, json.dumps(mix)))
-    if cold and "gnn" in mix:
-        raise SystemExit("--cold forces cold_random but the mix includes 'gnn' -- a cold run "
-                         "must not load a trained gnn; drop 'gnn' or drop --cold")
+    if cold and "gnn_marwil" in mix:
+        raise SystemExit("--cold forces cold_random but the mix includes 'gnn_marwil' -- a cold "
+                         "run must not load a trained model; drop 'gnn_marwil' or drop --cold")
     ruleset_meta = None
     if ruleset:
         import ruleset as RS
@@ -343,7 +343,7 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                 irep = IM.train()
                 entry["retrain_interrupt"] = irep
                 log("   interrupt model: %s" % json.dumps(irep)[:200])
-                if "gnn" in mix:
+                if "gnn_marwil" in mix:
                     try:
                         # against this checkout, not a hardcoded one -- see policy.py
                         if common.ROOT not in sys.path:
@@ -365,7 +365,7 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
             except Exception as e:
                 entry["retrain"] = {"error": repr(e)[:250]}
                 trained = entry["retrain"]
-                if "gnn" in mix and "retrain_gnn" not in entry:
+                if "gnn_marwil" in mix and "retrain_gnn" not in entry:
                     entry["retrain_gnn"] = {"trained": False,
                                             "error": "skipped: upstream retrain raised"}
                 log("!! retrain before run %d failed (continuing on the previous model): %s"
@@ -1066,8 +1066,8 @@ def main():
                          "normalized)\n"
                          "  --ruleset   -- rule file name under D:\\twdata\\rules\\<name>.json "
                          "(required when 'ruleset' is in the mix)\n"
-                         "  'gnn'       -- graph offer-scorer (D:\\twdata\\models\\gnn3); "
-                         "untrained -> gnn_random_fallback\n"
+                         "  'gnn_marwil' -- MARWIL/AWR on the graph encoder "
+                         "(D:\\twdata\\models\\mapgraph); untrained -> gnn_random_fallback\n"
                          "  --epsilon E -- legacy sugar for exploit_tree=1-E,random=E\n"
                          % ("|".join(B.names()), B.DEFAULT,
                             "\n".join("                 %-10s %s" % (k, B.label(k))
