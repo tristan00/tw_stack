@@ -3061,19 +3061,28 @@ def _mm_within_corr_rows(blocks):
             gate = MM_GATE_Z / math.sqrt(max(len(seen) - 1, 1))
             hot = r is not None and abs(r) >= gate
             camps_used |= seen
-            # The campaign count lives HERE, on the gate, and not as a column of its own.
-            # The unit of this table is the turn; campaigns are not a quantity of data,
-            # they are the clustering the gate is computed from, and that is the only
-            # thing they are used for.
             cells.append("<td class=num title='gate from %d campaigns'>"
                          "<span class='%s'>%+0.2f</span>"
                          "<span class=mmdimc> /%.2f</span></td>"
                          % (len(seen), "mmhot" if hot else "", r or 0.0, gate))
-        n_turns = sum(1 for cid in camps_used for _b in by_camp[cid])
-        rows.append("<tr><td>%s</td><td class=num>%d</td>%s</tr>"
-                    % (_esc(arm), n_turns, "".join(cells)))
-    return ("<table class=mmtbl><tr><th>arm<th class=num>turns"
-            "<th class=num>settlements<th class='num mmdimc'>lord level</tr>%s</table>"
+        # Campaigns is the clustering the gate comes from, so it belongs in the table --
+        # but on its own it says nothing about how much of the play the arm actually drove.
+        # A campaign counts here whether the arm took 2 decisions in it or 200. So the
+        # intensity sits beside it: the mean share of a turn's decisions this arm took,
+        # and how many decisions that came to per campaign it was active in.
+        used = [b for cid in camps_used for b in by_camp[cid]]
+        shares = [share(b[2]) for b in used if share(b[2]) is not None]
+        n_dec = sum((b[2].get("exploit_tree", 0) + b[2].get("gnn_marwil", 0))
+                    if arm == "model pool" else b[2].get(arm, 0) for b in used)
+        vol = ("%.0f%% <span class=mmdimc>&middot; %.0f/camp</span>"
+               % (100.0 * sum(shares) / len(shares), n_dec / float(len(camps_used)))
+               ) if shares and camps_used else "<span class=mmdimc>-</span>"
+        rows.append("<tr><td>%s</td><td class=num>%d</td><td class=num>%d</td>"
+                    "<td class=num>%s</td>%s</tr>"
+                    % (_esc(arm), len(camps_used), len(used), vol, "".join(cells)))
+    return ("<table class=mmtbl><tr><th>arm<th class=num>camps<th class=num>turns"
+            "<th class=num>share<th class=num>settlements"
+            "<th class='num mmdimc'>lord level</tr>%s</table>"
             % "".join(rows))
 
 
@@ -3122,7 +3131,10 @@ def _mm_corr_tables(con):
               "<b>/gate</b> is the smallest |rho| separable from chance at p&lt;0.005, "
               "computed from the number of CAMPAIGNS rather than turns, because turns "
               "within a campaign are not independent. Nothing is significant until a rho "
-              "exceeds its own gate. <b>Settlement gain is the objective</b>; lord level is "
+              "exceeds its own gate. <b>share</b> is how much of a turn the arm typically "
+              "drove, and beside it the decisions that came to per campaign it was active "
+              "in &mdash; a campaign counts toward the gate whether the arm played 2 "
+              "decisions in it or 200, so the count alone would overstate the evidence.<b>Settlement gain is the objective</b>; lord level is "
               "a proxy that exists to support taking ground, so it is supporting evidence "
               "rather than a second result &mdash; a run that levels its lord and takes no "
               "ground has not done the thing. Still observational in one respect: the "
