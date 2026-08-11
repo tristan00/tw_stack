@@ -10,6 +10,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.dirname(_HERE))
 import common
+from decisions import dbopen
 
 from store import DecisionStore
 
@@ -21,8 +22,7 @@ def run_dir():
 
 
 def _con(run):
-    db = os.path.join(run, "decisions.sqlite").replace("\\", "/")
-    return sqlite3.connect("file:%s?mode=ro" % db, uri=True)
+    return dbopen.connect(os.path.join(run, "decisions.sqlite"))
 
 
 def dilemmas(rows):

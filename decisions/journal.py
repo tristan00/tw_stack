@@ -9,6 +9,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import common
+from decisions import dbopen
 
 REQUESTS = "decisions_requests.jsonl"
 RESPONSES = "decisions_responses.jsonl"
@@ -164,7 +165,7 @@ def _con(run_dir):
     path = os.path.join(run_dir, DB_NAME)
     if not os.path.exists(path):
         raise RuntimeError("no decisions.sqlite in %s -- the recorder has not opened it yet" % run_dir)
-    con = sqlite3.connect("file:%s?mode=ro" % path.replace("\\", "/"), uri=True, timeout=15.0)
+    con = dbopen.connect(path, timeout=15.0)
     con.row_factory = sqlite3.Row
     return con
 

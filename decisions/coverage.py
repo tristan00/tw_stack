@@ -27,6 +27,7 @@ from collections import Counter, defaultdict
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(_HERE))
 import common  # noqa: E402
+from decisions import dbopen  # noqa: E402
 
 # A field may only be exempt for a reason that is about the GAME, never about the
 # collector. "The recorder does not populate it" is the bug this file exists to catch.
@@ -99,15 +100,19 @@ def _norm(scope):
 
 
 def _rows(con, col, table, where=(), args=(), sample=None):
-    """A uniform sample, not the first N.
+    """A sample spread over the whole corpus, not the first N.
 
     `LIMIT N` with no ORDER BY returns the N lowest rowids -- the earliest decisions of
     the earliest campaigns. Anything that only happens later in a campaign is then absent
     from the sample by construction and gets reported as a dead field. That is not
     hypothetical: `diplomacy.their_vassal` was flagged constant-False off the first 40,000
     rows and is in fact true in 8,256 of 2,131,584 -- vassals do not exist on turn 1. A
-    checker that manufactures its own false positives cannot be an acceptance gate, so
-    this strides across the whole rowid range instead.
+    checker that manufactures its own false positives cannot be an acceptance gate.
+
+    The stride is on `decision_id` rather than on rowid, for two reasons: it is uniform in
+    campaign time, which is the axis the bias was on, and the v2 store serves these table
+    names as views, which have no rowid at all. Rows are near-uniformly distributed across
+    decisions, so a step derived from the row count still lands near `sample` rows.
     """
     sql = "SELECT %s FROM %s" % (col, table)
     cond = list(where)
@@ -117,17 +122,16 @@ def _rows(con, col, table, where=(), args=(), sample=None):
                         args).fetchone()[0]
         step = max(1, n // sample)
         if step > 1:
-            cond.append("rowid %% %d = 0" % step)
+            cond.append("decision_id %% %d = 0" % step)
     if cond:
         sql += " WHERE " + " AND ".join(cond)
     return (r[0] for r in con.execute(sql, args))
 
 
 def check(db=None, sample=None, min_rows=200, verbose=True):
-    import sqlite3
     db = db or os.path.join(common.RUNS_ROOT.replace("/", os.sep), "run",
                             "decisions.sqlite")
-    con = sqlite3.connect("file:%s?mode=ro" % db.replace("\\", "/"), uri=True, timeout=300)
+    con = dbopen.connect(db, timeout=300)
     out = defaultdict(_blank)
 
     _scan(_rows(con, "campaign", "decision_points", sample=sample), "campaign", out)

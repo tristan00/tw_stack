@@ -9,6 +9,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.dirname(_HERE))
 import common
+from decisions import dbopen
 
 sys.path.insert(0, common.BUS)
 sys.path.insert(0, common.LAUNCHER)
@@ -105,8 +106,7 @@ def _ending_evidence(rd, entry, ex):
     import sqlite3
     out = {}
     try:
-        con = sqlite3.connect("file:%s/decisions.sqlite?mode=ro" % str(rd).replace("\\", "/"),
-                              uri=True, timeout=5.0)
+        con = dbopen.connect(os.path.join(str(rd), "decisions.sqlite"), timeout=5.0)
         camp = con.execute("SELECT campaign_id FROM decision_points"
                            " ORDER BY decision_id DESC LIMIT 1").fetchone()
         camp = camp[0] if camp else None
@@ -488,8 +488,7 @@ def _uuid_of(rows):
 
 def _db(run_dir):
     import sqlite3
-    p = os.path.join(run_dir or journal.RUN_DIR, journal.DB_NAME).replace("\\", "/")
-    return sqlite3.connect("file:%s?mode=ro" % p, uri=True, timeout=10.0)
+    return dbopen.connect(os.path.join(run_dir or journal.RUN_DIR, journal.DB_NAME))
 
 
 _TURNS_CACHE = {}

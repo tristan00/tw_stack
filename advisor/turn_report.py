@@ -9,6 +9,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import common
+from decisions import dbopen
 
 RUNS_ROOT = common.RUNS_ROOT
 
@@ -22,7 +23,7 @@ def _interrupts(run_dir):
     db = os.path.join(run_dir, "decisions.sqlite")
     if not os.path.isfile(db):
         return counts
-    con = sqlite3.connect("file:%s?mode=ro" % db.replace("\\", "/"), uri=True, timeout=10.0)
+    con = dbopen.connect(db)
     try:
         rows = con.execute("SELECT campaign_id, turn, kind, confirmed FROM interrupt_decisions")
         for camp, turn, kind, conf in rows:
