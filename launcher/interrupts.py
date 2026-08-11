@@ -598,11 +598,16 @@ def handle_results(bus):
         decisions = sorted([i for i in ctrls if is_captive_option(i)]
                            + [i for i in ADVANCE_PREFERENCE if i in ctrls])
         opts_before = _options_of(bus, "popup_battle_results", decisions)
+        # Read the outcome BEFORE clicking: the click dismisses the panel, and every number
+        # on it exists only as UI text. 324 of 324 archived battle_results rows carry no
+        # screen detail at all, so the result of every battle ever fought was discarded.
+        facts = battle_result_facts(bus)
         repeats = repeats + 1 if target == last else 0
         if repeats >= 2:
             sys.stderr.write("interrupts: %s clicked twice with no effect -- not hammering it\n"
                              % target)
             _record_choice("battle_results", "popup_battle_results", opts_before, target,
+                           extra={"battle": facts} if facts else None,
                            executed=True, confirmed=False, refusal="command_silently_refused")
             break
         last = target
@@ -611,6 +616,7 @@ def handle_results(bus):
         clicked = _click(bus, ctrls[target], settle=2.5)
         moved = set(roots(bus)) != roots_before
         _record_choice("battle_results", "popup_battle_results", opts_before, target,
+                       extra={"battle": facts} if facts else None,
                        executed=clicked, confirmed=bool(moved),
                        refusal=None if moved else ("command_silently_refused" if clicked
                                                    else "execute_failed"),
@@ -1317,6 +1323,101 @@ def drain_interrupt_records():
     out = list(_INTERRUPT_LOG)
     del _INTERRUPT_LOG[:]
     return out
+
+
+def battle_result_facts(bus):
+    """The battle-result screen as structured facts, not a 1284-node tree dump.
+
+    Every number on this screen is UI text only: all ten table cells and both faction-name
+    nodes carry `context: null` in all 32 archived dumps, and the CCO contexts that ARE
+    present resolve to the PLAYER's faction even on the enemy panel. So scraping is the only
+    route here -- unlike unit rosters, which come from CcoCampaignUnit and must not be
+    scraped off this screen.
+
+    Two things this deliberately does NOT do:
+
+    1. It does not claim which row is ours. `row_example` is the player in 24 of 32 archived
+       dumps and the OTHER row in 6 -- the determinant is attacker/defender, not player/enemy.
+       Guessing would mislabel ~19% of battles, and non-randomly: the flips correlate with
+       defeats, because defending is when you are the second row. Rows are recorded
+       positionally and resolved downstream from who initiated the battle.
+    2. It does not name race-specific resources. The resources bar differs per race -- slaves
+       for Dark Elves, scrap for Greenskins, grudge for Dwarfs, souls for Chaos, canopic jars
+       shared by Vampires AND Dwarfs -- and even the treasury path moves (Kislev and Warriors
+       of Chaos nest it under treasury_holder_standard). Holders present-but-invisible for a
+       race that does not use them are filtered on `visible`, and the whole bar is swept
+       generically rather than by name.
+    """
+    return battle_facts_from(_tree(bus, "popup_battle_results", depth=40, nodes=16000))
+
+
+def battle_facts_from(nodes):
+    """Pure extraction, split out so it can be tested against archived dumps without a game.
+
+    Validated against 32 archived battle-result dumps spanning 10 races (Dark Elves, High
+    Elves, Vampire Counts, Lizardmen, Warriors of Chaos, Bretonnia, Dwarfs, Greenskins,
+    Kislev, Norsca) -- see test_battle_facts.
+    """
+    if not nodes:
+        return None
+
+    def path(n):
+        return str(n.get("path") or "")
+
+    def txt(n):
+        return str(n.get("text") or "").strip()
+
+    out = {"rows": [], "resources": {}, "rewards": [], "armies": {}}
+
+    for n in nodes:
+        p, t = path(n), txt(n)
+        pid = str(n.get("id") or "")
+
+        if pid == "tx_battle_results" and t:
+            out["outcome"] = t
+        # locale-independent win/lose: both nodes always exist, visibility is the signal
+        elif pid in ("win_animation", "lose_animation") and n.get("visible"):
+            out["result_flag"] = "win" if pid == "win_animation" else "loss"
+        elif pid == "button_dismiss" and n.get("visible"):
+            out["dismiss_visible"] = True          # visible <=> defeat in all 32 dumps
+        elif pid == "button_accept" and "settlement_captured" in p and n.get("visible"):
+            out["settlement_captured"] = True
+        elif pid == "dy_faction_name" and t:
+            side = "allies" if "allies_combatants_panel" in p else (
+                "enemy" if "enemy_combatants_panel" in p else None)
+            if side:
+                out.setdefault("faction_names", {})[side] = t
+        elif pid == "army_header" and t:
+            side = "allies" if "allies_combatants_panel" in p else (
+                "enemy" if "enemy_combatants_panel" in p else None)
+            if side:
+                out["armies"].setdefault(side, [])
+                if t not in out["armies"][side]:
+                    out["armies"][side].append(t)
+        elif pid == "reward_entry" and t:
+            out["rewards"].append({"text": t,
+                                   "label": (str(n.get("tooltip") or "").split("\n")[0]
+                                             .strip() or None)})
+        elif "resources_bar" in p and t and n.get("visible") and t not in ("(", ")"):
+            key = p.split("resources_bar|", 1)[-1]
+            out["resources"][key] = t
+
+    # the details table: two positional rows, never labelled ours/theirs here.
+    # dy_kills is visible:false in every dump but its TEXT is correct, so filter on text.
+    cells = {}
+    for n in nodes:
+        p, pid = path(n), str(n.get("id") or "")
+        if "details_table|list_box|" not in p or not pid.startswith("dy_"):
+            continue
+        row = "row_example" if "|row_example|" in p else (
+            "result_entry1" if "|result_entry1|" in p else None)
+        if row:
+            cells.setdefault(row, {})[pid[3:]] = txt(n)
+    for row_id in ("row_example", "result_entry1"):
+        if row_id in cells:
+            out["rows"].append(dict(cells[row_id], row_id=row_id))
+
+    return out if (out.get("outcome") or out["rows"]) else None
 
 
 def _options_of(bus, root, ids):
