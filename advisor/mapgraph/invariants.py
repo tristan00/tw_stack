@@ -197,6 +197,9 @@ def check(verbose=True):
        S.N_SCALARS <= S.SCALAR_BUDGET,
        "%d of %d spent across %d node types"
        % (S.N_SCALARS, S.SCALAR_BUDGET, len(S.NODE_TYPES)))
+    ok("the value head sees no fact about the option generator",
+       "log_n_offers" not in S.G_CTX_FIELDS and "n_offers" not in "".join(S.G_CTX_FIELDS),
+       "%d context scalars: %s" % (S.G_CTX_DIM, ", ".join(S.G_CTX_FIELDS)))
     ok("every instance node type carries an identity or a scalar",
        all(S.TYPE_FIELDS[t] or t in S.CAT_BUCKETS or t in ("slot", "cgroup")
            for t in S.INSTANCE_TYPES),

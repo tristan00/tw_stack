@@ -399,7 +399,6 @@ def build_graph(record):
         float(cd.num("vassals") / 3.0),
         float((cd.num("power_rank") / 300.0).clip(-1.0, 1.0)),
         float(cd.num("lord_level") / 10.0),
-        math.log1p(n_offers) / 7.0,
     ]
     g.finalize()
     g.counts = {"nodes": len(g.x), "edges": len(g.src), "actions": len(g.action_nodes),
@@ -533,11 +532,25 @@ def _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me):
         g.edge(ai, g.id2idx.get("f:" + str(subject)), "act_subject")
 
     if params.get("slot_index") is not None:
-        rkey = str(params.get("region") or cid)
+        si = None
         try:
-            si = slot_index.get((rkey, int(float(params["slot_index"]))))
+            idx = int(float(params["slot_index"]))
         except (TypeError, ValueError):
-            si = None
+            idx = None
+        if idx is not None:
+            if params.get("slot_id"):
+                # A HORDE slot belongs to the lord's force, not to a region. This looked
+                # it up as (region, index) with the region defaulting to the context id --
+                # a lord CQI -- so it never resolved, no act_slot edge was ever built for
+                # horde_building, and two buildings queued into different horde slots were
+                # the same node to WL. Measured: 24 inseparable action nodes on a Beastmen
+                # campaign, every one of them horde_building.
+                si = g.id2idx.get("hslot:%s:%d" % (cid, idx))
+                if si is None:
+                    si = g.add("hslot:%s:%d" % (cid, idx), "slot", {})
+                    g.edge(ego, si, "has_slot")
+            else:
+                si = slot_index.get((str(params.get("region") or cid), idx))
         g.edge(ai, si, "act_slot")
 
 

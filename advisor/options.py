@@ -126,9 +126,30 @@ def _leave_garrison_offer(state, moves):
 
 
 def _horde_building_offers(slots):
+    """ONE OFFER PER BUILDING, not per (slot, building).
+
+    A horde's slots are interchangeable: an empty force slot is an empty force slot, and
+    constructing X in slot 237 or in slot 240 has identical effect. Emitting one candidate
+    per slot produced the SAME decision four times -- measured on a Beastmen campaign as
+    24 action nodes a message-passing network cannot separate, every one of them
+    horde_building, four copies of one building across force_slot_237..240. That is not
+    graph blindness, it is the generator asking the same question four times and splitting
+    the listwise softmax between identical answers.
+
+    This is the province edict case again: an edict scopes to a province, so the capital
+    is the canonical emitter. Here the building is the decision and the slot is the
+    execution handle -- kept in params, because cco_actions constructs by slot_id.
+
+    A slot already holding something is NOT interchangeable, so those stay per-slot.
+    """
     offers = []
+    seen = set()
     for s in slots or []:
         ok = bool(s["available"])
+        if s.get("empty"):
+            if s["key"] in seen:
+                continue
+            seen.add(s["key"])
         offers.append(_offer("horde_building", "%s@%s" % (s["slot_id"], s["key"]), ok,
                              None if ok else "requirements_not_met",
                              slot_id=s["slot_id"], slot_index=s["slot_index"],
