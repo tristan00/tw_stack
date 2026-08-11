@@ -251,8 +251,36 @@ class Bus:
         raise TWError("bus timeout: no result for seq %d cmd %s" % (seq, channel))
 
     def send_batch(self, requests, timeout: float = DEFAULT_TIMEOUT) -> list:
+        """Send many commands as one append and wait for all their replies.
+
+        INSTRUMENTED PER COMMAND, not per batch. This is the collector's entire hot path
+        -- a snapshot is three send_batch calls and dozens of evals -- and bus_stats only
+        ever saw `send`, so the expensive half of every decision was invisible and "which
+        read costs the time" was unanswerable. A batch shares one wall clock, so the
+        elapsed time is attributed to each command in it: that is not a per-command
+        measurement and does not pretend to be, but it makes the COMMAND the unit, so the
+        same key summed across a run says how much of the budget it accounts for.
+        """
         if not requests:
             return []
+        _t0 = time.perf_counter()
+        _keys = None
+        if _bus_stats is not None and _bus_stats.active():
+            try:
+                _keys = [(ch, _bus_stats.make_key(ch, pl)) for ch, pl in requests]
+            except Exception:
+                _keys = None
+
+        def _note(outcome):
+            if not _keys:
+                return
+            ms = (time.perf_counter() - _t0) * 1000.0
+            for _ch, _k in _keys:
+                try:
+                    _bus_stats.record(_ch, _k, outcome, ms)
+                    _bus_stats.note_outcome(_ch, _k, outcome)
+                except Exception:
+                    pass
         with self._seq_lock, self._proc_lock:
             t = self._tail_seq()
             if t + 1000 < self._seq:
@@ -285,14 +313,20 @@ class Bus:
                 if s in wanted and s not in found and obj.get("cmd") == wanted[s]:
                     found[s] = obj
             if len(found) == len(wanted):
+                # "hit", not "ok": record() coerces anything outside VALID_OUTCOMES to
+                # "error", so a wrong string here would have logged every successful batch
+                # as a failure and quietly inverted the statistic.
+                _note("hit")
                 return [found[s] for s in seqs]
             now = time.time()
             if now >= next_alive:
                 if not _game_alive():
+                    _note("error")
                     raise TWError("bus: WH3 process gone while awaiting batch seqs %s"
                                   % sorted(set(wanted) - set(found)))
                 next_alive = now + 2.0
             time.sleep(self.poll_seconds)
+        _note("timeout")
         raise TWError("bus batch timeout: %d/%d replies, missing seqs %s"
                       % (len(found), len(wanted), sorted(set(wanted) - set(found))))
 

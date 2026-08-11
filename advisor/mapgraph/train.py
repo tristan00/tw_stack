@@ -412,11 +412,21 @@ def _fit(datas, ys, groups, cfg, log=print):
         return rank + cfg["value_weight"] * vloss, nll.mean(), vloss
 
     best, best_state, bad, stopped = None, None, 0, "epochs"
+    out_of_time = False
     best_v, curve = None, []
     # The budget has to cover the validation pass that follows the last training step,
     # otherwise a fit that stops exactly at the limit overruns it by a whole val pass.
-    # Seeded with a guess, replaced by the measured cost after the first epoch.
-    val_s = 6.0
+    #
+    # This was seeded at 6.0 and then only ever RAISED (`max(val_s, measured)`), so a val
+    # pass that actually costs 0.2s kept reserving 6s forever. The inner break therefore
+    # fired ~6s early while the outer check still wanted the FULL budget, and the fit spent
+    # the gap running epochs of exactly one gradient step plus a full validation --
+    # observed as epochs 1-3 at 7.5s followed by 4-15 at 0.5s, burning patience and then
+    # reporting stopped_by "patience" when it had actually run out of time.
+    #
+    # None until measured, and the running max is over MEASURED passes only.
+    val_s = None
+    VAL_S_GUESS = 6.0
     t0 = time.time()
     for epoch in range(cfg["epochs"]):
         net.train()
@@ -429,8 +439,9 @@ def _fit(datas, ys, groups, cfg, log=print):
             # Checked per step, not per epoch: an epoch that overshoots the budget by a
             # whole epoch is fatal against a 300s target. Breaks to validation -- and
             # leaves room for it -- so best_state still reflects a scored model.
-            if time.time() - t0 > cfg["time_budget_s"] - val_s:
+            if time.time() - t0 > cfg["time_budget_s"] - (val_s or VAL_S_GUESS):
                 stopped = "time_budget"
+                out_of_time = True
                 break
         if vloader:
             net.eval()
@@ -448,7 +459,7 @@ def _fit(datas, ys, groups, cfg, log=print):
                     tot_v += vl.detach() * k
                     n += k
             score = float(tot_n) / max(n, 1)
-            val_s = max(val_s, time.time() - t_val)
+            val_s = max(val_s or 0.0, time.time() - t_val)
             # Kept in meta so "what does the time cap cost us" is answerable later from
             # stored evidence instead of from a console log that is gone.
             curve.append([epoch + 1, round(time.time() - t0, 1), round(score, 5)])
@@ -467,6 +478,11 @@ def _fit(datas, ys, groups, cfg, log=print):
             if bad >= cfg["patience"]:
                 stopped = "patience"
                 break
+        # The training loop broke for time; scoring it was the point of continuing this
+        # far, and now the fit is over. Without this the outer check waits for the FULL
+        # budget and the gap is spent on one-step epochs.
+        if out_of_time:
+            break
         if time.time() - t0 > cfg["time_budget_s"]:
             stopped = "time_budget"
             break
