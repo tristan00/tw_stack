@@ -3080,9 +3080,18 @@ def _mm_within_corr_rows(blocks):
         rows.append("<tr><td>%s</td><td class=num>%d</td><td class=num>%d</td>"
                     "<td class=num>%s</td>%s</tr>"
                     % (_esc(arm), len(camps_used), len(used), vol, "".join(cells)))
-    return ("<table class=mmtbl><tr><th>arm<th class=num>camps<th class=num>turns"
-            "<th class=num>share<th class=num>settlements"
-            "<th class='num mmdimc'>lord level</tr>%s</table>"
+    # The table carries its own meaning: headers name the quantity, title= holds the
+    # definition for anyone who wants it. No paragraph above it.
+    return ("<table class=mmtbl><tr><th>arm"
+            "<th class=num title='campaigns contributing a within-campaign contrast'>camps"
+            "<th class=num title='turns contributing'>turns"
+            "<th class=num title='mean share of a turn&#39;s decisions &middot; decisions "
+            "per campaign'>share &middot; /camp"
+            "<th class=num title='Spearman rho of share against peak settlement gain from "
+            "that turn on, both centred within campaign &middot; gate is the smallest |rho| "
+            "beating chance at p&lt;0.005'>settlements &rho;/gate"
+            "<th class='num mmdimc' title='same, against peak lord-level gain'>"
+            "lord &rho;/gate</tr>%s</table>"
             % "".join(rows))
 
 
@@ -3109,37 +3118,11 @@ def _mm_corr_tables(con):
     if not acts:
         return "<div class=dim>no turn has both a recorded share and an outcome yet</div>"
     return ("<div class=mmgrid>"
-            + ("<div class=mmtile><div class=mmt>action ranker</div>%s"
-               "<div class=mms>share of the TURN's ordinary decisions, against what the "
-               "campaign gained after that turn</div></div>" % _mm_within_corr_rows(acts))
-            + ("<div class=mmtile><div class=mmt>interrupt model</div>%s"
-               "<div class=mms>share of the turn's blocking-menu decisions (pre_battle, "
-               "battle_results, occupation, dilemma, diplomacy_proposal) &mdash; a separate "
-               "model, trained and drawn separately. Screens are rare, so most turns "
-               "contribute nothing here.</div></div>" % _mm_within_corr_rows(ints))
-            + "</div>"
-            + "<div class=mms>The unit is a <b>turn</b>, and every comparison happens "
-              "<b>inside one campaign</b>. Each cell is Spearman rho of that arm's share of "
-              "a turn's decisions against the peak gain from that turn onward, with both "
-              "sides centred on their own campaign's mean first &mdash; so faction, start, "
-              "era and how long the campaign survived all cancel, and only the randomised "
-              "turn-to-turn variation is left. "
-              "<b>This replaced a campaign-level correlation</b>, which compared whole "
-              "campaigns to each other: the draw is randomised per decision, not per "
-              "campaign, and a campaign's lifetime mix is partly an OUTCOME, since one that "
-              "died at turn 4 got a different mix by luck than one that ran to 20. "
-              "<b>/gate</b> is the smallest |rho| separable from chance at p&lt;0.005, "
-              "computed from the number of CAMPAIGNS rather than turns, because turns "
-              "within a campaign are not independent. Nothing is significant until a rho "
-              "exceeds its own gate. <b>share</b> is how much of a turn the arm typically "
-              "drove, and beside it the decisions that came to per campaign it was active "
-              "in &mdash; a campaign counts toward the gate whether the arm played 2 "
-              "decisions in it or 200, so the count alone would overstate the evidence.<b>Settlement gain is the objective</b>; lord level is "
-              "a proxy that exists to support taking ground, so it is supporting evidence "
-              "rather than a second result &mdash; a run that levels its lord and takes no "
-              "ground has not done the thing. Still observational in one respect: the "
-              "corpus spans several configurations, so a pooled number is partly an era "
-              "contrast.</div>")
+            + ("<div class=mmtile><div class=mmt>action ranker</div>%s</div>"
+               % _mm_within_corr_rows(acts))
+            + ("<div class=mmtile><div class=mmt>interrupt model</div>%s</div>"
+               % _mm_within_corr_rows(ints))
+            + "</div>")
 
 
 def render_model_metrics(con, run, q):
@@ -3167,14 +3150,10 @@ def render_mm_forcing(con, run, q):
         tiles.append("<div class=mmtile><div class='mmt %s'>%s</div>%s"
                      "<div class=mms>%s</div></div>"
                      % (cls, _esc(model), _mm_bars_svg(_mm_fold(offered, picks), cls), sub))
-    return ("<div class=mms>Share of the decisions that <b>offered</b> an action type on "
-            "which the model put it first. Conditioned on availability because a model "
-            "cannot pick what was never on the menu &mdash; an unconditioned count would "
-            "mostly measure the offer generator. Both models score every offer on every "
-            "decision, so this is what each <b>wants</b>, not what the draw let it do. "
-            "Tail beyond the %d most-offered types folds into <b>other</b>; hairline is a "
-            "Wilson 95%% interval, right-hand number is how many decisions offered it. "
-            "%d decisions in the scored window.</div>"
+    return ("<div class=mms title='Conditioned on availability: a model cannot pick what "
+            "was never offered. Hairline is a Wilson 95%% interval; right-hand number is "
+            "how many decisions offered the type.'>first pick, of the decisions that "
+            "offered the type &middot; top %d, %d decisions</div>"
             "<div class=mmgrid>%s</div>" % (MM_TOP_TYPES, n_dec, "".join(tiles)))
 
 
