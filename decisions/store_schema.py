@@ -132,6 +132,26 @@ CREATE TABLE IF NOT EXISTS entity_target_rows(
   value REAL, ts REAL,
   PRIMARY KEY(campaign_id, turn, context_kind, context_id));
 
+-- The whole world's war graph, one row per campaign turn, INCLUDING factions we have never
+-- met. It is deliberately NOT in the decision record: the record is what the model may see,
+-- and a model trained on relationships the player cannot observe would lean at training time
+-- on information it will not have at play time -- the kind of failure that scores fine
+-- offline and is silently wrong in the game.
+--
+-- `known_factions` is the filter, carried in the row itself rather than enforced by a
+-- separate guard. Any consumer holds the met-set for that exact turn next to the data, so
+-- clipping is a join and not a convention someone has to remember. The met set changes every
+-- turn, which is precisely why it is stored per row instead of derived later.
+--
+-- Written once per TURN, not per action: two factions that are not us cannot change their
+-- relationship while we are taking actions -- the AI moves between turns. PRIMARY KEY makes
+-- the repeat writes within a turn a no-op.
+CREATE TABLE IF NOT EXISTS diplo_state(
+  campaign_id TEXT NOT NULL, turn INTEGER NOT NULL, ts REAL,
+  known_blob INTEGER NOT NULL REFERENCES blobs(blob_id),  -- the met set at this turn
+  war_blob INTEGER NOT NULL REFERENCES blobs(blob_id),    -- [{faction,at_war_with:[]}], ALL factions
+  PRIMARY KEY(campaign_id, turn)) WITHOUT ROWID;
+
 CREATE INDEX IF NOT EXISTS ix_dec_campaign ON decisions(campaign_id, decision_id);
 CREATE INDEX IF NOT EXISTS ix_dec_turn ON decisions(turn);
 """

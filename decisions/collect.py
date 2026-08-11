@@ -385,6 +385,36 @@ def _parse_war_graph(raw):
     return out
 
 
+# The same war graph over EVERY faction in the world, met or not, plus the met set itself.
+#
+# This is the leaky twin of _LUA_WAR_GRAPH and it must never reach the decision record. It
+# exists so the corpus is not lossy: the met set changes every turn, so a clip applied at
+# collection time can never be widened afterwards, and if our clip turns out wrong there is
+# no way back. Storing the full graph with the met-set beside it keeps that reversible.
+#
+# Run ONCE PER TURN, from the `target` request, not from the per-action snapshot: 534
+# factions is ~10x the met-clipped call count, and two factions that are not us cannot
+# change their relationship while we are mid-turn taking actions.
+_LUA_DIPLO_WORLD = (
+    "local me=cm:get_local_faction(true) local ml=me:factions_met() local met={} "
+    "for i=0,ml:num_items()-1 do met[#met+1]=ml:item_at(i):name() end "
+    "local fl=cm:model():world():faction_list() local out={} "
+    "for i=0,fl:num_items()-1 do local f=fl:item_at(i) "
+    "  local ok,wl=pcall(function() return f:factions_at_war_with() end) "
+    "  if ok and wl and wl:num_items()>0 then local e={} "
+    "    for j=0,wl:num_items()-1 do e[#e+1]=wl:item_at(j):name() end "
+    "    out[#out+1]=f:name()..'>'..table.concat(e,'|') end end "
+    "return table.concat(met,',')..'||'..table.concat(out,',')")
+
+
+def diplo_world(bus):
+    """(known_factions, war_graph_over_all_factions). Once per turn -- see _LUA_DIPLO_WORLD."""
+    raw = str(_ev(bus, _LUA_DIPLO_WORLD, timeout=40.0, allow_nil=True) or "")
+    met_raw, _, war_raw = raw.partition("||")
+    known = [f for f in met_raw.split(",") if f]
+    return known, _parse_war_graph(war_raw)
+
+
 _LUA_ENEMY_AGENTS = (
     "local function t(fn) local ok,v=pcall(fn) if ok then return v end return nil end "
     "local me=cm:get_local_faction(true) local myname=me:name() local out={} "
