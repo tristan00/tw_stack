@@ -724,8 +724,11 @@ def _diplo_options(targets):
         # A treaty you already hold cannot be proposed again. The launcher refused these
         # at click time as already_allied / already_trading / already_in_vassalage, using
         # world.relations -- which is in the snapshot, so the refusal belongs here.
+        # our_master is the direction that was missing: `their_vassal` says they serve
+        # us, and proposing vassalage while WE serve THEM is equally impossible.
+        vassalage = t.get("their_vassal") or t.get("our_master")
         HELD = {"military_alliance": t.get("allied"), "trade_agreement": t.get("trade"),
-                "vassal": t.get("their_vassal"), "confederation": t.get("their_vassal")}
+                "vassal": vassalage, "confederation": vassalage}
         for a in DIPLO_TERMS:
             held = bool(HELD.get(a))
             ok = (not at_war) and not held
