@@ -14,7 +14,6 @@ import options as O
 import ruleset as R
 import strategies as S
 
-FORBIDDEN_KEYS = frozenset({"button_attack", "button_spectate"})
 
 MAX_ACTIONS_PER_TURN = 16
 MAX_ACTIONS_PER_ENTITY = 6
@@ -48,29 +47,11 @@ def normalize_strategies(strategies):
     return {k: w / total for k, w in mix.items()}
 
 
-FACTION_WIDE_CAPS = frozenset(("recruit_lord", "recruit_hero", "research", "rites",
-                               "building_dismantle"))
-PER_TURN_CAPS = {"recruit_lord": 1, "recruit_hero": 1, "recruit_unit": 4, "edict": 1,
-                 "research": 1, "rites": 1,
-                 "diplomacy": 3, "noop": 0,
-                 "stance": 1, "hero_action": 3, "building_dismantle": 0,
-                 "raise_dead": 4, "recruit_ror": 1,
-                 "recruit_blessed": 4, "recruit_imperial": 1}
-
-ATTACK_PAIR_TYPES = frozenset(("attack_army", "attack_settlement"))
-ATTACK_PAIR_CAP = 1
-DIPLO_TARGET_CAP = 1
-DIPLO_GIFT_CAP = 0
 
 
-def _is_gift(key):
-    return str(key).split(":", 1)[-1].startswith("gift_")
 
 
-def _pair_key(context_kind, context_id, action_type, key):
-    if action_type == "diplomacy":
-        return ("diplomacy", str(key).split(":", 1)[0])
-    return (context_kind, str(context_id), action_type, str(key))
+
 
 
 def _tally(values):
@@ -80,10 +61,6 @@ def _tally(values):
     return out
 
 
-def _cap_key(context_kind, context_id, action_type):
-    if action_type in FACTION_WIDE_CAPS:
-        return ("faction", "*", action_type)
-    return (context_kind, str(context_id), action_type)
 
 
 class Policy:
