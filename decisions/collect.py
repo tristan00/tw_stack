@@ -180,6 +180,52 @@ def campaign_uuid(bus):
     return None if v in (None, "NO-UUID", "nil", "") else str(v)
 
 
+# WHICH MAP this campaign is being played on. Immortal Empires (534 factions) and Realm of
+# Chaos are different games for our purposes -- different faction counts, different
+# topology, a different end-turn cost and a different diplomatic structure. Nothing recorded
+# it, so a corpus collected across more than one map would have been silently pooled and
+# indistinguishable afterwards, which is the same class of mistake as a mixed schema.
+#
+# Read from the GAME rather than passed down from session.py's --campaign argument: what we
+# asked the launcher to start is an intention, what the engine reports is the fact, and only
+# the second survives a launcher bug or a save being resumed.
+#
+# The exact accessor is unverified -- the game was down when this was written, and shipping
+# a guessed CCO/script name is how params.item_key became the string "nil" in 95,178 rows.
+# So it tries several and takes the first that answers, which degrades to empty rather than
+# to something wrong. Whichever one wins should be pinned here once observed live.
+_LUA_CAMPAIGN_MAP = (
+    "local out='' "
+    "local function try(fn) if out~='' then return end "
+    "  local ok,v=pcall(fn) if ok and v~=nil and tostring(v)~='' then out=tostring(v) end end "
+    "try(function() return cm:get_campaign_name() end) "
+    "try(function() return cm:model():campaign_name() end) "
+    "try(function() return cm:campaign_name() end) "
+    # CcoCampaignRoot.CampaignKey is a real property (cco_audit confirms it against the
+    # extracted CCO table). A `Key` fallback was tried and rejected by that same audit --
+    # 'Key' exists on many record types but NOT on CcoCampaignRoot -- which is the check
+    # earning its keep, since a nil there would have read as "no map" forever.
+    "try(function() return cco('CcoCampaignRoot',''):Call('CampaignKey') end) "
+    "return out")
+
+# Constant for the life of a campaign, so it is fetched once and cached rather than asked on
+# every action. Keyed by campaign uuid so a new campaign in the same process refetches.
+_MAP_CACHE = {}
+
+
+def campaign_map(bus, uuid=None):
+    key = str(uuid or "")
+    if key in _MAP_CACHE:
+        return _MAP_CACHE[key]
+    v = _ev(bus, _LUA_CAMPAIGN_MAP, timeout=25.0, allow_nil=True)
+    v = None if v in (None, "nil", "") else str(v)
+    _MAP_CACHE[key] = v
+    if len(_MAP_CACHE) > 64:
+        _MAP_CACHE.clear()
+        _MAP_CACHE[key] = v
+    return v
+
+
 _LUA_CAMPAIGN = (_G + "local okc,t0=pcall(os.clock) "
                  "local f=cm:get_local_faction(true) local me=f:name() "
                  "local fc=cco('CcoCampaignFaction',tostring(f:command_queue_index())) "
@@ -1735,6 +1781,8 @@ def snapshot(bus, active=None):
     camp = _parse_campaign(_bres(ra[0], "campaign_state"))
     prof["campaign_state_engine_ms"] = camp.pop("_eval_ms", None)
     camp["resources"] = _parse_resources(_bres(ra[1], "faction_resources", allow_nil=True))
+    # Constant per campaign and cached, so this is one bus call per campaign, not per action.
+    camp["campaign_map"] = campaign_map(bus, camp.get("campaign_uuid"))
     regs = _parse_regions(_bres(ra[2], "regions", allow_nil=True))
     rs = _ruins_of(regs)
     ruin_keys = {r["region"] for r in rs}
