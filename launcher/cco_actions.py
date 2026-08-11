@@ -882,8 +882,17 @@ def _collect_mod():
     return _C
 
 
+def _options_mod():
+    """HERO_ACTIONS is the ADVISOR's catalogue -- it decides what may be offered -- so it
+    moved with the rest of the generator. The executor still needs it to name the button
+    and to know what a target is supposed to be."""
+    sys.path.insert(0, common.ADVISOR)
+    import options as _O
+    return _O
+
+
 def _hero_action_method_name(action):
-    spec = _collect_mod().HERO_ACTIONS.get(action)
+    spec = _options_mod().HERO_ACTIONS.get(action)
     if not spec:
         return None
     sys.path.insert(0, common.REFERENCE)
@@ -921,7 +930,7 @@ def _hero_target(pick):
 
 def _assist_route(pick):
     action = (pick.get("params") or {}).get("action")
-    spec = _collect_mod().HERO_ACTIONS.get(action) or {}
+    spec = _options_mod().HERO_ACTIONS.get(action) or {}
     return tuple(spec.get("targets") or ()) == ("own_armies",)
 
 
@@ -934,7 +943,7 @@ _assist_payloads = {}
 
 def _assist_payload(action):
     if action not in _assist_payloads:
-        spec = _collect_mod().HERO_ACTIONS.get(action) or {}
+        spec = _options_mod().HERO_ACTIONS.get(action) or {}
         sys.path.insert(0, common.REFERENCE)
         import features_db as _DB
         _assist_payloads[action] = _DB.agent_action_payload(spec.get("loc_suffix"))
@@ -977,7 +986,7 @@ def _hero_action_gate_target(bus, ctx, pick, before):
         return True, None
     if before.get("is_shrouded") != "false":
         return False, "target_shrouded_%s" % before.get("is_shrouded")
-    spec = _collect_mod().HERO_ACTIONS.get((pick.get("params") or {}).get("action")) or {}
+    spec = _options_mod().HERO_ACTIONS.get((pick.get("params") or {}).get("action")) or {}
     if tuple(spec.get("targets") or ()) == ("ruins",):
         if before.get("is_abandoned") != "true":
             return False, "target_not_ruins_%s" % before.get("is_abandoned")

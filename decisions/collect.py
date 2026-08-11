@@ -785,6 +785,22 @@ def _reach_lua(cqi, target_cqis, regions):
             % (cqi, ",".join(str(t) for t in target_cqis), ",".join(regions)))
 
 
+def _reach(bus, cqi, target_cqis, regions):
+    """Can this character reach these targets, asked live.
+
+    Used by launcher/cco_actions.py, which re-checks reach at CLICK time -- the advisor
+    gated on reach as it was when the snapshot was taken, and the world moves. It reaches
+    this through `_collect_mod()._reach`, an attribute on a function's return value, which
+    is invisible to a static import-graph scan: the dead-code sweep saw no reference and
+    removed it, and every hero action then failed. Restored, and named in check.py's
+    dynamic-reference guard so a scan cannot delete it again.
+    """
+    if not target_cqis and not regions:
+        return {}, {}
+    return _parse_reach(_ev(bus, _reach_lua(cqi, target_cqis, regions), timeout=40.0,
+                            allow_nil=True))
+
+
 def _parse_reach(raw):
     chars, setts = {}, {}
     for part in str(raw or "").split(","):

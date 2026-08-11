@@ -197,7 +197,7 @@ ACTION_TYPES = ("stance", "building", "research", "skills", "items", "item_unequ
                 "recruit_unit", "recruit_lord", "edict", "attack_army", "attack_settlement",
                 "colonize", "horde_building", "garrison", "leave_garrison", "end_turn", "noop",
                 "move", "diplomacy", "hero_action", "recruit_hero",
-                "building_repair", "building_cancel", "building_dismantle",
+                "building_repair", "building_dismantle",
                 "raise_dead", "recruit_ror", "recruit_blessed", "recruit_imperial")
 ATYPE_VOCAB = len(ACTION_TYPES) + 1
 ATYPE_DIM = 24
