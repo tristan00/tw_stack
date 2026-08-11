@@ -721,9 +721,17 @@ def _diplo_options(targets):
         offers.append(_offer("diplomacy", "%s:%s" % (f, DIPLO_PEACE), at_war,
                              None if at_war else "not_at_war",
                              faction=f, terms=[DIPLO_PEACE], **rel))
+        # A treaty you already hold cannot be proposed again. The launcher refused these
+        # at click time as already_allied / already_trading / already_in_vassalage, using
+        # world.relations -- which is in the snapshot, so the refusal belongs here.
+        HELD = {"military_alliance": t.get("allied"), "trade_agreement": t.get("trade"),
+                "vassal": t.get("their_vassal"), "confederation": t.get("their_vassal")}
         for a in DIPLO_TERMS:
-            offers.append(_offer("diplomacy", "%s:%s" % (f, a), not at_war,
-                                 "at_war_offers_only_peace" if at_war else None,
+            held = bool(HELD.get(a))
+            ok = (not at_war) and not held
+            gate = ("at_war_offers_only_peace" if at_war else
+                    "already_holds_%s" % a if held else None)
+            offers.append(_offer("diplomacy", "%s:%s" % (f, a), ok, gate,
                                  faction=f, terms=[a], **rel))
         for tier in DIPLO_GIFT_TIERS:
             offers.append(_offer("diplomacy", "%s:gift_%s" % (f, tier), not at_war,
@@ -790,6 +798,13 @@ PER_TURN_CAPS = {"recruit_lord": 1, "recruit_hero": 1, "recruit_unit": 4, "edict
 # decision to be told something the state already said.
 COSTS_MOVEMENT = frozenset(("move", "attack_army", "attack_settlement", "colonize",
                             "garrison", "leave_garrison", "hero_action"))
+
+# A force holds 20 units. The launcher refused a 21st with `army_full`, which is a fact
+# about the game the snapshot already carries as state.units -- so it is decided here.
+# The value matches launcher/click_actions.MAX_FORCE_UNITS; it is game data, not policy.
+MAX_FORCE_UNITS = 20
+FILLS_THE_ARMY = frozenset(("recruit_unit", "raise_dead", "recruit_ror",
+                            "recruit_blessed", "recruit_imperial"))
 
 ATTACK_PAIR_TYPES = frozenset(("attack_army", "attack_settlement"))
 ATTACK_PAIR_CAP = 1
@@ -894,6 +909,11 @@ class Gate:
         # than simply being deleted -- `besieging` is on every lord snapshot.
         if at == "move" and (o.get("_state") or {}).get("besieging"):
             return "besieging"
+        if at in FILLS_THE_ARMY:
+            units = (o.get("_state") or {}).get("units")
+            # unread is not "full" -- an absent count says nothing, so it says nothing
+            if units is not None and float(units) >= MAX_FORCE_UNITS:
+                return "army_full"
         if at == "end_turn" and actions_taken < END_TURN_AFTER:
             return "end_turn_before_6th_decision"
         if key in FORBIDDEN_KEYS:

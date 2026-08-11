@@ -315,10 +315,6 @@ def _building_snapshot(bus, ctx, pick):
     return {"treasury": t, "slot_is_building_new": is_new == "true", "cost": cost}
 
 
-def _building_gate_slot(bus, ctx, pick, before):
-    if before.get("slot_is_building_new"):
-        return False, "slot_already_building"
-    return True, None
 
 
 def _building_execute(bus, ctx, pick, before):
@@ -413,7 +409,7 @@ def _building_confirm(bus, ctx, pick, before):
 register("building", {
     "layer": "cco", "signal": "slot_queued_with_requested_building",
     "snapshot": _building_snapshot,
-    "gates": [_building_gate_slot],
+    "gates": [],
     "execute": _building_execute, "confirm": _building_confirm,
     "timeout_s": 6.0, "poll_s": 2.0, "spends_gold": True,
 })
@@ -912,18 +908,6 @@ def _hero_action_snapshot(bus, ctx, pick):
     return st
 
 
-def _hero_action_gate_target(bus, ctx, pick, before):
-    if before.get("target_kind") == "character":
-        if before.get("is_abandoned") != "true":
-            return False, "target_character_gone"
-        return True, None
-    if before.get("is_shrouded") != "false":
-        return False, "target_shrouded_%s" % before.get("is_shrouded")
-    spec = _options_mod().HERO_ACTIONS.get((pick.get("params") or {}).get("action")) or {}
-    if tuple(spec.get("targets") or ()) == ("ruins",):
-        if before.get("is_abandoned") != "true":
-            return False, "target_not_ruins_%s" % before.get("is_abandoned")
-    return True, None
 
 
 
@@ -1250,7 +1234,7 @@ def _hero_action_confirm(bus, ctx, pick, before):
 register("hero_action", {
     "layer": "click", "signal": "agent_action_event",
     "snapshot": _hero_action_snapshot,
-    "gates": [_hero_action_gate_target],
+    "gates": [],
     "execute": _hero_action_execute, "confirm": _hero_action_confirm,
     "timeout_s": 8.0, "poll_s": 0.05,
 })
