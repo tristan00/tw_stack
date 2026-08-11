@@ -88,7 +88,6 @@ def _skill_offers(skills, has_pts):
         offers.append(_offer("skills", key, ok,
                              None if ok else ("no_points" if not has_pts else status),
                              level=lvl, total_levels=tot, tier=s.get("tier"),
-                             background=s.get("background"),
                              at_max=(None if lvl is None or tot is None else lvl >= tot)))
     return offers, active
 

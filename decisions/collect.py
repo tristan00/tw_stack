@@ -337,6 +337,54 @@ def regions(bus):
     return _parse_regions(_ev(bus, _LUA_REGIONS, timeout=30.0, allow_nil=True))
 
 
+# Third-party wars: who among the factions we KNOW is fighting whom.
+#
+# Everything else in the diplomacy record is a star centred on us -- world.relations rows
+# carry one faction key and 11 flags whose subject is implicitly the player, so 887 of 887
+# rows were player-incident and no (A,B) fact existed anywhere. That hides whether an attack
+# target is already tied down, who is dogpiling an ally, and which war blocs exist. It is
+# per-turn state with no static backfill, so it cannot be added to an old corpus later.
+#
+# O(n), not O(n^2): factions_at_war_with() returns a LIST per faction, so this is one call
+# per met faction rather than a pairwise sweep. At 60 met factions that is 60 calls, not the
+# ~5,300 a pairwise loop would need.
+#
+# BOTH axes are clipped to factions_met(). The tempting shortcut -- reusing the diplo block
+# in twstate.lua, which walks world():faction_list() -- would emit relationships for the 534
+# factions in the world including ones never met, which is a fog leak. `metset` includes our
+# own name so that "X is at war with US" survives the clip.
+_LUA_WAR_GRAPH = (
+    "local me=cm:get_local_faction(true) local ml=me:factions_met() "
+    "local metset={} metset[me:name()]=true "
+    "for i=0,ml:num_items()-1 do metset[ml:item_at(i):name()]=true end "
+    "local out={} "
+    "for i=0,ml:num_items()-1 do local f=ml:item_at(i) "
+    "  local ok,wl=pcall(function() return f:factions_at_war_with() end) "
+    "  if ok and wl then local e={} "
+    "    for j=0,wl:num_items()-1 do local w=wl:item_at(j):name() "
+    "      if metset[w] then e[#e+1]=w end end "
+    "    if #e>0 then out[#out+1]=f:name()..'>'..table.concat(e,'|') end end end "
+    "return table.concat(out,',')")
+
+
+def _parse_war_graph(raw):
+    """[{faction, at_war_with:[...]}] over KNOWN factions only.
+
+    Empty is a legitimate answer and an early-campaign one: measured on a turn-1 Empire
+    start, all six met factions had wars and none of them were against a faction we also
+    knew, so the met-clipped graph is genuinely empty until the met set grows.
+    """
+    out = []
+    for row in str(raw or "").split(","):
+        subj, _, rest = row.partition(">")
+        if not subj or not rest:
+            continue
+        peers = [w for w in rest.split("|") if w]
+        if peers:
+            out.append({"faction": subj, "at_war_with": peers})
+    return out
+
+
 _LUA_ENEMY_AGENTS = (
     "local function t(fn) local ok,v=pcall(fn) if ok then return v end return nil end "
     "local me=cm:get_local_faction(true) local myname=me:name() local out={} "
@@ -604,10 +652,31 @@ _LUA_LORD = (_G +
     "..'|'..ts(ch and ch:is_faction_leader())"
     "..'|'..table.concat(pend,',')"
     "..'|'..ts(g(c,'ActionPointsRemaining'))..'|'..ts(g(c,'ActionPointsPerTurn'))"
-    "..'|'..(function() if not (ch and ch:has_military_force()) then return 'nil' end "
-    "local ok,v=pcall(function() local ul=ch:military_force():unit_list() local t=0 "
-    "for i=0,ul:num_items()-1 do t=t+ul:item_at(i):percentage_proportion_of_full_strength() end "
-    "return math.floor(t)/100 end) return tv(ok,v) end)()")
+    # ONE walk of unit_list emits both fields: the aggregate `hp` this always returned, and
+    # the per-unit roster after it. The loop already ran and threw every unit away, so the
+    # roster costs payload, not traversal -- `units` was a bare COUNT in 100% of the corpus
+    # while the engine had the composition in hand. The two values are separated by '|' so
+    # they land as consecutive fields of the same split.
+    #
+    # Method names are smoke-tested against a live campaign, not guessed: unit_key,
+    # percentage_proportion_of_full_strength, unit_category and experience_level all answer;
+    # rank(), men_remaining() and max_men() do NOT exist on a unit and are absent for that
+    # reason. A wrong name here returns nil silently -- that is how params.item_key became
+    # the string "nil" in 95,178 of 95,178 rows.
+    "..'|'..(function() if not (ch and ch:has_military_force()) then return 'nil|' end "
+    "local ok,v=pcall(function() local ul=ch:military_force():unit_list() local t=0 local d={} "
+    "for i=0,ul:num_items()-1 do local u=ul:item_at(i) "
+    "local pc=u:percentage_proportion_of_full_strength() t=t+pc "
+    "d[#d+1]=ts(u:unit_key())..'~'..ts(pc)..'~'..ts(u:unit_category())"
+    "..'~'..ts(u:experience_level()) end "
+    "return (math.floor(t)/100)..'|'..table.concat(d,',') end) "
+    "if ok and v~=nil then return v end return 'nil|' end)()"
+    # is_wounded is the only health signal an AGENT has: a hero outside an army carries no
+    # unit and therefore no strength, so hero `hp` is structurally nil rather than broken.
+    # loyalty answers on the character interface (0 on this Empire lord; the archived
+    # firehose carries non-zero values on Dark Elf characters, so the read is live, not dead).
+    "..'|'..ts(ch and ch:is_wounded())"
+    "..'|'..ts(ch and ch:loyalty())")
 
 
 
@@ -627,7 +696,32 @@ def _parse_lord(raw, cqi):
                                      if k and k not in ("nil", "-")],
             "ap_remaining": _num(p[15]) if len(p) > 15 else None,
             "ap_per_turn": _num(p[16]) if len(p) > 16 else None,
-            "hp": _num(p[17]) if len(p) > 17 else None}
+            # `hp` is NOT hit points and never was: it is the summed
+            # percentage_proportion_of_full_strength over the army, /100. Named badly since
+            # before this file was split, and read as character health three times in review.
+            "hp": _num(p[17]) if len(p) > 17 else None,
+            "unit_cards": _parse_unit_cards(p[18] if len(p) > 18 else ""),
+            "wounded": (p[19] == "true") if len(p) > 19 and p[19] != "" else None,
+            "loyalty": _num(p[20]) if len(p) > 20 else None}
+
+
+def _parse_unit_cards(raw):
+    """key~pct_strength~category~xp per unit, comma separated.
+
+    Empty for a hero with no military force, which is the game answering rather than a
+    failed read -- an agent has no units. Returns [] rather than None so a consumer cannot
+    tell "no army" from "unread"; the caller distinguishes those by `hp`, which is 'nil'
+    only in the no-force case.
+    """
+    out = []
+    for chunk in str(raw or "").split(","):
+        bits = chunk.split("~")
+        if len(bits) < 4 or not bits[0] or bits[0] in ("nil", "-"):
+            continue
+        out.append({"key": bits[0], "strength_pct": _num(bits[1]),
+                    "category": (bits[2] if bits[2] not in ("nil", "") else None),
+                    "xp": _num(bits[3])})
+    return out
 
 
 _LUA_PROVINCE = (_G +
@@ -666,7 +760,21 @@ _LUA_PROVINCE = (_G +
     "local lv=bc and g(bc,'BuildingLevelRecordContext') "
     "local k=lv and ts(g(lv,'Key')) or '' "
     "if k~='' and string.find(k,'settlement') then n=n+(tonumber(g(lv,'Level')) or 0) end "
-    "end end return n end)()")
+    "end end return n end)()"
+    # Economics, each read at the level the GAME puts it on -- measured live, not assumed.
+    # Growth and development are PROVINCE-scoped and hang off FactionProvinceManagerContext
+    # (GrowthPerTurn=20/25 on live campaigns), NOT off the region: a region-level growth read
+    # is the one thing that was specifically wrong in the design review. Income exists at BOTH
+    # levels and they are different questions -- the settlement's own Income vs the province
+    # aggregate over the regions this faction owns -- so both are recorded rather than one
+    # being picked arbitrarily. They coincide only while a faction holds one region of a
+    # province, which is exactly the early-game case that would have hidden the difference.
+    # public_order stays where it already was, on the REGION interface.
+    "..'|'..ts(m and g(m,'GrowthPerTurn'))..'|'..ts(m and g(m,'GrossIncome'))"
+    "..'|'..ts(m and g(m,'DevelopmentPoints'))..'|'..ts(g(s,'Income'))"
+    # Port and walls were both on the wanted list as "needs collection" and are one property
+    # each on the settlement. Walls decide whether an attack is a siege or a field battle.
+    "..'|'..ts(g(s,'HasPort'))..'|'..ts(g(s,'HasWalls'))")
 
 
 
@@ -703,7 +811,15 @@ def _parse_province(raw, region):
             "public_order": _num(p[7]), "buildings": _num(p[8]), "is_capital": p[9] == "true",
             "built": built, "locked_slots": locked, "building_now": building_now,
             "corruption": corruption,
-            "settlement_level": (_num(p[12]) if len(p) > 12 else None)}
+            "settlement_level": (_num(p[12]) if len(p) > 12 else None),
+            # province-scoped (FactionProvinceManagerContext)
+            "growth_per_turn": (_num(p[13]) if len(p) > 13 else None),
+            "gross_income": (_num(p[14]) if len(p) > 14 else None),
+            "development_points": (_num(p[15]) if len(p) > 15 else None),
+            # settlement-scoped
+            "income": (_num(p[16]) if len(p) > 16 else None),
+            "has_port": (p[17] == "true") if len(p) > 17 else None,
+            "has_walls": (p[18] == "true") if len(p) > 18 else None}
 
 
 _LUA_ENTITY_TARGETS = (_G +
@@ -858,10 +974,24 @@ _LUA_LORD_OFFERS = (_G +
     "local sk={} local s=g(c,'SkillList') "
     # Key and Status alone left params={} on 100% of 2.13M skills rows, so nothing said
     # how far up a skill already was or how deep it goes. All four are on the same context.
+    #
+    # IsBackgroundSkill is NOT read here, and its absence is a finding rather than an
+    # oversight: SkillList is the ASSIGNABLE skill tree, which structurally never contains a
+    # background skill. All 265 distinct keys the corpus ever saw in it join
+    # reference.sqlite and ZERO carry is_background_skill (953 of the game's 961 background
+    # skills are *_innate_*, none of which appear). It was False in 6,700 of 6,700 rows --
+    # one distinct value, no information, and no number of extra turns would change it.
+    # Anything wanting the flag joins reference.sqlite.skills on the key.
     "if type(s)=='table' then for i=1,#s do sk[#sk+1]=ts(g(s[i],'Key'))..'~'..ts(g(s[i],'Status'))"
-    "..'~'..ts(g(s[i],'Level'))..'~'..ts(g(s[i],'TotalLevels'))..'~'..ts(g(s[i],'Tier'))"
-    "..'~'..ts(g(s[i],'IsBackgroundSkill')) end end "
-    "return table.concat(st,',')..'||'..table.concat(sk,',')")
+    "..'~'..ts(g(s[i],'Level'))..'~'..ts(g(s[i],'TotalLevels'))..'~'..ts(g(s[i],'Tier')) end end "
+    # The background skills a lord actually HAS live here, not in SkillList. The hero probe
+    # has read this since it was written; the lord probe never did, so hidden_skills was
+    # absent on 78 of 78 lord entities while present on 90 of 90 heroes -- we knew the
+    # innate skills of lords we might HIRE (recruit pools carry bg_skills 2177/2177) and not
+    # of the lord being commanded. Same context, same call, one line.
+    "local hk={} local h=g(c,'HiddenSkillList') "
+    "if type(h)=='table' then for i=1,#h do hk[#hk+1]=ts(g(h[i],'Key')) end end "
+    "return table.concat(st,',')..'||'..table.concat(sk,',')..'||'..table.concat(hk,',')")
 
 
 _LUA_STATIONED = (_G +
@@ -943,9 +1073,10 @@ _LUA_HERO_OFFERS = (_G +
     "local sk={} local s=g(c,'SkillList') "
     # Key and Status alone left params={} on 100% of 2.13M skills rows, so nothing said
     # how far up a skill already was or how deep it goes. All four are on the same context.
+    # IsBackgroundSkill dropped here for the same reason as the lord probe: SkillList
+    # structurally excludes background skills, so it was a constant False. See the note there.
     "if type(s)=='table' then for i=1,#s do sk[#sk+1]=ts(g(s[i],'Key'))..'~'..ts(g(s[i],'Status'))"
-    "..'~'..ts(g(s[i],'Level'))..'~'..ts(g(s[i],'TotalLevels'))..'~'..ts(g(s[i],'Tier'))"
-    "..'~'..ts(g(s[i],'IsBackgroundSkill')) end end "
+    "..'~'..ts(g(s[i],'Level'))..'~'..ts(g(s[i],'TotalLevels'))..'~'..ts(g(s[i],'Tier')) end end "
     "local tk='' local ch=cm:get_character_by_cqi(%(cqi)s) "
     "if ch then local ok,v=pcall(function() return ch:character_type_key() end) "
     "if ok then tk=ts(v) end end "
@@ -1448,7 +1579,10 @@ def _parse_stance_skills(raw):
     _lord_offers_assemble used to do this inline, which is why the stance and skill data
     reached nothing but the offer rows and was gone the moment the offers were built.
     """
-    st_raw, _, sk_raw = str(raw or "").partition("||")
+    parts = str(raw or "").split("||")
+    st_raw = parts[0] if parts else ""
+    sk_raw = parts[1] if len(parts) > 1 else ""
+    hk_raw = parts[2] if len(parts) > 2 else ""
     stances = []
     for row in st_raw.split(","):
         p = row.split("~")
@@ -1456,7 +1590,8 @@ def _parse_stance_skills(raw):
             continue
         stances.append({"key": p[0], "active": p[1] == "true",
                         "can_activate": p[2] == "true", "can_afford": p[3] == "true"})
-    return stances, _parse_skills(sk_raw)
+    hidden = [k for k in hk_raw.split(",") if k and k not in ("nil", "-")]
+    return stances, _parse_skills(sk_raw), hidden
 
 
 def _parse_skills(sk_raw):
@@ -1468,8 +1603,7 @@ def _parse_skills(sk_raw):
         out.append({"key": p[0], "status": p[1],
                     "level": _num(p[2]) if len(p) > 2 else None,
                     "total_levels": _num(p[3]) if len(p) > 3 else None,
-                    "tier": _num(p[4]) if len(p) > 4 else None,
-                    "background": (p[5] == "true") if len(p) > 5 else None})
+                    "tier": _num(p[4]) if len(p) > 4 else None})
     return out
 
 
@@ -1556,7 +1690,8 @@ def snapshot(bus, active=None):
     ra = bus.send_batch([("eval", _LUA_CAMPAIGN), ("eval", _LUA_FACTION_RESOURCES),
                          ("eval", _LUA_REGIONS), ("chars", ""), ("setts", ""), ("hostiles", ""),
                          ("eval", _LUA_STATIONED), ("eval", _LUA_DIPLO_TARGETS),
-                         ("eval", _LUA_ENEMY_AGENTS), ("eval", _LUA_AP_ALL)], timeout=40.0)
+                         ("eval", _LUA_ENEMY_AGENTS), ("eval", _LUA_AP_ALL),
+                         ("eval", _LUA_WAR_GRAPH)], timeout=40.0)
     prof["wave_a_ms"] = int((time.time() - t0) * 1000)
     camp = _parse_campaign(_bres(ra[0], "campaign_state"))
     prof["campaign_state_engine_ms"] = camp.pop("_eval_ms", None)
@@ -1572,7 +1707,8 @@ def snapshot(bus, active=None):
                           and str(h.get("region")) in ruin_keys)], ruin_keys),
              "ruins": rs,
              "regions": regs,
-             "enemy_agents": _parse_enemy_agents(_bres(ra[8], "enemy_agents", allow_nil=True))}
+             "enemy_agents": _parse_enemy_agents(_bres(ra[8], "enemy_agents", allow_nil=True)),
+             "war_graph": _parse_war_graph(_bres(ra[10], "war_graph", allow_nil=True))}
     diplo_raw = _bres(ra[7], "diplo_targets", allow_nil=True)
     world["relations"] = _parse_diplo_targets(diplo_raw)
     world["diplo_schema"] = DIPLO_SCHEMA
@@ -1654,10 +1790,10 @@ def snapshot(bus, active=None):
     lord_state, hero_state, prov_state = {}, {}, {}
     for cqi in lords:
         st = _parse_lord(_bres(rb[i], "lord_state:%s" % cqi), cqi)
-        stances, skills = _parse_stance_skills(
+        stances, skills, hidden = _parse_stance_skills(
             _bres(rb[i + 1], "lord_blob:%s" % cqi, allow_nil=True))
         rc, rs_ = _parse_reach(_bres(rb[i + 3], "reach:%s" % cqi, allow_nil=True))
-        st.update(stances=stances, skills=skills,
+        st.update(stances=stances, skills=skills, hidden_skills=hidden,
                   recruitable=_parse_recruitable(
                       _bres(rb[i + 2], "recruitable:%s" % cqi, allow_nil=True)),
                   reach_chars=rc, reach_setts=rs_,
