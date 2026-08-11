@@ -856,7 +856,17 @@ def _live_log():
     return path
 
 
+def _read_report(path):
+    """A session report, or None if it is missing or half-written."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
 def _live_session(runs_root):
+    import glob
     import re
     path = _live_log()
     if not path:
@@ -872,10 +882,32 @@ def _live_session(runs_root):
         return None
     backend = re.search(r"session_(?:cold_)?([A-Za-z0-9]+)_\d+x", name)
     report = os.path.join(runs_root, "session_%s.json" % stamp)
-    try:
-        with open(report, encoding="utf-8") as fh:
-            rep = json.load(fh)
-    except (OSError, ValueError):
+    rep = _read_report(report)
+    if rep is None:
+        # The log and the report are stamped by two INDEPENDENT strftime calls --
+        # runctl.start_session names the log, session.run_campaigns names the report --
+        # so they agree only when both land in the same second. Today's run straddled one:
+        # log ...143116.log, report ...143117.json. Reconstructing the report path from the
+        # log stamp therefore misses, and the fallback below invents a `requested` holding
+        # nothing but a backend scraped out of the log FILENAME. That is what made the
+        # training tab show a blank mix, a blank ruleset, a backend that was never read
+        # from the run, and a phantom trial id one second off the real one -- four symptoms,
+        # one missing file.
+        #
+        # Match on the recorded start instead. A session writes `started` into its own
+        # report, and no two sessions start within a minute of each other because a
+        # relaunch tears the old one down first.
+        best = None
+        for p in glob.glob(os.path.join(runs_root, "session_*.json")):
+            r = _read_report(p)
+            st = (r or {}).get("started")
+            if st is None:
+                continue
+            if -5.0 <= (float(st) - started) <= 120.0 and (best is None or st > best[2]):
+                best = (p, r, float(st))
+        if best is not None:
+            report, rep = best[0], best[1]
+    if rep is None:
         gen = 0
         try:
             gen = 1 if "retrained before run 1:" in open(path, encoding="utf-8",

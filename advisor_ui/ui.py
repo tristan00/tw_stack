@@ -468,7 +468,11 @@ def _mix_str(mix, epsilon=None):
 
 
 # fixed display order so the same slot means the same strategy on every row
-MIX_ORDER = (("exploit_tree", "ET", "p1"), ("gnn", "GN", "p2"),
+# gnn_marwil, not gnn: the strategy was renamed after its ALGORITHM in 129d4a7 and this
+# table was not. The GN slot read 00 on every trial that ran the gnn arm, and the real
+# weight was pushed into the overflow text as "+gnn_marwil=0.10" -- so the one column meant
+# to make mixes comparable by eye was wrong for exactly the arm being evaluated.
+MIX_ORDER = (("exploit_tree", "ET", "p1"), ("gnn_marwil", "GN", "p2"),
              ("random", "RD", "p3"), ("ruleset", "RS", "p4"))
 
 
