@@ -65,6 +65,9 @@ CHECKS = [
      "varying one is not"),
 
     # need a live game, a bus, or a populated corpus
+    ("replay_options", ["-m", "advisor.replay_options", "--n", "200"], True,
+     "every stored option regenerates from the stored state -- a miss means the record "
+     "cannot explain its own contents"),
     ("coverage", ["-m", "decisions.coverage"], True,
      "no recorded field is constant/null without a stated reason"),
     ("graph_build", ["-m", "advisor.mapgraph.test_build"], True,
