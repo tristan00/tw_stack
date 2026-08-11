@@ -1112,10 +1112,28 @@ def main():
     if epsilon is not None and strategies is not None:
         raise SystemExit("--epsilon is legacy sugar for --strategies; give one, not both")
     ruleset = _parse_ruleset(sys.argv)
+    # WHICH MAP to play. run_campaigns has always taken this; main() never passed it, so the
+    # campaign was pinned to Immortal Empires by the default and the only way to play another
+    # was to edit the source. Accepts either a friendly name ("Realm of Chaos") or a raw
+    # campaign key -- bus_launcher.start_campaign does CAMPAIGN_KEYS.get(campaign, campaign),
+    # so a modded key like `cr_combi_expanded` passes straight through.
+    #
+    # Immortal Empires has ~534 faction records against Realm of Chaos's far smaller set, and
+    # the end-turn AI phase is about half of all campaign wall-clock, so which map is played
+    # is a throughput decision as much as a content one. The campaign KEY is recorded per
+    # campaign in the store, so a corpus spanning maps stays separable.
+    campaign = "Immortal Empires"
+    if "--campaign" in sys.argv:
+        i = sys.argv.index("--campaign")
+        if i + 1 >= len(sys.argv):
+            raise SystemExit("--campaign needs a value: a friendly name "
+                             "('Immortal Empires', 'Realm of Chaos', 'Prologue') or a raw "
+                             "campaign key such as wh3_main_chaos")
+        campaign = sys.argv[i + 1]
     r = run_campaigns(n, turns, plan=keys, retrain="--retrain" in sys.argv,
                       retrain_every=every, cold=cold, backend=backend,
                       backend_cfg=backend_cfg, epsilon=epsilon, strategies=strategies,
-                      ruleset=ruleset)
+                      ruleset=ruleset, campaign=campaign)
     return 0 if r["totals"]["completed"] else 2
 
 

@@ -46,9 +46,23 @@ _CLICKABLE_STATES = frozenset(("active", "default", "NewState", "selected", "hov
 # _read_tree_or_die, which reports a bus failure and ends the session.
 #   influence_gained               398x220  32 particle nodes  0 buttons  "Influence Gained!"
 #   dlc27_hef_sotwt_scrolls_gained 202x110  30 particle nodes  0 buttons  "Scrolls of Knowledge Gained!"
+# cinematic_bars and advice_interface are the Realm of Chaos turn-1 intro: the campaign
+# reaches an interactive HUD normally (14 cinematic keys cleared at load), then plays a
+# fullscreen media event on the first turn with the advisor tour over it. The engine reports
+# PENDING_FULLSCREEN_MEDIA while both roots are open, nothing claimed them, and the session
+# killed itself rather than record a campaign it could not read -- correct behaviour, wrong
+# verdict, because neither root is a decision surface. cinematic_bars is the letterbox
+# overlay and advice_interface is the advisor popup; both dismiss themselves or are cleared
+# by the existing cm:dismiss_advice() path.
+#
+# Added on Tristan's explicit instruction. BENIGN_PANELS is his call by standing rule: a
+# panel goes on this list because he decided it is not a decision, never because it was
+# convenient to make an error go away, and _read_tree_or_die is not softened to accommodate
+# it. Immortal Empires never hit this because its intro sequence completes before turn 1.
 BENIGN_PANELS = frozenset(("units_panel", "settlement_panel", "recruitment_options",
                            "influence_gained", "dlc27_hef_sotwt_scrolls_gained",
-                           "province_publicorder_tooltip", "skaven_revealed_anim"))
+                           "province_publicorder_tooltip", "skaven_revealed_anim",
+                           "cinematic_bars", "advice_interface"))
 
 DECISION_ROOTS = frozenset(("diplomacy_dropdown", "ally_attacked"))
 
