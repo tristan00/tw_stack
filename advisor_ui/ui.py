@@ -92,8 +92,13 @@ def sequence(con, limit=SEQ_PAGE, offset=0):
         + (", (SELECT COUNT(*) FROM action_offers g WHERE g.decision_id=d.decision_id"
            " AND g.gnn_rank IS NOT NULL) AS n_gnn" if "gnn_rank" in gnn else "") +
         " FROM decision_points d LEFT JOIN action_taken t ON t.decision_id=d.decision_id"
-        " LEFT JOIN action_offers o ON o.rowid ="
-        "   (SELECT MIN(o2.rowid) FROM action_offers o2 WHERE o2.decision_id=t.decision_id"
+        # offer_id, not rowid: action_offers is a VIEW over offers+actions and a view has
+        # no rowid, so this raised "no such column: o.rowid" and the whole panel 500'd.
+        # offer_id is the view's own synthetic key (decision_id * 1048576 + offer_seq),
+        # unique and ordered the same way rowid was, so MIN() still picks the first
+        # matching offer when a decision offered the same action twice.
+        " LEFT JOIN action_offers o ON o.offer_id ="
+        "   (SELECT MIN(o2.offer_id) FROM action_offers o2 WHERE o2.decision_id=t.decision_id"
         "    AND o2.context_kind=t.context_kind AND o2.context_id=t.context_id"
         "    AND o2.action_type=t.action_type AND o2.action_key=t.action_key)"
         " ORDER BY d.decision_id DESC LIMIT ? OFFSET ?", (limit, offset))]
@@ -1543,8 +1548,9 @@ def _agreement_window(con):
     taken = con.execute(
         "SELECT t.decision_id, t.policy, d.n_offers, o.rank, o.gnn_rank"
         " FROM action_taken t JOIN decision_points d ON d.decision_id=t.decision_id"
-        " LEFT JOIN action_offers o ON o.rowid ="
-        "   (SELECT MIN(o2.rowid) FROM action_offers o2 WHERE o2.decision_id=t.decision_id"
+        # see render_decisions: action_offers is a view, so rowid does not exist here
+        " LEFT JOIN action_offers o ON o.offer_id ="
+        "   (SELECT MIN(o2.offer_id) FROM action_offers o2 WHERE o2.decision_id=t.decision_id"
         "    AND o2.context_kind=t.context_kind AND o2.context_id=t.context_id"
         "    AND o2.action_type=t.action_type AND o2.action_key=t.action_key)"
         " WHERE t.decision_id > ?", (lo,)).fetchall()
