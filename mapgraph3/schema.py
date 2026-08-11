@@ -43,7 +43,7 @@ SCHEMA_VERSION = 3
 INSTANCE_TYPES = ("faction", "region", "settlement", "province", "slot",
                   "lord", "hero", "action", "cgroup")
 CATALOGUE_TYPES = ("building", "chain", "unit", "tech", "skill", "ritual",
-                   "agent_action", "edict", "item", "race")
+                   "agent_action", "edict", "item", "race", "agent_subtype")
 NODE_TYPES = INSTANCE_TYPES + CATALOGUE_TYPES
 ACTION_TYPE_INDEX = NODE_TYPES.index("action")
 
@@ -53,18 +53,25 @@ ACTION_TYPE_INDEX = NODE_TYPES.index("action")
 TYPE_FIELDS = {
     "faction":      ("is_player",),                                    # 1
     "region":       ("x", "y", "public_order"),                        # 3
-    "settlement":   ("garrison_units",),                               # 1
+    # x,y are free here too (MAX_FIELDS is 6) and both own and enemy settlement rows
+    # carry them. Distance to a settlement is most of what an attack decision is about.
+    "settlement":   ("garrison_units", "x", "y"),                      # 3
     "province":     ("corruption",),                                   # 1
     "slot":         (),
     "lord":         ("x", "y", "units", "hp", "rank", "ap_pct"),       # 6
     "hero":         ("x", "y", "rank", "ap_pct"),                      # 4
-    "action":       ("available",),                                    # 1
+    # x,y are free: MAX_FIELDS is 6, set by `lord`, so an action row already carried five
+    # unused zero columns and the encoder input width does not move. `move` recorded a
+    # destination that nothing downstream could see -- the only thing distinguishing one
+    # move candidate from another was its sample_index.
+    "action":       ("available", "x", "y"),                           # 3
     "cgroup":       (),
     # catalogue nodes are pure identity -- their content is their embedding
     "building": (), "chain": (), "unit": (), "tech": (), "skill": (),
     "ritual": (), "agent_action": (), "edict": (), "item": (), "race": (),
+    "agent_subtype": (),
 }
-N_SCALARS = sum(len(v) for v in TYPE_FIELDS.values())   # == 22
+N_SCALARS = sum(len(v) for v in TYPE_FIELDS.values())   # 19; the "== 22" here was stale
 MAX_FIELDS = max(max(len(v) for v in TYPE_FIELDS.values()), 1)
 # {node type: {field name: column}} -- the same information as TYPE_FIELDS, indexed the
 # way build.Graph.add needs it. Building a graph writes ~1000 field values, and
@@ -177,9 +184,17 @@ TERM_DIM = 12
 # 136,369 distinct action keys into 256 buckets -- and 118,802 of those keys are `move`
 # destinations, pure noise, which then collided with the ~17.5k semantic keys.
 # `move` gets no key at all: its destination is x,y.
-CAT_BUCKETS = {"building": 8192, "chain": 2048, "unit": 4096, "tech": 4096,
+# Sized to hold every key in reference.sqlite as a DENSE id, plus room above it for keys
+# the reference does not know. Reference counts at time of writing: buildings 5,259,
+# skills 5,944, chains 1,943, units 2,609, tech 2,056, rituals 1,326, agent_actions 176.
+# `chain` was 2,048 against 1,943 keys -- 105 spare, which is not headroom.
+CAT_BUCKETS = {"building": 8192, "chain": 4096, "unit": 4096, "tech": 4096,
                "skill": 8192, "ritual": 2048, "agent_action": 256, "edict": 256,
-               "item": 4096, "race": 32}
+               "item": 4096, "race": 32,
+               # recruit_lord and recruit_hero linked to no catalogue node at all: their
+               # key is a character SUBTYPE, and `unit` is the wrong vocabulary for it.
+               # 565 distinct in reference.agent_permitted_subtypes.
+               "agent_subtype": 2048}
 CAT_DIM = 32
 
 G_CTX_FIELDS = ("turn", "treasury", "income", "settlements", "armies",
@@ -242,12 +257,52 @@ def term_index(term):
     return _TERM_IX.get(str(term), 0)
 
 
+_DENSE_CACHE = {}
+
+
+def _dense(kind):
+    """Lazy, because catalogue imports this module. Empty dict if reference.sqlite is
+    absent, which degrades to the old hashing and says so."""
+    if not _DENSE_CACHE:
+        try:
+            from mapgraph3 import catalogue as _cat
+        except ImportError:
+            import catalogue as _cat
+        _DENSE_CACHE.update(_cat.dense_ids())
+        _DENSE_CACHE.setdefault("__loaded__", True)
+    return _DENSE_CACHE.get(kind) or {}
+
+
 def cat_index(kind, key):
-    """Catalogue id. Namespaced per kind so a unit key cannot collide with a skill."""
+    """Catalogue id. Namespaced per kind so a unit key cannot collide with a skill.
+
+    Dense from reference.sqlite where the kind has a table there, because crc32 % buckets
+    is NOT injective and never was: 9,393 of 19,313 reference keys (48.6%) shared a row
+    with a different key -- 60.6% of chains, 51.1% of skills. Two different buildings
+    landing on one embedding is not a hash detail, it is the model being told they are the
+    same building.
+
+    A key the reference does not know still hashes, but into the range ABOVE the dense
+    ids, so an unknown key can never alias a known one. That range is small and shrinking;
+    it is reported by mapgraph3.invariants rather than left to be discovered.
+    """
     if not key:
         return 0
     n = CAT_BUCKETS[kind]
-    return (zlib.crc32(("%s\x00%s" % (kind, key)).encode()) % (n - 1)) + 1
+    d = _dense(kind)
+    hit = d.get(key)
+    if hit is not None:
+        if hit >= n:
+            raise ValueError(
+                "cat_index: %s has %d keys but CAT_BUCKETS[%r] is %d -- raise the bucket "
+                "count; silently wrapping would reintroduce collisions"
+                % (kind, len(d), kind, n))
+        return hit
+    lo = len(d) + 1
+    span = n - lo
+    if span <= 0:
+        raise ValueError("cat_index: no room above the dense ids for %r" % kind)
+    return lo + (zlib.crc32(("%s\x00%s" % (kind, key)).encode()) % span)
 
 
 CAT_OFFSET = {}

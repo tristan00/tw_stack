@@ -48,6 +48,54 @@ def _code_only(path):
     return ast.unparse(tree)
 
 
+def check_catalogue(verbose=True):
+    """No two live game keys may share a catalogue embedding row.
+
+    Deliberately free of torch, so the one check that guards against the model being told
+    two different buildings are the same building can run anywhere. crc32 % buckets put
+    9,393 of 19,313 reference keys (48.6%) on a shared row -- 60.6% of building chains,
+    51.1% of skills -- and nothing anywhere would have noticed.
+    """
+    try:
+        from mapgraph3 import schema as S
+        from mapgraph3 import catalogue as C
+    except ImportError:
+        import schema as S
+        import catalogue as C
+    import collections
+
+    results = []
+    dense = C.dense_ids()
+    if not any(dense.values()):
+        results.append((False, "catalogue ids are dense",
+                        "reference.sqlite unreadable -- ids fall back to hashing"))
+    for kind in sorted(dense):
+        keys = list(dense[kind])
+        if not keys:
+            continue
+        seen = collections.defaultdict(list)
+        for k in keys:
+            seen[S.cat_index(kind, k)].append(k)
+        dup = {i: v for i, v in seen.items() if len(v) > 1}
+        spare = S.CAT_BUCKETS[kind] - len(keys)
+        results.append((not dup, "cat_index injective for %-13s" % kind,
+                        "%d keys, %d spare rows%s"
+                        % (len(keys), spare,
+                           "" if not dup else "  COLLIDING: %s" % list(dup.values())[:2])))
+        results.append((spare > 0, "cat_index has room above %-11s" % kind,
+                        "%d free of %d" % (spare, S.CAT_BUCKETS[kind])))
+    # cat_global must keep the kinds in disjoint ranges
+    span = {k: (S.CAT_OFFSET[k], S.CAT_OFFSET[k] + S.CAT_BUCKETS[k]) for k in S.CAT_BUCKETS}
+    overlap = [(a, b) for a in span for b in span
+               if a < b and span[a][0] < span[b][1] and span[b][0] < span[a][1]]
+    results.append((not overlap, "cat_global ranges are disjoint",
+                    "%d kinds, vocab %d" % (len(span), S.CAT_VOCAB)))
+    if verbose:
+        for good, name, detail in results:
+            print("  %s  %-48s %s" % ("PASS" if good else "FAIL", name, detail))
+    return [r for r in results if not r[0]]
+
+
 def check(verbose=True):
     import torch
     try:
@@ -157,7 +205,18 @@ def check(verbose=True):
 
 if __name__ == "__main__":
     print("mapgraph3 v3 invariants")
-    bad = check()
+    print(" catalogue:")
+    bad = check_catalogue()
+    print(" network:")
+    try:
+        bad += check()
+    except ImportError as e:
+        # Say which checks did not run. A suite that silently shrinks is worse than one
+        # that fails, because the summary line still reads green.
+        print("  SKIP  the network invariants need torch -> %s" % repr(e)[:80])
+        print("\ncatalogue invariants %s -- NETWORK INVARIANTS DID NOT RUN"
+              % ("hold" if not bad else "BROKEN (%d)" % len(bad)))
+        raise SystemExit(1 if bad else 0)
     print("\n%s" % ("all invariants hold" if not bad else
                     "%d INVARIANT(S) BROKEN" % len(bad)))
     raise SystemExit(1 if bad else 0)

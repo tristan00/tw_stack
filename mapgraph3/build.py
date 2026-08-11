@@ -237,8 +237,11 @@ def build_graph(record):
         if not key:
             continue
         sd = G.Reader(s, "settlement:" + key, "world.settlements[]")
-        si = g.add("s:" + key, "settlement",
-                   {"garrison_units": sd.num("units") / S.UNITS_SCALE}, own=True)
+        svals = {"garrison_units": sd.num("units") / S.UNITS_SCALE}
+        if _pos_ok(s.get("x"), s.get("y")):
+            svals["x"] = sd.num("x") / S.COORD_SCALE
+            svals["y"] = sd.num("y") / S.COORD_SCALE
+        si = g.add("s:" + key, "settlement", svals, own=True)
         ri = g.id2idx.get("r:" + key)
         if ri is None:
             ri = g.add("r:" + key, "region", {})
@@ -248,11 +251,16 @@ def build_graph(record):
     # ---------------- slots and buildings ---------------------------------
     # `buildings`, `built`, `free_slots`, `max_slots`, `locked_slots`, `building_now`
     # all become structure here: seven province columns replaced by nodes and edges.
+    # A slot belongs to a REGION. This loop runs per region but used to name the node
+    # "slot:<province>:<n>", so every region of a province wrote into the same slot
+    # nodes: of 558 shared (province, slot) pairs, 341 (61.1%) ended up holding two
+    # different built buildings. That is not a collapse, it is corruption -- the second
+    # region's building overwrote the first one's on a node the model reads as one place.
+    # The region node already exists and is one hop from the province via in_prov.
     slot_index = {}
     for key, st in sorted(prov_state.items()):
-        prov = str(st.get("province") or "")
-        pi = g.id2idx.get("p:" + prov)
-        if pi is None:
+        ri = g.id2idx.get("r:" + key)
+        if ri is None:
             continue
         try:
             n_slots = int(float(st.get("max_slots") or 0))
@@ -262,10 +270,9 @@ def build_graph(record):
         locked = {str(v) for v in (st.get("locked_slots") or [])}
         now = st.get("building_now") or {}
         for sl in range(max(n_slots, len(built))):
-            sid = "slot:%s:%d" % (prov, sl)
-            si = g.add(sid, "slot", {})
+            si = g.add("slot:%s:%d" % (key, sl), "slot", {})
             slot_index[(key, sl)] = si
-            g.edge(pi, si, "has_slot")
+            g.edge(ri, si, "has_slot")
             if str(sl) in locked:
                 g.edge(si, si, "slot_locked")
             bkey = built.get(str(sl)) or built.get(sl)
@@ -332,6 +339,33 @@ def build_graph(record):
                    subtype=S.subtype_index(h.get("subtype")))
         char_faction[cqi] = str(h.get("faction") or "")
         _wire_char(g, ci, cqi, h, char_faction[cqi], prov_of_region, None)
+
+    # ---------------- enemy settlements -----------------------------------
+    # MOBILE_KINDS dropped every hostile of kind "settlement", so an enemy settlement had
+    # no node at all. The target was never missing from the snapshot -- 0 of 2,571
+    # attack_settlement targets were, 44.6% of them arriving through hostiles rather than
+    # world.regions -- it simply had nowhere to point. One node type fixes three things at
+    # once: attack_settlement gets a target, `besieging` gets somewhere to attach (it had
+    # 0 edges in 653 graphs), and garrison targets resolve.
+    for h in world.get("hostiles") or []:
+        if str(h.get("kind") or "") != "settlement":
+            continue
+        rkey = str(h.get("region") or "")
+        if not rkey or ("s:" + rkey) in g.id2idx:
+            continue
+        hd = G.Reader(h, "settlement:" + rkey, "world.hostiles[kind=settlement]")
+        vals = {"garrison_units": hd.num("units") / S.UNITS_SCALE}
+        if _pos_ok(h.get("x"), h.get("y")):
+            vals["x"] = hd.num("x") / S.COORD_SCALE
+            vals["y"] = hd.num("y") / S.COORD_SCALE
+        si = g.add("s:" + rkey, "settlement", vals, own=False)
+        ri = g.id2idx.get("r:" + rkey)
+        if ri is None:
+            ri = g.add("r:" + rkey, "region", {}, own=False)
+        g.edge(ri, si, "sett_of")
+        fj = g.id2idx.get("f:" + str(h.get("faction") or ""))
+        if fj is not None:
+            g.edge(fj, si, "owns_sett")
 
     # _wire_knn reads node_type and x to find characters, so the node buffers have to be
     # materialised before it runs. It only ADDS edges, so the final finalize() below
@@ -419,6 +453,10 @@ def _ego_of(g, ck, cid, prov_of_region, me):
 
 _CAT_OF_TYPE = {"recruit_unit": "unit", "recruit_ror": "unit", "recruit_blessed": "unit",
                 "recruit_imperial": "unit", "raise_dead": "unit",
+                # recruit_lord/_hero key a character SUBTYPE, which is not a unit key and
+                # was in no catalogue, so 560 of the offers in a 40-graph sample linked to
+                # nothing at all. 565 subtypes in reference.agent_permitted_subtypes.
+                "recruit_lord": "agent_subtype", "recruit_hero": "agent_subtype",
                 "research": "tech", "skills": "skill", "rites": "ritual",
                 "edict": "edict", "items": "item", "item_unequip": "item",
                 "building": "building", "building_repair": "building",
@@ -435,9 +473,13 @@ def _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me):
     term = 0
     if at == "diplomacy":
         term = S.term_index(key.split(":", 1)[-1])
+    avals = {"available": rd.flag("available")}
+    if _pos_ok(params.get("x"), params.get("y")):
+        pd = G.Reader(params, "offer:%s:%s:%s" % (ck, cid, key), "offers[].params")
+        avals["x"] = pd.num("x") / S.COORD_SCALE
+        avals["y"] = pd.num("y") / S.COORD_SCALE
     ai = g.add("a:%s:%s:%s:%d" % (ck, cid, key, len(g.action_nodes)), "action",
-               {"available": rd.flag("available")},
-               atype=S.atype_index(at), term=term)
+               avals, atype=S.atype_index(at), term=term)
     g.action_keys.append((str(ck), str(cid), at, key))
     g.edge(ai, ego, "act_actor")
 
@@ -453,9 +495,15 @@ def _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me):
     kind = _CAT_OF_TYPE.get(at)
     if kind:
         ck_key = key.split("@", 1)[0] if at.startswith("recruit") else key
-        if at in ("building", "building_repair", "building_dismantle",
-                  "building_cancel", "horde_building"):
+        if at in ("building_repair", "building_dismantle", "building_cancel",
+                  "horde_building"):
+            # These are keyed by the slot they act on, so the building is in params.
             ck_key = str(params.get("building_key") or "") or None
+        elif at == "building":
+            # `building` has no params.building_key -- its action_key IS the building key,
+            # and it joins the catalogue 912/912. Reading a field that does not exist for
+            # this type meant every construction offer built no act_on edge at all.
+            ck_key = key or None
         if at in ("items", "item_unequip"):
             ck_key = str(params.get("item_key") or "") or None
         if ck_key:
@@ -495,7 +543,14 @@ def _target_of(g, at, key, params):
     if params.get("target_cqi") is not None:
         return g.id2idx.get("c:" + str(params["target_cqi"]))
     if at in ("attack_settlement", "colonize", "garrison"):
-        return g.id2idx.get("s:" + str(key)) or g.id2idx.get("r:" + str(key))
+        # `garrison` is keyed "settlement:<region>" while the nodes are "s:<region>", so
+        # the lookup missed on all 1,973 garrison offers -- every one of them was an
+        # action with no target edge. Nothing else in the corpus carries the prefix, so
+        # stripping it is safe for the other two types.
+        rkey = str(key)
+        if rkey.startswith("settlement:"):
+            rkey = rkey[len("settlement:"):]
+        return g.id2idx.get("s:" + rkey) or g.id2idx.get("r:" + rkey)
     if at == "diplomacy":
         return g.id2idx.get("f:" + str(key).split(":", 1)[0])
     if params.get("region"):
