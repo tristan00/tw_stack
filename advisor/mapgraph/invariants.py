@@ -193,6 +193,15 @@ def check(verbose=True):
     ok("per-node-type encoders and norms",
        "F.embedding(node_type, self.bias)" in src_net
        and "F.embedding(node_type, self.affine)" in src_net)
+    ok("scalar budget is respected and single-sourced",
+       S.N_SCALARS <= S.SCALAR_BUDGET,
+       "%d of %d spent across %d node types"
+       % (S.N_SCALARS, S.SCALAR_BUDGET, len(S.NODE_TYPES)))
+    ok("every instance node type carries an identity or a scalar",
+       all(S.TYPE_FIELDS[t] or t in S.CAT_BUCKETS or t in ("slot", "cgroup")
+           for t in S.INSTANCE_TYPES),
+       "faction was the exception: no scalar beyond is_player and no catalogue id, so "
+       "two same-race factions were one node")
     ok("schema keeps the full node-type set",
        len(S.NODE_TYPES) >= 15,
        "%d node types, %d relations" % (len(S.NODE_TYPES), S.N_RELATIONS))

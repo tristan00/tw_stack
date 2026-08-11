@@ -154,9 +154,15 @@ def build_graph(record):
                  if h.get("faction")}
     fac_keys.discard("")
     for fk in sorted(fac_keys):
-        rd = G.Reader({"is_player": fk == me}, "faction:" + fk, "faction")
-        fi = g.add("f:" + fk, "faction", {"is_player": rd.flag("is_player")},
-                   race=S.race_index(fk), own=(fk == me))
+        rel = relations.get(fk) or {}
+        rd = G.Reader({"is_player": fk == me, "standing": rel.get("standing")},
+                      "faction:" + fk, "faction")
+        vals = {"is_player": rd.flag("is_player")}
+        if rel.get("standing") is not None:
+            vals["standing"] = (rd.num("standing") / 100.0).clip(-1.0, 1.0)
+        fi = g.add("f:" + fk, "faction", vals,
+                   race=S.race_index(fk), cat=S.cat_global("faction", fk),
+                   own=(fk == me))
         rn = g.cat_node("race", (fk.split("_")[2] if len(fk.split("_")) > 2 else ""))
         g.edge(fi, rn, "of_race")
 
