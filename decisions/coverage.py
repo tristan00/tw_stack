@@ -296,22 +296,7 @@ if __name__ == "__main__":
     common.require_venv()
     a = sys.argv[1:]
 
-    # The db path is the first bare token -- but an option's VALUE is also a bare token,
-    # so `--min-rows 50` made this try to open a file called "50" and die with
-    # "unable to open database file", which reads like a missing corpus rather than a
-    # command line it mis-parsed.
-    _TAKES_VALUE = {"--sample", "--min-rows"}
-    db, _skip = None, False
-    for _x in a:
-        if _skip:
-            _skip = False
-            continue
-        if _x in _TAKES_VALUE:
-            _skip = True
-            continue
-        if not _x.startswith("--"):
-            db = _x
-            break
+    db = common.cli_path(a, ("--sample", "--min-rows"))
 
     def _opt(name, default):
         return int(a[a.index(name) + 1]) if name in a else default

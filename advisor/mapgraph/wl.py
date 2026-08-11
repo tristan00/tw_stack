@@ -165,10 +165,9 @@ def selftest():
 def main(argv):
     if "--selftest" in argv:
         return selftest()
-    target = next((a for a in argv if not a.startswith("--")), None)
+    target = common.cli_path(argv, ("--n",))
     if not target:
-        import common
-        target = os.path.join(common.RUNS_ROOT.replace("/", os.sep), "run")
+        target = common.RUN_DIR
     n = int(argv[argv.index("--n") + 1]) if "--n" in argv else 40
     verbose = "--verbose" in argv
 
