@@ -60,6 +60,9 @@ CHECKS = [
     ("options", ["-m", "advisor.test_options"], False,
      "generate -> gate -> store end to end: nothing gated is stored, and options.py "
      "touches no bus, db or file"),
+    ("battle_facts", ["-m", "launcher.test_battle_facts"], False,
+     "battle-result screen parses on every archived dump across 10 races -- the one place "
+     "scraping is unavoidable, and the resources bar differs per race"),
     ("graph_no_catboost", ["-m", "advisor.mapgraph.eval", "no-catboost"], False,
      "no mapgraph source imports advisor/features.py -- checked on OUR source, because "
      "base_model legitimately imports it for the label"),
