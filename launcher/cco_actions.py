@@ -285,11 +285,18 @@ def _legal_stances(bus):
 
 
 def _stance_gate_whitelist(bus, ctx, pick, before):
-    wl = _legal_stances(bus)
-    if not wl:
-        return False, "stance_legality_unreadable"
-    if pick["key"] not in wl:
-        return False, "stance_not_in_legality_whitelist"
+    """Stance legality is the ADVISOR's decision, so this no longer re-decides it.
+
+    This scraped the stance button stack over the bus -- one `find` for the stack and one
+    more per button -- and refused anything the UI showed as inactive. That made the
+    launcher a second gating authority, disagreeing with the advisor using data the
+    advisor had never seen, and it spent N+1 round-trips per stance click to do it.
+
+    The advisor gates stance on can_activate and can_afford, read off StanceList in the
+    snapshot. If that proves too weak, the answer is to record what is missing in the
+    snapshot, not to re-decide here: gating lives in one component, and a refusal the
+    game itself issues is honest data, while a refusal invented by the launcher is not.
+    """
     return True, None
 
 
@@ -994,12 +1001,17 @@ def _hero_action_gate_target(bus, ctx, pick, before):
 
 
 def _hero_action_gate_reach(bus, ctx, pick, before):
-    is_char = before.get("target_kind") == "character"
-    tid = before["target_id"]
-    reach_c, reach_s = _collect_mod()._reach(
-        bus, ctx["entity_id"], [tid] if is_char else [], [] if is_char else [tid])
-    if not (reach_c if is_char else reach_s).get(str(tid)):
-        return False, "cannot_reach"
+    """Reach is settled at snapshot time, so this no longer asks the game again.
+
+    The flow is snapshot -> predict -> act -> snapshot. One fresh snapshot is taken per
+    decision, immediately before that decision's single action, and it is the player's
+    turn, so nothing moves in between. This gate re-read reach over the bus anyway and
+    could only ever confirm what the snapshot already recorded -- at the cost of a
+    round-trip per hero action.
+
+    The advisor gates on the recorded reach_chars / reach_setts. If those are ever wrong,
+    the fix is the collector's read, not a second opinion here.
+    """
     return True, None
 
 
