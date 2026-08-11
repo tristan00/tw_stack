@@ -80,6 +80,50 @@ def _load():
     return _CACHE
 
 
+# Dense catalogue ids, one table per kind, so no two live game keys share an embedding
+# row. schema.cat_index used crc32 % buckets, and a hash over thousands of keys collides
+# whatever the bucket count: 9,393 of 19,313 reference keys (48.6%) shared a row with a
+# different key -- 60.6% of building chains, 51.1% of skills, 47.9% of buildings. The
+# docstring above already promised every key joins this database, so the ids were always
+# available and the hash was never needed.
+_KIND_TABLE = {"building": "buildings", "chain": "building_chains", "unit": "units",
+               "tech": "tech", "skill": "skills", "ritual": "rituals",
+               "agent_action": "agent_actions"}
+# tables whose key column is not called "key"
+_KIND_COLUMN = {"agent_subtype": ("agent_permitted_subtypes", "subtype")}
+_DENSE = {}
+
+
+def dense_ids():
+    """{kind: {key: 1..n}}. Sorted by key so an id is a property of the game data and not
+    of row order -- a rebuilt reference.sqlite must not silently renumber the embeddings."""
+    if _DENSE:
+        return _DENSE
+    path = S.REFERENCE_DB
+    out = {k: {} for k in list(_KIND_TABLE) + list(_KIND_COLUMN)}
+    if not os.path.exists(path):
+        sys.stderr.write("mapgraph3.catalogue: %s missing -- catalogue ids fall back to "
+                         "hashing, which is NOT injective\n" % path)
+        _DENSE.update(out)
+        return _DENSE
+    try:
+        cx = sqlite3.connect("file:%s?mode=ro" % path.replace("\\", "/"), uri=True)
+        try:
+            cols = [(k, t, "key") for k, t in _KIND_TABLE.items()]
+            cols += [(k, t, c) for k, (t, c) in _KIND_COLUMN.items()]
+            for kind, tab, col in cols:
+                keys = sorted({r[0] for r in cx.execute(
+                    "SELECT %s FROM %s WHERE %s IS NOT NULL AND %s != ''"
+                    % (col, tab, col, col)) if r[0]})
+                out[kind] = {k: i + 1 for i, k in enumerate(keys)}
+        finally:
+            cx.close()
+    except Exception as e:
+        sys.stderr.write("mapgraph3.catalogue: dense id load failed -> %s\n" % repr(e)[:200])
+    _DENSE.update(out)
+    return _DENSE
+
+
 def chain_of(building_key):
     return _load()["building_chain"].get(building_key)
 
