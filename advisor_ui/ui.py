@@ -393,6 +393,27 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .note{margin-top:9px;font-size:11px;line-height:1.5;white-space:normal}
 th.grp{text-align:center;color:var(--fg);border-left:1px solid var(--line)}
 td.gsep,th.gsep{border-left:1px solid var(--line)}
+
+/* model metrics: tiles in a grid rather than stacked full-width tables. Two of the three
+   questions this tab answers are about distributions, and the version this replaced drew
+   both as text. Tiles are a fixed 330px so they pack 2-3 across without a chart wrapping
+   mid-row, and each is self-contained -- readable without its neighbours. */
+.mmgrid{display:flex;flex-wrap:wrap;gap:12px;margin:10px 0}
+.mmtile{border:1px solid var(--line);border-radius:8px;background:var(--card);padding:10px 12px}
+.mmt{color:var(--dim);text-transform:uppercase;letter-spacing:.08em;font-size:11px;margin-bottom:6px}
+.mms{color:var(--dim);font-size:11px;margin-top:6px;white-space:normal;max-width:330px;line-height:1.5}
+.mmtbl{border-collapse:collapse}.mmtbl th{color:var(--dim);font-weight:400;text-align:left;padding:2px 8px 2px 0}
+.mmtbl td{padding:2px 8px 2px 0;white-space:nowrap}
+.mmcat{fill:#4c8dff;color:#4c8dff}.mmgnn{fill:#e0609c;color:#e0609c}
+.mmok{fill:var(--ok)}.mmbad{fill:var(--bad)}.mmdim{fill:var(--dim)}
+text.sl{fill:var(--fg);font:10px ui-monospace,monospace}
+text.sd{fill:var(--dim);font:10px ui-monospace,monospace}
+.verdict{border:1px solid var(--line);border-left-width:4px;border-radius:8px;background:var(--card);
+padding:12px 14px;margin:16px 0 4px;white-space:normal;line-height:1.6;max-width:120ch}
+.verdict .vw{font-size:17px;letter-spacing:.06em;text-transform:uppercase;display:block;margin-bottom:6px}
+.verdict.hold{border-left-color:var(--warn)}.verdict.raise{border-left-color:var(--ok)}
+.verdict.lower{border-left-color:var(--bad)}
+ul.mmb{margin:6px 0 0;padding-left:18px;color:var(--dim)}ul.mmb li{margin:3px 0}
 """
 
 
@@ -1807,8 +1828,9 @@ PANEL_MAP = {s: f for s, _t, f in PANELS}
 # Sections fetched by a panel AFTER it is on screen (see .lazy in _TABS_JS). They are
 # served by the same /panel/ route but are deliberately NOT in PANELS, so they get no tab.
 LAZY_PANELS = {
-    "modelmetrics_gate": lambda con, run, q: render_model_metrics_gate(con, run, q),
-    "modelmetrics_dist": lambda con, run, q: _mm_distributions(con, _mm_versions(con)),
+    "mm_forcing": lambda con, run, q: render_mm_forcing(con, run, q),
+    "mm_gate": lambda con, run, q: render_mm_gate(con, run, q),
+    "mm_strata": lambda con, run, q: render_mm_strata(con, run, q),
     "agreement_body": lambda con, run, q: render_agreement(con),
 }
 PANEL_MAP.update(LAZY_PANELS)
@@ -2693,17 +2715,213 @@ def _fit_config_table(events=()):
             % "".join(body))
 
 
-MM_VERSIONS = 12          # model versions shown, newest first -- bounds every query here
-MM_PERMS = 2000           # permutations per correlation; enough to separate 0.2 from 0.02
+# ======================================================================================
+# MODEL METRICS -- primitives
+#
+# The tab this replaced led with a 14-column stratified table in which nearly every cell
+# read p=1.000, followed by two more tables in which 12 of 14 rows read "no ranked
+# offers". It was scaffolding for data that does not exist yet. This version puts the
+# pooled numbers -- which always exist -- at the top, and lets the stratified detail be
+# sparse at the bottom where sparseness is honest rather than dominant.
+# ======================================================================================
+
+MM_GATE_Z = 2.807             # two-sided z at alpha=.005 -- "way better than .05"
+MM_TARGET_RHO = 0.30          # smallest effect worth acting on
+MM_JAM = 0.90                 # grab rate that blocks a raise
+MM_JAM_MIN_N = 30             # offers a type needs before its grab rate can block
+MM_PERMS = 2000
+# +1 because a HIGHER target_rows.power_rank is better. Measured, not assumed: of the 10
+# campaigns that gained settlements, power_rank rose in 10 and fell in 0 (median +121).
+# Note the opposite convention in entity_snapshots, which stores it NEGATED (-148 there
+# against +46 here) -- read power_rank from target_rows only.
+#
+# Knowing the sign is still not enough to let a correlation authorise a raise. power_rank
+# change correlates +0.54 with campaign length, and the arms have different median
+# latencies, so a faster arm buys more turns and can manufacture "improvement" out of
+# throughput alone. That is why §3 reports the partial correlation holding turns constant
+# and why the verdict rule requires it.
+MM_POWER_RANK_SIGN = 1
 
 
-def _mm_versions(con):
-    """Model versions, newest first, each with the decision range it produced.
+def _mm_arm(p):
+    """Which arm the DRAW assigned. Intention-to-treat, deliberately.
 
-    A "model version" is a ledger trial: a session plus a retrain generation. The corpus
-    does not record which weights scored a decision, so the join goes
-    campaign -> campaign_uuid -> trial, which is exact because the trial row lists the
-    uuids it ran. decisions.version_id is the COLLECTOR version, a different thing.
+    "<strategy>_random_fallback" means the arm was drawn and had nothing to say. That is
+    state-dependent -- it fires exactly when the arm is stuck -- so analysing only the
+    compliant rows would condition on a post-treatment variable. Those rows belong to the
+    arm that was drawn.
+
+    forced_end_turn is not a randomised unit at all: the loop emits it, no draw happened.
+
+    The old code did this with a lambda that was ITT for ruleset (its startswith caught
+    ruleset_random_fallback) and per-protocol for the model arms (exploit_tree_random_
+    fallback fell through to None and was dropped). That is silent today only because all
+    65 fallbacks in the corpus are ruleset ones.
+    """
+    p = p or ""
+    if p == "forced_end_turn":
+        return None
+    if p.endswith("_random_fallback"):
+        p = p[:-len("_random_fallback")]
+    if p.startswith("ruleset"):
+        return "ruleset"
+    return p if p in ("random", "exploit_tree", "gnn_marwil") else None
+
+
+MM_ARMS = ("random", "exploit_tree", "gnn_marwil", "ruleset")
+MM_MODEL_ARMS = ("exploit_tree", "gnn_marwil")
+
+
+def _mm_window(con):
+    """(lo, hi) decision ids over which a model actually scored.
+
+    Before the first retrain no model had weights, so no arm could be compared with
+    another: the window is the only span where the draw means anything.
+
+    The obvious query -- MIN/MAX(decision_id) FROM action_offers WHERE score IS NOT NULL
+    -- costs 1.7s and grows with the corpus, because action_offers is a VIEW that zlib
+    decompresses every blob and unpacks a float32 per row just to test for NULL. That was
+    1.7 of the 1.8 seconds of a tab that must paint immediately.
+
+    scores.packed holds the same numbers without the view: an untrained decision stores
+    NaN, which _f32 returns as None. Scoring starts once and never stops, so the boundary
+    is monotone and a binary search finds it in ~12 single-row reads.
+    """
+    ids = [r[0] for r in con.execute("SELECT decision_id FROM scores ORDER BY decision_id")]
+    if not ids:
+        return (None, None)
+
+    def scored(did):
+        r = con.execute("SELECT packed FROM scores WHERE decision_id=?", (did,)).fetchone()
+        return bool(r) and dbopen._f32(r[0], 0) is not None
+
+    if not scored(ids[-1]):
+        return (None, None)
+    # Bisect over the id LIST, not the id range: ids are sparse, and snapping a numeric
+    # midpoint forward onto an existing id can land on the upper bound and loop forever.
+    lo, hi = 0, len(ids) - 1
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if scored(ids[mid]):
+            hi = mid
+        else:
+            lo = mid + 1
+    return (ids[lo], ids[-1])
+
+
+def _mm_gate_rho(n):
+    """Smallest |rho| separable from chance at alpha=.005 with n campaigns.
+
+    Closed form on purpose. A permutation p computed in a lazy panel could land after the
+    verdict and contradict it; this cannot. Calibrated against 4000-shuffle nulls on the
+    real tie-heavy shares it is slightly conservative (0.290 vs 0.279 at n=95), which is
+    the safe direction -- it can never falsely open the gate.
+    """
+    return None if not n or n < 4 else MM_GATE_Z / math.sqrt(n - 1)
+
+
+def _mm_n_req(rho=MM_TARGET_RHO):
+    return int(math.ceil(1 + (MM_GATE_Z / rho) ** 2))
+
+
+def _mm_pace(con):
+    """(median seconds per campaign, median decisions per campaign). Computed, not
+    hardcoded, because both move whenever the action cap or the start pool changes."""
+    rng = [(lo, hi) for lo, hi in con.execute(
+        "SELECT first_decision_id, last_decision_id FROM campaigns"
+        " WHERE first_decision_id IS NOT NULL ORDER BY first_decision_id")]
+    if not rng:
+        return 0.0, 0.0
+    # One ordered scan against the sorted disjoint ranges. Querying per campaign put ~100
+    # round trips on the synchronous top of the tab and cost 2.5s of a 2.6s render.
+    agg, i = [[None, None, 0] for _ in rng], 0
+    for did, ts in con.execute("SELECT decision_id, ts FROM decision_points"
+                               " ORDER BY decision_id"):
+        while i < len(rng) and did > rng[i][1]:
+            i += 1
+        if i >= len(rng):
+            break
+        if did >= rng[i][0] and ts is not None:
+            a = agg[i]
+            a[0] = ts if a[0] is None else min(a[0], ts)
+            a[1] = ts if a[1] is None else max(a[1], ts)
+            a[2] += 1
+    secs = [float(a[1]) - float(a[0]) for a in agg if a[0] is not None and a[2] > 1]
+    decs = [a[2] for a in agg if a[2]]
+    return (_median(secs) or 0.0), (_median(decs) or 0.0)
+
+
+def _mm_campaign_table(con):
+    """One row per campaign: pooled model share against how the campaign moved.
+
+    Three ordered scans, never a query per campaign. The old version issued three queries
+    for every campaign and read outcomes out of entity_snapshots JSON.
+
+    JOIN TRAP, load-bearing: target_rows.campaign_id is the campaign KEY STRING
+    ("wh2_dlc09_skv_clan_rictus_3cd4821..."), while campaigns.campaign_id is an integer
+    surrogate. Joining the identically-named columns returns ZERO rows -- silently, not as
+    an error. The join is target_rows.campaign_id == campaigns.campaign_key.
+
+    campaigns.outcome and campaigns.defeated are NULL on every row in the corpus and must
+    not be read here; turns and the target_rows deltas are the only outcome signal.
+    """
+    rng = [(cid, key, lo, hi, turns) for cid, key, lo, hi, turns in con.execute(
+        "SELECT campaign_id, campaign_key, first_decision_id, last_decision_id, turns"
+        " FROM campaigns WHERE first_decision_id IS NOT NULL ORDER BY first_decision_id")]
+    if not rng:
+        return []
+    arms = [collections.Counter() for _ in rng]
+    i = 0
+    for did, pol in con.execute("SELECT decision_id, policy FROM taken ORDER BY decision_id"):
+        while i < len(rng) and did > rng[i][3]:
+            i += 1
+        if i >= len(rng):
+            break
+        if did >= rng[i][2]:
+            a = _mm_arm(pol)
+            if a:
+                arms[i][a] += 1
+    tgt = collections.defaultdict(list)
+    for key, turn, income, power, lord, setts in con.execute(
+            "SELECT campaign_id, turn, income, power_rank, lord_level, settlements"
+            " FROM target_rows ORDER BY campaign_id, turn"):
+        tgt[key].append((turn, income, power, lord, setts))
+    out = []
+    for idx, (cid, key, lo, hi, turns) in enumerate(rng):
+        c = arms[idx]
+        n = sum(c.values())
+        rows = tgt.get(key) or []
+        if not n or len(rows) < 2:
+            continue
+        first, last = rows[0], rows[-1]
+        delta = lambda j: ((float(last[j]) - float(first[j]))
+                           if last[j] is not None and first[j] is not None else None)
+        out.append({"campaign_id": cid, "n": n, "turns": float(turns or 0),
+                    "x": (c["exploit_tree"] + c["gnn_marwil"]) / float(n),
+                    "y_power": delta(2), "y_income": delta(1)})
+    return out
+
+
+def _mm_partial(xs, ys, ts):
+    """Spearman of x,y with t held constant -- required because power_rank change tracks
+    campaign length (+0.54) and the arms differ in median latency, so a faster arm buys
+    more turns and can manufacture improvement out of throughput alone."""
+    rxy, rxt, ryt = _spearman(xs, ys), _spearman(xs, ts), _spearman(ys, ts)
+    if rxy is None or rxt is None or ryt is None:
+        return None
+    d = math.sqrt(max(1e-9, (1 - rxt ** 2) * (1 - ryt ** 2)))
+    return (rxy - rxt * ryt) / d
+
+
+def _mm_weightsets(con):
+    """Distinct sets of WEIGHTS, newest first -- not distinct trials.
+
+    All three trained trials share generation=1 AND feature_version=f5978b73:108 while
+    holding genuinely different models: corpus_at_train.rows 2757 / 2963 / 3069 and
+    mae_in_sample 1.1774 / 1.62736 / 2.06188. Keying on (generation, feature_version)
+    therefore merges three different models into one, and keying on the trial id splits
+    the 9 untrained trials into 9 empty rows. Keying on what actually changed collapses
+    19 ledger trials into 4 groups, every one of them populated.
     """
     import session as S
     trials = {}
@@ -2714,7 +2932,7 @@ def _mm_versions(con):
                     t = json.loads(line)
                 except ValueError:
                     continue
-                trials[t.get("trial")] = t          # last row per trial wins
+                trials[t.get("trial")] = t
     except OSError:
         return []
     by_uuid = {}
@@ -2723,276 +2941,523 @@ def _mm_versions(con):
             by_uuid[u] = t
     if not by_uuid:
         return []
-    out = {}
-    for cid, first, last in con.execute(
-            "SELECT campaign_id, first_decision_id, last_decision_id FROM campaigns"
-            " WHERE first_decision_id IS NOT NULL ORDER BY campaign_id"):
-        row = con.execute("SELECT features FROM entity_snapshots WHERE context_kind='campaign'"
-                          " AND decision_id BETWEEN ? AND ? LIMIT 1", (first, last)).fetchone()
-        if not row:
-            continue
-        try:
-            u = json.loads(row[0]).get("campaign_uuid")
-        except (ValueError, TypeError):
-            continue
-        t = by_uuid.get(u)
+    rng = [(cid, lo, hi) for cid, lo, hi in con.execute(
+        "SELECT campaign_id, first_decision_id, last_decision_id FROM campaigns"
+        " WHERE first_decision_id IS NOT NULL ORDER BY first_decision_id")]
+    uuid_of, i = {}, 0
+    for did, feat in con.execute(
+            "SELECT decision_id, features FROM entity_snapshots"
+            " WHERE context_kind='campaign' ORDER BY decision_id"):
+        while i < len(rng) and did > rng[i][2]:
+            i += 1
+        if i >= len(rng):
+            break
+        cid = rng[i][0]
+        if did >= rng[i][1] and cid not in uuid_of:
+            try:
+                u = json.loads(feat).get("campaign_uuid")
+            except (ValueError, TypeError):
+                u = None
+            if u:
+                uuid_of[cid] = u
+    groups = {}
+    for cid, lo, hi in rng:
+        t = by_uuid.get(uuid_of.get(cid))
         if not t:
             continue
-        v = out.setdefault(t.get("trial"), {
-            "trial": t.get("trial"), "generation": t.get("generation"),
-            "feature_version": t.get("feature_version") or "unfitted",
-            "strategies": t.get("strategies") or {}, "corpus": t.get("corpus_at_train") or {},
-            "lo": first, "hi": last, "campaigns": []})
-        v["lo"] = min(v["lo"], first)
-        v["hi"] = max(v["hi"], last)
-        v["campaigns"].append(cid)
-    return sorted(out.values(), key=lambda v: v["lo"], reverse=True)[:MM_VERSIONS]
+        fit = t.get("fit") or {}
+        trained = bool(fit.get("trained"))
+        key = ("unfitted", None) if not trained else (
+            t.get("feature_version") or "?", (t.get("corpus_at_train") or {}).get("rows"))
+        g = groups.setdefault(key, {"key": key, "trained": trained, "lo": lo, "hi": hi,
+                                    "campaigns": [], "trials": set(),
+                                    "mae": fit.get("mae_in_sample")})
+        g["lo"] = min(g["lo"], lo)
+        g["hi"] = max(g["hi"], hi)
+        g["campaigns"].append(cid)
+        g["trials"].add(t.get("trial"))
+    return sorted(groups.values(), key=lambda g: g["lo"], reverse=True)
 
 
-def _mm_top1(con, lo, hi):
-    """{model: Counter(action_type)} over each model's OWN top-ranked offer per decision.
-
-    rank=1 is what catboost would have done, gnn_rank=1 what the gnn would have done --
-    on every decision, not only the ones each was drawn to decide. That is the point: it
-    measures what a model WANTS, independent of what the draw let it do.
-
-    `score IS NOT NULL` is load-bearing and not a tidiness filter. An UNTRAINED catboost
-    returns score/exploit/impact as None for every offer, but policy.choose() then stamps
-    `r["rank"] = i + 1` over the list unconditionally -- so every decision before the first
-    retrain carries a full 1..N ranking that is `decision_rows` ENUMERATION ORDER, not an
-    opinion. Measured: 163,427 ranked offers before the first score exists, and 0 of them
-    scored. Counting those made an unfitted model look like it had a strong taste (top pick
-    `stance` on 54.5%) when it had none at all. gnn_rank needs no such guard: _score_with_gnn
-    writes it only alongside a value.
+def _mm_first_picks(con, lo, hi):
+    """Per action type: how many decisions OFFERED it, and how often each model put it
+    first. Availability-conditioned, which is the only way the number means anything --
+    a model cannot pick what was never on the menu.
     """
-    out = {"catboost": collections.Counter(), "gnn": collections.Counter()}
-    for at, r, g, s in con.execute(
-            "SELECT action_type, rank, gnn_rank, score FROM action_offers"
-            " WHERE decision_id BETWEEN ? AND ? AND (rank=1 OR gnn_rank=1)", (lo, hi)):
+    offered = collections.Counter()
+    first = {"catboost": collections.Counter(), "gnn": collections.Counter()}
+    seen = collections.defaultdict(set)
+    for did, at, r, g, s in con.execute(
+            "SELECT decision_id, action_type, rank, gnn_rank, score FROM action_offers"
+            " WHERE decision_id BETWEEN ? AND ?", (lo, hi)):
+        if at not in seen[did]:
+            seen[did].add(at)
+            offered[at] += 1
         if r == 1 and s is not None:
-            out["catboost"][at] += 1
+            first["catboost"][at] += 1
         if g == 1:
-            out["gnn"][at] += 1
-    return out
-
-
-def _mm_concentration(counter):
-    """(top action, its share, normalised entropy, distinct). Entropy over log2(distinct)
-    so 1.0 is "spreads evenly over the types it uses" and 0.0 is "always the same move"."""
-    n = sum(counter.values())
-    if not n:
-        return None
-    top, cnt = counter.most_common(1)[0]
-    k = len(counter)
-    ent = -sum((v / n) * math.log(v / n, 2) for v in counter.values() if v)
-    return {"top": top, "share": 100.0 * cnt / n, "n": n, "distinct": k,
-            "entropy": (ent / math.log(k, 2)) if k > 1 else 0.0}
+            first["gnn"][at] += 1
+    return offered, first, len(seen)
 
 
 def _mm_tv(a, b):
-    """Total variation distance between two action-type distributions. 0 identical,
-    1 disjoint. Chosen because it compares DISTRIBUTIONS, which is the question here --
-    how much the model's taste moved between versions."""
     na, nb = sum(a.values()), sum(b.values())
     if not na or not nb:
         return None
     return 0.5 * sum(abs(a.get(k, 0) / na - b.get(k, 0) / nb) for k in (set(a) | set(b)))
 
 
-def _mm_strategy_outcomes(con, v):
-    """Per-strategy share of a campaign's decisions against how that campaign ended."""
-    fam = lambda p: ("ruleset" if (p or "").startswith("ruleset")
-                     else (p if p in ("random", "exploit_tree", "gnn_marwil") else None))
-    rows = []
-    for cid in v["campaigns"]:
-        first, last, turns = con.execute(
-            "SELECT first_decision_id, last_decision_id, turns FROM campaigns"
-            " WHERE campaign_id=?", (cid,)).fetchone()
-        fams = [f for f in (fam(r[0]) for r in con.execute(
-            "SELECT policy FROM taken WHERE decision_id BETWEEN ? AND ?", (first, last))) if f]
-        if not fams:
-            continue
-        n = float(len(fams))
-        setts, lords = [], []
-        for (feat,) in con.execute(
-                "SELECT features FROM entity_snapshots WHERE context_kind='campaign'"
-                " AND decision_id BETWEEN ? AND ?", (first, last)):
-            try:
-                s = json.loads(feat)
-            except (ValueError, TypeError):
-                continue
-            if s.get("settlements") is not None:
-                setts.append(float(s["settlements"]))
-            if s.get("lord_level") is not None:
-                lords.append(float(s["lord_level"]))
-        rows.append({"turns": float(turns or 0),
-                     "sett": (max(setts) - setts[0]) if setts else None,
-                     "lord": (max(lords) - lords[0]) if lords else None,
-                     "share": {k: c / n for k, c in collections.Counter(fams).items()}})
+def _mm_wilson(k, n, z=1.96):
+    if not n:
+        return (0.0, 0.0)
+    p = k / float(n)
+    d = 1 + z * z / n
+    c = (p + z * z / (2 * n)) / d
+    h = z * math.sqrt(max(0.0, p * (1 - p) / n + z * z / (4 * n * n))) / d
+    return (max(0.0, c - h), min(1.0, c + h))
+
+
+# ---------------------------------------------------------------------------- svg bits
+# Inline SVG generated here rather than a charting library: the UI is served offline and
+# a strict no-external-assets rule applies. Two of the three questions this tab answers
+# are about DISTRIBUTIONS, and the version it replaces rendered both as text tables --
+# the least parseable form for the thing being shown.
+
+MM_TILE_W = 330               # tiles sit 2-3 across in the grid without wrapping mid-chart
+MM_TOP_TYPES = 8              # rest folded into "other"; see _mm_fold
+
+
+def _mm_fold(offered, first, keep=MM_TOP_TYPES):
+    """Keep the action types carrying most of the offers, fold the tail into `other`.
+
+    A compact tile cannot carry 14 labelled rows legibly. The tail is folded rather than
+    dropped so the bars still sum to the whole menu, and `other` growing is itself a
+    signal that the model has moved to types it used to ignore.
+    """
+    top = [t for t, _n in offered.most_common(keep)]
+    rest = [t for t in offered if t not in top]
+    rows = [(t, offered[t], {m: first[m].get(t, 0) for m in first}) for t in top]
+    if rest:
+        rows.append(("other (%d types)" % len(rest), sum(offered[t] for t in rest),
+                     {m: sum(first[m].get(t, 0) for t in rest) for m in first}))
     return rows
 
 
-def _mm_perm_p(xs, ys, obs, rng):
-    """Two-sided permutation p for a Spearman rho. Shuffling the OUTCOMES against fixed
-    shares is the right null: it keeps both marginal distributions and destroys only the
-    pairing, which is exactly the hypothesis being tested."""
-    if obs is None:
+def _mm_axis(x0, x1, y, w):
+    return ("<line x1='%d' y1='%d' x2='%d' y2='%d' stroke='var(--line)'/>"
+            % (x0, y, x0 + w, y))
+
+
+def _mm_bars_svg(rows, models=("catboost", "gnn")):
+    """Paired horizontal bars: for each action type, the share of the decisions that
+    OFFERED it on which each model put it first. Wilson 95% hairline on each bar."""
+    if not rows:
+        return "<div class=dim>nothing offered in this window</div>"
+    lab_w, bar_w, rowh = 118, 150, 22
+    h = len(rows) * rowh + 26
+    out = ["<svg width='%d' height='%d' role='img'>" % (MM_TILE_W, h)]
+    out.append("<text x='0' y='10' class='sl'>share of decisions that offered it</text>")
+    for i, (t, n, per) in enumerate(rows):
+        y = 20 + i * rowh
+        out.append("<text x='0' y='%d' class='sl'>%s</text>" % (y + 9, _esc(t[:17])))
+        for j, m in enumerate(models):
+            k = per.get(m, 0)
+            f = (k / float(n)) if n else 0.0
+            by = y + j * 8
+            cls = "mmcat" if m == "catboost" else "mmgnn"
+            out.append("<rect x='%d' y='%d' width='%.1f' height='6' class='%s'/>"
+                       % (lab_w, by, max(0.0, f * bar_w), cls))
+            lo, hi = _mm_wilson(k, n)
+            out.append("<line x1='%.1f' y1='%d' x2='%.1f' y2='%d' stroke='var(--line)'/>"
+                       % (lab_w + lo * bar_w, by + 3, lab_w + hi * bar_w, by + 3))
+            if f >= 0.5:
+                out.append("<text x='%.1f' y='%d' class='sl'>%d%%</text>"
+                           % (lab_w + f * bar_w + 3, by + 6, round(f * 100)))
+        out.append("<text x='%d' y='%d' class='sd'>%d</text>"
+                   % (lab_w + bar_w + 8, y + 9, n))
+    out.append(_mm_axis(lab_w, lab_w + bar_w, h - 4, bar_w))
+    out.append("</svg>")
+    return "".join(out)
+
+
+def _mm_dot_svg(lanes, rules, width=MM_TILE_W, lab_w=104, hi=1.0):
+    """One dot per lane on a shared 0..hi axis, with vertical rule lines behind them.
+    Used for both the draw audit and the correlation gate."""
+    bar_w = width - lab_w - 34
+    h = len(lanes) * 22 + 26
+    out = ["<svg width='%d' height='%d' role='img'>" % (width, h)]
+    for pos, lab, cls in rules:
+        x = lab_w + min(1.0, pos / hi) * bar_w
+        out.append("<line x1='%.1f' y1='14' x2='%.1f' y2='%d' stroke='var(--line)'/>"
+                   % (x, x, h - 10))
+        out.append("<text x='%.1f' y='10' class='sd'>%s</text>" % (x - 8, _esc(lab)))
+    for i, (lab, val, band, cls, note) in enumerate(lanes):
+        y = 22 + i * 22
+        out.append("<text x='0' y='%d' class='sl'>%s</text>" % (y + 4, _esc(lab)))
+        if band:
+            a, b = band
+            out.append("<rect x='%.1f' y='%d' width='%.1f' height='8' fill='var(--line)'"
+                       " opacity='0.5'/>"
+                       % (lab_w + min(1.0, a / hi) * bar_w, y - 4,
+                          max(1.0, (min(1.0, b / hi) - min(1.0, a / hi)) * bar_w)))
+        if val is not None:
+            out.append("<circle cx='%.1f' cy='%d' r='4' class='%s'/>"
+                       % (lab_w + min(1.0, abs(val) / hi) * bar_w, y, cls))
+        if note:
+            out.append("<text x='%d' y='%d' class='sd'>%s</text>"
+                       % (width - 30, y + 4, _esc(note)))
+    out.append(_mm_axis(lab_w, lab_w + bar_w, h - 6, bar_w))
+    out.append("</svg>")
+    return "".join(out)
+
+
+def _mm_tile(title, body, sub=""):
+    return ("<div class=mmtile><div class=mmt>%s</div>%s%s</div>"
+            % (_esc(title), body, ("<div class=mms>%s</div>" % sub) if sub else ""))
+
+
+# ------------------------------------------------------------------- the tab itself
+def _mm_state(con):
+    """Everything the verdict and §1 need, in two bounded queries. Memoised per render."""
+    lo, hi = _mm_window(con)
+    st = {"lo": lo, "hi": hi, "arms": {}, "counted": {}, "lat": {}, "n_window": 0}
+    if lo is None:
+        return st
+    per = collections.defaultdict(list)
+    for pol, counted, lat in con.execute(
+            "SELECT policy, counted, latency_ms FROM taken WHERE decision_id BETWEEN ? AND ?",
+            (lo, hi)):
+        a = _mm_arm(pol)
+        if a:
+            per[a].append((1 if counted else 0, lat))
+    for a, rows in per.items():
+        st["arms"][a] = len(rows)
+        st["counted"][a] = sum(r[0] for r in rows) / float(len(rows))
+        lats = [r[1] for r in rows if r[1] is not None]
+        st["lat"][a] = _median(lats)
+    st["n_window"] = sum(st["arms"].values())
+    return st
+
+
+def _mm_configured(con):
+    """The configured mix from the ledger trials that overlap the scored window."""
+    import session as S
+    mixes = []
+    try:
+        with open(S.EXPERIMENTS, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    t = json.loads(line)
+                except ValueError:
+                    continue
+                if (t.get("fit") or {}).get("trained") and t.get("strategies"):
+                    mixes.append(t["strategies"])
+    except OSError:
+        pass
+    if not mixes:
         return None
-    hits = 0
-    sh = list(ys)
-    for _ in range(MM_PERMS):
-        rng.shuffle(sh)
-        r = _spearman(xs, sh)
-        if r is not None and abs(r) >= abs(obs):
-            hits += 1
-    return hits / float(MM_PERMS)
+    first = mixes[-1]
+    return first if all(m == first for m in mixes) else None
+
+
+def _mm_verdict(con, camps, st, cfg):
+    """The one line at the top. A pure function of numbers already computed -- it issues
+    no query, so it can never disagree with a lazy panel that lands a moment later."""
+    exposed = [c for c in camps if c["x"] > 0]
+    n_exp = len(exposed)
+    gate = _mm_gate_rho(n_exp)
+    need = _mm_n_req()
+    blockers, verdict, cls = [], "HOLD", "warn"
+
+    audit_ok = True
+    if cfg and st["n_window"]:
+        for a in MM_ARMS:
+            want = float(cfg.get(a, 0.0))
+            n = st["arms"].get(a, 0)
+            p = n / float(st["n_window"])
+            se = math.sqrt(max(1e-9, want * (1 - want) / max(st["n_window"], 1)))
+            if abs(p - want) > 1.96 * se:
+                audit_ok = False
+                blockers.append("the draw audit fails: %s realised %.1f%% against a "
+                                "configured %.0f%%" % (a, 100 * p, 100 * want))
+    if not st["n_window"]:
+        blockers.append("no randomised window yet: no decision has been scored, so no arm "
+                        "has been drawn against another")
+    if n_exp < need:
+        blockers.append("%d of the %d model-exposed campaigns needed to resolve a rho of "
+                        "%.2f at p&lt;0.005" % (n_exp, need, MM_TARGET_RHO))
+    best = None
+    if n_exp >= 4:
+        xs = [c["x"] for c in exposed]
+        for lab, key in (("power_rank", "y_power"), ("income", "y_income")):
+            pairs = [(c["x"], c[key]) for c in exposed if c[key] is not None]
+            if len(pairs) < 4:
+                continue
+            r = _spearman([p[0] for p in pairs], [p[1] for p in pairs])
+            if r is not None and (best is None or abs(r) > abs(best[1])):
+                best = (lab, r)
+    if best and gate and abs(best[1]) < gate:
+        blockers.append("strongest |rho| %.2f over the %d campaigns with any model "
+                        "exposure, against %.2f -- the smallest separable from chance at "
+                        "p&lt;0.005 at that n" % (abs(best[1]), n_exp, gate))
+    if audit_ok and not blockers:
+        verdict, cls = "RAISE MODEL SHARE", "ok"
+    words = {"HOLD": "HOLD MODEL SHARE AT 10% PER ARM"}
+    return ("<div class='verdict %s'><span class='vw %s'>%s</span>%s</div>"
+            % (verdict.split()[0].lower(), cls, _esc(words.get(verdict, verdict)),
+               ("<ul class=mmb>%s</ul>"
+                % "".join("<li>%s</li>" % b for b in blockers)) if blockers else
+               "<div class=mms>no blocker remains</div>"))
+
+
+def _mm_sec1(con, camps, st, cfg):
+    """§1 where this stands -- pooled, always populated, synchronous."""
+    exposed = [c for c in camps if c["x"] > 0]
+    n_dec = con.execute("SELECT COUNT(*) FROM decision_points").fetchone()[0]
+    share_cfg = (sum(float(cfg.get(a, 0.0)) for a in MM_MODEL_ARMS) if cfg else None)
+    n_model = sum(st["arms"].get(a, 0) for a in MM_MODEL_ARMS)
+    meas = (n_model / float(st["n_window"])) if st["n_window"] else None
+    cards = _statcards([
+        ("campaigns", "%d" % len(camps), ""),
+        ("with model exposure", "%d" % len(exposed), "ok" if exposed else "dim"),
+        ("decisions", "{:,}".format(n_dec), ""),
+        ("randomised window", "{:,}".format(st["n_window"]), "" if st["n_window"] else "dim"),
+        ("configured model share", ("%.0f%%" % (100 * share_cfg)) if share_cfg else "-", ""),
+        ("measured in window", ("%.1f%%" % (100 * meas)) if meas is not None else "-",
+         "ok" if meas is not None else "dim"),
+    ])
+    if not st["n_window"]:
+        return ("<h2>where this stands</h2>" + cards +
+                "<div class=legend>no randomised window yet: no decision has been scored, "
+                "so no arm has been drawn against another.</div>")
+    lanes, rows = [], []
+    for a in MM_ARMS:
+        n = st["arms"].get(a, 0)
+        p = n / float(st["n_window"])
+        want = float((cfg or {}).get(a, 0.0))
+        se = math.sqrt(max(1e-9, want * (1 - want) / st["n_window"])) if want else 0.0
+        band = (max(0.0, want - 1.96 * se), min(1.0, want + 1.96 * se)) if want else None
+        inside = (not band) or (band[0] <= p <= band[1])
+        lanes.append((a, p, band, "mmok" if inside else "mmbad", "%d" % n))
+        rows.append("<tr><td>%s</td><td class=num>%d</td><td class=num>%.1f%%</td>"
+                    "<td class='num dim'>%.0f%%</td><td class=num>%.1f%%</td>"
+                    "<td class='num dim'>%s</td></tr>"
+                    % (_esc(a), n, 100 * p, 100 * want, 100 * st["counted"].get(a, 0.0),
+                       ("%.0f ms" % st["lat"][a]) if st["lat"].get(a) else "-"))
+    n_rand = st["arms"].get("random", 0)
+    foot = ""
+    if n_model and n_rand:
+        pm = sum(st["counted"].get(a, 0.0) * st["arms"].get(a, 0)
+                 for a in MM_MODEL_ARMS) / float(n_model)
+        pr = st["counted"].get("random", 0.0)
+        pb = (pm * n_model + pr * n_rand) / float(n_model + n_rand)
+        mde = (1.96 + 0.8416) * math.sqrt(max(1e-9, pb * (1 - pb) *
+                                              (1.0 / n_model + 1.0 / n_rand))) * 100
+        foot = ("<div class=mms>model pool %.1f%% counted vs random %.1f%%: %+.1fpp, and "
+                "the smallest difference resolvable at these n is %.1fpp &mdash; this "
+                "cannot conclude either way yet.</div>"
+                % (100 * pm, 100 * pr, 100 * (pm - pr), mde))
+    return ("<h2>where this stands</h2>" + cards +
+            "<div class=legend>counted rate is a legality and executability floor, not a "
+            "quality measure &mdash; an arm that always ends the turn scores 100%. This "
+            "section can justify LOWERING the share; it can never justify raising it. If "
+            "the draw audit fails, every number below it is void.</div>"
+            "<div class=mmgrid>"
+            + _mm_tile("draw audit", _mm_dot_svg(lanes, [], hi=1.0),
+                       "dot = realised share, bar = 95% binomial band around the "
+                       "configured share, right-hand number = decisions")
+            + _mm_tile("by arm",
+                       "<table class=mmtbl><tr><th>arm<th class=num>n<th class=num>drawn"
+                       "<th class=num>cfg<th class=num>counted<th class=num>latency</tr>"
+                       + "".join(rows) + "</table>", "")
+            + "</div>" + foot)
+
+
+def _mm_sec4(con, camps, st):
+    """§4 what would it take -- arithmetic, always useful, most useful when nothing is
+    significant. Converts "nothing yet" into "this many campaigns at this share"."""
+    n_exp = len([c for c in camps if c["x"] > 0])
+    sec, dec = _mm_pace(con)
+    rows = []
+    for label, s in (("now", 0.20), ("optimum", 0.45)):
+        m = dec or 29.0
+        sd = math.sqrt(max(1e-9, s * (1 - s) / m))
+        sd0 = math.sqrt(max(1e-9, 0.20 * 0.80 / m))
+        need = int(math.ceil(_mm_n_req() * (sd0 / sd) ** 2))
+        more = max(0, need - n_exp)
+        hrs = more * (sec or 0.0) / 3600.0
+        rows.append("<tr><td>%s (%.0f%% pooled)</td><td class=num>%d</td>"
+                    "<td class=num>%d</td><td class=num>%.1f h</td></tr>"
+                    % (label, 100 * s, need, more, hrs))
+    return ("<h2>what would it take to settle this?</h2>"
+            "<div class=legend>The share-leverage row is arithmetic under a stated model, "
+            "not a measurement: it assumes a per-decision effect of fixed size and "
+            "campaign-level share variance of sqrt(s(1-s)/m). It says how much faster the "
+            "evidence arrives, not that there is an effect to find. Pace measured now: "
+            "%.0fs and %.0f decisions per campaign.</div>"
+            "<div class=mmgrid>%s</div>"
+            % (sec, dec,
+               _mm_tile("campaigns to resolve rho=%.2f" % MM_TARGET_RHO,
+                        "<table class=mmtbl><tr><th>share<th class=num>needed"
+                        "<th class=num>more<th class=num>at current pace</tr>"
+                        + "".join(rows) + "</table>",
+                        "with ruleset held at 10%, the pooled model-vs-random contrast "
+                        "resolves fastest near 45% model / 45% random. Past that the "
+                        "random control starves and resolution gets worse again.")))
 
 
 def render_model_metrics(con, run, q):
-    """The cheap sections, plus a placeholder the browser fills in afterwards.
-
-    Sections 2 and 3 are two bounded queries and some counting. Section 1 runs a
-    permutation test per strategy per outcome per model version, which is seconds of pure
-    CPU -- and holding the whole tab behind it would mean waiting on a number that cannot
-    conclude anything anyway. It loads into its own box once the rest is on screen.
-    """
-    vs = _mm_versions(con)
-    if not vs:
-        return ("<h2>model metrics</h2><div class=legend>No model versions yet. This panel "
-                "keys off the experiment ledger's per-trial campaign uuids, so it fills "
-                "once a session has written a trial row.</div>")
-    return ("<div class=lazy data-src='/panel/modelmetrics_gate'>"
-            "<h2>does a strategy's share predict the outcome?</h2>"
-            "<div class=legend>running the permutation tests&hellip;</div></div>"
-            "<div class=lazy data-src='/panel/modelmetrics_dist'>"
-            "<h2>what does each model want to do?</h2>"
-            "<div class=legend>counting each model's first picks per version&hellip;</div>"
-            "</div>")
+    camps = _mm_campaign_table(con)
+    st = _mm_state(con)
+    cfg = _mm_configured(con)
+    return (_mm_verdict(con, camps, st, cfg)
+            + _mm_sec1(con, camps, st, cfg)
+            + "<div class=lazy data-src='/panel/mm_forcing'>"
+              "<h2>what does each model force?</h2>"
+              "<div class=legend>counting first picks against what was on the menu&hellip;"
+              "</div></div>"
+            + "<div class=lazy data-src='/panel/mm_gate'>"
+              "<h2>does model share track how the campaign went?</h2>"
+              "<div class=legend>running the permutation tests&hellip;</div></div>"
+            + _mm_sec4(con, camps, st)
+            + "<div class=lazy data-src='/panel/mm_strata'>"
+              "<h2>per weight set</h2>"
+              "<div class=legend>grouping by weights&hellip;</div></div>")
 
 
-def render_model_metrics_gate(con, run, q):
-    vs = _mm_versions(con)
-    if not vs:
-        return "<div class=dim>no model versions yet</div>"
-    rng = random.Random(20260811)
+def render_mm_forcing(con, run, q):
+    """§2 what does each model force -- availability-conditioned first picks."""
+    lo, hi = _mm_window(con)
+    if lo is None:
+        return ("<h2>what does each model force?</h2><div class=legend>no model has "
+                "weights yet, so neither has expressed a preference.</div>")
+    offered, first, n_dec = _mm_first_picks(con, lo, hi)
+    if not offered:
+        return ("<h2>what does each model force?</h2><div class=legend>no offers in the "
+                "scored window.</div>")
+    base = collections.Counter({t: n for t, n in offered.items()})
+    tiles = []
+    for m, nice in (("catboost", "catboost"), ("gnn", "gnn_marwil")):
+        tv = _mm_tv(first[m], base)
+        top = first[m].most_common(1)
+        sub = ("puts %s first most often; %s from the offer menu"
+               % (_esc(top[0][0]) if top else "-",
+                  ("total variation %.3f" % tv) if tv is not None else "no picks"))
+        tiles.append(_mm_tile(nice, _mm_bars_svg(_mm_fold(offered, {m: first[m]}), (m,)), sub))
+    jam = []
+    for m in ("catboost", "gnn"):
+        for t, n in offered.items():
+            if n >= MM_JAM_MIN_N:
+                f = first[m].get(t, 0) / float(n)
+                if f >= MM_JAM:
+                    jam.append("%s takes %s first on %.1f%% of the %d decisions that offer "
+                               "one" % (m, t, 100 * f, n))
+    return ("<h2>what does each model force?</h2>"
+            "<div class=legend>The action type each model puts <b>first</b>, as a share of "
+            "the decisions that <b>offered</b> that type at all &mdash; a model cannot pick "
+            "what was never on the menu, so an unconditioned count would mostly measure the "
+            "generator. Both models score every offer on every decision, so this is what "
+            "each WANTS, not what the draw let it do. The tail beyond the %d most-offered "
+            "types is folded into <b>other</b>; hairline is a Wilson 95%% interval, "
+            "right-hand number is how many decisions offered it.</div>"
+            "<div class=mmgrid>%s</div>%s"
+            % (MM_TOP_TYPES, "".join(tiles),
+               ("<div class=legend bad>forcing: %s. At a raised share those types stop "
+                "being explored.</div>" % "; ".join(jam)) if jam else ""))
 
-    # ---- section 1: does a strategy's share predict how the campaign went? ----
-    srows = []
-    for v in vs:
-        data = _mm_strategy_outcomes(con, v)
-        if len(data) < 4:
-            srows.append("<tr><td>%s</td><td class=dim colspan=13>%d campaign(s) &mdash; "
-                         "a rank correlation needs at least 4</td></tr>"
-                         % (_esc(v["trial"]), len(data)))
+
+def render_mm_gate(con, run, q):
+    """§3 the observational correlation, with the gate rule drawn on the same axis."""
+    camps = _mm_campaign_table(con)
+    exposed = [c for c in camps if c["x"] > 0]
+    n = len(exposed)
+    gate = _mm_gate_rho(n)
+    rules = []
+    if gate:
+        rules.append((gate, "p<.005", "dim"))
+        g05 = 1.96 / math.sqrt(max(1, n - 1))
+        rules.append((g05, "p<.05", "dim"))
+    lanes, caps = [], []
+    for label, key in (("power_rank change", "y_power"), ("income change", "y_income")):
+        pairs = [(c["x"], c[key], c["turns"]) for c in exposed if c[key] is not None]
+        if len(pairs) < 4:
+            lanes.append((label, None, None, "mmdim", "n=%d" % len(pairs)))
+            caps.append("%s: n=%d, a rank correlation needs 4" % (label, len(pairs)))
             continue
-        cells = []
-        for strat in ("exploit_tree", "gnn_marwil", "ruleset", "random"):
-            xs = [d["share"].get(strat, 0.0) for d in data]
-            if len(set(round(x, 6) for x in xs)) < 2:
-                cells += ["<td class='num dim'>flat</td>", "<td class='num dim'>-</td>",
-                          "<td class='num dim'>-</td>"]
-                continue
-            for key in ("turns", "sett", "lord"):
-                pairs = [(x, d[key]) for x, d in zip(xs, data) if d[key] is not None]
-                rho = (_spearman([p[0] for p in pairs], [p[1] for p in pairs])
-                       if len(pairs) >= 4 else None)
-                if rho is None:
-                    cells.append("<td class='num dim'>-</td>")
-                    continue
-                p = _mm_perm_p([p[0] for p in pairs], [p[1] for p in pairs], rho, rng)
-                cls = "ok" if (p is not None and p < 0.005) else "dim"
-                cells.append("<td class=num><span class=%s>%+0.2f</span>"
-                             "<span class=dim> p=%.3f</span></td>" % (cls, rho, p))
-        srows.append("<tr><td>%s</td><td class=num>%d</td>%s</tr>"
-                     % (_esc(v["trial"]), len(data), "".join(cells)))
-
-    sect1 = ("<h2>does a strategy's share predict the outcome?</h2>"
-             "<div class=legend><b>This is a first-glance metric and it cannot settle "
-             "anything on its own.</b> The draw is randomised per decision, but this "
-             "aggregates it to a campaign-level share and correlates against a "
-             "campaign-level result &mdash; which throws away the randomisation and makes "
-             "the comparison observational. A strategy can also score well by accident: "
-             "overfit behaviour that happens to line up with one or two high-value moves, "
-             "like attacking the army standing in front of it, looks identical here to a "
-             "policy that is actually better and is worse over a full game. Reading it "
-             "properly needs stratification by turn, model version and decision sequence, "
-             "which needs far more data than exists. Rows are split by model version and "
-             "never pooled across them: the mix, the feature set and the faction pool have "
-             "all changed mid-run, so a pooled number would measure the config change. "
-             "Spearman rho with a %d-permutation two-sided p; only p&lt;0.005 is "
-             "highlighted, and even that is not a green light.</div>"
-             "<div class=scroll><table>"
-             "<tr><th rowspan=2>model version<th class=num rowspan=2>campaigns"
-             "<th class=grp colspan=3>exploit_tree<th class=grp colspan=3>gnn_marwil"
-             "<th class=grp colspan=3>ruleset<th class=grp colspan=3>random</tr>"
-             "<tr>%s</tr>%s</table></div>"
-             % (MM_PERMS,
-                ("<th class=num>turns<th class=num>sett+<th class=num>lord+" * 4),
-                "".join(srows) or "<tr><td colspan=14 class=dim>nothing yet</tr>"))
-    return sect1
+        xs = [p[0] for p in pairs]
+        ys = [p[1] for p in pairs]
+        ts = [p[2] for p in pairs]
+        r = _spearman(xs, ys)
+        rp = _mm_partial(xs, ys, ts)
+        good = gate is not None and r is not None and abs(r) >= gate
+        lanes.append((label, r, None, "mmok" if good else "mmdim", "n=%d" % len(pairs)))
+        caps.append("%s: n=%d &middot; rho %+0.2f &middot; partial (turns held) %s"
+                    % (label, len(pairs), r,
+                       ("%+0.2f" % rp) if rp is not None else "-"))
+    allp = [(c["x"], c["y_power"]) for c in camps if c["y_power"] is not None]
+    allr = (_spearman([p[0] for p in allp], [p[1] for p in allp])
+            if len(allp) >= 4 else None)
+    demoted = ""
+    if allr is not None:
+        g = _mm_gate_rho(len(allp))
+        demoted = ("<div class=mms>over all %d campaigns, rho(share, power_rank change) = "
+                   "%+0.2f against a gate of %.2f &mdash; but %d of those had no model "
+                   "exposure at all and every one predates the first retrain, so that is an "
+                   "era contrast (config, faction pool and feature set all moved at the "
+                   "same moment) and is shown for completeness only.</div>"
+                   % (len(allp), allr, g or 0.0, len(allp) - n))
+    return ("<h2>does model share track how the campaign went?</h2>"
+            "<div class=legend>The draw is randomised per decision, but this aggregates it "
+            "to a campaign-level share and correlates against a campaign-level result, "
+            "which throws the randomisation away and makes the comparison observational. "
+            "It stays observational at any sample size. A high-share campaign that ended "
+            "early has a different share <b>by luck</b>, so share is itself partly an "
+            "outcome. This lane can veto a raise; it cannot authorise one. power_rank is "
+            "read from target_rows, where higher is better.</div>"
+            "<div class=mmgrid>%s</div>%s%s"
+            % (_mm_tile("|rho| against the gate", _mm_dot_svg(lanes, rules, hi=1.0),
+                        "<br>".join(caps)),
+               demoted, ""))
 
 
-def _mm_distributions(con, vs):
-    # ---- section 2: what does each model want to do? ----
-    dists, rows2 = {}, []
-    for v in vs:
-        d = _mm_top1(con, v["lo"], v["hi"])
-        dists[v["trial"]] = d
-        for model in ("catboost", "gnn"):
-            c = _mm_concentration(d[model])
-            if not c:
-                rows2.append("<tr><td>%s</td><td>%s</td><td class=dim colspan=5>no ranked "
-                             "offers</td></tr>" % (_esc(v["trial"]), model))
-                continue
-            forced = "bad" if c["share"] >= 50.0 else ("warn" if c["share"] >= 35.0 else "ok")
-            rows2.append("<tr><td>%s</td><td>%s</td><td class=dim>%s</td>"
-                         "<td class=num>%d</td><td>%s</td>"
-                         "<td class=num><span class=%s>%.1f%%</span></td>"
-                         "<td class=num>%.3f</td><td class=num>%d</td></tr>"
-                         % (_esc(v["trial"]), model, _esc(v["feature_version"]), c["n"],
-                            _esc(c["top"]), forced, c["share"], c["entropy"], c["distinct"]))
-    sect2 = ("<h2>what does each model want to do?</h2>"
-             "<div class=legend>The action type each model puts <b>first</b>, over every "
-             "decision it scored &mdash; not only the ones it was drawn to decide, so this "
-             "is what the model wants rather than what the draw let it do. "
-             "<b>top share</b> is how often its first pick is that one action type: high "
-             "means the model is forcing a move. <b>entropy</b> is normalised over the types "
-             "it actually uses, so 1.0 spreads evenly and 0.0 always says the same thing. "
-             "Shown per model version, because that is the thing that changes. Versions "
-             "before a model had weights show <b>no ranked offers</b>: an untrained ranker "
-             "returns no score, and the 1..N rank stored alongside it is enumeration order "
-             "rather than an opinion, so it is not counted here.</div>"
-             "<div class=scroll><table><tr><th>model version<th>model<th>features"
-             "<th class=num>decisions<th>most common first pick<th class=num>top share"
-             "<th class=num>entropy<th class=num>distinct types</tr>%s</table></div>"
-             % "".join(rows2))
-
-    # ---- section 3: how much did that taste move between versions? ----
-    rows3 = []
-    for older, newer in zip(vs[1:], vs[:-1]):
-        for model in ("catboost", "gnn"):
-            tv = _mm_tv(dists[older["trial"]][model], dists[newer["trial"]][model])
-            if tv is None:
-                rows3.append("<tr><td>%s</td><td>%s</td><td>%s</td><td class=dim>one side "
-                             "scored nothing</td></tr>"
-                             % (_esc(older["trial"]), _esc(newer["trial"]), model))
-                continue
-            cls = "bad" if tv >= 0.5 else ("warn" if tv >= 0.25 else "ok")
-            rows3.append("<tr><td>%s</td><td>%s</td><td>%s</td>"
-                         "<td class=num><span class=%s>%.3f</span></td></tr>"
-                         % (_esc(older["trial"]), _esc(newer["trial"]), model, cls, tv))
-    sect3 = ("<h2>how much did that move between versions?</h2>"
-             "<div class=legend>Total variation distance between one version's first-pick "
-             "distribution and the next: <b>0</b> identical taste, <b>1</b> no overlap at "
-             "all. A model whose taste lurches every retrain has not converged on anything, "
-             "whatever its validation number says. Expect one large jump at the boundary "
-             "where a model first got weights &mdash; an unfitted ranker has a taste too, "
-             "and it is not a meaningful one.</div>"
-             "<div class=scroll><table><tr><th>from<th>to<th>model"
-             "<th class=num>TV distance</tr>%s</table></div>"
-             % ("".join(rows3) or "<tr><td colspan=4 class=dim>needs two model versions</tr>"))
-
-    return sect2 + sect3
+def render_mm_strata(con, run, q):
+    """§5-§7 per weight set, below the fold. One row per distinct set of WEIGHTS."""
+    ws = _mm_weightsets(con)
+    if not ws:
+        return "<h2>per weight set</h2><div class=legend>no trial has run yet.</div>"
+    rows, tiles = [], []
+    for g in ws:
+        feat, corpus = g["key"]
+        name = "unfitted" if not g["trained"] else "%s @%s" % (feat, corpus)
+        if not g["trained"]:
+            rows.append("<tr><td>%s</td><td class=num>%d</td><td class=num>%d</td>"
+                        "<td class=num>0</td><td class=dim colspan=2>no weights</td></tr>"
+                        % (_esc(name), len(g["trials"]), len(g["campaigns"])))
+            continue
+        offered, first, n_dec = _mm_first_picks(con, g["lo"], g["hi"])
+        n_scored = sum(first["catboost"].values())
+        best = []
+        for m in ("catboost", "gnn"):
+            b = max(((first[m].get(t, 0) / float(n), t, n) for t, n in offered.items()
+                     if n >= 5), default=None)
+            best.append(("%s %.0f%% (%s, %d offered)" % (m, 100 * b[0], b[1], b[2]))
+                        if b else "-")
+        rows.append("<tr><td>%s</td><td class=num>%d</td><td class=num>%d</td>"
+                    "<td class=num>%d</td><td class=dim>%s</td><td class=num>%s</td></tr>"
+                    % (_esc(name), len(g["trials"]), len(g["campaigns"]), n_scored,
+                       _esc(best[0]), _fmt(g.get("mae"), 3)))
+        tiles.append(_mm_tile(name, _mm_bars_svg(_mm_fold(offered, first)),
+                              "%d scored decisions" % n_scored))
+    return ("<h2>per weight set</h2>"
+            "<div class=legend>Grouped by the WEIGHTS, not the trial: all three trained "
+            "trials share generation 1 and feature version <code>f5978b73:108</code> while "
+            "holding different models, distinguished only by the corpus they were fit on. "
+            "Keying on the trial split the untrained history into one empty row each; this "
+            "folds them into a single row that says so once.</div>"
+            "<table class=mmtbl><tr><th>weight set<th class=num>trials"
+            "<th class=num>campaigns<th class=num>scored<th>top grab"
+            "<th class=num>in-sample MAE</tr>%s</table>"
+            "<div class=mmgrid>%s</div>" % ("".join(rows), "".join(tiles)))
 
 
 def render_models():
