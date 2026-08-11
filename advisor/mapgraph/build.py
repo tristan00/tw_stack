@@ -455,8 +455,7 @@ _CAT_OF_TYPE = {"recruit_unit": "unit", "recruit_ror": "unit", "recruit_blessed"
                 "research": "tech", "skills": "skill", "rites": "ritual",
                 "edict": "edict", "items": "item", "item_unequip": "item",
                 "building": "building", "building_repair": "building",
-                "building_dismantle": "building", "building_cancel": "building",
-                "horde_building": "building"}
+                "building_dismantle": "building", "horde_building": "building"}
 
 
 def _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me):
@@ -493,8 +492,7 @@ def _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me):
     kind = _CAT_OF_TYPE.get(at)
     if kind:
         ck_key = key.split("@", 1)[0] if at.startswith("recruit") else key
-        if at in ("building_repair", "building_dismantle", "building_cancel",
-                  "horde_building"):
+        if at in ("building_repair", "building_dismantle", "horde_building"):
             # These are keyed by the slot they act on, so the building is in params.
             ck_key = str(params.get("building_key") or "") or None
         elif at == "building":

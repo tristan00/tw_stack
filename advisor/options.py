@@ -241,6 +241,14 @@ ACTION_TARGETS = {
 
 INNATE_ACTIONS = frozenset(("scout_settlement",))
 
+# ONLY THESE ABILITIES ARE IMPLEMENTED IN THE LAUNCHER. cco_actions routes an
+# `assist_army` action through the assist path and everything else through a panel path
+# that was never finished, so a hinder_* candidate is an action the agent can be offered,
+# can pick, and can never perform. Generating it is not "collecting a refusal" -- the game
+# never gets asked, so the refusal says nothing about the game. It is gated here, at
+# generation, with a reason that names the truth.
+SUPPORTED_ABILITIES = frozenset(("assist_army",))
+
 
 COVERED_ACTIONS = frozenset((
     "assassinate", "assault_garrison", "assault_units", "block_army", "damage_walls",
@@ -268,6 +276,8 @@ def _build_hero_actions():
     for e in entries:
         act, ability = e["action"], e["ability"]
         if act not in COVERED_ACTIONS or act in NEEDS_SUBPICK or ability not in ABILITY_TARGETS:
+            continue
+        if ability not in SUPPORTED_ABILITIES:
             continue
         spec = out.setdefault(act, {"loc_suffix": [],
                                     "targets": ACTION_TARGETS.get(act, ABILITY_TARGETS[ability]),
@@ -532,11 +542,6 @@ def _slot_action_offers(region, slots):
                                               "cannot_repair"),
                              damaged=s["damaged"], repairing=s["repairing"],
                              repair_cost=s["repair_cost"], **common_p))
-        # There is no CanCancel property; a queued construction item is the condition.
-        ok = s["queued"]
-        offers.append(_offer("building_cancel", key, ok,
-                             None if ok else "nothing_queued",
-                             queued=s["queued"], **common_p))
         ok = s["can_dismantle"] and not s["empty"]
         offers.append(_offer("building_dismantle", key, ok,
                              None if ok else ("slot_empty" if s["empty"] else "cannot_dismantle"),
@@ -765,8 +770,12 @@ END_TURN_AFTER = 5
 
 FACTION_WIDE_CAPS = frozenset(("recruit_lord", "recruit_hero", "research", "rites",
                                "building_dismantle"))
+# A cap of 0 does not mean "rare", it means UNREACHABLE: the gate refuses at
+# `count >= cap` and the count starts at 0. noop sat here at 0, so it could never be
+# picked -- and loop.py's noop branch, the only thing that ever calls pol.retire, had
+# therefore never run. noop is meant to be gated, but through a rule that says so.
 PER_TURN_CAPS = {"recruit_lord": 1, "recruit_hero": 1, "recruit_unit": 4, "edict": 1,
-                 "research": 1, "rites": 1, "diplomacy": 3, "noop": 0, "stance": 1,
+                 "research": 1, "rites": 1, "diplomacy": 3, "stance": 1,
                  "hero_action": 3, "building_dismantle": 0, "raise_dead": 4,
                  "recruit_ror": 1, "recruit_blessed": 4, "recruit_imperial": 1}
 ATTACK_PAIR_TYPES = frozenset(("attack_army", "attack_settlement"))
@@ -883,17 +892,31 @@ class Gate:
         taken is not part of the decision it faced.
         """
         self.last_drops = []
-        out = []
+        out, noops = [], []
+        real = set()
         for ck, cid, o in generate(record):
+            at = o.get("action_type")
+            row = {"context_kind": ck, "context_id": cid, "action_type": at,
+                   "key": o.get("key"), "params": o.get("params") or {}}
             why = self.reason(ck, cid, o, actions_taken)
+            if at == "noop":
+                # noop is "there is nothing worth doing with this entity, retire it", so
+                # it is a candidate exactly when the entity has no other survivor. Held
+                # back and decided below, once the entity's real options are known.
+                noops.append((ck, cid, row, why))
+                continue
             if why is None:
-                out.append({"context_kind": ck, "context_id": cid,
-                            "action_type": o.get("action_type"), "key": o.get("key"),
-                            "params": o.get("params") or {}})
+                out.append(row)
+                real.add((ck, str(cid)))
             else:
-                self.last_drops.append({"context_kind": ck, "context_id": cid,
-                                        "action_type": o.get("action_type"),
-                                        "key": o.get("key"), "reason": why})
+                self.last_drops.append(dict(row, reason=why))
+        for ck, cid, row, why in noops:
+            if why is None and (ck, str(cid)) in real:
+                why = "entity_has_real_options"
+            if why is None:
+                out.append(row)
+            else:
+                self.last_drops.append(dict(row, reason=why))
         return out
 
 

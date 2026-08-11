@@ -191,6 +191,22 @@ def main():
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
+    # Names reached through a function's return value -- `_collect_mod()._reach` -- are
+    # invisible to a static import-graph scan, so the dead-code sweep deleted _reach and
+    # every hero action failed. Anything referenced that way is checked here by name.
+    import re as _re
+    import importlib
+    cco = io.open(os.path.join(common.LAUNCHER, "cco_actions.py"), encoding="utf-8").read()
+    for mod_fn, module in (("_collect_mod", "collect"), ("_options_mod", "options")):
+        wanted = sorted(set(_re.findall(r"%s\(\)\.([A-Za-z_][A-Za-z0-9_]*)" % mod_fn, cco)))
+        if not wanted:
+            continue
+        m = importlib.import_module(module)
+        missing = [w for w in wanted if not hasattr(m, w)]
+        check(not missing, "cco_actions %s() names all exist" % mod_fn,
+              "%s -> %s" % (",".join(wanted), ("MISSING " + ",".join(missing))
+                            if missing else "all present"))
+
     bad = _io_names(os.path.join(_HERE, "options.py"))
     check(not bad, "options.py touches no bus, db or file", ", ".join(bad) or "clean")
 
