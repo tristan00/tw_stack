@@ -1,5 +1,10 @@
 # Pre-wipe spec: collector, schema, and the checks that keep them honest
 
+> **CORRECTIONS, 2026-08-10 (second pass).** Four claims below were checked and are wrong.
+> They are corrected inline and marked **[CORRECTED]**; see §0 of `STATUS_HANDOFF.md`.
+> Steps 1–4 of that handoff are implemented and committed. Numbers not marked have not
+> been re-derived, so treat them as of their original measurement.
+
 Everything here is measured against the archived corpus
 (`D:\twdata\archive\corpus_20260810_prewipe\`, 22,136 decisions / 9,013,360 offers /
 583 campaigns / 4.78 GB) unless marked *inferred*.
@@ -106,12 +111,29 @@ turn ≤ 13, or the read fails silently. Max turn in the corpus is 13 and p50 ca
 read-failure sentinel distinct from an empty list, or this looks identical after the
 wipe.**
 
+**[CORRECTED]** both were resolvable from the archive without new collection. `_num('')`
+returns `None`, so a failed rank read and a real zero were *already* distinguishable, and
+the value is 0.0 in every row: a pool entry is not a character and has no rank until it is
+recruited. `cand_rank` is therefore not recorded at all. `traits` is non-empty in 241 of
+159,336 lord rows, which proves the route works, so the hero rows are genuinely empty. The
+sentinel is still right and is implemented (`TRAITS_UNREAD`), but it is guarding a read
+that works rather than settling an open question.
+
 ### b4. `recruit_unit` local/global is fabricated
 `RECRUIT_QUEUES = ("local","global")` is cross-producted at `collect.py:985`. Both rows
 are `available=1` in **all 221,504** offers, and `_parse_recruitable` hardcodes
 `"state": "active"`. So `available`/`gate` carry zero information for this type.
 **Record:** the pool the unit is actually recruitable from, its cost, pool availability,
 turns-to-recruit, and a real per-queue availability flag.
+
+**[CORRECTED]** there is no per-queue flag to record. No CCO context and no script method
+distinguishes the local pool from the global one headlessly — `can_recruit_unit(key)` is
+the only availability the collector can see, and only the recruitment panel knows the
+pools, which only the executor reads. Inventing the queue cost 371 of 652 `global` picks
+in `execute_failed` against 225 of 1,128 `local`. The cross-product is gone, `Cost` and
+`IsRecruitmentDisabled` are recorded, and the pool choice moved to the executor where it
+is observed and written back as `queue_used`. `available` is still constant for this type;
+see "Not done" in `STATUS_HANDOFF.md`.
 
 ### b5. Mercenary pools lose their origin
 `agg` collapses the faction pool (`F~`) and region pool (`P~`) by unit key, summing counts
@@ -131,8 +153,15 @@ and never used.
 **Route:** `g(sl,'BuildingContext.BuildingLevelRecordContext.Key')` — the identical
 expression already runs at `collect.py:656-658`. Keep the queued key under `queued_key`;
 they answer different questions and conflating them caused this.
-Free extras: `Health`, `IsRuined`, `DismantleRefundAmount` (which is why `refund` is
-always null), `IsDismantling`, `IsUpgrading`, `RepairCost`.
+**[CORRECTED]** `DismantleRefundAmount` and `IsDamaged` are **not** slot properties — they
+belong to `CcoCampaignBuilding`, reached via `BuildingContext`. `refund` was null and
+`damaged` False because both were read off `CcoCampaignBuildingSlot`. `CanBeCancelled` is
+not a slot property either; it is `CcoCampaignMission`'s, and both the collector's gate and
+`_slot_exec`'s executor guard used it, so `building_cancel` answered `REFUSED-nil` for the
+life of the corpus. There is no CanCancel to ask: the queued `ConstructionItemContext` is
+the condition. Free extras, with the right receivers: `BuildingContext.Health`,
+`BuildingContext.MaxHealth`, `BuildingContext.IsRuined`, and on the slot itself
+`IsDismantling`, `IsUpgrading`, `RepairCost`. Verified by `decisions/cco_audit.py`.
 
 ### b8. Enemy settlements — NOT a collection gap
 Measured: **0 of 2,571** attack_settlement targets are missing from the snapshot. 55.4%
@@ -252,6 +281,12 @@ a needless int64; together ~3.6x.
 skills** and **34.4% of tech** share an embedding row with a different key. The docstring
 already says every key joins the reference DB, so dense ids are available and the hash was
 never needed.
+
+**[CORRECTED]** those percentages were over *observed* keys only. Over every key in
+`reference.sqlite` it is **9,393 of 19,313 (48.6%)** — 60.6% of building chains, 51.1% of
+skills, 47.9% of buildings. `stance_index` (7 of 19, 36.8%) and `subtype_index` (50 of 249,
+20.1%) had the same defect and are not mentioned below. All three are dense now, and
+`mapgraph3.invariants` fails the build if any of them stops being injective.
 
 Slot nodes are keyed by **province** but populated per **region**: of 558 shared
 `(province, slot)` pairs, **341 (61.1%)** hold two different built buildings — corrupted,
