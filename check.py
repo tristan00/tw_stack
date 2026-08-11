@@ -75,6 +75,10 @@ CHECKS = [
     ("shots", ["shots/test_shots.py"], True, "the screenshot stream writes jpgs"),
     ("manager_live", ["manager/test_manager.py"], True, "the recorder captures a fresh game log"),
     ("integrated", ["manager/test_integrated_live.py"], True, "every stream reports bus_available"),
+    ("state_probe", ["-m", "decisions.probe_state"], True,
+     "drive the game directly on chosen factions: horde_slots populates for a horde "
+     "LORD and not its faction-mates, and equipped populates for a lord that starts "
+     "with items"),
     ("cco_commands", ["launcher/verify_cco_commands.py"], True,
      "every executor CCO command is accepted by the running game"),
 ]
