@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-"""What must stay true of v3, checked mechanically.
+"""What must stay true of the graph model, checked mechanically.
 
-v2 was not dropped because it was slow. It was dropped because it was a graph in name
+Its predecessor was not dropped because it was slow. It was dropped because it was a graph in name
 only: the candidate action was a feature vector rather than a node, the loss broadcast
 one graph-level scalar onto every candidate so no term ever compared two candidates, and
 CatBoost columns were stamped into the record before the graph was built.
@@ -12,7 +12,7 @@ quietly -- a conv that is 1.5x cheaper but cannot tell which relation attached t
 neighbour still trains, still reports a loss, and still looks fine. So each upgrade gets
 a mechanical check here, and speed work has to keep them all green.
 
-    python -m mapgraph3.invariants
+    python -m advisor.mapgraph.invariants
 """
 
 import ast
@@ -21,7 +21,7 @@ import os
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(_HERE))
+sys.path.insert(0, os.path.dirname(os.path.dirname(_HERE)))
 import common
 
 for _p in (common.DECISIONS, common.ADVISOR, common.ROOT):
@@ -32,7 +32,7 @@ for _p in (common.DECISIONS, common.ADVISOR, common.ROOT):
 def _code_only(path):
     """Source with docstrings removed.
 
-    train.py's own docstring says "no mse(q, y_z)" and names the v2 functions that are
+    train.py's own docstring says "no mse(q, y_z)" and names the CatBoost-stamping functions that are
     NOT called. Grepping the prose that documents an absence is not evidence about the
     code, so the checks below run against executable statements only.
     """
@@ -57,8 +57,8 @@ def check_catalogue(verbose=True):
     51.1% of skills -- and nothing anywhere would have noticed.
     """
     try:
-        from mapgraph3 import schema as S
-        from mapgraph3 import catalogue as C
+        from advisor.mapgraph import schema as S
+        from advisor.mapgraph import catalogue as C
     except ImportError:
         import schema as S
         import catalogue as C
@@ -99,8 +99,8 @@ def check_catalogue(verbose=True):
 def check(verbose=True):
     import torch
     try:
-        from mapgraph3 import net as N
-        from mapgraph3 import schema as S
+        from advisor.mapgraph import net as N
+        from advisor.mapgraph import schema as S
     except ImportError:
         import net as N
         import schema as S
@@ -124,7 +124,7 @@ def check(verbose=True):
     ok("listwise NLL over each decision's candidate set",
        "softmax(q, a_graph" in nll and "-torch.log" in nll)
 
-    # 3. no mse(q, y): v2's q and v regressed to the same scalar, so q-v was zero by
+    # 3. no mse(q, y): in the predecessor, q and v regressed to the same scalar, so q-v was zero by
     #    construction and non-zero only where v underfit
     mse = [ast.unparse(n) for n in ast.walk(ast.parse(code_trn))
            if isinstance(n, ast.Call) and "mse" in ast.unparse(n.func).lower()]
@@ -136,12 +136,12 @@ def check(verbose=True):
     ok("advantage weight exp((y_z - v)/tau), clipped",
        "b.y_z - v.detach()" in code_trn and "adv_clip" in code_trn)
 
-    # 5. the ban: no mapgraph3 module may import advisor/features.py, and nothing may
-    #    call v2's CatBoost-stamping helpers.
+    # 5. the ban: no mapgraph module may import advisor/features.py, and nothing may
+    #    call the CatBoost-stamping helpers.
     #    Static, across the whole package. A runtime sys.modules check (guard.py used to
     #    have one) cannot do this job: the LABEL legitimately goes through base_model,
     #    which imports features, so after the first walk `features` is loaded no matter
-    #    how clean mapgraph3 is. Only the import graph distinguishes "we use the label"
+    #    how clean mapgraph is. Only the import graph distinguishes "we use the label"
     #    from "we transcribed the feature set".
     banned_calls, importers = [], []
     for fn in sorted(os.listdir(_HERE)):
@@ -157,7 +157,7 @@ def check(verbose=True):
                     else ([n.module or ""] if isinstance(n, ast.ImportFrom) else []))
             if any(m.split(".")[-1] == "features" for m in mods):
                 importers.append(fn)
-    ok("no mapgraph3 module imports advisor/features.py",
+    ok("no mapgraph module imports advisor/features.py",
        not banned_calls and not importers,
        "importers: %s  banned calls: %s" % (importers or "none", banned_calls or "none"))
 
@@ -189,7 +189,7 @@ def check(verbose=True):
        all(t in msg for t in ("x_i", "x_j", "rel", "cat")),
        msg.strip().splitlines()[-1].strip())
 
-    # 9/10. per-node-type parameters, and the schema breadth v2 did not have
+    # 9/10. per-node-type parameters, and the schema breadth the predecessor lacked
     ok("per-node-type encoders and norms",
        "F.embedding(node_type, self.bias)" in src_net
        and "F.embedding(node_type, self.affine)" in src_net)
@@ -205,7 +205,7 @@ def check(verbose=True):
 
 if __name__ == "__main__":
     common.require_venv()
-    print("mapgraph3 v3 invariants")
+    print("mapgraph invariants")
     print(" catalogue:")
     bad = check_catalogue()
     print(" network:")

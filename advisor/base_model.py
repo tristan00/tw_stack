@@ -74,6 +74,11 @@ def grouped_split(n, groups, frac=VAL_FRACTION, seed=SPLIT_SEED):
         return [], list(range(n))
     return val, trn
 
+# A frozen salt, NOT a version reference -- do not "tidy" it to match a module name.
+# stable_split hashes campaign_id with this string to decide holdout membership, so
+# changing the value redraws the held-out set and makes val scores incomparable across
+# retrains, which is the exact failure stable_split exists to prevent. It survived the
+# mapgraph rename for that reason.
 HOLDOUT_SALT = "gnn3"
 
 

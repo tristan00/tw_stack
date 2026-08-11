@@ -30,7 +30,8 @@
   decision loop, `policy.py` selection, `model.py` E1/E2 global+local ranking,
   `interrupt_model.py` for blocking screens, `watchdog.py`, `analyze.py`/`efficiency.py` reports.
   `reference/` is the offline game-data lookup layer (`features_db.py`, rebuilt by
-  `build_reference.py` from the WH3 packs).
+  `build_reference.py` from the WH3 packs). `mapgraph/` is the graph ranker — one model, no
+  version suffix; it lives here because it is an advisor model, not a peer of the recorder.
 - **advisor_ui** — the frontend. `ui.py [port]` (:8779 in production): decision browser, run
   history, timeline, blocking menus, infrastructure health, session start/kill.
 - **launcher** — the driver. Game lifecycle (`bus_launcher.py`, `launcher.py`), the executor

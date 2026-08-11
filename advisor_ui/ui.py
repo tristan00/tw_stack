@@ -662,7 +662,7 @@ def render_interrupts(runs_root=RUNS_ROOT):
 
     def _short(opt, n=28):
         s = _clean(opt)
-        return s if len(s) <= n else "…" + s[-(n - 1):]
+        return s if len(s) <= n else "Ã¢â‚¬Â¦" + s[-(n - 1):]
 
     def _shortfac(fac):
         parts = str(fac or "?").split("_")
@@ -2337,7 +2337,7 @@ def _lift(e2_rmse, e1_rmse):
 MODEL_DIRS = (("global", common.MODEL_GLOBAL),
               ("local", common.MODEL_LOCAL),
               ("interrupt", common.MODEL_INTERRUPT),
-              ("gnn", common.MODEL_GNN3))
+              ("gnn", common.MODEL_MAPGRAPH))
 
 _MODEL_ROLE = {
     "global": "catboost E1/E2 &mdash; E2 is the counterfactual baseline and E1&minus;E2 is the "
@@ -2345,7 +2345,7 @@ _MODEL_ROLE = {
               "ignore it, but its scores are still stored on every offer row",
     "local": "catboost &mdash; per-entity local value, blended into the global score",
     "interrupt": "catboost &mdash; ranks the options on blocking menus (battles, occupation)",
-    "gnn": "mapgraph3 &mdash; every candidate action is a <b>node</b> in the decision "
+    "gnn": "mapgraph &mdash; every candidate action is a <b>node</b> in the decision "
            "graph, wired by typed edges to the actor, the target and the shared "
            "catalogue entry it instantiates (unit / building / tech / skill). The score "
            "is read off the action's own embedding after message passing; the ranking "
@@ -2357,7 +2357,7 @@ def _live_gnn_schema():
     try:
         if common.ROOT not in sys.path:
             sys.path.insert(0, common.ROOT)
-        from mapgraph3 import schema as GS
+        from advisor.mapgraph import schema as GS
         return GS.SCHEMA_VERSION, GS.schema_hash()
     except Exception:
         return None, None
@@ -2492,8 +2492,8 @@ def _fit_config_table(events=()):
     try:
         if common.ROOT not in sys.path:
             sys.path.insert(0, common.ROOT)
-        from mapgraph3 import train as _GT
-        from mapgraph3 import schema as _GS
+        from advisor.mapgraph import train as _GT
+        from advisor.mapgraph import schema as _GS
         c = _GT.CFG
         body.append(
             "<tr><td>gnn<td>graph action-scorer<td>hidden %s &middot; %s entity layers + "

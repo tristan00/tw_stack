@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-"""v3 schema: 22 numbers, and everything else is structure.
+"""The graph schema: 22 numbers, and everything else is structure.
 
-v2 was a 90-field flat node vector plus a 24-slot per-offer block transcribed from
-CatBoost's `opt_*` columns. Adversarial review of my first v3 draft found it was still
+This is the only graph model in the tree. What it replaced was a 90-field flat node
+vector plus a 24-slot per-offer block transcribed from CatBoost's `opt_*` columns;
+that code is deleted, and the lessons from it are recorded here rather than in a
+parallel package. Adversarial review of the first draft of this one found it was still
 ~76% CatBoost by feature -- the province block was `features.py:182-209` with the
 `prov_` prefix removed.
 
-So v3 has a hard numeric budget: 22 raw scalars across the entire ontology. Anything
+So there is a hard numeric budget: 22 raw scalars across the entire ontology. Anything
 that can be a relation is a relation, and anything that has a stable game key is a
 shared catalogue node.
 
@@ -30,7 +32,8 @@ import os
 import sys
 import zlib
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))))
 import common
 
 SCHEMA_VERSION = 3
@@ -140,8 +143,6 @@ REL_DIM = 24
 N_FORWARD_RELATIONS = len(RELATIONS)
 
 
-def rel_index(name, reverse=False):
-    return REL_INDEX[name] + (N_FORWARD_RELATIONS if reverse else 0)
 
 
 # --------------------------------------------------------------------------
@@ -152,7 +153,7 @@ RACES = ("brt", "bst", "chd", "chs", "cst", "cth", "dae", "def", "dwf", "emp", "
 RACE_VOCAB = len(RACES) + 1
 RACE_DIM = 12
 
-# 9 values, not the 7 v2 carried -- `colonel` and `minister` were silently missing
+# 9 values, not the 7 carried before -- `colonel` and `minister` were silently missing
 AGENT_TYPES = ("general", "colonel", "champion", "dignitary", "engineer", "minister",
                "runesmith", "spy", "wizard")
 AGENT_VOCAB = len(AGENT_TYPES) + 1
@@ -205,7 +206,7 @@ DIPLO_TERMS = ("declare_war", "peace", "trade_agreement", "nonaggression_pact",
 TERM_VOCAB = len(DIPLO_TERMS) + 1
 TERM_DIM = 12
 
-# Catalogue nodes get real id-indexed embeddings, not a shared crc32. v2 hashed
+# Catalogue nodes get real id-indexed embeddings, not a shared crc32. The predecessor hashed
 # 136,369 distinct action keys into 256 buckets -- and 118,802 of those keys are `move`
 # destinations, pure noise, which then collided with the ~17.5k semantic keys.
 # `move` gets no key at all: its destination is x,y.
@@ -227,7 +228,7 @@ G_CTX_FIELDS = ("turn", "treasury", "income", "settlements", "armies",
 G_CTX_DIM = len(G_CTX_FIELDS)
 
 # normalisation constants -- scaling by a constant is not feature engineering, but it
-# has to be written down, because v3 feeds raw x,y (0..1024) next to ap and corruption
+# has to be written down, because this schema feeds raw x,y (0..1024) next to ap and corruption
 COORD_SCALE = 1024.0
 UNITS_SCALE = 20.0
 HP_SCALE = 20.0
@@ -237,7 +238,7 @@ CORRUPT_SCALE = 100.0
 TREASURY_SCALE = 10000.0
 
 KNN_K = 4
-MODEL_DIR = common.MODEL_GNN3
+MODEL_DIR = common.MODEL_MAPGRAPH
 REFERENCE_DB = common.REFERENCE_DB
 MIN_ROWS = 40
 
@@ -310,7 +311,7 @@ def _dense(kind):
     absent, which degrades to the old hashing and says so."""
     if not _DENSE_CACHE:
         try:
-            from mapgraph3 import catalogue as _cat
+            from advisor.mapgraph import catalogue as _cat
         except ImportError:
             import catalogue as _cat
         _DENSE_CACHE.update(_cat.dense_ids())
@@ -329,7 +330,7 @@ def cat_index(kind, key):
 
     A key the reference does not know still hashes, but into the range ABOVE the dense
     ids, so an unknown key can never alias a known one. That range is small and shrinking;
-    it is reported by mapgraph3.invariants rather than left to be discovered.
+    it is reported by mapgraph.invariants rather than left to be discovered.
     """
     if not key:
         return 0

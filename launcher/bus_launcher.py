@@ -21,23 +21,8 @@ PACK_SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 PACK_DST = os.path.join(GAME_DIR, "data", "tw.pack")
 ROSTER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "startable_factions.json")
 
-P_CAMPAIGN = "main|left_holder|buttons_holder|buttons_list|campaign|button_campaign"
-P_NEW = ("main|left_holder|buttons_holder|buttons_list|campaign_frame|campaign_buttons|"
-         "start_campaign_new|button_start_campaign_new")
 P_LIST_PARENT = ("campaign_select_new|right_holder|tab_campaign|campaign_holder|"
                  "campaign_button_holder|list_parent")
-P_LORD = ("campaign_select_new|side_panel_holder|side_holder|button_list|lord_select_holder|"
-          "button_select_lord")
-P_CHANGE_RACE = ("campaign_select_new|right_holder|tab_lord|lord_details_panel|faction_holder|"
-                 "button_select_race")
-P_CULTURE_LIST = P_CHANGE_RACE + "|popup_menu|content|culture_list"
-P_LORD_LIST = ("campaign_select_new|right_holder|tab_lord|lord_details_panel|lord_select_list|"
-               "list|list_clip|list_box")
-P_LEADER_NAME = ("campaign_select_new|right_holder|tab_lord|lord_details_panel|"
-                 "name_and_icon_holder|name_clip|name_holder|dy_faction_leader")
-P_FACTION_NAME = ("campaign_select_new|right_holder|tab_lord|lord_details_panel|"
-                  "name_and_icon_holder|name_clip|name_holder|label_faction_name")
-P_START = "campaign_select_new|button_start_parent|button_start_campaign"
 P_CONTINUE = "custom_loading_screen|bottom_parent|button_continue"
 
 

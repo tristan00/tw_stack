@@ -96,14 +96,14 @@ class Policy:
             raise ValueError("strategy mix includes 'ruleset' but no ruleset name was given")
         self.gnn = None
         if "gnn" in self.strategies:
-            # Resolve mapgraph3 against the checkout this file lives in -- common.ROOT
+            # Resolve mapgraph against the checkout this file lives in -- common.ROOT
             # is derived from common.py's own location. Hardcoding D:\tw_stack here meant
-            # a worktree loaded the MAIN checkout's mapgraph3 while training wrote a model
+            # a worktree loaded the MAIN checkout's mapgraph while training wrote a model
             # from its own -- which surfaces as a state_dict key mismatch and silently
             # drops the gnn arm to random.
             if common.ROOT not in sys.path:
                 sys.path.insert(0, common.ROOT)
-            from mapgraph3 import rank as GNN
+            from advisor.mapgraph import rank as GNN
             self.gnn = GNN.Ranker()
         self.members = {name: S.build(name, rng=self.rng, ranker=self.ranker,
                                       ruleset=self.ruleset, gnn=self.gnn)

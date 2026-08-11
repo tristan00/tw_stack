@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Runtime enforcement of the no-derived-features rule.
 
-The v2 model was a CatBoost feature block wearing a graph. When told to remove the
+The model this replaced was a CatBoost feature block wearing a graph. When told to remove the
 CatBoost features, my first rebuild attempt kept `reach_max`, the eight reach rays and
 the ego->target bearing by *relocating* them onto a node and an edge, and wrote a comment
 explaining why that was principled. It was not. The rule is about the information, not

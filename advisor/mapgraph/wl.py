@@ -17,7 +17,7 @@ and picking either is the same decision. Anything else is a defect, whoever it b
 That rule is why this is a check and not a metric: nobody gets to add their action type to
 an exemption list.
 
-    python -m mapgraph3.wl [run_dir] [--n 40] [--verbose]
+    python -m advisor.mapgraph.wl [run_dir] [--n 40] [--verbose]
 
 Exit code 1 means at least one pair of genuinely different actions is invisible to the
 network.
@@ -29,11 +29,11 @@ import os
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(_HERE))
+sys.path.insert(0, os.path.dirname(os.path.dirname(_HERE)))
 
 import common  # noqa: E402
-from mapgraph3 import build as B      # noqa: E402
-from mapgraph3 import schema as S     # noqa: E402
+from advisor.mapgraph import build as B      # noqa: E402
+from advisor.mapgraph import schema as S     # noqa: E402
 
 MAX_ROUNDS = 40
 

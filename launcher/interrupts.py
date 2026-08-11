@@ -14,7 +14,6 @@ sys.path.insert(0, common.LAUNCHER)
 
 import nav
 
-_BR = "popup_battle_results|mid|battle_results|post_battle_results_panel"
 BATTLE_ROOTS = ("popup_pre_battle", "popup_battle_results", "settlement_captured")
 FORBIDDEN_CLICK_IDS = frozenset({"button_attack", "button_spectate", "button_retreat"})
 SCROLL_CHROME_IDS = frozenset({"top", "bottom", "handle", "vslider"})
@@ -77,7 +76,6 @@ DISPLAY_CONTROLS = frozenset((
     "button_zoom",
     "button_txt",
 ))
-DISPLAY_PREFIXES = ("unit_",)
 
 
 def _unknown_controls(ctrls, known):
@@ -333,14 +331,6 @@ def evidence(bus, why, shots_dir=None):
     return rep
 
 
-def _found(bus, path):
-    try:
-        r = bus.send("find", path, timeout=8.0) or {}
-        res = r.get("result") or {}
-        return bool(res.get("found") and res.get("visible")
-                    and str(res.get("state")) in _CLICKABLE)
-    except Exception:
-        return False
 
 
 def _tree(bus, root, depth=22, nodes=4000):
@@ -465,8 +455,6 @@ def pending(bus):
     return out
 
 
-def in_battle(bus):
-    return "battle" in pending(bus)
 
 
 def prebattle_forecast(bus):
@@ -1178,8 +1166,6 @@ def answer_ally_attacked(bus):
 _stuck_sig = [None]
 
 
-def forget_stuck():
-    _stuck_sig[0] = None
 
 
 def choose_dilemma(bus, open_roots):
@@ -1348,7 +1334,6 @@ def _options_of(bus, root, ids):
     return out
 
 
-DILEMMA_MARKER = "dilemma_active"
 DILEMMA_LIST = "dilemma_list"
 
 

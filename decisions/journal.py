@@ -15,7 +15,6 @@ REQUESTS = "decisions_requests.jsonl"
 RESPONSES = "decisions_responses.jsonl"
 DB_NAME = "decisions.sqlite"
 RUNS_ROOT = common.RUNS_ROOT
-CURRENT_POINTER = "CURRENT_RUN"
 
 
 RUN_DIR = common.RUN_DIR
@@ -23,6 +22,13 @@ RUN_DIR = common.RUN_DIR
 
 def current_run_dir(runs_root=RUNS_ROOT, timeout=0.0):
     return RUN_DIR
+
+
+# Serialises the jsonl appends below. `import threading` survived the path refactor in
+# 4c74853 and this line did not, so both `with _io_lock:` blocks raised NameError on the
+# first journal write -- which is the first thing that happens after a campaign loads.
+# Every campaign errored at once and no decision was ever recorded.
+_io_lock = threading.Lock()
 
 
 def _append(run_dir, name, row):
@@ -129,14 +135,6 @@ def request_target(run_dir, timeout=120.0):
     return _await(run_dir, rid, timeout).get("row")
 
 
-def _retry_once(fn, what):
-    try:
-        return fn()
-    except RuntimeError as e:
-        if "never answered" not in str(e):
-            raise
-        sys.stderr.write("journal: %s timed out, retrying once -- %s\n" % (what, str(e)[:120]))
-        return fn()
 
 
 def request_turn(run_dir, timeout=60.0):

@@ -12,7 +12,7 @@ that:
     silently imported the main checkout's store.py underneath its own edits, overriding
     what the caller had set up.
   * advisor/policy.py and advisor/session.py inserted r"D:\tw_stack" before importing
-    mapgraph3, so a worktree loaded the main checkout's model code while training wrote
+    mapgraph, so a worktree loaded the main checkout's model code while training wrote
     a model from its own. It surfaced as a state_dict key mismatch, and a key mismatch
     silently drops the gnn arm to random -- a wrong number, not a crash.
 
@@ -92,7 +92,7 @@ BUS = os.path.join(ROOT, "bus")
 DECISIONS = os.path.join(ROOT, "decisions")
 LAUNCHER = os.path.join(ROOT, "launcher")
 MANAGER = os.path.join(ROOT, "manager")
-MAPGRAPH3 = os.path.join(ROOT, "mapgraph3")
+MAPGRAPH = os.path.join(ROOT, "mapgraph")
 REFERENCE = os.path.join(ADVISOR, "reference")
 UI_CAPTURE = os.path.join(ROOT, "ui-capture")
 
@@ -131,8 +131,7 @@ MODELS = os.path.join(TWDATA, "models")
 MODEL_GLOBAL = os.path.join(MODELS, "global")
 MODEL_LOCAL = os.path.join(MODELS, "local")
 MODEL_INTERRUPT = os.path.join(MODELS, "interrupt")
-MODEL_NN_GLOBAL = os.path.join(MODELS, "nn_global")
-MODEL_GNN3 = os.path.join(MODELS, "gnn3")
+MODEL_MAPGRAPH = os.path.join(MODELS, "mapgraph")
 # not a real directory: the sentinel a run points at to force cold start.
 MODEL_COLD_START = os.path.join(MODELS, "__cold_start__")
 
@@ -171,7 +170,7 @@ def require_venv(what=None):
     This is the ONE python that has torch, catboost, numpy and lupa; the README has said
     so since the beginning and nothing enforced it. A check run under a bare system python
     does not fail -- it degrades, skips the half of itself that needed the missing import,
-    and prints a summary that reads green. That happened: `mapgraph3.invariants` was run
+    and prints a summary that reads green. That happened: `mapgraph.invariants` was run
     under C:\\Python314, reported that the network invariants "need torch", and the
     conclusion "torch is not on this machine" was written into a handoff. Both were false.
     A wrong interpreter is now a hard stop with the right command in the message.
