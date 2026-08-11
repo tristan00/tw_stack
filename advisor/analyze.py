@@ -39,7 +39,7 @@ def refusal_report(con):
     for at, in con.execute("SELECT DISTINCT action_type FROM action_taken"):
         n, ok, pre = con.execute(
             "SELECT COUNT(*), COALESCE(SUM(counted),0),"
-            " COALESCE(SUM(COALESCE(json_extract(diagnostics,'$.gates'),'') != ''),0)"
+            " COALESCE(SUM(COALESCE(json_extract(diagnostics,'$.prechecks'),'') != ''),0)"
             " FROM action_taken WHERE action_type=?"
             " AND refusal IS NOT 'awaiting_execution'", (at,)).fetchone()
         n, ok, pre = n or 0, ok or 0, pre or 0

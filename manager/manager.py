@@ -144,8 +144,7 @@ class Recording:
 
     def __init__(self, out_dir, t0, stop_event, threads, events_writer, *,
                  out_root=None, writers=None, ctxs=None, on_error=None,
-                 meta_overrides=None, restart_turn=1, reset_bus=None, swap_dirs=False):
-        self.swap_dirs = swap_dirs
+                 meta_overrides=None, restart_turn=1, reset_bus=None):
         self.out_dir = out_dir
         self.out_root = out_root
         self.t0 = t0
@@ -172,55 +171,11 @@ class Recording:
         except Exception as e:
             sys.stderr.write("manager: tracker.observe failed -> %s\n" % repr(e)[:80])
             return False
-        if not self.swap_dirs:
-            return False
-        return bool(started_new and self._tracker.index >= 1)
+        # The boundary is worth knowing and is reported; it does NOT open a new run
+        # directory. One run dir is the contract, and decisions_stream already keys
+        # campaigns by campaign_uuid inside it.
+        return False
 
-    def perform_swap(self):
-        with self._swap_lock:
-            try:
-                new_dir = _new_run_dir(self.out_root)
-            except OSError as e:
-                sys.stderr.write("manager: campaign-swap could not create a run dir -> %s (staying in %s)\n"
-                                 % (repr(e)[:80], self.out_dir))
-                return self.out_dir
-            prev_dir = self.out_dir
-            self.swap_count += 1
-            self.campaign_index = self._tracker.index if self._tracker is not None else self.campaign_index + 1
-
-            self._events({"t": round(time.time() - self.t0, 3), "kind": "campaign_swap_out",
-                          "to": new_dir, "campaign_index": self.campaign_index})
-
-            new_writers = {name: _writer(new_dir, name) for name in self._writers}
-            self._all_writers.extend(new_writers.values())
-
-            new_on_error = _errlog(new_dir)
-
-            for ctx, out_file in self._ctxs:
-                ctx._emit = new_writers.get(out_file, new_writers["events.jsonl"])
-                ctx.out_dir = new_dir
-                ctx._on_error = new_on_error
-
-            self._writers = new_writers
-            self._events = new_writers["events.jsonl"]
-            self._on_error = new_on_error
-            self.out_dir = new_dir
-            self.dirs.append(new_dir)
-            write_current_pointer(self.out_root, new_dir)
-
-            meta = dict(self._meta_overrides)
-            meta["campaign_index"] = self.campaign_index
-            meta["swapped_from"] = prev_dir
-            write_meta(new_dir, self.t0, meta)
-            self._events({"t": round(time.time() - self.t0, 3), "kind": "start",
-                          "wall": time.strftime("%Y-%m-%d %H:%M:%S"), "out": new_dir,
-                          "campaign_index": self.campaign_index, "swap": True})
-
-            try:
-                self._reset_bus()
-            except Exception as e:
-                sys.stderr.write("manager: reset_bus_files on swap failed -> %s\n" % repr(e)[:80])
-            return new_dir
 
     def stop(self, join_timeout=3.0):
         self._stop.set()
@@ -236,7 +191,7 @@ class Recording:
 
 
 def start(out_root, streams, *, recorder_version, meta_overrides=None,
-          restart_turn=1, reset_bus=None, swap_dirs=False):
+          restart_turn=1, reset_bus=None):
     t0 = time.time()
     out = _new_run_dir(out_root)
     stop_event = threading.Event()
@@ -260,14 +215,16 @@ def start(out_root, streams, *, recorder_version, meta_overrides=None,
 
     rec = Recording(out, t0, stop_event, [], events, out_root=out_root, writers=writers,
                     ctxs=[], on_error=on_error, meta_overrides=base_meta,
-                    restart_turn=restart_turn, reset_bus=reset_bus, swap_dirs=swap_dirs)
+                    restart_turn=restart_turn, reset_bus=reset_bus)
 
     threads = []
     for s in streams:
         w = get_writer(s.get("out_file", "events.jsonl"))
         out_file = s.get("out_file", "events.jsonl")
+        # No `swap` callable any more: a campaign boundary does not open a new run
+        # directory. observe_state stays so the boundary is still observed and reported.
         ctx = Ctx(out, t0, stop_event, shot_req, w, on_error,
-                  on_state=rec.observe_state, swap=rec.perform_swap)
+                  on_state=rec.observe_state)
         rec._ctxs.append((ctx, out_file))
         nm = s.get("name", getattr(s["run"], "__name__", "stream"))
         th = threading.Thread(target=_run_guarded,
@@ -366,8 +323,7 @@ def main():
         streams.append({"run": actions_stream.run, "name": "actions",
                         "out_file": "actions_stream.jsonl"})
 
-    swap_dirs = "--swap-dirs" in argv
-    rec = start(out_root, streams, recorder_version=RECORDER_VERSION, swap_dirs=swap_dirs,
+    rec = start(out_root, streams, recorder_version=RECORDER_VERSION,
                 meta_overrides={"game_dir": game_dir, "appdata_logs": appdata,
                                 "shots_enabled": shots_on, "ui_enabled": ui_on,
                                 "actions_enabled": actions_on,

@@ -89,7 +89,7 @@ def _attack_army_doomed(bus, ctx, pick, before, after):
 
 register("attack_army", {
     "layer": "cm", "signal": "pre_battle_popup",
-    "snapshot": _attack_army_snapshot, "gates": [],
+    "snapshot": _attack_army_snapshot, "prechecks": [],
     "execute": _attack_army_execute, "confirm": _attack_army_confirm,
     "doomed": _attack_army_doomed,
     "timeout_s": 20.0, "poll_s": 2.0, "retryable": False,
@@ -132,7 +132,7 @@ def _attack_sett_confirm(bus, ctx, pick, before):
 
 register("attack_settlement", {
     "layer": "cm", "signal": "pre_battle_or_captured_or_is_besieging",
-    "snapshot": _attack_sett_snapshot, "gates": [],
+    "snapshot": _attack_sett_snapshot, "prechecks": [],
     "execute": _attack_sett_execute, "confirm": _attack_sett_confirm,
     "timeout_s": 20.0, "poll_s": 2.0, "retryable": False,
 })
@@ -140,7 +140,7 @@ register("attack_settlement", {
 
 register("colonize", {
     "layer": "cm", "signal": "pre_battle_or_captured_or_is_besieging",
-    "snapshot": _attack_sett_snapshot, "gates": [],
+    "snapshot": _attack_sett_snapshot, "prechecks": [],
     "execute": _attack_sett_execute, "confirm": _attack_sett_confirm,
     "timeout_s": 20.0, "poll_s": 2.0, "retryable": False,
 })
@@ -166,7 +166,7 @@ def _garrison_confirm(bus, ctx, pick, before):
 
 register("garrison", {
     "layer": "cm", "signal": "in_settlement_true",
-    "snapshot": _garrison_snapshot, "gates": [],
+    "snapshot": _garrison_snapshot, "prechecks": [],
     "execute": _garrison_execute, "confirm": _garrison_confirm,
     "timeout_s": 10.0, "poll_s": 1.5,
 })
@@ -187,7 +187,7 @@ def _leave_confirm(bus, ctx, pick, before):
 register("leave_garrison", {
     "layer": "cm", "signal": "in_settlement_false",
     "snapshot": _garrison_snapshot,
-    "gates": [],
+    "prechecks": [],
     "execute": _leave_execute, "confirm": _leave_confirm,
     "timeout_s": 10.0, "poll_s": 1.5,
 })
@@ -278,7 +278,7 @@ def _await_standstill(bus, cqi, after):
 
 register("move", {
     "layer": "cm", "signal": "position_changed",
-    "snapshot": _move_snapshot, "gates": [],
+    "snapshot": _move_snapshot, "prechecks": [],
     "execute": _move_execute, "confirm": _move_confirm,
     "timeout_s": 6.0, "poll_s": 1.0, "retryable": False,
 })

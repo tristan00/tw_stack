@@ -95,7 +95,12 @@ def register(action_type, spec):
     spec.setdefault("poll_s", 1.2)
     spec.setdefault("retryable", True)
     spec.setdefault("spends_gold", False)
-    spec.setdefault("gates", [])
+    # TERMINOLOGY, and it is load-bearing. A GATE takes a list of options and filters
+    # it -- that is the advisor's job and only the advisor does it. A PRECHECK asks
+    # whether THIS one click can be made: is the panel open, is the pick well formed.
+    # It never has a list and never decides legality. Calling both "gates" is how the
+    # launcher accumulated a second, disagreeing gating layer in the first place.
+    spec.setdefault("prechecks", [])
     REGISTRY[action_type] = spec
     return spec
 
@@ -136,7 +141,7 @@ def _execute_confirmed(bus, ctx, pick):
            "key": pick.get("key"), "params": pick.get("params") or {},
            "policy": pick.get("policy"), "layer": None, "attempt": pick.get("attempt", 1),
            "executed": False, "confirmed": False, "counted": False, "refusal": None,
-           "confirm": None, "gates": {"passed": True, "failed_gate": None}}
+           "confirm": None, "prechecks": {"passed": True, "failed_precheck": None}}
     spec = REGISTRY.get(atype)
     if spec is None:
         rec["refusal"] = "unknown_action_type"
@@ -170,15 +175,15 @@ def _execute_confirmed(bus, ctx, pick):
         cost = (pick.get("params") or {}).get("cost") or 0
         t = before.get("treasury")
         if t is not None and t - cost < TREASURY_FLOOR:
-            rec["gates"] = {"passed": False, "failed_gate": "treasury_floor"}
+            rec["prechecks"] = {"passed": False, "failed_precheck": "treasury_floor"}
             rec["refusal"] = "pre_check_refused"
             rec["timing"] = dict(_t, gates_ms=int((time.time() - _tg) * 1000),
                                  total_ms=int((time.time() - _t_start) * 1000))
             return rec
-    for gate in spec["gates"]:
-        ok, reason = gate(bus, ctx, pick, before)
+    for precheck in spec["prechecks"]:
+        ok, reason = precheck(bus, ctx, pick, before)
         if not ok:
-            rec["gates"] = {"passed": False, "failed_gate": reason}
+            rec["prechecks"] = {"passed": False, "failed_precheck": reason}
             rec["refusal"] = "pre_check_refused"
             rec["timing"] = dict(_t, gates_ms=int((time.time() - _tg) * 1000),
                                  total_ms=int((time.time() - _t_start) * 1000))
@@ -284,7 +289,7 @@ def _stance_confirm(bus, ctx, pick, before):
 register("stance", {
     "layer": "cco", "signal": "is_active_flip",
     "snapshot": _stance_snapshot,
-    "gates": [],
+    "prechecks": [],
     "execute": _stance_execute, "confirm": _stance_confirm,
     "timeout_s": 5.0, "poll_s": 1.2,
 })
@@ -388,7 +393,7 @@ def _horde_build_confirm(bus, ctx, pick, before):
 
 register("horde_building", {
     "layer": "cco", "signal": "force_slot_construction_queued",
-    "snapshot": _horde_build_snapshot, "gates": [],
+    "snapshot": _horde_build_snapshot, "prechecks": [],
     "execute": _horde_build_execute, "confirm": _horde_build_confirm,
     "timeout_s": 10.0, "poll_s": 1.5, "spends_gold": True,
 })
@@ -409,7 +414,7 @@ def _building_confirm(bus, ctx, pick, before):
 register("building", {
     "layer": "cco", "signal": "slot_queued_with_requested_building",
     "snapshot": _building_snapshot,
-    "gates": [],
+    "prechecks": [],
     "execute": _building_execute, "confirm": _building_confirm,
     "timeout_s": 6.0, "poll_s": 2.0, "spends_gold": True,
 })
@@ -466,7 +471,7 @@ def _research_confirm(bus, ctx, pick, before):
 
 register("research", {
     "layer": "cco", "signal": "is_researching_and_current_tech",
-    "snapshot": _research_snapshot, "gates": [],
+    "snapshot": _research_snapshot, "prechecks": [],
     "execute": _research_execute, "confirm": _research_confirm,
     "timeout_s": 6.0, "poll_s": 1.5,
 })
@@ -518,7 +523,7 @@ def _skills_confirm(bus, ctx, pick, before):
 
 register("skills", {
     "layer": "cco", "signal": "has_skill_flip_and_committed",
-    "snapshot": _skills_snapshot, "gates": [],
+    "snapshot": _skills_snapshot, "prechecks": [],
     "execute": _skills_execute, "confirm": _skills_confirm,
     "timeout_s": 6.0, "poll_s": 1.2,
 })
@@ -580,7 +585,7 @@ def _items_confirm(bus, ctx, pick, before):
 
 register("items", {
     "layer": "cco", "signal": "equipped_count_increase",
-    "snapshot": _items_snapshot, "gates": [],
+    "snapshot": _items_snapshot, "prechecks": [],
     "execute": _items_execute, "confirm": _items_confirm,
     "timeout_s": 6.0, "poll_s": 1.2,
 })
@@ -651,7 +656,7 @@ def _rites_confirm(bus, ctx, pick, before):
 
 register("rites", {
     "layer": "cco", "signal": "can_perform_false_and_complete",
-    "snapshot": _rites_snapshot, "gates": [],
+    "snapshot": _rites_snapshot, "prechecks": [],
     "execute": _rites_execute, "confirm": _rites_confirm,
     "timeout_s": 8.0, "poll_s": 1.5,
 })
@@ -1234,7 +1239,7 @@ def _hero_action_confirm(bus, ctx, pick, before):
 register("hero_action", {
     "layer": "click", "signal": "agent_action_event",
     "snapshot": _hero_action_snapshot,
-    "gates": [],
+    "prechecks": [],
     "execute": _hero_action_execute, "confirm": _hero_action_confirm,
     "timeout_s": 8.0, "poll_s": 0.05,
 })

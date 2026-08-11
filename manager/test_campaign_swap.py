@@ -104,6 +104,16 @@ def _run(log_bytes: bytes, reset_bus):
 
 
 def two_campaign():
+    """Two campaigns in one game log land in ONE run dir, byte for byte.
+
+    This used to require a SECOND run directory per campaign and assert the log was split
+    across them. That behaviour is gone: it was reachable only through a --swap-dirs flag
+    nothing passed, and a directory per campaign is exactly what forced every trainer to
+    glob the runs root back together. One run dir is the contract now, and the campaign
+    boundary is carried by campaign_uuid in the decision store instead.
+
+    What still matters, and is what this checks: no bytes are dropped at the boundary.
+    """
     fails = []
     reset_bus = FakeBusReset()
     log_bytes = _campaign_a() + _campaign_b()
@@ -112,62 +122,36 @@ def two_campaign():
     dirs_on_disk = sorted(os.path.join(out_root, d) for d in os.listdir(out_root)
                           if os.path.isdir(os.path.join(out_root, d)))
 
-    if len(rec.dirs) != 2:
-        fails.append("[A] expected 2 run dirs, rec.dirs=%s" % rec.dirs)
-    if len(dirs_on_disk) != 2:
-        fails.append("[A] expected 2 dirs on disk, got %s" % dirs_on_disk)
-    if rec.swap_count != 1:
-        fails.append("[A] expected swap_count==1, got %d" % rec.swap_count)
+    if len(rec.dirs) != 1:
+        fails.append("[A] expected exactly 1 run dir, rec.dirs=%s" % rec.dirs)
+    if len(dirs_on_disk) != 1:
+        fails.append("[A] expected 1 dir on disk, got %s" % dirs_on_disk)
 
-    if len(rec.dirs) == 2:
-        d1, d2 = rec.dirs[0], rec.dirs[1]
-        t1, t2 = _tail_bytes(d1, log_name), _tail_bytes(d2, log_name)
+    if len(rec.dirs) == 1:
+        tail = _tail_bytes(rec.dirs[0], log_name)
+        if FAC_A not in tail:
+            fails.append("[B] campaign A missing from the tail")
+        if FAC_B not in tail:
+            fails.append("[B] campaign B missing from the tail")
+        if tail != log_bytes:
+            fails.append("[C] DROPPED OR REORDERED BYTES: tail=%d != original=%d"
+                         % (len(tail), log_size))
+        ctx, _out_file = rec._ctxs[0]
+        if ctx.out_dir != rec.dirs[0]:
+            fails.append("[D] ctx.out_dir drifted from the run dir (=%s)" % ctx.out_dir)
 
-        if FAC_A not in t1 or FAC_B in t1:
-            fails.append("[B] dir1 tail must hold campaign A only (A in=%s, B in=%s)"
-                         % (FAC_A in t1, FAC_B in t1))
-        if FAC_B not in t2 or FAC_A in t2:
-            fails.append("[B] dir2 tail must hold campaign B only (B in=%s, A in=%s)"
-                         % (FAC_B in t2, FAC_A in t2))
-        if t1 != _campaign_a() or t2 != _campaign_b():
-            fails.append("[B] byte-exact split wrong: len(t1)=%d len(t2)=%d (want %d/%d)"
-                         % (len(t1), len(t2), len(_campaign_a()), len(_campaign_b())))
+    if reset_bus.calls != 0:
+        fails.append("[E] bus was reset mid-run (%d times) -- nothing swaps any more"
+                     % reset_bus.calls)
 
-        if len(t1) + len(t2) != log_size:
-            fails.append("[C] DROPPED BYTES: t1+t2=%d != original=%d" % (len(t1) + len(t2), log_size))
-
-        ctx, out_file = rec._ctxs[0]
-        if getattr(ctx._emit, "out_dir", None) != d2:
-            fails.append("[D] ctx._emit not re-pointed to dir2 (=%s)" % getattr(ctx._emit, "out_dir", None))
-        if ctx.out_dir != d2:
-            fails.append("[D] ctx.out_dir not re-pointed to dir2 (=%s)" % ctx.out_dir)
-        if rec._writers["events.jsonl"].out_dir != d2:
-            fails.append("[D] events writer not re-pointed to dir2")
-        old = [w for w in rec._all_writers if w.out_dir == d1 and w.name == "events.jsonl"]
-        if not old:
-            fails.append("[D] old dir1 events writer was not retained")
-
-        if reset_bus.calls != 1:
-            fails.append("[E] reset_bus called %d times, expected 1" % reset_bus.calls)
-
-        m1 = json.load(open(os.path.join(d1, "meta.json")))
-        m2 = json.load(open(os.path.join(d2, "meta.json")))
-        if m1.get("campaign_index") != 0:
-            fails.append("[F] dir1 meta.campaign_index != 0 (=%s)" % m1.get("campaign_index"))
-        if m2.get("campaign_index") != 1 or m2.get("swapped_from") != d1:
-            fails.append("[F] dir2 meta wrong: campaign_index=%s swapped_from=%s"
-                         % (m2.get("campaign_index"), m2.get("swapped_from")))
-        e1k = [r.get("kind") for r in _events(d1)]
-        e2 = _events(d2)
-        if "campaign_swap_out" not in e1k:
-            fails.append("[F] dir1 events.jsonl missing 'campaign_swap_out' (got %s)" % e1k)
-        if not any(r.get("kind") == "start" and r.get("swap") for r in e2):
-            fails.append("[F] dir2 events.jsonl missing swap 'start' row")
-
-    for d in rec.dirs:
-        el = os.path.join(d, "errors.log")
-        if os.path.isfile(el):
-            fails.append("errors.log in %s: %s" % (os.path.basename(d), open(el).read()[:200]))
+    print("run dirs: %s" % [os.path.basename(d) for d in rec.dirs])
+    print("tail bytes: %d of %d" % (len(_tail_bytes(rec.dirs[0], log_name)), log_size))
+    if fails:
+        print("\nTWO-CAMPAIGN one-dir: FAIL")
+        for f in fails:
+            print("  - %s" % f)
+    else:
+        print("TWO-CAMPAIGN one-dir: PASS")
     return fails, rec
 
 
@@ -202,9 +186,9 @@ def main():
 
     if two or one:
         sys.exit(1)
-    print("\nPASS: R3 auto-swaps to a fresh run dir on a new campaign -- two campaigns land in two "
-          "dirs split byte-exactly at the boundary (nothing dropped), every stream re-pointed, bus "
-          "reset once per swap; a single campaign records unchanged in one dir. All offline, no game.")
+    print("\nPASS: two campaigns in one game log land in ONE run dir, byte for byte, "
+          "nothing dropped at the boundary, no stream re-pointed and no bus reset -- a campaign "
+          "no longer opens a new run directory. All offline, no game.")
 
 
 if __name__ == "__main__":

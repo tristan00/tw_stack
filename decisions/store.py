@@ -354,7 +354,7 @@ class DecisionStore:
              _dumps(conf.get("before")), _dumps(conf.get("after")),
              conf.get("latency_ms"), policy or taken.get("policy"),
              _dumps(taken.get("timing")),
-             _dumps({"stderr": taken.get("stderr"), "gates": taken.get("gates"),
+             _dumps({"stderr": taken.get("stderr"), "prechecks": taken.get("prechecks"),
                      "execute_error": taken.get("execute_error"),
                      "doomed": taken.get("doomed"), "params": taken.get("params")})))
         self.con.commit()

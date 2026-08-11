@@ -292,7 +292,7 @@ def _edict_confirm(bus, ctx, pick, before):
 
 register("edict", {
     "layer": "click", "signal": "selected_initiative_key",
-    "snapshot": _edict_snapshot, "gates": [],
+    "snapshot": _edict_snapshot, "prechecks": [],
     "execute": _edict_execute, "confirm": _edict_confirm,
     "timeout_s": 6.0, "poll_s": 1.2,
 })
@@ -406,7 +406,7 @@ def _recruit_snapshot(bus, ctx, pick):
             "capacity": recruitment_capacity(bus)}
 
 
-def _recruit_gate(bus, ctx, pick, before):
+def _recruit_precheck(bus, ctx, pick, before):
     """Crash guard only -- NOT a judgement about whether the recruit is legal.
 
     Clicking the recruitment buttons with the panel shut crashes the game, so this is a
@@ -499,7 +499,7 @@ def _recruit_confirm(bus, ctx, pick, before):
 
 register("recruit_unit", {
     "layer": "click", "signal": "unit_key_in_recruitment_items",
-    "snapshot": _recruit_snapshot, "gates": [_recruit_gate],
+    "snapshot": _recruit_snapshot, "prechecks": [_recruit_precheck],
     "execute": _recruit_execute, "confirm": _recruit_confirm,
     "timeout_s": 2.0, "poll_s": 1.0, "spends_gold": True,
 })
@@ -578,7 +578,7 @@ def _merc_snapshot(bus, ctx, pick):
             "units_panel_open": (r is not None and "units_panel" in r)}
 
 
-def _merc_gate(bus, ctx, pick, before):
+def _merc_precheck(bus, ctx, pick, before):
     """Crash guard only. `army_full` is decided by the advisor from state.units."""
     if not before.get("units_panel_open"):
         return False, "units_panel_not_open_CTD_guard"
@@ -654,7 +654,7 @@ def _merc_confirm(bus, ctx, pick, before):
 for _merc_atype, _merc_btn in MERC_POOL_BUTTONS.items():
     register(_merc_atype, {
         "layer": "click", "signal": "force_unit_key_count_increased",
-        "snapshot": _merc_snapshot, "gates": [_merc_gate],
+        "snapshot": _merc_snapshot, "prechecks": [_merc_precheck],
         "execute": _merc_execute_for(_merc_btn), "confirm": _merc_confirm,
         "timeout_s": 4.0, "poll_s": 1.0, "spends_gold": True,
     })
