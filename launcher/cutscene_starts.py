@@ -96,11 +96,21 @@ def observations(log_glob=None):
     return out
 
 
-def classify(obs=None):
-    """Split the observed starts into cutscene / clean / unknown."""
+def classify(obs=None, campaign_map=None):
+    r"""Split the observed starts into cutscene / clean / unknown.
+
+    campaign_map matters and is not a convenience filter. A cutscene belongs to the
+    (map, faction) pair, not the faction: wh3_main_ksl_the_ice_court opens on an intro
+    movie on Realm of Chaos (149 cinematic keys, 80s to HUD) and on nothing at all on
+    Immortal Empires (8 keys, 22s). Classifying by faction alone put it in both lists at
+    once. Pass the map the session will actually play, or get every map pooled and a
+    faction that is clean on one of them wrongly marked dirty.
+    """
     obs = observations() if obs is None else obs
     cutscene, clean, unknown = [], [], []
     for (cmap, faction), rows in sorted(obs.items()):
+        if campaign_map and cmap != campaign_map:
+            continue
         keys = [r["keys"] for r in rows if r["keys"] is not None]
         huds = [r["hud"] for r in rows]
         rec = {"map": cmap, "faction": faction, "n": len(rows),
@@ -115,12 +125,22 @@ def classify(obs=None):
     cutscene.sort(key=lambda r: -r["hud_median"])
     clean.sort(key=lambda r: r["hud_median"])
     return {"cutscene": cutscene, "clean": clean, "unknown": unknown,
-            "key_threshold": KEY_THRESHOLD, "min_observations": MIN_OBS,
-            "launches_seen": sum(len(v) for v in obs.values())}
+            "campaign_map": campaign_map, "key_threshold": KEY_THRESHOLD,
+            "min_observations": MIN_OBS,
+            "launches_seen": sum(len(v) for k, v in obs.items()
+                                 if not campaign_map or k[0] == campaign_map)}
+
+
+DEFAULT_MAP = "wh3_main_combi"          # Immortal Empires, what the runs play
 
 
 def main(argv):
-    r = classify()
+    cmap = None
+    if "--map" in argv:
+        cmap = argv[argv.index("--map") + 1]
+    r = classify(campaign_map=cmap)
+    if cmap:
+        print("campaign map     : %s" % cmap)
     if not r["launches_seen"]:
         print("no launches found in %s" % common.LOGS_ADVISOR)
         return 1

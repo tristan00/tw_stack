@@ -91,7 +91,8 @@ def start_session(campaigns, turns, model=None, cfg=None, retrain=True, retrain_
                   cold=False, dev=False, epsilon=None, factions="all", strategies=None,
                   ruleset=None, campaign=None):
     if not str(factions or "").strip():
-        raise SystemExit("--factions must be 'all' or a comma-separated list of faction keys")
+        raise SystemExit("--factions must be 'all', 'no-cutscene', or a comma-separated "
+                         "list of faction keys")
     ts = _stamp()
     log = os.path.join(LOG_DIR, "session_%s%s%sx%s_%s.log"
                        % ("cold_" if cold else "", ("%s_" % model) if model else "",
@@ -180,7 +181,10 @@ def main():
         s.add_argument("campaigns", type=int)
         s.add_argument("turns")
         s.add_argument("--model", default="catboost")
-        s.add_argument("--factions", default="all")
+        s.add_argument("--factions", default="all",
+                       help="all | no-cutscene | key,key,...  ('no-cutscene' drops the 14 "
+                            "starts that open on an intro movie; see "
+                            "launcher/cutscene_starts.py)")
         s.add_argument("--cfg", action="append")
         s.add_argument("--no-retrain", action="store_true")
         s.add_argument("--retrain-every", type=int, default=0)
