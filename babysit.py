@@ -20,8 +20,23 @@ LOG = common.BABYSIT_LOG
 STALL_S = 1200
 RELAUNCH_COOLDOWN_S = 1800
 
-RUN = {"campaigns": 100, "turns": 20, "model": "catboost", "retrain_every": 20,
-       "strategies": "exploit_tree=0.3,gnn=0.3,random=0.3,ruleset=0.1", "ruleset": "v1",
+# What a relaunch must reproduce. This is the CORPUS-COLLECTION run, not a training run:
+# mostly random play, no learner in the loop, no retraining. The learner is deliberately
+# absent -- integrating it on too small a sample has historically produced an unstable model
+# that then poisoned further training, so nothing trains until the corpus is ~10k decisions
+# (roughly 350-400 campaigns at the observed 29 decisions/campaign).
+#
+# This block previously read exploit_tree=0.3, gnn=0.3, random=0.3, ruleset=0.1 with
+# retrain_every=20 and campaigns=100. Had the babysitter ever fired against the collection
+# run, a single crash would have silently switched play to 60% model-driven and started
+# retraining every 20 campaigns -- and the only way to notice would have been auditing
+# taken.policy long afterwards, by which point the corpus is mixed.
+#
+# retrain is False AND retrain_every is 0: runctl emits --retrain from `retrain` and
+# --retrain-every from `retrain_every` independently, so both must be off.
+RUN = {"campaigns": 500, "turns": 20, "model": "catboost",
+       "retrain": False, "retrain_every": 0,
+       "strategies": "random=0.96,ruleset=0.04", "ruleset": "probe_gaps",
        "factions": "all"}
 
 
@@ -88,8 +103,12 @@ def main():
     note("DEAD/STALLED (alive=%s age=%s) -- relaunching" % (alive, age))
     with open(STAMP, "w", encoding="utf-8") as fh:
         fh.write(str(time.time()))
+    # with_ui=True and dev=False so a relaunch matches how the run was started by hand --
+    # a babysitter that quietly brings the run back in a different shape is worse than one
+    # that does nothing, because the corpus keeps growing either way.
     for step in runctl.up(RUN["campaigns"], RUN["turns"], model=RUN["model"],
-                          retrain_every=RUN["retrain_every"], dev=True, with_ui=False,
+                          retrain=RUN["retrain"], retrain_every=RUN["retrain_every"],
+                          dev=False, with_ui=True,
                           strategies=RUN["strategies"], ruleset=RUN["ruleset"],
                           factions=RUN["factions"]):
         note(step)
