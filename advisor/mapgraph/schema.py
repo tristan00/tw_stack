@@ -245,8 +245,17 @@ CAT_BUCKETS = {"building": 8192, "chain": 4096, "unit": 4096, "tech": 4096,
                "faction": 16384}
 CAT_DIM = 32
 
+# The VALUE head's context. These are raw recorded campaign facts, not derived ones, and
+# the value head predicts a campaign outcome -- so it is allowed to see campaign state.
+# They are counted separately from the node budget and REPORTED, because being uncounted
+# is how ten extra scalars went unnoticed.
+#
+# log_n_offers is gone. It was math.log1p(n_offers)/7.0 -- a derived composite, and worse,
+# a fact about OUR GENERATOR rather than about the game. A model that sees how many
+# options it was handed can learn the option generator instead of the world, which is the
+# specific failure this schema was rebuilt to end.
 G_CTX_FIELDS = ("turn", "treasury", "income", "settlements", "armies",
-                "allies", "vassals", "power_rank", "lord_level", "log_n_offers")
+                "allies", "vassals", "power_rank", "lord_level")
 G_CTX_DIM = len(G_CTX_FIELDS)
 
 # normalisation constants -- scaling by a constant is not feature engineering, but it
