@@ -759,6 +759,10 @@ def generate(record):
             raise CollectError("options.generate: unknown context_kind %r -- refusing to "
                                "silently skip an entity the recorder stored" % ck)
         for o in offers:
+            # The gate needs the acting entity's state -- action points, for one -- and
+            # only generate() knows which entity an offer came from. Carried under a
+            # private key and dropped before the option is handed to the recorder.
+            o["_state"] = st
             yield ck, cid, o
 
 
@@ -779,6 +783,14 @@ PER_TURN_CAPS = {"recruit_lord": 1, "recruit_hero": 1, "recruit_unit": 4, "edict
                  "research": 1, "rites": 1, "diplomacy": 3, "noop": 0, "stance": 1,
                  "hero_action": 3, "building_dismantle": 0, "raise_dead": 4,
                  "recruit_ror": 1, "recruit_blessed": 4, "recruit_imperial": 1}
+# Everything that moves the character across the map. The executor was refusing these
+# with `no_action_points` -- a gate the ADVISOR should have applied, because the snapshot
+# already carries ap_remaining, ap_per_turn and ap_pct on every lord and hero. Offering a
+# move to a lord with no movement left is not collecting a refusal, it is spending a
+# decision to be told something the state already said.
+COSTS_MOVEMENT = frozenset(("move", "attack_army", "attack_settlement", "colonize",
+                            "garrison", "leave_garrison", "hero_action"))
+
 ATTACK_PAIR_TYPES = frozenset(("attack_army", "attack_settlement"))
 ATTACK_PAIR_CAP = 1
 DIPLO_TARGET_CAP = 1
@@ -851,6 +863,19 @@ class Gate:
             self.blacklist.add((k[0], k[1], pick["action_type"], str(pick["key"])))
             self.failed_types.add(pick["action_type"])
 
+    @staticmethod
+    def _no_movement_left(state, at):
+        """True when this action needs movement and the entity has none left."""
+        if at not in COSTS_MOVEMENT:
+            return False
+        rem = (state or {}).get("ap_remaining")
+        if rem is None:
+            return False          # unread is not "zero" -- say nothing rather than guess
+        try:
+            return float(rem) <= 0.0
+        except (TypeError, ValueError):
+            return False
+
     def reason(self, ck, cid, o, actions_taken):
         """Why this candidate cannot be taken right now, or None if it can.
 
@@ -862,6 +887,8 @@ class Gate:
         k = (ck, str(cid))
         if not o.get("available"):
             return o.get("gate") or "no_gate_recorded"
+        if self._no_movement_left(o.get("_state"), at):
+            return "no_action_points"
         if at == "end_turn" and actions_taken < END_TURN_AFTER:
             return "end_turn_before_6th_decision"
         if key in FORBIDDEN_KEYS:
@@ -897,7 +924,7 @@ class Gate:
         for ck, cid, o in generate(record):
             row = {"context_kind": ck, "context_id": cid,
                    "action_type": o.get("action_type"), "key": o.get("key"),
-                   "params": o.get("params") or {}}
+                   "params": o.get("params") or {}}          # note: no _state
             why = self.reason(ck, cid, o, actions_taken)
             if why is None:
                 out.append(row)
