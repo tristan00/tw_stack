@@ -388,6 +388,32 @@ class DecisionStore:
         self.con.commit()
         return n
 
+    def write_diplo_state(self, campaign_id, turn, known_factions, war_graph):
+        """The whole world's war graph for one turn, met-set included in the row.
+
+        Deliberately outside the decision record. The record is what the model may see, and
+        this contains relationships between factions the player has never met; training on
+        those would teach the model to lean on information it does not have at play time.
+        `known_factions` travels WITH the data so clipping is a join rather than a rule
+        someone has to remember -- the met set changes every turn, so it cannot be
+        reconstructed afterwards.
+
+        INSERT OR IGNORE, so calling this on every action is harmless: only the first write
+        of a turn lands. Two factions that are not us cannot change their relationship while
+        we are mid-turn taking actions.
+        """
+        self._assert_writable("write_diplo_state")
+        if not campaign_id or war_graph is None:
+            return False
+        kb = self._blob(json.dumps(known_factions or [], sort_keys=True))
+        wb = self._blob(json.dumps(war_graph or [], sort_keys=True))
+        cur = self.con.execute(
+            "INSERT OR IGNORE INTO diplo_state(campaign_id,turn,ts,known_blob,war_blob)"
+            " VALUES(?,?,?,?,?)",
+            (campaign_id, int(turn or 0), time.time(), kb, wb))
+        self.con.commit()
+        return cur.rowcount > 0
+
     @staticmethod
     def _flag(v):
         return None if v is None else (1 if v else 0)

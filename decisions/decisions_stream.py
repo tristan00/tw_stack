@@ -82,9 +82,20 @@ def run(ctx):
                         r = collect.target_row(bus)
                         wrote = store.write_target_row(r)
                         ents = collect.entity_target_rows(bus)
-                        store.write_entity_target_rows(
-                            store.campaign_key(r.get("campaign_id"), r.get("campaign_uuid")),
-                            r.get("turn"), ents)
+                        ckey = store.campaign_key(r.get("campaign_id"),
+                                                  r.get("campaign_uuid"))
+                        store.write_entity_target_rows(ckey, r.get("turn"), ents)
+                        # The world war graph rides the per-TURN request, never the
+                        # per-action snapshot: 534 factions against ~10 met, and third
+                        # parties cannot change their relations while we act. It goes
+                        # straight to its own table and never touches the decision record,
+                        # which is the boundary between what we keep and what the model
+                        # is allowed to see.
+                        try:
+                            known, wg = collect.diplo_world(bus)
+                            store.write_diplo_state(ckey, r.get("turn"), known, wg)
+                        except Exception as e:  # never lose a target row over this
+                            sys.stderr.write("diplo_world failed: %s\n" % repr(e)[:180])
                         counts["target"] += 1
                         journal.respond(out_dir, rid, row=r, inserted=bool(wrote))
                         ctx.emit({"kind": "decisions_target", "turn": r.get("turn"),
