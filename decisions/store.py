@@ -538,6 +538,25 @@ class DecisionStore:
                 "campaign": json.loads(cjson or "{}"), "world": json.loads(wjson or "{}"),
                 "entities": ents.get(decision_id, [])}
 
+    def decision_index(self):
+        """[(decision_id, campaign_key, ts)] in decision_id order -- no blobs, no offers.
+
+        The cheap half of a join an interrupt has to make: a blocking screen records no
+        world of its own worth building a graph from (world_state on a popped panel yields
+        no relations, no citizenry and no war_graph -- 0 of 347 archived rows carry any of
+        the three), so it borrows the last real DECISION snapshot instead. This is over
+        `decisions`, which is exactly why an interrupt that follows another interrupt walks
+        past it to a real snapshot: interrupts are not in this table. 137 of 347 rows need
+        that, and the chain runs 5 deep behind a battle.
+
+        Pair with read_decision() for the few hundred that are actually wanted, rather than
+        labelled_decisions(), which drags every entity and offer in the corpus along.
+        """
+        return [(int(did), ck, ts or 0.0) for did, ck, ts in self.con.execute(
+            "SELECT d.decision_id,c.campaign_key,d.ts FROM decisions d"
+            " JOIN campaigns c ON c.campaign_id=d.campaign_id"
+            " ORDER BY d.decision_id")]
+
     def taken_map(self, confirmed_only=False):
         """{decision_id: ((kind, id, type, key), counted)} for every labelled decision."""
         out = {}

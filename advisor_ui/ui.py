@@ -603,8 +603,9 @@ def _policy_tally_html(title, counts):
         notes.append("<b>forced_end_turn</b> is written by the loop when it runs out of "
                      "actions, so it is listed but kept out of the share denominator.")
     if any(str(p).startswith("gnn_delegated") for p in agg):
-        notes.append("<b>gnn_delegated_*</b> is a gnn draw on the interrupt path, where "
-                     "there is no gnn model, handed to exploit_tree.")
+        notes.append("<b>gnn_delegated_*</b> is from before the interrupt path had a gnn "
+                     "model: the draw was handed to exploit_tree. It can only appear on "
+                     "rows recorded then.")
     retired = [p for p in ("cold_random", "epsilon_random", "explore", "exploit",
                            "interrupt_exploit", "interrupt_explore") if p in agg]
     if retired:
@@ -623,6 +624,10 @@ def render_interrupts(runs_root=RUNS_ROOT):
     chosen = collections.Counter()
     offered = collections.Counter()
     policies = collections.Counter()
+    # Both arms score every screen whatever the draw hands the decision to, so the two
+    # rankings sit on the same row and can be compared without a confound.
+    arms = collections.defaultdict(lambda: {"rows": 0, "exploit": 0, "gnn": 0, "both": 0,
+                                            "agree": 0})
     total = 0
     for db in common.run_dbs(runs_root):
         try:
@@ -640,10 +645,23 @@ def render_interrupts(runs_root=RUNS_ROOT):
                 if pick:
                     chosen[(kind, pick)] += 1
                 try:
-                    for o in (json.loads(opts_json) or {}):
-                        offered[(kind, o)] += 1
+                    o = json.loads(opts_json) or {}
                 except Exception:
-                    pass
+                    o = {}
+                for k in o:
+                    offered[(kind, k)] += 1
+                a = arms[kind]
+                a["rows"] += 1
+                top = {}
+                for field in ("exploit", "gnn"):
+                    scored = {k: v.get(field) for k, v in o.items()
+                              if isinstance(v, dict) and isinstance(v.get(field), (int, float))}
+                    if scored:
+                        a[field] += 1
+                        top[field] = max(scored, key=scored.get)
+                if len(top) == 2:
+                    a["both"] += 1
+                    a["agree"] += 1 if top["exploit"] == top["gnn"] else 0
         except sqlite3.Error:
             pass
         finally:
@@ -653,10 +671,10 @@ def render_interrupts(runs_root=RUNS_ROOT):
         import interrupt_model as IM
         import strategies as ST
         mix_note = ("the sampler draws each pick from the run's strategy mix over %s "
-                    "(--strategies, recorded on the trial). <b>gnn has no interrupt-side "
-                    "model</b>, so a gnn draw here is delegated to exploit_tree and recorded "
-                    "as <code>gnn_delegated_*</code> &mdash; on this path the effective "
-                    "exploit_tree share is exploit_tree + gnn" % "/".join(ST.NAMES))
+                    "(--strategies, recorded on the trial). Every arm that can score a "
+                    "screen scores it, whichever one the draw hands the decision to, so "
+                    "<code>exploit</code> and <code>gnn</code> are recorded side by side "
+                    "on the row and are directly comparable" % "/".join(ST.NAMES))
         r = IM.InterruptRanker()
         if r.ready:
             sr = (r.meta or {}).get("screen_rows") or {}
@@ -727,10 +745,14 @@ def render_interrupts(runs_root=RUNS_ROOT):
             return x if isinstance(x, (int, float)) else None
 
         def _lvl(k):
-            fmt = lambda x: ("%.2f" % x) if isinstance(x, (int, float)) else "-"
-            return "%s exploit=%s" % (_short(k), fmt(_pred(k, "exploit")))
-        ordered = sorted(opts, key=lambda k: -(_pred(k, "exploit")
-                                               if _pred(k, "exploit") is not None else -1e9))
+            fmt = lambda x, p: (("%." + str(p) + "f") % x) if isinstance(x, (int, float)) else "-"
+            return "%s exploit=%s gnn=%s" % (_short(k), fmt(_pred(k, "exploit"), 2),
+                                             fmt(_pred(k, "gnn"), 4))
+        # order by whichever arm scored this screen; gnn-only rows are real (a screen the
+        # tree has too few rows to touch) and used to sort as if unscored
+        _key = "exploit" if any(_pred(k, "exploit") is not None for k in opts) else "gnn"
+        ordered = sorted(opts, key=lambda k: -(_pred(k, _key)
+                                               if _pred(k, _key) is not None else -1e9))
         tip = ", ".join(_lvl(k) for k in ordered)
         res = ("<span class=ok>OK</span>" if counted
                else "<span class=bad>%s</span>" % _esc((ref or "fail")[:22]))
@@ -760,13 +782,35 @@ def render_interrupts(runs_root=RUNS_ROOT):
     head = ("<h2>blocking menus <span class=dim>(%d decisions)</span></h2>"
             "<p class=muted>sampler: %s</p>"
             "<p class=muted>%s</p>" % (total, state, screens))
+    arm_rows = []
+    for kind in sorted(arms):
+        a = arms[kind]
+        pct = lambda x, d: ("%.0f%%" % (100.0 * x / d)) if d else "&mdash;"
+        arm_rows.append(
+            "<tr><td>%s</td><td class=num>%d</td><td class=num>%s</td><td class=num>%s</td>"
+            "<td class=num>%d</td><td class=num>%s</td></tr>"
+            % (_esc(kind), a["rows"], pct(a["exploit"], a["rows"]), pct(a["gnn"], a["rows"]),
+               a["both"], pct(a["agree"], a["both"])))
+    arm_tbl = (
+        "<h2>arm coverage and agreement</h2>"
+        "<p class=muted>Every arm that can score a screen scores it, whichever one the draw "
+        "hands the decision to &mdash; so both rankings sit on the same row and comparing "
+        "them carries no confound. <b>scored</b> is how often each arm had anything to say: "
+        "the tree is fitted per screen and stays quiet on cold ones, the graph model is "
+        "quiet when it has no world snapshot yet. <b>agree</b> is how often their top pick "
+        "is the same option, over the rows where both spoke. This says nothing about which "
+        "is <i>right</i> &mdash; that is the held-out number on the models card, and it "
+        "needs outcomes these rows do not carry.</p>"
+        "<div class=scroll><table><tr><th>screen<th class=num>rows<th class=num>tree scored"
+        "<th class=num>graph scored<th class=num>both<th class=num>agree</tr>%s</table></div>"
+        % ("".join(arm_rows) or "<tr><td class=dim colspan=6>none recorded</td></tr>"))
     prov = _policy_tally_html("interrupt provenance (all runs)", policies)
     agg = ("<p class=muted>Dilemmas, pre-battle, post-battle and occupation. <b>taken</b> is how "
            "often we picked that option; <b>offered</b> is how often the screen showed it, so the "
            "rate exposes whether a choice ever actually gets picked.</p>"
            "<div class=scroll><table><tr><th>screen<th>option<th>taken<th>offered<th>rate</tr>"
            "%s</table></div>" % "".join(rows))
-    return head + prov + recent_tbl + agg
+    return head + prov + arm_tbl + recent_tbl + agg
 
 
 def starts_summary(runs_root=RUNS_ROOT):
@@ -2538,7 +2582,8 @@ def _lift(e2_rmse, e1_rmse):
 MODEL_DIRS = (("global", common.MODEL_GLOBAL),
               ("local", common.MODEL_LOCAL),
               ("interrupt", common.MODEL_INTERRUPT),
-              ("gnn", common.MODEL_MAPGRAPH))
+              ("gnn", common.MODEL_MAPGRAPH),
+              ("gnn interrupt", common.MODEL_MAPGRAPH_INTERRUPT))
 
 _MODEL_ROLE = {
     "global": "catboost E1/E2 &mdash; E2 is the counterfactual baseline and E1&minus;E2 is the "
@@ -2551,6 +2596,13 @@ _MODEL_ROLE = {
            "catalogue entry it instantiates (unit / building / tech / skill). The score "
            "is read off the action's own embedding after message passing; the ranking "
            "objective is a listwise softmax over the candidate set, not a regression",
+    "gnn interrupt": "mapgraph, on blocking menus &mdash; the same architecture and the "
+                     "same ontology as <b>gnn</b>, its own weights. The screen's options "
+                     "are action nodes on the world graph borrowed from the last decision "
+                     "snapshot, and the panel's own facts (forecast, attitude, the deal on "
+                     "the table) hang off a <code>screen</code> node. This is what a "
+                     "<b>gnn_marwil</b> draw plays on an interrupt; it used to be handed "
+                     "to exploit_tree",
 }
 
 
@@ -2608,16 +2660,27 @@ def _gnn_card(path, m, secs, when):
     else:
         state, cls, note = "ready", "ok", ""
     dev = fit.get("device")
-    # v3 does not regress the score, so there is no rmse to show. The ranking metric is
-    # the held-out listwise NLL, in nats, and it is only readable against the uniform
-    # baseline log(candidate set size) -- about 5.9 at the corpus median of 376 offers.
+    # This does not regress the score, so there is no rmse to show. The ranking metric is
+    # the held-out listwise NLL, in nats, and it is meaningless without the uniform
+    # baseline log(candidate set size) beside it. The interrupt model computes its own and
+    # stores it (screens offer 2-4 options, so uniform is ~1.0, not ~5.9); the action
+    # model does not, and 5.9 is log(376), its corpus median offer count.
     nll = fit.get("val_listwise_nll")
+    uni = m.get("uniform_nll")
+    base = ("uniform %s" % _fmt(uni, 4)) if uni is not None else "uniform &asymp; 5.9"
+    beats = uni is not None and nll is not None and nll < uni
     rows = [
         _mrow("held-out listwise NLL",
-              ("%s <span class=dim>nats &middot; uniform &asymp; 5.9</span>" % _fmt(nll, 4))
+              ("%s <span class=%s>nats &middot; %s</span>"
+               % (_fmt(nll, 4), "ok" if beats else "dim", base))
               if nll is not None else "<span class=dim>-</span>"),
         _mrow("rows / campaigns", "%s &middot; %s" % (_esc(str(m.get("rows", "-"))),
-                                                      len(m.get("campaigns") or []) or "-")),
+                                                      len(m.get("campaigns") or []) or "-")),]
+    if m.get("screens"):
+        rows.append(_mrow("screens", _esc(", ".join(
+            "%s %d" % (k, v) for k, v in sorted((m.get("screens") or {}).items(),
+                                                key=lambda kv: -kv[1])))))
+    rows += [
         _mrow("trained on", ("<span class=%s>%s</span>"
                              % ("ok" if dev == "cuda" else "warn", _esc(str(dev))))
               if dev else "<span class=dim>not recorded</span>"),
@@ -2626,7 +2689,8 @@ def _gnn_card(path, m, secs, when):
                  _esc(str(fit.get("stopped_by", "-"))))),
         _mrow("graph schema", "v%s <span class=dim>%s</span>"
               % (_esc(str(m.get("schema_version", "-"))), _esc(str(have_hash or "-")[:12]))),
-        _mrow("aux labelled nodes", _esc(str((m.get("aux") or {}).get("n_labelled_nodes", "-")))),
+        # An "aux labelled nodes" row used to sit here reading meta["aux"], which nothing
+        # in the tree has ever written. It could only render "-".
         _mrow("trained at", "%s <span class=dim>%s</span>" % (_esc(when), _age_words(secs))),
     ]
     return state, cls, note, rows
@@ -2762,12 +2826,14 @@ def _mm_arm(p):
         return None
     if p.endswith("_random_fallback"):
         p = p[:-len("_random_fallback")]
-    # "gnn_delegated_exploit_tree": the gnn was drawn and handed the choice to the tree.
-    # Attributed to the model that DECIDED -- exploit_tree -- not the one that was drawn.
-    # A delegation is not a failure to act like a fallback is: the gnn routed to another
-    # real model and that model's ranking is what picked, so crediting the gnn would put
-    # the tree's behaviour in the gnn's row. Without this branch it matched nothing and
-    # was silently dropped.
+    # HISTORICAL. "gnn_delegated_exploit_tree": the gnn was drawn on a blocking screen,
+    # where it had no model, and handed the choice to the tree. It has one now and the
+    # delegation is deleted, so no new row can carry this -- but the corpus is full of
+    # rows that do, and without this branch every one of them would match nothing and be
+    # silently dropped. Attributed to the model that DECIDED -- exploit_tree -- not the
+    # one that was drawn: a delegation is not a failure to act like a fallback is, the
+    # tree's ranking is what picked, and crediting the gnn would put the tree's behaviour
+    # in the gnn's row.
     if "_delegated_" in p:
         p = p.split("_delegated_", 1)[1]
     if p == "gnn":
@@ -3092,7 +3158,7 @@ def render_models():
         path = os.path.join(d, "meta.json")
         m = _meta(path)
         secs, when = _age(path)
-        if name == "gnn":
+        if name.startswith("gnn"):
             state, cls, note, rows = _gnn_card(path, m, secs, when)
         else:
             state, cls, note, rows = _catboost_card(name, m, secs, when, events)

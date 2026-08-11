@@ -48,6 +48,67 @@ def _code_only(path):
     return ast.unparse(tree)
 
 
+def _launcher_screens():
+    """Screen names launcher/interrupts.py actually answers, read out of its source.
+
+    Three call shapes carry one: `_choose(screen, ...)`, `_sticky_choice(screen, ...)` and
+    `_drive_decision(bus, root, kind, ...)`. Where the argument is a variable rather than a
+    literal it is resolved WITHIN THE ENCLOSING FUNCTION only, and a conditional
+    contributes its branches and not its test -- `kind = "diplomacy_proposal" if
+    "button_cancel" in opts else "diplomacy_notice"` names two screens, and "button_cancel"
+    is not one of them. Resolving loosely instead collected `accept`/`decline` from an
+    unrelated `kind` in answer_diplomacy, which is how a check like this quietly becomes
+    noise and then gets deleted.
+    """
+    path = os.path.join(common.LAUNCHER, "interrupts.py")
+    tree = ast.parse(open(path, encoding="utf-8").read())
+
+    def lits(node):
+        """String literals a value expression can evaluate TO (branches, not tests)."""
+        if isinstance(node, ast.Constant):
+            return {node.value} if isinstance(node.value, str) else set()
+        if isinstance(node, ast.IfExp):
+            return lits(node.body) | lits(node.orelse)
+        if isinstance(node, ast.BoolOp):
+            return set().union(*(lits(v) for v in node.values))
+        return set()
+
+    def resolve(arg, scope):
+        got = lits(arg)
+        if got or not isinstance(arg, ast.Name) or scope is None:
+            return got
+        for n in ast.walk(scope):
+            if isinstance(n, ast.Assign) and any(
+                    getattr(t, "id", None) == arg.id for t in n.targets):
+                got |= lits(n.value)
+        return got
+
+    # Innermost enclosing function per call. Walking the module as one scope resolves a
+    # variable against every assignment in the file, which is how `accept`/`decline` from
+    # answer_diplomacy's unrelated `kind` reached a check about screen names.
+    parent = {}
+    for n in ast.walk(tree):
+        for c in ast.iter_child_nodes(n):
+            parent[c] = n
+
+    def enclosing(node):
+        p = parent.get(node)
+        while p is not None and not isinstance(p, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            p = parent.get(p)
+        return p
+
+    out = set()
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.Call):
+            continue
+        fn = getattr(n.func, "id", None) or getattr(n.func, "attr", None)
+        if fn in ("_choose", "_sticky_choice") and n.args:
+            out |= resolve(n.args[0], enclosing(n))
+        elif fn == "_drive_decision" and len(n.args) > 2:
+            out |= resolve(n.args[2], enclosing(n))
+    return out
+
+
 def check_catalogue(verbose=True):
     """No two live game keys may share a catalogue embedding row.
 
@@ -193,10 +254,20 @@ def check(verbose=True):
     ok("per-node-type encoders and norms",
        "F.embedding(node_type, self.bias)" in src_net
        and "F.embedding(node_type, self.affine)" in src_net)
-    ok("scalar budget is respected and single-sourced",
-       S.N_SCALARS <= S.SCALAR_BUDGET,
-       "%d of %d spent across %d node types"
-       % (S.N_SCALARS, S.SCALAR_BUDGET, len(S.NODE_TYPES)))
+    # The ceiling this used to assert (SCALAR_BUDGET = 22) is gone: it had reached exactly
+    # 22 of 22, so the next honest field anywhere was an ImportError, and the count was
+    # never the cost. MAX_FIELDS is -- `x` is [N, MAX_FIELDS] for EVERY node and
+    # TypeEncoders projects _NT * MAX_FIELDS, so one wide type taxes every node of every
+    # type in every graph. So: report the count, assert the width.
+    widest = max(S.TYPE_FIELDS, key=lambda t: len(S.TYPE_FIELDS[t]))
+    ok("scalar count is computed, not written down",
+       S.N_SCALARS == sum(len(v) for v in S.TYPE_FIELDS.values()),
+       "%d scalars across %d node types" % (S.N_SCALARS, len(S.NODE_TYPES)))
+    ok("MAX_FIELDS is the widest single type, and every type fits it",
+       S.MAX_FIELDS == len(S.TYPE_FIELDS[widest])
+       and all(len(v) <= S.MAX_FIELDS for v in S.TYPE_FIELDS.values()),
+       "MAX_FIELDS=%d, set by %r; input row is _NT*MAX_FIELDS = %d wide"
+       % (S.MAX_FIELDS, widest, len(S.NODE_TYPES) * S.MAX_FIELDS))
     ok("the value head sees no fact about the option generator",
        "log_n_offers" not in S.G_CTX_FIELDS and "n_offers" not in "".join(S.G_CTX_FIELDS),
        "%d context scalars: %s" % (S.G_CTX_DIM, ", ".join(S.G_CTX_FIELDS)))
@@ -208,6 +279,28 @@ def check(verbose=True):
     ok("schema keeps the full node-type set",
        len(S.NODE_TYPES) >= 15,
        "%d node types, %d relations" % (len(S.NODE_TYPES), S.N_RELATIONS))
+
+    # 11. every blocking screen the launcher answers is a screen this schema knows.
+    #     SCREEN_TYPES is a copy of a fact that lives in launcher/interrupts.py, and a copy
+    #     drifts. The builder raises on an unknown screen at runtime, which is correct but
+    #     late -- it fires mid-campaign, on the screen, with the game blocked. This reads
+    #     the launcher's own source and fails the build instead.
+    launcher_screens = _launcher_screens()
+    missing = sorted(launcher_screens - set(S.SCREEN_TYPES))
+    ok("every launcher interrupt screen is in schema.SCREEN_TYPES",
+       not missing and bool(launcher_screens),
+       "%d found in launcher/interrupts.py%s"
+       % (len(launcher_screens), ("  MISSING: %s" % missing) if missing else ""))
+
+    # 12. a screen action type must not collide with a map action type. `diplomacy` is
+    #     both a proposal we send and a panel we are shown; if they shared an atype the
+    #     model could not tell "offer them peace" from "they offered us peace".
+    map_types = set(S.ACTION_TYPES) - set(S.SCREEN_ACTION_TYPES)
+    clash = sorted(map_types & set(S.SCREEN_ACTION_TYPES))
+    ok("screen action types do not collide with map action types",
+       not clash and len(set(S.ACTION_TYPES)) == len(S.ACTION_TYPES),
+       "%d map + %d screen = %d distinct"
+       % (len(map_types), len(S.SCREEN_ACTION_TYPES), len(set(S.ACTION_TYPES))))
 
     if verbose:
         for good, name, detail in results:

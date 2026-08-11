@@ -359,6 +359,18 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                     entry["retrain_gnn"] = grep
                     entry["retrain"]["gnn"] = grep
                     log("   gnn model: %s" % json.dumps(grep, default=str)[:220])
+                    try:
+                        from advisor.mapgraph import interrupt_train as GIT
+                        t1 = time.time()
+                        girep = GIT.train(log=log)
+                        girep["seconds"] = round(time.time() - t1, 1)
+                    except Exception as ge:
+                        girep = {"trained": False, "error": repr(ge)[:250]}
+                        log("!! gnn interrupt retrain before run %d failed (continuing on "
+                            "the previous one): %s" % (i + 1, repr(ge)[:180]))
+                    entry["retrain_gnn_interrupt"] = girep
+                    entry["retrain"]["gnn_interrupt"] = girep
+                    log("   gnn interrupt model: %s" % json.dumps(girep, default=str)[:220])
                 if not rep.get("trained"):
                     log("!! retrain %d DID NOT FIT (rows=%s need=%s) -- this campaign will NOT be "
                         "played by a freshly trained model" % (i + 1, rep.get("rows"), rep.get("need")))
@@ -368,6 +380,9 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                 if "gnn_marwil" in mix and "retrain_gnn" not in entry:
                     entry["retrain_gnn"] = {"trained": False,
                                             "error": "skipped: upstream retrain raised"}
+                if "gnn_marwil" in mix and "retrain_gnn_interrupt" not in entry:
+                    entry["retrain_gnn_interrupt"] = {
+                        "trained": False, "error": "skipped: upstream retrain raised"}
                 log("!! retrain before run %d failed (continuing on the previous model): %s"
                     % (i + 1, repr(e)[:180]))
             entry.setdefault("outcome", "in_progress")

@@ -97,6 +97,16 @@ CHECKS = [
     ("graph_ablate", ["-m", "advisor.mapgraph.eval", "ablate"], True,
      "rewiring the MAP edges alone changes the ranking -- if it does not, the world "
      "structure is decoration"),
+    ("graph_interrupt_build", ["-m", "advisor.mapgraph.interrupt_eval", "build"], True,
+     "every stored blocking screen builds a graph whose action nodes are exactly its "
+     "options, off a real DECISION snapshot -- not the panel's own world, which carries "
+     "no relations, citizenry or war_graph"),
+    ("graph_interrupt_discrim", ["-m", "advisor.mapgraph.interrupt_eval", "discrim"], True,
+     "held-out accuracy@1 and MRR per screen against uniform (reported, not gated -- the "
+     "screen corpus is far too small to fail on)"),
+    ("graph_interrupt_ablate", ["-m", "advisor.mapgraph.interrupt_eval", "ablate"], True,
+     "how much the world moves the ranking against how much the PANEL does -- a screen "
+     "model that reads only the forecast is a panel ranker with a graph attached"),
     ("cco_commands", ["launcher/verify_cco_commands.py"], True,
      "every executor CCO command is accepted by the running game"),
 ]
