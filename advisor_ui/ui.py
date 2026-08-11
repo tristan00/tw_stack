@@ -2451,8 +2451,6 @@ def _kill_session():
     return killed
 
 
-
-
 def _kill_recorder():
     import subprocess
     cmd = ("$n=0; Get-CimInstance Win32_Process -Filter \"Name like '%python%'\" | "
@@ -2465,8 +2463,6 @@ def _kill_recorder():
         return (r.stdout or "").strip() or "recorder killed"
     except Exception as e:
         return "recorder kill failed: %s" % repr(e)[:120]
-
-
 
 
 def _trial_row_html(r, live=False, show_cfg=True):
@@ -2958,113 +2954,125 @@ def _mm_bars_svg(rows, cls):
     return "".join(out)
 
 
-def _mm_campaign_table(con):
-    """One row per campaign: each arm's share of the play, and how the campaign moved.
+def _mm_turn_blocks(con, kind="action"):
+    """[(campaign_id, turn, {arm: n}, settlement gain from here, lord gain from here)].
 
-    JOIN TRAP, load-bearing: target_rows.campaign_id is the campaign KEY STRING
-    ("wh2_dlc09_skv_clan_rictus_3cd4821..."), campaigns.campaign_id is an integer
-    surrogate. Joining the identically-named columns returns ZERO rows, silently. The join
-    is target_rows.campaign_id == campaigns.campaign_key.
+    The TURN is the unit, not the campaign. The draw is randomised per decision, so the
+    mix a campaign happened to play over its whole life is not a treatment -- it is partly
+    an outcome, because a campaign that died at turn 4 got a different mix by luck than one
+    that ran to 20. Correlating that against how the campaign went compares campaigns to
+    each other and throws the randomisation away.
 
-    Outcomes come from target_rows and nowhere else: campaigns.outcome and
-    campaigns.defeated are NULL on every row in the corpus.
-
-    The two outcomes are SETTLEMENT GAIN and LORD LEVEL GAIN, because those are the
-    objective the run is actually scored against -- the growth gate keeps a campaign alive
-    on "+1 settlements over 4 turns OR +1 legendary lord level over 3 turns" and kills it
-    otherwise. turns, income and power_rank were the wrong things to correlate: turns is
-    mostly how long the gate tolerated the campaign, and income and power_rank both drift
-    upward with turn count, so a faster arm scores on throughput alone.
-
-    PEAK minus first, not last minus first, for the same reason the gate uses a peak: a
-    campaign that takes a settlement and loses it again did the thing being measured.
+    Within one campaign, though, the share of turn t is randomised against the share of
+    turn t+1, and "what happened after turn t" is measurable per turn. So the contrast
+    lives here, and _mm_within_corr_rows centres both sides inside each campaign so no
+    comparison ever crosses from one campaign to another.
     """
-    rng = [(cid, key, lo, hi, turns) for cid, key, lo, hi, turns in con.execute(
-        "SELECT campaign_id, campaign_key, first_decision_id, last_decision_id, turns"
-        " FROM campaigns WHERE first_decision_id IS NOT NULL ORDER BY first_decision_id")]
-    if not rng:
-        return []
-    arms = [collections.Counter() for _ in rng]
-    i = 0
-    for did, pol in con.execute("SELECT decision_id, policy FROM taken ORDER BY decision_id"):
-        while i < len(rng) and did > rng[i][3]:
-            i += 1
-        if i >= len(rng):
-            break
-        if did >= rng[i][2]:
-            a = _mm_arm(pol)
-            if a:
-                arms[i][a] += 1
-    tgt = collections.defaultdict(list)
+    keys = {cid: key for cid, key in con.execute(
+        "SELECT campaign_id, campaign_key FROM campaigns")}
+    # JOIN TRAP, load-bearing: target_rows.campaign_id is the campaign KEY STRING
+    # ("wh2_dlc09_skv_clan_rictus_3cd4821...") and campaigns.campaign_id is an integer
+    # surrogate. Joining the identically-named columns returns ZERO rows, silently.
+    # Outcomes come from target_rows and nowhere else -- campaigns.outcome and
+    # campaigns.defeated are NULL on every row in the corpus.
+    series = collections.defaultdict(dict)
     for key, turn, setts, lord in con.execute(
-            "SELECT campaign_id, turn, settlements, lord_level FROM target_rows"
-            " ORDER BY campaign_id, turn"):
-        tgt[key].append((turn, setts, lord))
+            "SELECT campaign_id, turn, settlements, lord_level FROM target_rows"):
+        if turn is not None:
+            series[key][int(turn)] = (setts, lord)
+
+    per = collections.defaultdict(collections.Counter)
+    if kind == "interrupt":
+        rows = con.execute("SELECT campaign_id, turn, policy FROM interrupts")
+    else:
+        rows = con.execute("SELECT d.campaign_id, d.turn, t.policy FROM taken t"
+                           " JOIN decisions d ON d.decision_id = t.decision_id")
+    for cid, turn, pol in rows:
+        a = _mm_arm(pol)
+        if a and cid is not None and turn is not None:
+            per[(cid, int(turn))][a] += 1
+
+    def gain(key, t, j):
+        """Peak from here on, minus here. Peak not last, for the same reason the growth
+        gate uses a peak: taking a settlement and losing it still did the thing."""
+        pts = [(k, v[j]) for k, v in (series.get(key) or {}).items()
+               if k >= t and v[j] is not None]
+        if len(pts) < 2:
+            return None
+        here = dict(pts).get(t)
+        return (max(v for _k, v in pts) - here) if here is not None else None
+
     out = []
-    for idx, (cid, key, lo, hi, turns) in enumerate(rng):
-        c = arms[idx]
-        n = sum(c.values())
-        rows = tgt.get(key) or []
-        if not n or len(rows) < 2:
+    for (cid, turn), c in per.items():
+        key = keys.get(cid)
+        if not key or not sum(c.values()):
             continue
-
-        def gain(j):
-            vals = [float(r[j]) for r in rows if r[j] is not None]
-            return (max(vals) - vals[0]) if len(vals) >= 2 else None
-
-        out.append({"cid": cid, "n": n, "turns": float(turns or 0),
-                    "share": {a: c.get(a, 0) / float(n) for a in MM_ARMS},
-                    "setts": gain(1), "lord": gain(2)})
+        out.append((cid, turn, c, gain(key, turn, 0), gain(key, turn, 1)))
     return out
 
 
-def _mm_interrupt_shares(con):
-    """campaign_id -> each arm's share of that campaign's INTERRUPT decisions.
+def _mm_within_corr_rows(blocks):
+    """Spearman of an arm's share of a TURN against what the campaign gained after it,
+    with both sides centred inside their own campaign.
 
-    A separate model decides interrupts -- the blocking menus: pre_battle, battle_results,
-    occupation, dilemma, diplomacy_proposal -- and it is trained and drawn separately from
-    the action ranker, so its share deserves its own contrast rather than being pooled in
-    with ordinary decisions. interrupts.campaign_id is the integer surrogate here and joins
-    campaigns.campaign_id directly (343 of 343), unlike target_rows which keys on the
-    campaign key string.
+    Centring within campaign is the whole point: it removes every campaign-level
+    difference -- faction, start, era, how long it survived -- so what is left is only the
+    randomised variation between one turn and the next of the SAME campaign.
+
+    The gate is computed from the number of CAMPAIGNS, not the number of turns. Turns
+    inside a campaign are not independent (they share a faction, a map and a future), so
+    counting them as n would shrink the gate by roughly sqrt(turns per campaign) and call
+    noise significant.
     """
-    per = collections.defaultdict(collections.Counter)
-    for cid, pol in con.execute("SELECT campaign_id, policy FROM interrupts"):
-        a = _mm_arm(pol)
-        if a and cid is not None:
-            per[cid][a] += 1
-    return {cid: {"n": sum(c.values()),
-                  "share": {a: c.get(a, 0) / float(sum(c.values())) for a in MM_ARMS}}
-            for cid, c in per.items() if sum(c.values())}
-
-
-def _mm_corr_rows(camps, share_of):
-    """The shared body of both correlation tables: rho of an arm's share against the
-    campaign's PEAK gain, beside the gate that share size can resolve."""
-    lanes = (("settlements", lambda c: c["setts"]),
-             ("lord level", lambda c: c["lord"]))
+    lanes = ((3, "settlements"), (4, "lord level"))
+    by_camp = collections.defaultdict(list)
+    for b in blocks:
+        by_camp[b[0]].append(b)
     rows = []
     for arm in MM_ARMS + ("model pool",):
-        get = ((lambda c: (share_of(c) or {}).get("exploit_tree", 0.0)
-                + (share_of(c) or {}).get("gnn_marwil", 0.0))
-               if arm == "model pool"
-               else (lambda c, a=arm: (share_of(c) or {}).get(a, 0.0)))
-        used = [c for c in camps if share_of(c) is not None and get(c) > 0]
+        def share(c, a=arm):
+            n = sum(c.values())
+            if not n:
+                return None
+            if a == "model pool":
+                return (c.get("exploit_tree", 0) + c.get("gnn_marwil", 0)) / float(n)
+            return c.get(a, 0) / float(n)
         cells = []
-        for _lab, out in lanes:
-            pairs = [(get(c), out(c)) for c in used if out(c) is not None]
-            if len(pairs) < 4 or len({round(q[0], 6) for q in pairs}) < 2:
+        camps_used = set()
+        for j, _lab in lanes:
+            xs, ys = [], []
+            seen = set()
+            for cid, bs in by_camp.items():
+                pts = [(share(b[2]), b[j]) for b in bs
+                       if share(b[2]) is not None and b[j] is not None]
+                # two turns minimum, and the share has to have MOVED between them --
+                # a campaign that played the same mix every turn carries no contrast
+                if len(pts) < 2 or len({round(p[0], 6) for p in pts}) < 2:
+                    continue
+                mx = sum(p[0] for p in pts) / len(pts)
+                my = sum(p[1] for p in pts) / len(pts)
+                xs += [p[0] - mx for p in pts]
+                ys += [p[1] - my for p in pts]
+                seen.add(cid)
+            if len(xs) < 4 or len({round(v, 9) for v in xs}) < 2:
                 cells.append("<td class='num mmdimc'>-</td>")
                 continue
-            r = _spearman([q[0] for q in pairs], [q[1] for q in pairs])
-            gate = MM_GATE_Z / math.sqrt(len(pairs) - 1)
+            r = _spearman(xs, ys)
+            gate = MM_GATE_Z / math.sqrt(max(len(seen) - 1, 1))
             hot = r is not None and abs(r) >= gate
-            cells.append("<td class=num><span class='%s'>%+0.2f</span>"
+            camps_used |= seen
+            # The campaign count lives HERE, on the gate, and not as a column of its own.
+            # The unit of this table is the turn; campaigns are not a quantity of data,
+            # they are the clustering the gate is computed from, and that is the only
+            # thing they are used for.
+            cells.append("<td class=num title='gate from %d campaigns'>"
+                         "<span class='%s'>%+0.2f</span>"
                          "<span class=mmdimc> /%.2f</span></td>"
-                         % ("mmhot" if hot else "", r or 0.0, gate))
+                         % (len(seen), "mmhot" if hot else "", r or 0.0, gate))
+        n_turns = sum(1 for cid in camps_used for _b in by_camp[cid])
         rows.append("<tr><td>%s</td><td class=num>%d</td>%s</tr>"
-                    % (_esc(arm), len(used), "".join(cells)))
-    return ("<table class=mmtbl><tr><th>arm<th class=num>campaigns"
+                    % (_esc(arm), n_turns, "".join(cells)))
+    return ("<table class=mmtbl><tr><th>arm<th class=num>turns"
             "<th class=num>settlements<th class='num mmdimc'>lord level</tr>%s</table>"
             % "".join(rows))
 
@@ -3072,43 +3080,54 @@ def _mm_corr_rows(camps, share_of):
 def _mm_corr_tables(con):
     """Two contrasts side by side: the action ranker and the interrupt model.
 
-    Both are POOLED across every campaign, deliberately -- these numbers exist even while
-    nothing is conclusive, and the stratified-by-weight-set version was mostly empty cells.
+    This used to correlate a CAMPAIGN's lifetime arm share against that campaign's result,
+    and its own docstring admitted the flaw: the draw is randomised per decision, so
+    aggregating to a campaign-level share and correlating against a campaign-level result
+    throws the randomisation away, and a campaign that ended early has a different share
+    partly by luck -- share was itself partly an outcome. Every number it produced was a
+    between-campaign comparison wearing a per-decision estimator's clothes.
 
-    Read both with the same two caveats. They are OBSERVATIONAL: the draw is randomised
-    per decision, but this aggregates to a campaign-level share and correlates against a
-    campaign-level result, which throws the randomisation away, and a campaign that ended
-    early has a different share partly BY LUCK -- so share is itself partly an outcome.
-    And the corpus spans several configurations: mix, action cap, faction pool and feature
-    set all moved mid-run, so a pooled number is partly an era contrast.
+    Now the unit is the turn and the contrast is within-campaign. See _mm_turn_blocks and
+    _mm_within_corr_rows.
+
+    One caveat survives: the corpus spans several configurations -- mix, action cap,
+    faction pool and feature set all moved mid-run -- so a pooled number is partly an era
+    contrast. Centring within campaign does not fix that, because a campaign belongs to
+    exactly one era.
     """
-    camps = _mm_campaign_table(con)
-    if not camps:
-        return "<div class=dim>no campaign has both a recorded share and an outcome yet</div>"
-    ints = _mm_interrupt_shares(con)
-    n_int = sum(v["n"] for v in ints.values())
+    acts = _mm_turn_blocks(con, "action")
+    ints = _mm_turn_blocks(con, "interrupt")
+    if not acts:
+        return "<div class=dim>no turn has both a recorded share and an outcome yet</div>"
     return ("<div class=mmgrid>"
             + ("<div class=mmtile><div class=mmt>action ranker</div>%s"
-               "<div class=mms>share of the campaign's ordinary decisions</div></div>"
-               % _mm_corr_rows(camps, lambda c: c["share"]))
+               "<div class=mms>share of the TURN's ordinary decisions, against what the "
+               "campaign gained after that turn</div></div>" % _mm_within_corr_rows(acts))
             + ("<div class=mmtile><div class=mmt>interrupt model</div>%s"
-               "<div class=mms>share of the campaign's blocking-menu decisions "
-               "(pre_battle, battle_results, occupation, dilemma, diplomacy_proposal). "
-               "%d interrupts over %d campaigns &mdash; a separate model, trained and "
-               "drawn separately.</div></div>"
-               % (_mm_corr_rows(camps, lambda c: (ints.get(c["cid"]) or {}).get("share")),
-                  n_int, len(ints)))
+               "<div class=mms>share of the turn's blocking-menu decisions (pre_battle, "
+               "battle_results, occupation, dilemma, diplomacy_proposal) &mdash; a separate "
+               "model, trained and drawn separately. Screens are rare, so most turns "
+               "contribute nothing here.</div></div>" % _mm_within_corr_rows(ints))
             + "</div>"
-            + "<div class=mms>each cell is Spearman rho of that arm's share against that "
-              "campaign's PEAK gain, then <b>/gate</b> &mdash; the smallest |rho| separable "
-              "from chance at p&lt;0.005 for that n. Nothing is significant until a rho "
+            + "<div class=mms>The unit is a <b>turn</b>, and every comparison happens "
+              "<b>inside one campaign</b>. Each cell is Spearman rho of that arm's share of "
+              "a turn's decisions against the peak gain from that turn onward, with both "
+              "sides centred on their own campaign's mean first &mdash; so faction, start, "
+              "era and how long the campaign survived all cancel, and only the randomised "
+              "turn-to-turn variation is left. "
+              "<b>This replaced a campaign-level correlation</b>, which compared whole "
+              "campaigns to each other: the draw is randomised per decision, not per "
+              "campaign, and a campaign's lifetime mix is partly an OUTCOME, since one that "
+              "died at turn 4 got a different mix by luck than one that ran to 20. "
+              "<b>/gate</b> is the smallest |rho| separable from chance at p&lt;0.005, "
+              "computed from the number of CAMPAIGNS rather than turns, because turns "
+              "within a campaign are not independent. Nothing is significant until a rho "
               "exceeds its own gate. <b>Settlement gain is the objective</b>; lord level is "
               "a proxy that exists to support taking ground, so it is supporting evidence "
               "rather than a second result &mdash; a run that levels its lord and takes no "
-              "ground has not done the thing. Settlement gain currently takes only 0 or 1 "
-              "because campaigns end at 4-12 turns; that widens as campaigns run longer and "
-              "is not a property of the measure. Both tables are observational and pooled "
-              "across configurations.</div>")
+              "ground has not done the thing. Still observational in one respect: the "
+              "corpus spans several configurations, so a pooled number is partly an era "
+              "contrast.</div>")
 
 
 def render_model_metrics(con, run, q):
