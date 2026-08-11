@@ -212,32 +212,16 @@ class BusLauncher:
                           if k.get("id") in ("campaign_space_bar_options", "black_fade")
                           and k.get("visible")]
             now = time.time()
-            # skip_all_campaign_cutscenes() is called UNCONDITIONALLY, not only when one of
-            # those two roots happens to be visible. Realm of Chaos opens on a fullscreen
-            # cinematic with ZERO visible roots -- measured live: cinematic_ui=true, roots
-            # []. The old code gated the skip behind campaign_space_bar_options/black_fade,
-            # so on that campaign the branch never ran, the skip never fired, and the
-            # launcher sat and watched a two-minute cutscene it had a working API call to
-            # cancel. Immortal Empires raises one of those roots, which is the only reason
-            # this ever worked.
-            if now - last_skip > 2.0:
-                last_skip = now
-                try:
-                    self.bus.send("eval", "cm:skip_all_campaign_cutscenes()", timeout=10)
-                except TWError:
-                    pass
             if skip_roots:
+                if now - last_skip > 2.0:
+                    last_skip = now
+                    try:
+                        self.bus.send("eval", "cm:skip_all_campaign_cutscenes()", timeout=10)
+                    except TWError:
+                        pass
                 key = "space" if "campaign_space_bar_options" in skip_roots else "escape"
                 try:
                     self.bus.send("key", "@root %s" % key, timeout=10)
-                    cinematic_keys += 1
-                except TWError:
-                    pass
-            elif not roots:
-                # No roots at all is the bare-cinematic case. Escape dismisses it; there is
-                # nothing here to misclick, because nothing is on screen.
-                try:
-                    self.bus.send("key", "@root escape", timeout=10)
                     cinematic_keys += 1
                 except TWError:
                     pass
