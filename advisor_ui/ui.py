@@ -2762,6 +2762,13 @@ def _mm_arm(p):
         return None
     if p.endswith("_random_fallback"):
         p = p[:-len("_random_fallback")]
+    # The interrupt side records "gnn_delegated_exploit_tree": the gnn was drawn and
+    # handed the choice to the tree. Same reasoning as the fallback -- the draw assigned
+    # gnn, so the row is gnn's. Without this it fell through to None and was dropped.
+    if "_delegated_" in p:
+        p = p.split("_delegated_", 1)[0]
+    if p == "gnn":
+        p = "gnn_marwil"
     if p.startswith("ruleset"):
         return "ruleset"
     return p if p in ("random", "exploit_tree", "gnn_marwil") else None
@@ -2936,51 +2943,51 @@ def _mm_campaign_table(con):
             vals = [float(r[j]) for r in rows if r[j] is not None]
             return (max(vals) - vals[0]) if len(vals) >= 2 else None
 
-        out.append({"n": n, "turns": float(turns or 0),
+        out.append({"cid": cid, "n": n, "turns": float(turns or 0),
                     "share": {a: c.get(a, 0) / float(n) for a in MM_ARMS},
                     "setts": gain(1), "lord": gain(2)})
     return out
 
 
-def _mm_corr_table(con):
-    """The measurement that prompted this tab: does a strategy's share of the play relate
-    to how the campaign went? POOLED across every campaign, deliberately.
+def _mm_interrupt_shares(con):
+    """campaign_id -> each arm's share of that campaign's INTERRUPT decisions.
 
-    Pooling is the point -- these numbers exist even while nothing is conclusive, and the
-    stratified-by-weight-set version was mostly empty cells. Two things to keep in view
-    while reading it, stated once here rather than in a paragraph per row:
-
-      - it is OBSERVATIONAL. The draw is randomised per decision, but this aggregates to a
-        campaign-level share and correlates against a campaign-level result, which throws
-        the randomisation away. A campaign that ended early has a different share partly
-        BY LUCK, so share is itself partly an outcome.
-      - the corpus spans several configurations. The mix, the action cap, the faction pool
-        and the feature set all changed mid-run, so a pooled correlation across the whole
-        history is partly an era contrast.
-
-    `gate` is the smallest |rho| separable from chance at p<0.005 for that n, closed form
-    (z / sqrt(n-1)). It is the yardstick, not a verdict.
+    A separate model decides interrupts -- the blocking menus: pre_battle, battle_results,
+    occupation, dilemma, diplomacy_proposal -- and it is trained and drawn separately from
+    the action ranker, so its share deserves its own contrast rather than being pooled in
+    with ordinary decisions. interrupts.campaign_id is the integer surrogate here and joins
+    campaigns.campaign_id directly (343 of 343), unlike target_rows which keys on the
+    campaign key string.
     """
-    camps = _mm_campaign_table(con)
-    if not camps:
-        return "<div class=dim>no campaign has both a recorded share and an outcome yet</div>"
-    # Settlement gain is THE objective. Lord level is a proxy that exists to support it,
-    # so it is reported second and reads as supporting evidence, not as a co-equal result:
-    # a run that levels its lord and takes no ground has not done the thing.
+    per = collections.defaultdict(collections.Counter)
+    for cid, pol in con.execute("SELECT campaign_id, policy FROM interrupts"):
+        a = _mm_arm(pol)
+        if a and cid is not None:
+            per[cid][a] += 1
+    return {cid: {"n": sum(c.values()),
+                  "share": {a: c.get(a, 0) / float(sum(c.values())) for a in MM_ARMS}}
+            for cid, c in per.items() if sum(c.values())}
+
+
+def _mm_corr_rows(camps, share_of):
+    """The shared body of both correlation tables: rho of an arm's share against the
+    campaign's PEAK gain, beside the gate that share size can resolve."""
     lanes = (("settlements", lambda c: c["setts"]),
              ("lord level", lambda c: c["lord"]))
     rows = []
     for arm in MM_ARMS + ("model pool",):
-        get = ((lambda c: c["share"]["exploit_tree"] + c["share"]["gnn_marwil"])
-               if arm == "model pool" else (lambda c, a=arm: c["share"][a]))
-        used = [c for c in camps if get(c) > 0]
+        get = ((lambda c: (share_of(c) or {}).get("exploit_tree", 0.0)
+                + (share_of(c) or {}).get("gnn_marwil", 0.0))
+               if arm == "model pool"
+               else (lambda c, a=arm: (share_of(c) or {}).get(a, 0.0)))
+        used = [c for c in camps if share_of(c) is not None and get(c) > 0]
         cells = []
         for _lab, out in lanes:
             pairs = [(get(c), out(c)) for c in used if out(c) is not None]
-            if len(pairs) < 4 or len({round(p[0], 6) for p in pairs}) < 2:
+            if len(pairs) < 4 or len({round(q[0], 6) for q in pairs}) < 2:
                 cells.append("<td class='num mmdimc'>-</td>")
                 continue
-            r = _spearman([p[0] for p in pairs], [p[1] for p in pairs])
+            r = _spearman([q[0] for q in pairs], [q[1] for q in pairs])
             gate = MM_GATE_Z / math.sqrt(len(pairs) - 1)
             hot = r is not None and abs(r) >= gate
             cells.append("<td class=num><span class='%s'>%+0.2f</span>"
@@ -2989,19 +2996,50 @@ def _mm_corr_table(con):
         rows.append("<tr><td>%s</td><td class=num>%d</td>%s</tr>"
                     % (_esc(arm), len(used), "".join(cells)))
     return ("<table class=mmtbl><tr><th>arm<th class=num>campaigns"
-            "<th class=num>settlement gain<th class='num mmdimc'>lord level gain</tr>"
-            "%s</table>"
-            "<div class=mms>each cell is Spearman rho of that arm's share of the "
-            "campaign's decisions against that campaign's PEAK gain, then <b>/gate</b> "
-            "&mdash; the smallest |rho| separable from chance at p&lt;0.005 for that n. "
-            "Nothing here is significant until a rho exceeds its own gate. "
-            "<b>Settlement gain is the objective</b>; lord level is a proxy that exists to "
-            "support taking ground, so it is supporting evidence rather than a second "
-            "result &mdash; a run that levels its lord and takes no ground has not done "
-            "the thing. Settlement gain currently takes only 0 or 1 because campaigns end "
-            "at 4-12 turns; that widens as campaigns run longer and is not a property of "
-            "the measure.</div>"
+            "<th class=num>settlements<th class='num mmdimc'>lord level</tr>%s</table>"
             % "".join(rows))
+
+
+def _mm_corr_tables(con):
+    """Two contrasts side by side: the action ranker and the interrupt model.
+
+    Both are POOLED across every campaign, deliberately -- these numbers exist even while
+    nothing is conclusive, and the stratified-by-weight-set version was mostly empty cells.
+
+    Read both with the same two caveats. They are OBSERVATIONAL: the draw is randomised
+    per decision, but this aggregates to a campaign-level share and correlates against a
+    campaign-level result, which throws the randomisation away, and a campaign that ended
+    early has a different share partly BY LUCK -- so share is itself partly an outcome.
+    And the corpus spans several configurations: mix, action cap, faction pool and feature
+    set all moved mid-run, so a pooled number is partly an era contrast.
+    """
+    camps = _mm_campaign_table(con)
+    if not camps:
+        return "<div class=dim>no campaign has both a recorded share and an outcome yet</div>"
+    ints = _mm_interrupt_shares(con)
+    n_int = sum(v["n"] for v in ints.values())
+    return ("<div class=mmgrid>"
+            + ("<div class=mmtile><div class=mmt>action ranker</div>%s"
+               "<div class=mms>share of the campaign's ordinary decisions</div></div>"
+               % _mm_corr_rows(camps, lambda c: c["share"]))
+            + ("<div class=mmtile><div class=mmt>interrupt model</div>%s"
+               "<div class=mms>share of the campaign's blocking-menu decisions "
+               "(pre_battle, battle_results, occupation, dilemma, diplomacy_proposal). "
+               "%d interrupts over %d campaigns &mdash; a separate model, trained and "
+               "drawn separately.</div></div>"
+               % (_mm_corr_rows(camps, lambda c: (ints.get(c["cid"]) or {}).get("share")),
+                  n_int, len(ints)))
+            + "</div>"
+            + "<div class=mms>each cell is Spearman rho of that arm's share against that "
+              "campaign's PEAK gain, then <b>/gate</b> &mdash; the smallest |rho| separable "
+              "from chance at p&lt;0.005 for that n. Nothing is significant until a rho "
+              "exceeds its own gate. <b>Settlement gain is the objective</b>; lord level is "
+              "a proxy that exists to support taking ground, so it is supporting evidence "
+              "rather than a second result &mdash; a run that levels its lord and takes no "
+              "ground has not done the thing. Settlement gain currently takes only 0 or 1 "
+              "because campaigns end at 4-12 turns; that widens as campaigns run longer and "
+              "is not a property of the measure. Both tables are observational and pooled "
+              "across configurations.</div>")
 
 
 def render_model_metrics(con, run, q):
@@ -3010,7 +3048,7 @@ def render_model_metrics(con, run, q):
             "<div class=mms>counting first picks against what was on the menu&hellip;</div>"
             "</div>"
             "<h2>does a strategy's share track how the campaign went?</h2>"
-            + _mm_corr_table(con))
+            + _mm_corr_tables(con))
 
 
 def render_mm_forcing(con, run, q):
