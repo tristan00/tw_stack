@@ -333,8 +333,6 @@ def _turn_trail(run_dir, executor, row, turn_index, log):
                rec.get("ui_state"), rec.get("screenshot")))
 
 
-_DIPLO_SCREENS = frozenset(("diplomacy_proposal", "diplomacy_notice", "ally_attacked",
-                            "diplomacy", "diplomacy_hud"))
 
 
 def _drain_interrupts(run_dir, log):

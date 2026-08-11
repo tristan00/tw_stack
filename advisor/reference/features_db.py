@@ -208,22 +208,8 @@ def permitted_agent_subtypes(faction):
 
 
 
-_EDICT_PREFIX = "provincial_initiative_records_localised_name_"
-_EDICT_RE = re.compile(r"_edict_([a-z]+)_")
-_edict_cache = None
 
 
-def edict_options(race_tokens):
-    global _edict_cache
-    if _edict_cache is None:
-        _edict_cache = []
-        for row in _connect().execute("SELECT key,text FROM loc WHERE key LIKE ?",
-                                      (_EDICT_PREFIX + "%",)):
-            ek = row["key"][len(_EDICT_PREFIX):]
-            m = _EDICT_RE.search(ek)
-            _edict_cache.append((m.group(1) if m else None, ek, row["text"]))
-    toks = set(race_tokens or ())
-    return [(ek, txt) for tok, ek, txt in _edict_cache if tok in toks]
 
 
 

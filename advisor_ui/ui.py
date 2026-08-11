@@ -1925,8 +1925,6 @@ def render_decision(con, did):
     return _page(head + tbl + ents, "decision #%d" % did)
 
 
-TW_STACK = common.ROOT
-VENV_PY = common.VENV_PY
 LOG_DIR = common.LOGS_ADVISOR
 CURRENT_LOG = os.path.join(LOG_DIR, "CURRENT_SESSION_LOG.txt")
 SERVICES = (("session.py", "advisor session"), ("manager.py", "recorder"), ("ui.py", "UI"))
@@ -2217,7 +2215,6 @@ def _kill_recorder():
         return "recorder kill failed: %s" % repr(e)[:120]
 
 
-SERVICES_LOG_DIR = common.LOGS_SERVICES
 
 
 def _trial_row_html(r, live=False, show_cfg=True):

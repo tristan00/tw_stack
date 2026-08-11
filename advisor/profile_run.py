@@ -8,7 +8,6 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import common
 
-RUNS_ROOT = common.RUNS_ROOT
 PHASES = ("wave_a_ms", "wave_b_ms", "wave_c_ms", "campaign_offers/diplomacy", "lord_pools_ms",
           "campaign_state_engine_ms")
 

@@ -55,8 +55,6 @@ def _arg(name, default=None):
     return default
 
 
-def _flag(name):
-    return name in sys.argv
 
 
 def group_folds(groups, k, seed):
