@@ -59,6 +59,9 @@ class _Ctx:
         self.hostiles = world.get("hostiles") or []
         self.at_war = {r.get("faction") for r in world.get("relations") or []
                        if r.get("at_war") and r.get("faction")}
+        self.standing = {str(r.get("faction")): r.get("standing")
+                         for r in world.get("relations") or []
+                         if r.get("faction") and r.get("standing") is not None}
         self._memo = {}
 
     def entity_of(self, row):
@@ -171,6 +174,37 @@ def _target_army_rank(row, ctx):
     return None if u is None else float(u) * 0.001
 
 
+def _target_faction_standing(row, ctx):
+    """Standing of the faction a diplomacy offer is aimed at, from world.relations.
+
+    A diplomacy offer's key is "<faction>:<term>", so the target is the head of it --
+    the same split build.py and _target_of use. Standing is the recorded per-faction
+    attitude; higher is friendlier. None when we have no relations row for them, which
+    is every faction we have not met, and a None drops the offer out of the ranking
+    rather than sorting it as 0 (neutral) alongside factions we actually like.
+    """
+    if row.get("action_type") != "diplomacy":
+        return None
+    target = str(row.get("key") or "").split(":", 1)[0]
+    if not target:
+        return None
+    return ctx.standing.get(target)
+
+
+def _diplomacy_term(row, ctx):
+    """The term half of a diplomacy offer key, as a scalar.
+
+    params.terms is a LIST, so a predicate against it compares a string to a list and is
+    always false. The key's tail is the same value in the shape a predicate can use --
+    which is what lets a rule say "anything except declare_war", and declaring war is
+    emphatically not a proposal to a faction we like.
+    """
+    if row.get("action_type") != "diplomacy":
+        return None
+    key = str(row.get("key") or "")
+    return key.split(":", 1)[1] if ":" in key else None
+
+
 DERIVED = {"target_units": _target_units,
            "units_advantage": _units_advantage,
            "chain_key": _chain_key,
@@ -178,7 +212,9 @@ DERIVED = {"target_units": _target_units,
            "in_own_territory": _in_own_territory,
            "in_enemy_territory": _in_enemy_territory,
            "target_army_units": _target_army_units,
-           "target_army_rank": _target_army_rank}
+           "target_army_rank": _target_army_rank,
+           "target_faction_standing": _target_faction_standing,
+           "diplomacy_term": _diplomacy_term}
 
 PREFER_FIELDS = frozenset(DERIVED) | PARAMS_FIELDS
 
@@ -530,8 +566,15 @@ class RuleSet:
                 scored = [(v, r) for v, r in scored if v is not None]
                 if not scored:
                     continue
-                pick = min if order == "min" else max
-                return pick(scored, key=lambda t: t[0])[1], rule.name
+                # Ties break RANDOMLY, not by offer order. min()/max() return the first
+                # extremal element, so a rule that ranks on a coarse field silently
+                # resolved to whatever the generator happened to emit first -- every
+                # diplomacy term aimed at one faction shares that faction's standing, so
+                # "propose to whoever likes us most" would otherwise always propose the
+                # same term. Offer order is arbitrary; this removes a bias rather than
+                # adding one.
+                best = (min if order == "min" else max)(v for v, _r in scored)
+                return _RULE_RNG.choice([r for v, r in scored if v == best]), rule.name
             return hits[0], rule.name
         return None
 
