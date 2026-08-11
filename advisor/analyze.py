@@ -7,6 +7,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import common
+from decisions import dbopen
 
 RUNS_ROOT = common.RUNS_ROOT
 
@@ -16,8 +17,10 @@ def live_run():
 
 
 def _con(run_dir):
-    p = os.path.join(run_dir, "decisions.sqlite").replace("\\", "/")
-    return sqlite3.connect("file:%s?mode=ro" % p, uri=True, timeout=10.0)
+    # dbopen, not sqlite3: decision_points/entity_snapshots/action_offers/action_taken are
+    # views over the interned store now, and they call unz()/f32(), which exist only on a
+    # connection that registered them.
+    return dbopen.connect(os.path.join(run_dir, "decisions.sqlite"))
 
 
 def offer_honesty(con):

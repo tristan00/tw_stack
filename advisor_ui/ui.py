@@ -13,6 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import common
+from decisions import dbopen
 
 sys.path.insert(0, common.ADVISOR)
 
@@ -26,8 +27,9 @@ def newest_run():
 
 
 def _con(run_dir):
-    p = os.path.join(run_dir, "decisions.sqlite")
-    con = sqlite3.connect("file:%s?mode=ro" % p.replace("\\", "/"), uri=True, timeout=10.0)
+    # dbopen, not sqlite3: the v1 table names are views over the interned store and are
+    # written in terms of unz()/f32(), which only exist on a connection that has them.
+    con = dbopen.connect(os.path.join(run_dir, "decisions.sqlite"))
     con.row_factory = sqlite3.Row
     return con
 
@@ -233,7 +235,7 @@ def run_history(con, runs_root=RUNS_ROOT):
     dbs = sorted(glob.glob(os.path.join(runs_root, "*", "decisions.sqlite")), key=os.path.getmtime)
     for db in dbs:
         try:
-            c = sqlite3.connect("file:%s?mode=ro" % db.replace("\\", "/"), uri=True, timeout=5.0)
+            c = dbopen.connect(db, timeout=5.0)
         except sqlite3.Error:
             continue
         run = os.path.basename(os.path.dirname(db))
@@ -572,7 +574,7 @@ def render_interrupts(runs_root=RUNS_ROOT):
     for db in sorted(glob.glob(os.path.join(runs_root, "*", "decisions.sqlite")),
                      key=os.path.getmtime):
         try:
-            c = sqlite3.connect("file:%s?mode=ro" % db.replace("\\", "/"), uri=True, timeout=5.0)
+            c = dbopen.connect(db, timeout=5.0)
         except sqlite3.Error:
             continue
         try:
@@ -628,7 +630,7 @@ def render_interrupts(runs_root=RUNS_ROOT):
     for db in sorted(glob.glob(os.path.join(runs_root, "*", "decisions.sqlite")),
                      key=os.path.getmtime, reverse=True)[:3]:
         try:
-            c = sqlite3.connect("file:%s?mode=ro" % db.replace("\\", "/"), uri=True, timeout=5.0)
+            c = dbopen.connect(db, timeout=5.0)
         except sqlite3.Error:
             continue
         try:
@@ -721,7 +723,7 @@ def starts_summary(runs_root=RUNS_ROOT):
     for db in sorted(glob.glob(os.path.join(runs_root, "*", "decisions.sqlite")),
                      key=os.path.getmtime):
         try:
-            c = sqlite3.connect("file:%s?mode=ro" % db.replace("\\", "/"), uri=True, timeout=5.0)
+            c = dbopen.connect(db, timeout=5.0)
         except sqlite3.Error:
             continue
         try:
@@ -787,7 +789,7 @@ def faction_action_stats(runs_root=RUNS_ROOT):
     for db in sorted(glob.glob(os.path.join(runs_root, "*", "decisions.sqlite")),
                      key=os.path.getmtime):
         try:
-            c = sqlite3.connect("file:%s?mode=ro" % db.replace("\\", "/"), uri=True, timeout=5.0)
+            c = dbopen.connect(db, timeout=5.0)
         except sqlite3.Error:
             continue
         try:

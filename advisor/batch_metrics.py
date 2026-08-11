@@ -10,6 +10,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import common
+from decisions import dbopen
 
 RUNS = common.RUNS_ROOT
 OUT_DIR = common.METRICS_DIR
@@ -32,7 +33,7 @@ def collect(since):
     camps, turns_by_camp = {}, {}
     for db in sorted(glob.glob(os.path.join(RUNS, "*", "decisions.sqlite"))):
         try:
-            con = sqlite3.connect("file:%s?mode=ro" % db.replace("\\", "/"), uri=True, timeout=5.0)
+            con = dbopen.connect(db, timeout=5.0)
         except sqlite3.Error:
             continue
         try:

@@ -1,78 +1,40 @@
 from __future__ import annotations
 
+"""Read and write the decision corpus.
+
+The storage layout is decisions/schema_v2.py; read its docstring for why it looks the way
+it does. This file is the API, and the API is deliberately unchanged from v1: everything
+above the store still speaks (decision, entities, offers), and every reader outside this
+package still speaks v1 SQL through the compatibility views. Open the database with
+decisions.dbopen.connect() so those views have the functions they are written in terms of.
+
+A v1 database is not upgraded in place and never will be. The mechanics would be about a
+minute; the semantics do not survive. 0.705% of recent v1 offers collide on the identity
+tuple their labels were attached by -- the disambiguating params were never part of the
+key -- so 1,643 of ~4,200 recent decisions have a genuinely ambiguous taken row. Collector
+version cannot be reconstructed without guessing, which is the failure `collector_versions`
+exists to end. And campaign outcome was never in the database at all. Opening a v1 file
+raises IncompatibleStore, pointing at the archive.
+"""
+
+import hashlib
 import json
 import os
 import sqlite3
+import struct
 import sys
 import time
+import zlib
+
+from decisions import dbopen
+from decisions import schema_v2 as S
 
 DB_NAME = "decisions.sqlite"
+ZLEVEL = 6
 
 
 class IncompatibleStore(RuntimeError):
     pass
-
-_DDL = """
-CREATE TABLE IF NOT EXISTS interrupt_decisions(
-  interrupt_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  ts REAL, campaign_id TEXT, turn INTEGER,
-  kind TEXT NOT NULL, root TEXT, root_context TEXT,
-  n_options INTEGER, options_json TEXT,
-  chosen TEXT, chosen_context TEXT,
-  campaign_json TEXT,
-  executed INTEGER, confirmed INTEGER, counted INTEGER, refusal TEXT, latency_ms INTEGER,
-  tree_json TEXT);
-
-CREATE TABLE IF NOT EXISTS entity_target_rows(
-  campaign_id TEXT NOT NULL, turn INTEGER NOT NULL,
-  context_kind TEXT NOT NULL, context_id TEXT NOT NULL,
-  value REAL, ts REAL,
-  PRIMARY KEY(campaign_id, turn, context_kind, context_id));
-
-CREATE TABLE IF NOT EXISTS target_rows(
-  campaign_id TEXT NOT NULL, turn INTEGER NOT NULL, ts REAL,
-  income REAL, settlements REAL, allies REAL, vassals REAL, power_rank REAL, lord_level REAL,
-  PRIMARY KEY(campaign_id, turn));
-
-CREATE TABLE IF NOT EXISTS decision_points(
-  decision_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  ts REAL, campaign_id TEXT, turn INTEGER,
-  decision_seq INTEGER NOT NULL DEFAULT 0, policy TEXT,
-  n_entities INTEGER, n_offers INTEGER,
-  campaign TEXT, world TEXT, timings TEXT);
-
-CREATE TABLE IF NOT EXISTS entity_snapshots(
-  snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  decision_id INTEGER NOT NULL REFERENCES decision_points(decision_id),
-  context_kind TEXT NOT NULL, context_id TEXT NOT NULL,
-  features TEXT NOT NULL);
-
-CREATE TABLE IF NOT EXISTS action_offers(
-  offer_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  decision_id INTEGER NOT NULL REFERENCES decision_points(decision_id),
-  snapshot_id INTEGER NOT NULL REFERENCES entity_snapshots(snapshot_id),
-  context_kind TEXT NOT NULL, context_id TEXT NOT NULL,
-  action_type TEXT NOT NULL, action_key TEXT NOT NULL,
-  available INTEGER NOT NULL, gate TEXT, params TEXT,
-  score REAL, exploit REAL, rank INTEGER, gnn_impact REAL, gnn_rank INTEGER);
-
-CREATE TABLE IF NOT EXISTS action_taken(
-  taken_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  decision_id INTEGER NOT NULL REFERENCES decision_points(decision_id),
-  snapshot_id INTEGER, offer_id INTEGER, ts REAL,
-  context_kind TEXT, context_id TEXT,
-  action_type TEXT NOT NULL, action_key TEXT,
-  executed INTEGER NOT NULL, confirmed INTEGER NOT NULL, counted INTEGER NOT NULL,
-  refusal TEXT, confirm_signal TEXT, confirm_before TEXT, confirm_after TEXT,
-  latency_ms INTEGER, policy TEXT, timing TEXT);
-
-CREATE INDEX IF NOT EXISTS ix_dp ON decision_points(campaign_id, turn);
-CREATE INDEX IF NOT EXISTS ix_snap_dp ON entity_snapshots(decision_id);
-CREATE INDEX IF NOT EXISTS ix_offer_dp ON action_offers(decision_id);
-CREATE INDEX IF NOT EXISTS ix_offer_key ON action_offers(
-  decision_id, context_kind, context_id, action_type, action_key);
-CREATE INDEX IF NOT EXISTS ix_taken_dp ON action_taken(decision_id);
-"""
 
 
 class _SnapshotRead:
@@ -99,61 +61,58 @@ class _SnapshotRead:
         return False
 
 
+def _dumps(o):
+    """Canonical JSON: interning and content-addressing both depend on two equal payloads
+    producing one identical string, so key order is not allowed to drift."""
+    return json.dumps(o, default=str, sort_keys=True, separators=(",", ":"))
+
+
 class DecisionStore:
-    _MIGRATIONS = (("decision_points", "campaign", "TEXT"),
-                   ("decision_points", "world", "TEXT"),
-                   ("decision_points", "timings", "TEXT"),
-                   ("action_taken", "timing", "TEXT"),
-                   ("action_taken", "diagnostics", "TEXT"),
-                   ("interrupt_decisions", "executed", "INTEGER"),
-                   ("interrupt_decisions", "confirmed", "INTEGER"),
-                   ("interrupt_decisions", "counted", "INTEGER"),
-                   ("interrupt_decisions", "refusal", "TEXT"),
-                   ("interrupt_decisions", "latency_ms", "INTEGER"),
-                   ("interrupt_decisions", "tree_json", "TEXT"),
-                   ("interrupt_decisions", "policy", "TEXT"),
-                   ("interrupt_decisions", "world_json", "TEXT"),
-                   ("interrupt_decisions", "panel_json", "TEXT"),
-                   ("action_offers", "score", "REAL"),
-                   ("action_offers", "exploit", "REAL"),
-                   ("action_offers", "rank", "INTEGER"),
-                   ("action_offers", "pct_global", "REAL"),
-                   ("action_offers", "pct_local", "REAL"),
-                   ("action_offers", "gnn_impact", "REAL"),
-                   ("action_offers", "gnn_rank", "INTEGER"))
-
-    _REQUIRED = (("action_offers", "decision_id"), ("entity_snapshots", "decision_id"))
-
-    def _assert_compatible(self):
-        for table, col in self._REQUIRED:
-            exists = self.con.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
-            if not exists:
-                continue
-            cols = {r[1] for r in self.con.execute("PRAGMA table_info(%s)" % table)}
-            if col not in cols:
-                raise IncompatibleStore(
-                    "%s predates the faction-wide decision-point schema (%s.%s missing). Its rows "
-                    "have a different shape and cannot be read by the current queries."
-                    % (self.path, table, col))
 
     def __init__(self, run_dir, readonly=False):
         self.run_id = os.path.basename(str(run_dir).rstrip("/\\"))
         self.path = os.path.join(run_dir, DB_NAME)
         self.readonly = bool(readonly)
+        self._blob_cache = {}
+        self._action_cache = {}
+        self._gate_cache = {}
+        self._campaign_cache = {}
         if self.readonly:
             if not os.path.exists(self.path):
                 raise IncompatibleStore("no %s in %s" % (DB_NAME, run_dir))
-            self.con = sqlite3.connect("file:%s?mode=ro" % self.path.replace("\\", "/"),
-                                       uri=True, timeout=10.0)
+            self.con = dbopen.connect(self.path, readonly=True)
             self._assert_compatible()
             return
-        self.con = sqlite3.connect(self.path, timeout=10.0)
-        self.con.execute("PRAGMA journal_mode=WAL")
-        self._assert_compatible()
-        self.con.executescript(_DDL)
-        self._migrate()
+        fresh = not os.path.exists(self.path) or os.path.getsize(self.path) == 0
+        self.con = dbopen.connect(self.path, readonly=False)
+        if fresh:
+            # auto_vacuum can only be chosen before the first table exists.
+            for p in S.PRAGMAS:
+                self.con.execute(p)
+        else:
+            self.con.execute("PRAGMA journal_mode=WAL")
+        self._assert_compatible(fresh=fresh)
+        self.con.executescript(S.DDL)
+        self.con.executescript(S.VIEWS)
+        self.con.execute("INSERT OR IGNORE INTO meta(k,v) VALUES('schema_version',?)",
+                         (S.SCHEMA_VERSION,))
         self.con.commit()
+
+    # ------------------------------------------------------------------ compatibility
+
+    def _assert_compatible(self, fresh=False):
+        have = {r[0] for r in self.con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        if not have and fresh:
+            return
+        if "decision_points" in have or ("action_offers" in have and "offers" not in have):
+            raise IncompatibleStore(
+                "%s is a v1 decision store. It is not upgraded in place: 0.705%% of its "
+                "offers collide on the identity its labels were attached by, its collector "
+                "version cannot be reconstructed, and campaign outcome was never recorded. "
+                "Archive it and start a new run directory." % self.path)
+        if have and "offers" not in have and "meta" not in have:
+            raise IncompatibleStore("%s is not a decision store" % self.path)
 
     def snapshot_read(self):
         return _SnapshotRead(self.con)
@@ -162,16 +121,247 @@ class DecisionStore:
         if self.readonly:
             raise IncompatibleStore("%s called on a read-only store (%s)" % (what, self.path))
 
-    def _migrate(self):
-        for table, col, typ in self._MIGRATIONS:
-            cols = {r[1] for r in self.con.execute("PRAGMA table_info(%s)" % table)}
-            if col not in cols:
-                self.con.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, col, typ))
+    def close(self):
+        try:
+            self.con.close()
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------ interning
+
+    def _blob(self, text):
+        """Content-address a JSON payload. `world` is 58.2% byte-identical to the previous
+        decision of the same campaign, so most calls here are a cache hit and no write."""
+        if text is None:
+            return None
+        sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        hit = self._blob_cache.get(sha)
+        if hit is not None:
+            return hit
+        row = self.con.execute("SELECT blob_id FROM blobs WHERE sha=?", (sha,)).fetchone()
+        if row is None:
+            cur = self.con.execute(
+                "INSERT INTO blobs(sha,n,z) VALUES(?,?,?)",
+                (sha, len(text), dbopen.pack(text, ZLEVEL)))
+            bid = cur.lastrowid
+        else:
+            bid = row[0]
+        if len(self._blob_cache) > 4096:
+            self._blob_cache.clear()
+        self._blob_cache[sha] = bid
+        return bid
+
+    def _gate_id(self, gate):
+        if gate is None:
+            return None
+        gate = str(gate)
+        hit = self._gate_cache.get(gate)
+        if hit is not None:
+            return hit
+        self.con.execute("INSERT OR IGNORE INTO gates(gate) VALUES(?)", (gate,))
+        gid = self.con.execute("SELECT gate_id FROM gates WHERE gate=?", (gate,)).fetchone()[0]
+        self._gate_cache[gate] = gid
+        return gid
+
+    def _action_id(self, ck, cid, atype, akey, params_text):
+        k = (ck, cid, atype, akey, params_text)
+        hit = self._action_cache.get(k)
+        if hit is not None:
+            return hit
+        self.con.execute(
+            "INSERT OR IGNORE INTO actions(context_kind,context_id,action_type,action_key,"
+            "params) VALUES(?,?,?,?,?)", k)
+        aid = self.con.execute(
+            "SELECT action_id FROM actions WHERE context_kind=? AND context_id=? AND "
+            "action_type=? AND action_key=? AND params=?", k).fetchone()[0]
+        if len(self._action_cache) > 200000:
+            self._action_cache.clear()
+        self._action_cache[k] = aid
+        return aid
 
     def campaign_key(self, faction, uuid=None):
         return str(uuid) if uuid else "%s@%s" % (faction, self.run_id)
 
+    def _campaign_id(self, key, faction=None):
+        hit = self._campaign_cache.get(key)
+        if hit is not None:
+            return hit
+        self.con.execute("INSERT OR IGNORE INTO campaigns(campaign_key,faction) VALUES(?,?)",
+                         (key, faction))
+        cid = self.con.execute("SELECT campaign_id FROM campaigns WHERE campaign_key=?",
+                               (key,)).fetchone()[0]
+        self._campaign_cache[key] = cid
+        return cid
+
+    def register_collector(self, collector_sha, git_sha=None, note=None):
+        """Which build produced the rows that follow. v1 could not say, and that alone
+        makes its corpus unmigratable."""
+        self._assert_writable("register_collector")
+        self.con.execute(
+            "INSERT OR IGNORE INTO collector_versions(collector_sha,git_sha,started_ts,note)"
+            " VALUES(?,?,?,?)", (collector_sha, git_sha, time.time(), note))
+        row = self.con.execute("SELECT version_id FROM collector_versions WHERE collector_sha=?",
+                               (collector_sha,)).fetchone()
+        self.con.commit()
+        self._version_id = row[0]
+        return row[0]
+
+    _version_id = None
+
+    # ------------------------------------------------------------------ writes
+
+    def write_decision(self, snapshot, decision_seq=0, policy=None):
+        self._assert_writable("write_decision")
+        camp = snapshot.get("campaign") or {}
+        ents = snapshot.get("entities") or []
+        flat = []
+        for ei, e in enumerate(ents):
+            for oi, o in enumerate(e.get("offers") or []):
+                flat.append((ei, oi, o))
+        if len(ents) >= S.MAX_ENTITIES_PER_DECISION:
+            raise ValueError("decision has %d entities; the view id packing allows %d"
+                             % (len(ents), S.MAX_ENTITIES_PER_DECISION - 1))
+        if len(flat) >= S.MAX_OFFERS_PER_DECISION:
+            raise ValueError("decision has %d offers; the view id packing allows %d"
+                             % (len(flat), S.MAX_OFFERS_PER_DECISION - 1))
+
+        # THE LAYOUT INVARIANT. Available offers take seq 0..n_available-1; gated offers
+        # follow. Ties keep (entity, offer) emission order, so the sequence is a pure
+        # function of the snapshot and two runs of the same data agree.
+        flat.sort(key=lambda t: (0 if t[2].get("available") else 1, t[0], t[1]))
+        n_available = sum(1 for _e, _o, o in flat if o.get("available"))
+
+        cid = self._campaign_id(self.campaign_key(camp.get("faction"),
+                                                  camp.get("campaign_uuid")),
+                                camp.get("faction"))
+        cur = self.con.execute(
+            "INSERT INTO decisions(campaign_id,ts,turn,decision_seq,policy,version_id,"
+            "n_entities,n_offers,n_available,campaign_blob,world_blob)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (cid, snapshot.get("ts") or time.time(), int(camp.get("turn") or 0),
+             int(decision_seq), policy, self._version_id, len(ents), len(flat), n_available,
+             self._blob(_dumps(camp)), self._blob(_dumps(snapshot.get("world") or {}))))
+        did = cur.lastrowid
+
+        self.con.executemany(
+            "INSERT INTO entities(decision_id,entity_seq,context_kind,context_id,"
+            "features_blob) VALUES(?,?,?,?,?)",
+            [(did, ei, e.get("context_kind"), str(e.get("context_id")),
+              self._blob(_dumps(e.get("state") or {})))
+             for ei, e in enumerate(ents)])
+
+        rows = []
+        for seq, (ei, _oi, o) in enumerate(flat):
+            e = ents[ei]
+            rows.append((did, seq, ei,
+                         self._action_id(e.get("context_kind"), str(e.get("context_id")),
+                                         o.get("action_type"), str(o.get("key")),
+                                         _dumps(o.get("params") or {})),
+                         1 if o.get("available") else 0, self._gate_id(o.get("gate"))))
+        self.con.executemany(
+            "INSERT INTO offers(decision_id,offer_seq,entity_seq,action_id,available,gate_id)"
+            " VALUES(?,?,?,?,?,?)", rows)
+        self.con.execute(
+            "UPDATE campaigns SET first_decision_id=COALESCE(first_decision_id,?),"
+            "last_decision_id=?, turns=MAX(COALESCE(turns,0),?) WHERE campaign_id=?",
+            (did, did, int(camp.get("turn") or 0), cid))
+        self.con.commit()
+        return did
+
+    def attach_timings(self, decision_id, timings):
+        if not timings:
+            return 0
+        self._assert_writable("attach_timings")
+        self.con.execute("UPDATE decisions SET timings=? WHERE decision_id=?",
+                         (_dumps(timings), decision_id))
+        self.con.commit()
+        return 1
+
+    def _seq_by_identity(self, decision_id):
+        """(context_kind, context_id, action_type, action_key) -> offer_seq."""
+        out = {}
+        for seq, ck, cid, at, ak in self.con.execute(
+                "SELECT o.offer_seq,a.context_kind,a.context_id,a.action_type,a.action_key"
+                " FROM offers o JOIN actions a ON a.action_id=o.action_id"
+                " WHERE o.decision_id=?", (decision_id,)):
+            out.setdefault((ck, str(cid), at, str(ak)), seq)
+        return out
+
+    def attach_scores(self, decision_id, scores):
+        """Packed float32, one row per decision, indexed by offer_seq.
+
+        v1 wrote seven float columns on all 9M offer rows and updated them by identity
+        tuple -- which matched *every* colliding row, 0.705% of recent offers. Here a
+        score lands at a position, and the position is unique by construction.
+        """
+        if not scores:
+            return 0
+        self._assert_writable("attach_scores")
+        n_offers = self.con.execute("SELECT n_offers FROM decisions WHERE decision_id=?",
+                                    (decision_id,)).fetchone()
+        if n_offers is None:
+            return 0
+        n_offers = int(n_offers[0])
+        ns = len(S.SCORE_FIELDS)
+        buf = bytearray(struct.pack("<%df" % (n_offers * ns),
+                                    *([float("nan")] * (n_offers * ns))))
+        row = self.con.execute("SELECT packed FROM scores WHERE decision_id=?",
+                               (decision_id,)).fetchone()
+        if row is not None and len(row[0]) == len(buf):
+            buf = bytearray(row[0])
+        seqs = self._seq_by_identity(decision_id)
+        n = 0
+        for s in scores:
+            seq = seqs.get((s.get("context_kind"), str(s.get("context_id")),
+                            s.get("action_type"), str(s.get("key"))))
+            if seq is None:
+                continue
+            for j, f in enumerate(S.SCORE_FIELDS):
+                v = s.get(f)
+                struct.pack_into("<f", buf, (seq * ns + j) * 4,
+                                 float("nan") if v is None else float(v))
+            n += 1
+        self.con.execute("INSERT OR REPLACE INTO scores(decision_id,packed) VALUES(?,?)",
+                         (decision_id, bytes(buf)))
+        self.con.commit()
+        return n
+
+    def attach_taken(self, decision_id, taken, policy=None):
+        self._assert_writable("attach_taken")
+        ck, cid = taken.get("context_kind"), str(taken.get("context_id"))
+        atype, akey = taken.get("action_type"), str(taken.get("key"))
+        row = self.con.execute(
+            "SELECT o.offer_seq,o.entity_seq,o.action_id FROM offers o"
+            " JOIN actions a ON a.action_id=o.action_id WHERE o.decision_id=?"
+            " AND a.context_kind=? AND a.context_id=? AND a.action_type=? AND a.action_key=?"
+            " ORDER BY o.offer_seq LIMIT 1",
+            (decision_id, ck, cid, atype, akey)).fetchone()
+        seq, ent_seq, action_id = row if row else (None, None, None)
+        if action_id is None:
+            # The action was played but never offered. Intern it anyway so the label keeps
+            # its identity instead of becoming a null join.
+            action_id = self._action_id(ck, cid, atype, akey,
+                                        _dumps(taken.get("params") or {}))
+        conf = taken.get("confirm") or {}
+        self.con.execute(
+            "INSERT OR REPLACE INTO taken(decision_id,offer_seq,entity_seq,action_id,ts,"
+            "executed,confirmed,counted,refusal,confirm_signal,confirm_before,confirm_after,"
+            "latency_ms,policy,timing,diagnostics)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (decision_id, seq, ent_seq, action_id, taken.get("ts") or time.time(),
+             1 if taken.get("executed") else 0, 1 if taken.get("confirmed") else 0,
+             1 if taken.get("counted") else 0, taken.get("refusal"), conf.get("signal"),
+             _dumps(conf.get("before")), _dumps(conf.get("after")),
+             conf.get("latency_ms"), policy or taken.get("policy"),
+             _dumps(taken.get("timing")),
+             _dumps({"stderr": taken.get("stderr"), "gates": taken.get("gates"),
+                     "execute_error": taken.get("execute_error"),
+                     "doomed": taken.get("doomed"), "params": taken.get("params")})))
+        self.con.commit()
+        return seq is not None
+
     def write_target_row(self, row):
+        self._assert_writable("write_target_row")
         cur = self.con.execute(
             "INSERT OR IGNORE INTO target_rows"
             "(campaign_id,turn,ts,income,settlements,allies,vassals,power_rank,lord_level)"
@@ -183,160 +373,130 @@ class DecisionStore:
         self.con.commit()
         return cur.rowcount > 0
 
-    def write_decision(self, snapshot, decision_seq=0, policy=None):
-        camp = snapshot.get("campaign") or {}
-        ents = snapshot.get("entities") or []
-        n_offers = sum(len(e.get("offers") or []) for e in ents)
-        cur = self.con.execute(
-            "INSERT INTO decision_points(ts,campaign_id,turn,decision_seq,policy,n_entities,"
-            "n_offers,campaign,world) VALUES(?,?,?,?,?,?,?,?,?)",
-            (snapshot.get("ts") or time.time(),
-             self.campaign_key(camp.get("faction"), camp.get("campaign_uuid")),
-             int(camp.get("turn") or 0),
-             int(decision_seq), policy, len(ents), n_offers,
-             json.dumps(camp, default=str), json.dumps(snapshot.get("world") or {}, default=str)))
-        did = cur.lastrowid
-        for e in ents:
-            ck, cid = e.get("context_kind"), str(e.get("context_id"))
-            c = self.con.execute(
-                "INSERT INTO entity_snapshots(decision_id,context_kind,context_id,features)"
-                " VALUES(?,?,?,?)", (did, ck, cid, json.dumps(e.get("state") or {}, default=str)))
-            snap = c.lastrowid
-            for o in e.get("offers") or []:
-                self.con.execute(
-                    "INSERT INTO action_offers(decision_id,snapshot_id,context_kind,context_id,"
-                    "action_type,action_key,available,gate,params) VALUES(?,?,?,?,?,?,?,?,?)",
-                    (did, snap, ck, cid, o.get("action_type"), str(o.get("key")),
-                     1 if o.get("available") else 0, o.get("gate"),
-                     json.dumps(o.get("params") or {}, default=str)))
+    def write_entity_target_rows(self, campaign_id, turn, rows):
+        self._assert_writable("write_entity_target_rows")
+        n = 0
+        for r in rows or []:
+            if r.get("value") is None:
+                continue
+            cur = self.con.execute(
+                "INSERT OR IGNORE INTO entity_target_rows"
+                "(campaign_id,turn,context_kind,context_id,value,ts) VALUES(?,?,?,?,?,?)",
+                (campaign_id, int(turn or 0), r["context_kind"], str(r["context_id"]),
+                 float(r["value"]), time.time()))
+            n += cur.rowcount or 0
         self.con.commit()
-        return did
+        return n
 
-    def attach_timings(self, decision_id, timings):
-        if not timings:
-            return 0
-        self.con.execute("UPDATE decision_points SET timings=? WHERE decision_id=?",
-                         (json.dumps(timings, default=str), decision_id))
-        self.con.commit()
-        return 1
+    @staticmethod
+    def _flag(v):
+        return None if v is None else (1 if v else 0)
 
-    def attach_scores(self, decision_id, scores):
-        rows = [(s.get("score"), s.get("exploit"), s.get("rank"),
-                 s.get("pct_global"), s.get("pct_local"),
-                 s.get("gnn_impact"), s.get("gnn_rank"), decision_id,
-                 s.get("context_kind"), str(s.get("context_id")), s.get("action_type"),
-                 str(s.get("key"))) for s in (scores or [])]
-        if not rows:
-            return 0
-        cur = self.con.executemany(
-            "UPDATE action_offers SET score=?,exploit=?,rank=?,"
-            "pct_global=?,pct_local=?,gnn_impact=?,gnn_rank=? WHERE decision_id=? "
-            "AND context_kind=? AND context_id=? AND action_type=? AND action_key=?", rows)
-        self.con.commit()
-        return cur.rowcount
-
-    def attach_taken(self, decision_id, taken, policy=None):
-        ck, cid = taken.get("context_kind"), str(taken.get("context_id"))
-        atype, akey = taken.get("action_type"), str(taken.get("key"))
-        row = self.con.execute(
-            "SELECT offer_id,snapshot_id FROM action_offers WHERE decision_id=? AND context_kind=?"
-            " AND context_id=? AND action_type=? AND action_key=?",
-            (decision_id, ck, cid, atype, akey)).fetchone()
-        offer_id, snap_id = (row if row else (None, None))
-        conf = taken.get("confirm") or {}
-        self.con.execute("DELETE FROM action_taken WHERE decision_id=?", (decision_id,))
+    def write_interrupt(self, row):
+        """`tree` is accepted and dropped. interrupt_decisions.tree_json was 886 MB, 18.5%
+        of the v1 database, and had no readers anywhere in the repo."""
+        self._assert_writable("write_interrupt")
+        camp = row.get("campaign") or {}
+        opts = row.get("options") or {}
+        counted = row.get("counted")
+        if counted is None and row.get("confirmed") is not None:
+            counted = bool(row.get("executed")) and bool(row.get("confirmed"))
         self.con.execute(
-            "INSERT INTO action_taken(decision_id,snapshot_id,offer_id,ts,context_kind,context_id,"
-            "action_type,action_key,executed,confirmed,counted,refusal,confirm_signal,"
-            "confirm_before,confirm_after,latency_ms,policy,timing,diagnostics)"
+            "INSERT INTO interrupts(ts,campaign_id,turn,kind,root,root_context,n_options,"
+            "options_json,chosen,chosen_context,executed,confirmed,counted,refusal,"
+            "latency_ms,campaign_blob,world_blob,panel_blob,policy)"
             " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (decision_id, snap_id, offer_id, taken.get("ts") or time.time(), ck, cid, atype, akey,
-             1 if taken.get("executed") else 0, 1 if taken.get("confirmed") else 0,
-             1 if taken.get("counted") else 0, taken.get("refusal"), conf.get("signal"),
-             json.dumps(conf.get("before"), default=str),
-             json.dumps(conf.get("after"), default=str),
-             conf.get("latency_ms"), policy or taken.get("policy"),
-             json.dumps(taken.get("timing"), default=str),
-             json.dumps({"stderr": taken.get("stderr"), "gates": taken.get("gates"),
-                         "execute_error": taken.get("execute_error"),
-                         "doomed": taken.get("doomed"), "params": taken.get("params")},
-                        default=str)))
+            (row.get("ts") or time.time(),
+             self._campaign_id(self.campaign_key(camp.get("faction"),
+                                                 camp.get("campaign_uuid")),
+                               camp.get("faction")),
+             int(camp.get("turn") or 0),
+             row.get("screen"), row.get("root"), row.get("root_context"),
+             len(opts), _dumps(opts), row.get("chosen"), row.get("chosen_context"),
+             self._flag(row.get("executed")), self._flag(row.get("confirmed")),
+             self._flag(counted), row.get("refusal"), row.get("latency_ms"),
+             self._blob(_dumps(camp)),
+             self._blob(_dumps(row["world"])) if row.get("world") else None,
+             self._blob(_dumps(row["panel"])) if row.get("panel") else None,
+             row.get("policy")))
         self.con.commit()
-        return offer_id is not None
+
+    # ------------------------------------------------------------------ reads
 
     def summary(self):
         q = lambda s: self.con.execute(s).fetchone()[0]
         return {"target_rows": q("SELECT COUNT(*) FROM target_rows"),
-                "decisions": q("SELECT COUNT(*) FROM decision_points"),
-                "snapshots": q("SELECT COUNT(*) FROM entity_snapshots"),
-                "offers": q("SELECT COUNT(*) FROM action_offers"),
-                "taken": q("SELECT COUNT(*) FROM action_taken"),
-                "counted": q("SELECT COUNT(*) FROM action_taken WHERE counted=1"),
-                "unconfirmed": q("SELECT COUNT(*) FROM action_taken WHERE executed=1 AND confirmed=0")}
+                "decisions": q("SELECT COUNT(*) FROM decisions"),
+                "snapshots": q("SELECT COUNT(*) FROM entities"),
+                "offers": q("SELECT COUNT(*) FROM offers"),
+                "taken": q("SELECT COUNT(*) FROM taken"),
+                "counted": q("SELECT COUNT(*) FROM taken WHERE counted=1"),
+                "unconfirmed": q("SELECT COUNT(*) FROM taken WHERE executed=1 AND confirmed=0")}
+
+    def max_decision_id(self):
+        r = self.con.execute("SELECT MAX(decision_id) FROM decisions").fetchone()
+        return int(r[0]) if r and r[0] is not None else 0
+
+    def _entities_and_offers(self, where="", args=()):
+        """Both clustered scans, merged on decision_id. Entities come back in entity_seq
+        order and each entity's offers in offer_seq order, so action-node order (and
+        therefore the taken mask) is a property of the layout rather than of an index."""
+        ents_by_dec = {}
+        for did, ei, ck, cid, feats in self.con.execute(
+                "SELECT e.decision_id,e.entity_seq,e.context_kind,e.context_id,unz(b.z)"
+                " FROM entities e JOIN blobs b ON b.blob_id=e.features_blob" + where +
+                " ORDER BY e.decision_id,e.entity_seq", args):
+            ents_by_dec.setdefault(did, []).append(
+                {"snapshot_id": did * S.MAX_ENTITIES_PER_DECISION + ei,
+                 "context_kind": ck, "context_id": cid,
+                 "state": json.loads(feats or "{}"), "offers": []})
+        w = where.replace("e.decision_id", "o.decision_id") if where else ""
+        for did, seq, ei, at, ak, avail, gate, params in self.con.execute(
+                "SELECT o.decision_id,o.offer_seq,o.entity_seq,a.action_type,a.action_key,"
+                "o.available,g.gate,a.params FROM offers o"
+                " JOIN actions a ON a.action_id=o.action_id"
+                " LEFT JOIN gates g ON g.gate_id=o.gate_id" + w +
+                " ORDER BY o.decision_id,o.offer_seq", args):
+            ents = ents_by_dec.get(did)
+            if ents is None or ei >= len(ents):
+                continue
+            ents[ei]["offers"].append(
+                {"offer_id": did * S.MAX_OFFERS_PER_DECISION + seq,
+                 "action_type": at, "key": ak, "available": bool(avail), "gate": gate,
+                 "params": json.loads(params or "{}")})
+        return ents_by_dec
 
     def read_decision(self, decision_id):
-        cur = self.con.execute("SELECT * FROM decision_points WHERE decision_id=?",
-                               (decision_id,))
-        dp = cur.fetchone()
-        if dp is None:
+        row = self.con.execute(
+            "SELECT d.turn,c.campaign_key,unz(bc.z),unz(bw.z) FROM decisions d"
+            " JOIN campaigns c ON c.campaign_id=d.campaign_id"
+            " LEFT JOIN blobs bc ON bc.blob_id=d.campaign_blob"
+            " LEFT JOIN blobs bw ON bw.blob_id=d.world_blob"
+            " WHERE d.decision_id=?", (decision_id,)).fetchone()
+        if row is None:
             raise KeyError("decision %s not in the store" % decision_id)
-        dp = dict(zip([d[0] for d in cur.description], dp))
-        ents, by_snap = [], {}
-        for sid, ck, cid, feats in self.con.execute(
-                "SELECT snapshot_id,context_kind,context_id,features FROM entity_snapshots"
-                " WHERE decision_id=?", (decision_id,)):
-            e = {"snapshot_id": sid, "context_kind": ck, "context_id": cid,
-                 "state": json.loads(feats), "offers": []}
-            by_snap[sid] = e
-            ents.append(e)
-        for sid, oid, atype, akey, avail, gate, params in self.con.execute(
-                "SELECT snapshot_id,offer_id,action_type,action_key,available,gate,params"
-                " FROM action_offers WHERE decision_id=?", (decision_id,)):
-            e = by_snap.get(sid)
-            if e is not None:
-                e["offers"].append({"offer_id": oid, "action_type": atype, "key": akey,
-                                    "available": bool(avail), "gate": gate,
-                                    "params": json.loads(params or "{}")})
-        return {"decision_id": decision_id, "turn": dp["turn"], "campaign_id": dp["campaign_id"],
-                "campaign": json.loads(dp["campaign"] or "{}"),
-                "world": json.loads(dp["world"] or "{}"), "entities": ents}
+        turn, ckey, cjson, wjson = row
+        ents = self._entities_and_offers(" WHERE e.decision_id=?", (decision_id,))
+        return {"decision_id": decision_id, "turn": turn, "campaign_id": ckey,
+                "campaign": json.loads(cjson or "{}"), "world": json.loads(wjson or "{}"),
+                "entities": ents.get(decision_id, [])}
 
     def taken_map(self, confirmed_only=False):
-        """{decision_id: ((kind, id, type, key), counted)} for every labelled decision.
-
-        action_taken is ~22k rows, so this is the cheap way to learn which decisions
-        exist and what each one played, without touching the 9M-row offers table. Same
-        filtering as labelled_decisions, so the two always agree on membership.
-        """
+        """{decision_id: ((kind, id, type, key), counted)} for every labelled decision."""
         out = {}
-        for did, ck, cid, atype, akey, counted, refusal in self.con.execute(
-                "SELECT decision_id,context_kind,context_id,action_type,action_key,"
-                "counted,refusal FROM action_taken"):
+        for did, ck, cid, at, ak, counted, refusal in self.con.execute(
+                "SELECT t.decision_id,a.context_kind,a.context_id,a.action_type,a.action_key,"
+                "t.counted,t.refusal FROM taken t LEFT JOIN actions a ON a.action_id=t.action_id"):
             if refusal == "awaiting_execution":
                 continue
             if confirmed_only and not counted:
                 continue
-            out[did] = ((ck, str(cid), atype, str(akey)), bool(counted))
+            out[did] = ((ck, str(cid), at, str(ak)), bool(counted))
         return out
 
-    def max_decision_id(self):
-        r = self.con.execute("SELECT MAX(decision_id) FROM decision_points").fetchone()
-        return int(r[0]) if r and r[0] is not None else 0
-
     def labelled_decisions(self, confirmed_only=False, after=None, before=None):
-        """Rows in decision_id order.
-
-        `after` (exclusive) and `before` (inclusive) bound decision_id so a caller can
-        read one shard of the corpus instead of the whole thing. Without them every one
-        of the four queries below is a full table scan -- and action_offers is 9M rows,
-        so an unbounded read costs ~20s no matter how few decisions are wanted.
-        The ix_*_dp indexes already exist; nothing was using them.
-
-        A bounded read emits, for each decision, exactly what the unbounded one emits:
-        the indexes order by (decision_id, rowid), so entities stay in snapshot_id order
-        and each entity's offers stay in offer_id order -- and that order is what fixes
-        action-node order, g.action_keys, and therefore the taken mask.
-        """
+        """Rows in decision_id order. `after` (exclusive) and `before` (inclusive) bound
+        decision_id so a caller can read one shard instead of the whole corpus."""
         rng, args = "", []
         if after is not None:
             rng += " AND decision_id>?"
@@ -344,94 +504,50 @@ class DecisionStore:
         if before is not None:
             rng += " AND decision_id<=?"
             args.append(int(before))
-        w = (" WHERE 1" + rng) if rng else ""
 
         taken = {}
-        for did, ck, cid, atype, akey, counted, refusal in self.con.execute(
-                "SELECT decision_id,context_kind,context_id,action_type,action_key,counted,"
-                "refusal FROM action_taken" + w, args):
+        for did, ck, cid, at, ak, counted, refusal in self.con.execute(
+                "SELECT t.decision_id,a.context_kind,a.context_id,a.action_type,a.action_key,"
+                "t.counted,t.refusal FROM taken t"
+                " LEFT JOIN actions a ON a.action_id=t.action_id"
+                + ((" WHERE 1" + rng.replace("decision_id", "t.decision_id")) if rng else ""),
+                args):
             if refusal == "awaiting_execution":
                 continue
             if confirmed_only and not counted:
                 continue
-            taken[did] = ((ck, str(cid), atype, str(akey)), bool(counted))
+            taken[did] = ((ck, str(cid), at, str(ak)), bool(counted))
         if not taken:
             return []
 
-        ents_by_dec, by_snap = {}, {}
-        for sid, did, ck, cid, feats in self.con.execute(
-                "SELECT snapshot_id,decision_id,context_kind,context_id,features"
-                " FROM entity_snapshots" + w, args):
-            if did not in taken:
-                continue
-            e = {"snapshot_id": sid, "context_kind": ck, "context_id": cid,
-                 "state": json.loads(feats), "offers": []}
-            by_snap[sid] = e
-            ents_by_dec.setdefault(did, []).append(e)
-
-        for sid, oid, atype, akey, avail, gate, params in self.con.execute(
-                "SELECT snapshot_id,offer_id,action_type,action_key,available,gate,params"
-                " FROM action_offers" + w, args):
-            e = by_snap.get(sid)
-            if e is not None:
-                e["offers"].append({"offer_id": oid, "action_type": atype, "key": akey,
-                                    "available": bool(avail), "gate": gate,
-                                    "params": json.loads(params or "{}")})
+        w = (" WHERE 1" + rng.replace("decision_id", "e.decision_id")) if rng else ""
+        ents_by_dec = self._entities_and_offers(w, args)
 
         out = []
-        cur = self.con.execute(
-            "SELECT * FROM decision_points" + w + " ORDER BY decision_id", args)
-        cols = [d[0] for d in cur.description]
-        for row in cur:
-            dp = dict(zip(cols, row))
-            did = dp["decision_id"]
+        for did, turn, ckey, cjson, wjson in self.con.execute(
+                "SELECT d.decision_id,d.turn,c.campaign_key,unz(bc.z),unz(bw.z)"
+                " FROM decisions d JOIN campaigns c ON c.campaign_id=d.campaign_id"
+                " LEFT JOIN blobs bc ON bc.blob_id=d.campaign_blob"
+                " LEFT JOIN blobs bw ON bw.blob_id=d.world_blob"
+                + ((" WHERE 1" + rng.replace("decision_id", "d.decision_id")) if rng else "")
+                + " ORDER BY d.decision_id", args):
             hit = taken.get(did)
             if hit is None:
                 continue
-            rec = {"decision_id": did, "turn": dp["turn"], "campaign_id": dp["campaign_id"],
-                   "campaign": json.loads(dp["campaign"] or "{}"),
-                   "world": json.loads(dp["world"] or "{}"),
-                   "entities": ents_by_dec.get(did, [])}
-            out.append((rec, hit[0], hit[1]))
+            out.append(({"decision_id": did, "turn": turn, "campaign_id": ckey,
+                         "campaign": json.loads(cjson or "{}"),
+                         "world": json.loads(wjson or "{}"),
+                         "entities": ents_by_dec.get(did, [])}, hit[0], hit[1]))
         return out
-
-    @staticmethod
-    def _flag(v):
-        return None if v is None else (1 if v else 0)
-
-    def write_interrupt(self, row):
-        camp = row.get("campaign") or {}
-        opts = row.get("options") or {}
-        counted = row.get("counted")
-        if counted is None and row.get("confirmed") is not None:
-            counted = bool(row.get("executed")) and bool(row.get("confirmed"))
-        row = dict(row, counted=counted)
-        self.con.execute(
-            "INSERT INTO interrupt_decisions(ts,campaign_id,turn,kind,root,root_context,"
-            "n_options,options_json,chosen,chosen_context,executed,confirmed,counted,refusal,"
-            "latency_ms,campaign_json,tree_json,policy,world_json,panel_json)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (row.get("ts") or time.time(),
-             self.campaign_key(camp.get("faction"), camp.get("campaign_uuid")),
-             int(camp.get("turn") or 0),
-             row.get("screen"), row.get("root"), row.get("root_context"),
-             len(opts), json.dumps(opts, default=str),
-             row.get("chosen"), row.get("chosen_context"),
-             self._flag(row.get("executed")), self._flag(row.get("confirmed")),
-             self._flag(row.get("counted")),
-             row.get("refusal"), row.get("latency_ms"),
-             json.dumps(camp, default=str),
-             json.dumps(row["tree"], default=str) if row.get("tree") else None,
-             row.get("policy"),
-             json.dumps(row.get("world") or {}, default=str) if row.get("world") else None,
-             json.dumps(row.get("panel") or {}, default=str) if row.get("panel") else None))
-        self.con.commit()
 
     def campaign_snapshots(self):
         out = []
-        for camp, ts, cjson, wjson in self.con.execute(
-                "SELECT campaign_id, ts, campaign, world FROM decision_points"
-                " ORDER BY decision_id"):
+        for ckey, ts, cjson, wjson in self.con.execute(
+                "SELECT c.campaign_key,d.ts,unz(bc.z),unz(bw.z) FROM decisions d"
+                " JOIN campaigns c ON c.campaign_id=d.campaign_id"
+                " LEFT JOIN blobs bc ON bc.blob_id=d.campaign_blob"
+                " LEFT JOIN blobs bw ON bw.blob_id=d.world_blob"
+                " ORDER BY d.decision_id"):
             try:
                 c = json.loads(cjson) if cjson else {}
             except Exception:
@@ -440,24 +556,31 @@ class DecisionStore:
                 w = json.loads(wjson) if wjson else {}
             except Exception:
                 w = {}
-            out.append((camp, ts or 0.0, c, w))
+            out.append((ckey, ts or 0.0, c, w))
         return out
 
     def action_sequence(self):
         return self.con.execute(
-            "SELECT dp.campaign_id, at.ts, at.action_type FROM action_taken at"
-            " JOIN decision_points dp ON dp.decision_id = at.decision_id"
-            " WHERE at.action_type != 'noop'"
-            " AND (at.refusal IS NULL OR at.refusal != 'awaiting_execution')"
-            " ORDER BY at.decision_id").fetchall()
+            "SELECT c.campaign_key,t.ts,a.action_type FROM taken t"
+            " JOIN decisions d ON d.decision_id=t.decision_id"
+            " JOIN campaigns c ON c.campaign_id=d.campaign_id"
+            " LEFT JOIN actions a ON a.action_id=t.action_id"
+            " WHERE a.action_type != 'noop'"
+            " AND (t.refusal IS NULL OR t.refusal != 'awaiting_execution')"
+            " ORDER BY t.decision_id").fetchall()
 
     def interrupt_rows(self):
         out = []
         for (iid, ts, camp, turn, kind, opts, chosen, executed, confirmed, counted, refusal,
              cjson, wjson, pjson) in self.con.execute(
-                "SELECT interrupt_id,ts,campaign_id,turn,kind,options_json,chosen,"
-                "executed,confirmed,counted,refusal,campaign_json,world_json,panel_json"
-                " FROM interrupt_decisions ORDER BY interrupt_id"):
+                "SELECT i.interrupt_id,i.ts,c.campaign_key,i.turn,i.kind,i.options_json,"
+                "i.chosen,i.executed,i.confirmed,i.counted,i.refusal,unz(bc.z),unz(bw.z),"
+                "unz(bp.z) FROM interrupts i"
+                " LEFT JOIN campaigns c ON c.campaign_id=i.campaign_id"
+                " LEFT JOIN blobs bc ON bc.blob_id=i.campaign_blob"
+                " LEFT JOIN blobs bw ON bw.blob_id=i.world_blob"
+                " LEFT JOIN blobs bp ON bp.blob_id=i.panel_blob"
+                " ORDER BY i.interrupt_id"):
             try:
                 options = json.loads(opts) if opts else {}
             except Exception:
@@ -486,20 +609,6 @@ class DecisionStore:
                 "lord_level": lvl or 0.0}
         return out
 
-    def write_entity_target_rows(self, campaign_id, turn, rows):
-        n = 0
-        for r in rows or []:
-            if r.get("value") is None:
-                continue
-            cur = self.con.execute(
-                "INSERT OR IGNORE INTO entity_target_rows"
-                "(campaign_id,turn,context_kind,context_id,value,ts) VALUES(?,?,?,?,?,?)",
-                (campaign_id, int(turn or 0), r["context_kind"], str(r["context_id"]),
-                 float(r["value"]), time.time()))
-            n += cur.rowcount or 0
-        self.con.commit()
-        return n
-
     def entity_series(self):
         out = {}
         for camp, turn, kind, cid, val in self.con.execute(
@@ -509,53 +618,9 @@ class DecisionStore:
             out.setdefault(camp, {}).setdefault((kind, str(cid)), {})[int(turn)] = float(val)
         return out
 
-    def close(self):
-        try:
-            self.con.close()
-        except Exception:
-            pass
+    # ------------------------------------------------------------------ checks
 
-
-if __name__ == "__main__":
-    import tempfile
-    d = tempfile.mkdtemp()
-    s = DecisionStore(d)
-    print("first target write:", s.write_target_row({"campaign_id": "c", "turn": 1, "income": 100,
-                                                     "settlements": 1, "allies": 0, "vassals": 0,
-                                                     "power_rank": 144}))
-    print("duplicate ignored :", s.write_target_row({"campaign_id": "c", "turn": 1, "income": 999,
-                                                     "settlements": 9, "allies": 9, "vassals": 9,
-                                                     "power_rank": 9}))
-    snap = {"ts": time.time(), "campaign": {"faction": "c", "turn": 1, "treasury": 2000},
-            "world": {"armies": [{"cqi": 56, "x": 10, "y": 10}], "settlements": [], "hostiles": []},
-            "entities": [
-                {"context_kind": "lord", "context_id": "56", "state": {"units": 5, "ap_pct": 100},
-                 "offers": [{"action_type": "stance", "key": "MARCH", "available": True},
-                            {"action_type": "attack_army", "key": "cqi:99", "available": True,
-                             "params": {"target_cqi": 99}},
-                            {"action_type": "noop", "key": "noop", "available": True}]},
-                {"context_kind": "province", "context_id": "reg_a", "state": {"free_slots": 2},
-                 "offers": [{"action_type": "building", "key": "b1", "available": True},
-                            {"action_type": "noop", "key": "noop", "available": True}]},
-                {"context_kind": "campaign", "context_id": "c", "state": {"treasury": 2000},
-                 "offers": [{"action_type": "end_turn", "key": "end_turn", "available": True}]}]}
-    d1 = s.write_decision(snap)
-    print("attach_scores:", s.attach_scores(d1, [
-        {"context_kind": "lord", "context_id": "56", "action_type": "attack_army",
-         "key": "cqi:99", "score": 0.9, "exploit": 0.8, "rank": 1}]), "offers scored")
-    s.attach_taken(d1, {"context_kind": "lord", "context_id": "56", "action_type": "attack_army",
-                        "key": "cqi:99", "executed": True, "confirmed": True, "counted": True,
-                        "confirm": {"signal": "pre_battle_popup"}})
-    d2 = s.write_decision(snap, decision_seq=1)
-    s.attach_taken(d2, {"context_kind": "province", "context_id": "reg_a", "action_type": "building",
-                        "key": "b1", "executed": True, "confirmed": False, "counted": False,
-                        "refusal": "command_silently_refused", "confirm": {}})
-    print("summary:", s.summary())
-    lab = s.labelled_decisions()
-    print("labelled decisions:", len(lab), "(the unconfirmed one is VOIDED -> 1, not 2)")
-    for rec, taken in lab:
-        print("   decision %s turn %s taken=%s  entities=%d offers=%d"
-              % (rec["decision_id"], rec["turn"], taken, len(rec["entities"]),
-                 sum(len(e["offers"]) for e in rec["entities"])))
-    print("target series:", s.target_series())
-    s.close()
+    def layout_violations(self):
+        """`offer_seq < n_available` must mean exactly `available`. If this is ever
+        non-zero the contiguous-prefix read is silently returning the wrong candidates."""
+        return self.con.execute(S.LAYOUT_INVARIANT).fetchone()[0]
