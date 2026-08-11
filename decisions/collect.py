@@ -1231,8 +1231,30 @@ _LUA_LORD_POOLS = (_G +
     "local okk,k=pcall(function() return f:Call(base..'.CharacterContext.TraitsList['..j..'].TraitRecordContext.Key') end) "
     "if okk and k then tr[#tr+1]=ts(k) end end trs=table.concat(tr,'+') end "
     "local oka,ia=pcall(function() return f:Call(base..'.CharacterContext.IsAgent') end) "
-    # The differentiators an actual recruitment card shows. Rank is not among them: a pool
-    # entry has no rank until it becomes a character.
+    # The differentiators an actual recruitment card shows.
+    #
+    # MEASURED on 722 pools / 1673 entries of live play, which settles part of a long
+    # -standing "these fields are dead" claim and leaves part of it open:
+    #
+    #   bg_skills  1673/1673 carry a value
+    #   subtypes   1673/1673
+    #   cqis          0/1673
+    #   units         0/1673
+    #   traits        0/1673
+    #
+    # bg_skills and subtypes resolve through the SAME CharacterContext path as cqis, so
+    # the route mechanism works and CharacterContext exists on a pool entry. A null CQI
+    # is therefore the game answering honestly: a pool entry has not been instantiated, so
+    # it has no command queue index. That is a fact about the game, not a broken read.
+    #
+    # `units` is NOT settled. MainUnitRecordContext is a sibling of CharacterContext on
+    # the pool entry rather than a property of it, so nothing here corroborates it the way
+    # bg_skills corroborates cqi -- cco_audit says the route is valid and it returns
+    # nothing. It stays collected and stays flagged by coverage until a campaign shows
+    # otherwise; it is not justified away on a guess.
+    #
+    # traits at 0/1673 is a small sample against a historical 241 of 159,336 on lords, so
+    # it is consistent with "rare" rather than "dead".
     "local bg=ts(g(f,e..'['..i..'].CharacterContext.BackgroundSkillContext.Key')) "
     "local cq=ts(g(f,e..'['..i..'].CharacterContext.CQI')) "
     "local st=ts(g(f,e..'['..i..'].CharacterContext.AgentSubtypeRecordContext.Key')) "
