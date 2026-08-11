@@ -36,13 +36,10 @@ import json
 import os
 import shutil
 
-try:
-    from mapgraph3 import schema as S
-except ImportError:
-    import schema as S
+from advisor.mapgraph import schema as S
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-CACHE_ROOT = os.path.join(os.path.dirname(S.MODEL_DIR), "gnn3_corpus")
+CACHE_ROOT = os.path.join(os.path.dirname(S.MODEL_DIR), "mapgraph_corpus")
 SHARD = 2000
 
 
@@ -79,7 +76,7 @@ def _graph_sources():
             if isinstance(node, ast.Import):
                 names = [a.name for a in node.names]
             elif isinstance(node, ast.ImportFrom):
-                # covers both `import schema` and `from mapgraph3 import schema`
+                # covers both `import schema` and `from mapgraph import schema`
                 names = ([node.module] if node.module else []) + [a.name for a in node.names]
             for mod in names:
                 leaf = mod.split(".")[-1] + ".py"
@@ -143,11 +140,11 @@ def load(run_key, log=print):
         for name in meta["shards"]:
             for rec in torch.load(os.path.join(d, name), weights_only=False):
                 out[rec[0]] = rec
-        log("mapgraph3.corpus: %d cached graphs from %d shard(s)"
+        log("mapgraph.corpus: %d cached graphs from %d shard(s)"
             % (len(out), len(meta["shards"])))
         return out, d
     except (OSError, ValueError, KeyError, RuntimeError) as e:
-        log("mapgraph3.corpus: cache unreadable (%s) -- rebuilding" % repr(e)[:80])
+        log("mapgraph.corpus: cache unreadable (%s) -- rebuilding" % repr(e)[:80])
         shutil.rmtree(d, ignore_errors=True)
         return {}, d
 
@@ -175,7 +172,7 @@ def save(d, slots, dirty, log=print):
                "shards": sorted(by_shard), "n": len(slots),
                "watermark": max(slots) if slots else 0},
               open(os.path.join(d, "manifest.json"), "w"))
-    log("mapgraph3.corpus: cache holds %d graphs; rewrote %d of %d shard(s)"
+    log("mapgraph.corpus: cache holds %d graphs; rewrote %d of %d shard(s)"
         % (len(slots), len(touched & set(by_shard)), len(by_shard)))
 
 

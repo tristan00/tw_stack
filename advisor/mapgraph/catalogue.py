@@ -18,10 +18,7 @@ import os
 import sqlite3
 import sys
 
-try:
-    from mapgraph3 import schema as S
-except ImportError:
-    import schema as S
+from advisor.mapgraph import schema as S
 
 _CACHE = {}
 
@@ -34,7 +31,7 @@ def _load():
            "tech_parents": {}, "skill_actions": {}, "agent_ability": {},
            "unit_caste": {}, "ok": False}
     if not os.path.exists(path):
-        sys.stderr.write("mapgraph3.catalogue: %s missing -- catalogue edges will be "
+        sys.stderr.write("mapgraph.catalogue: %s missing -- catalogue edges will be "
                          "skipped; the graph still builds, with less structure\n" % path)
         _CACHE.update(out)
         return _CACHE
@@ -57,7 +54,7 @@ def _load():
         finally:
             cx.close()
     except Exception as e:
-        sys.stderr.write("mapgraph3.catalogue: load failed -> %s\n" % repr(e)[:200])
+        sys.stderr.write("mapgraph.catalogue: load failed -> %s\n" % repr(e)[:200])
 
     unlocks = os.path.join(os.path.dirname(path), "agent_action_unlocks.sqlite")
     if os.path.exists(unlocks):
@@ -70,7 +67,7 @@ def _load():
             finally:
                 cx.close()
         except Exception as e:
-            sys.stderr.write("mapgraph3.catalogue: unlocks load failed -> %s\n"
+            sys.stderr.write("mapgraph.catalogue: unlocks load failed -> %s\n"
                              % repr(e)[:160])
 
     # tech prerequisites live in the pack, not in reference.sqlite; the DAG edge is
@@ -102,7 +99,7 @@ def dense_ids():
     path = S.REFERENCE_DB
     out = {k: {} for k in list(_KIND_TABLE) + list(_KIND_COLUMN)}
     if not os.path.exists(path):
-        sys.stderr.write("mapgraph3.catalogue: %s missing -- catalogue ids fall back to "
+        sys.stderr.write("mapgraph.catalogue: %s missing -- catalogue ids fall back to "
                          "hashing, which is NOT injective\n" % path)
         _DENSE.update(out)
         return _DENSE
@@ -119,7 +116,7 @@ def dense_ids():
         finally:
             cx.close()
     except Exception as e:
-        sys.stderr.write("mapgraph3.catalogue: dense id load failed -> %s\n" % repr(e)[:200])
+        sys.stderr.write("mapgraph.catalogue: dense id load failed -> %s\n" % repr(e)[:200])
     _DENSE.update(out)
     return _DENSE
 
@@ -128,20 +125,14 @@ def chain_of(building_key):
     return _load()["building_chain"].get(building_key)
 
 
-def superchain_of(chain_key):
-    return _load()["chain_super"].get(chain_key)
 
 
 def ability_of(agent_action_key):
     return _load()["agent_ability"].get(agent_action_key)
 
 
-def actions_of_skill(skill_key):
-    return _load()["skill_actions"].get(skill_key) or ()
 
 
-def unit_facts(unit_key):
-    return _load()["unit_caste"].get(unit_key)
 
 
 def ready():

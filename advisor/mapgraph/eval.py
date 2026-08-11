@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-"""Gates that would have caught v2.
+"""Gates that would have caught the model this one replaced.
 
-v2 shipped with a test suite that looked rigorous and verified nothing: `_overfit`
+That model shipped with a test suite that looked rigorous and verified nothing: `_overfit`
 asserted `impact_spread > 1e-4` on a quantity (q-v) that was non-zero purely because
 the two heads had different input widths. It passed every time and proved nothing.
 
@@ -18,9 +18,9 @@ The gates here are built so a decorative graph FAILS them.
             model must beat: uniform over the candidate set, and always-pick-the-most-
             common-action-type. (Not top-k overlap, not RBO -- permanently banned.)
 
-  catboost  Assert no mapgraph3 source imports advisor/features.py. Checking sys.modules
+  catboost  Assert no mapgraph source imports advisor/features.py. Checking sys.modules
             is useless: base_model imports `features` to compute the label, so the module
-            is loaded no matter what v3 does. The honest check is on OUR source.
+            is loaded no matter what this package does. The honest check is on OUR source.
 """
 
 import glob
@@ -29,14 +29,11 @@ import os
 import re
 import sys
 
-try:
-    from mapgraph3 import schema as S
-    from mapgraph3 import build as B
-except ImportError:
-    import schema as S
-    import build as B
+from advisor.mapgraph import schema as S
+from advisor.mapgraph import build as B
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))))
 import common
 
 sys.path.insert(0, common.ADVISOR)
@@ -76,7 +73,7 @@ def _load(limit=120):
 def _net():
     import torch
     try:
-        from mapgraph3 import net as N
+        from advisor.mapgraph import net as N
     except ImportError:
         import net as N
     meta = json.load(open(os.path.join(S.MODEL_DIR, "meta.json"), encoding="utf-8"))
@@ -141,7 +138,7 @@ def ablate(limit=60, seed=0):
 
     If rewiring the MAP leaves the ranking untouched, the world structure is decoration
     and the model is an action-feature ranker with a graph bolted on -- which is exactly
-    what v2 was, and exactly what this gate exists to detect.
+    what the predecessor was, and exactly what this gate exists to detect.
     """
     import random
     import torch
@@ -177,7 +174,7 @@ def ablate(limit=60, seed=0):
     if res["map"]["score_shift_sd"] < 0.05:
         raise SystemExit(
             "ablate FAILED: rewiring the map moved scores by %.4f sd -- the world "
-            "structure is decoration. This is the v2 failure."
+            "structure is decoration. This is the failure that retired the predecessor."
             % res["map"]["score_shift_sd"])
     print("ablate OK: the map changes the ranking")
 
@@ -208,7 +205,7 @@ def _rewire(g, mode, rng, act):
 
 
 def no_catboost():
-    """No mapgraph3 source may import the CatBoost feature module."""
+    """No mapgraph source may import the CatBoost feature module."""
     here = os.path.dirname(os.path.abspath(__file__))
     pat = re.compile(r"^\s*(?:import\s+features|from\s+features\s+import"
                      r"|from\s+advisor\.features\s+import|import\s+advisor\.features)",

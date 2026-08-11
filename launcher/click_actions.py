@@ -12,7 +12,6 @@ sys.path.insert(0, common.LAUNCHER)
 
 from cco_actions import _G, _ev, register
 
-EDICT_STACK = "hud_campaign|BL_parent|stack_incentives"
 RECRUIT_BTN = ("hud_campaign|hud_center_docker|hud_center|small_bar|button_subpanel_parent|"
                "button_subpanel|button_group_army|button_recruitment")
 CREATE_ARMY_BTN = ("hud_campaign|hud_center_docker|hud_center|small_bar|button_subpanel_parent|"
@@ -25,7 +24,6 @@ LORD_MODE = "recruit_general"
 AGENT_MODE = "recruit_agent"
 LORD_TYPE_LIST = CHAR_PANEL + "|lords_and_agents_holder|lord_parent|list_box"
 AGENT_TYPE_LIST = CHAR_PANEL + "|lords_and_agents_holder|agent_parent|list_box"
-BUTTON_CONFIRM = CHAR_PANEL + "|footer|button_confirm"
 CANDIDATE_LIST = (CHAR_PANEL + "|general_selection_panel|main_holder|character_list_parent|"
                   "character_list|listview|list_clip|list_box")
 BUTTON_RAISE = CHAR_PANEL + "|footer|button_raise"
@@ -236,22 +234,8 @@ def _roots(bus):
         return None
 
 
-STANCE_STACK = "hud_campaign|BL_parent|land_stance_button_stack|clip_parent|stack_background"
-_STANCE_PREFIX = "button_"
 
 
-def stance_options(bus):
-    _res, kids = _find(bus, STANCE_STACK, timeout=12.0)
-    out = {}
-    for k in kids:
-        if not k.startswith(_STANCE_PREFIX) or k == "button_default":
-            continue
-        key = k[len(_STANCE_PREFIX):]
-        res, _ = _find(bus, "%s|%s" % (STANCE_STACK, k), timeout=8.0)
-        out[key] = res.get("state")
-    if not out:
-        sys.stderr.write("click_actions: stance stack %s enumerated 0 buttons\n" % STANCE_STACK)
-    return out
 
 
 def _selected_edict(bus, region):
@@ -532,8 +516,6 @@ MERC_BTN_CONTAINER = ("hud_campaign|hud_center_docker|hud_center|small_bar|butto
                       "button_subpanel|button_group_army|mercenary_recruitment_button_container")
 MERC_DISPLAY = ("units_panel|main_units_panel|recruitment_docker|recruitment_options|"
                 "mercenary_display")
-MERC_LIST = MERC_DISPLAY + "|frame|listview|list_clip|list_box"
-MERC_HIRE_BTN = MERC_DISPLAY + "|buttons_holder|button_hire_mercenary"
 MERC_SUFFIX = "_mercenary"
 
 MERC_POOL_BUTTONS = {
@@ -700,16 +682,8 @@ def _character_count(bus):
     return None
 
 
-def _character_cqis(bus):
-    raw = _ev(bus, "local f=cm:get_local_faction(true); local cl=f:character_list(); local o={} "
-                   "for i=0,cl:num_items()-1 do o[#o+1]=cl:item_at(i):command_queue_index() end "
-                   "return table.concat(o,',')", timeout=12.0)
-    return set(x for x in str(raw or "").split(",") if x.strip())
 
 
-def lord_types(bus):
-    _res, kids = _find(bus, LORD_TYPE_LIST)
-    return [k for k in kids if not k.startswith("button_template")]
 
 
 def lore_tabs(bus):

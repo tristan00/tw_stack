@@ -15,7 +15,7 @@ rather than argued about. Each check below corresponds to a defect that was meas
     construction offer ever linked to the building it constructs.
   - `move` recorded x,y that no node carried.
 
-    python -m mapgraph3.test_build [run_dir_or_db] [--n 40]
+    python -m advisor.mapgraph.test_build [run_dir_or_db] [--n 40]
 """
 
 import collections
@@ -23,11 +23,11 @@ import os
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(_HERE))
+sys.path.insert(0, os.path.dirname(os.path.dirname(_HERE)))
 
 import common  # noqa: E402
-from mapgraph3 import build as B      # noqa: E402
-from mapgraph3 import schema as S     # noqa: E402
+from advisor.mapgraph import build as B      # noqa: E402
+from advisor.mapgraph import schema as S     # noqa: E402
 
 FAILED = []
 

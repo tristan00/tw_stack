@@ -15,11 +15,7 @@ import nav
 
 ROOT = "diplomacy_dropdown"
 BTN_DIPLOMACY = "hud_campaign|faction_buttons_docker|button_group_management|button_diplomacy"
-OFFERS_PATH = ("diplomacy_dropdown|offers_panel|diplomacy_hud_offers_panel|panel_diplomacy|"
-               "offers_list_panel|list_possible_actions")
 
-TERMS = ("nonaggression_pact", "trade_agreement", "defensive_alliance", "soft_access",
-         "military_alliance", "vassal", "confederation", "peace")
 DECLARE_WAR = "declare_war"
 PEACE = "peace"
 MAX_TERMS = 1
@@ -164,15 +160,6 @@ def success_chance(bus):
         return None
 
 
-def chance_after_change(bus, before, limit=4.0):
-    out = {}
-
-    def moved():
-        cur = success_chance(bus)
-        out["v"] = cur
-        return cur is not None and cur != before
-
-    return out.get("v") if _wait(moved, limit) else None
 
 
 def _is_selected(state):
@@ -487,7 +474,6 @@ def _sendable(bus):
     return bool(n and n.get("visible") and str(n.get("state")) in _CLICKABLE)
 
 
-RESPONSE_ACK = "button_accept"
 
 
 def offer_response(bus):

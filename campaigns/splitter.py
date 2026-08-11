@@ -16,7 +16,6 @@ _FACTION_MARK = b'"kind":"faction"'
 _RE_FACTION = re.compile(rb'"faction":"([a-z0-9_]+)"')
 _RE_SUBCULTURE = re.compile(rb'"subculture":"([a-z0-9_]+)"')
 _RE_TURN = re.compile(rb'"turn":(\d+)')
-_RE_GAME_T = re.compile(rb"<([\d.]+)s>")
 _RE_LOGSTAMP = re.compile(r"script_log_(\d{6})_(\d{4})")
 
 

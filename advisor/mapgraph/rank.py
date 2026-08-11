@@ -11,7 +11,7 @@ offer's score is read off its own node. Offers are matched back to nodes by the 
 
 Reported number is `q` centred within the decision, `q - mean(q)`.
 
-Not `q - v`, which is what v2 reported and what I wrote first: `q` is an unnormalised
+Not `q - v`, which is what the predecessor reported and what I wrote first: `q` is an unnormalised
 softmax logit whose absolute shift is arbitrary (softmax is shift-invariant), and `v` is
 a z-scored outcome prediction. Subtracting one from the other is apples-oranges -- it
 produced numbers like -12.4 that mean nothing. Centring removes the arbitrary shift and
@@ -23,14 +23,11 @@ import json
 import os
 import sys
 
-try:
-    from mapgraph3 import schema as S
-    from mapgraph3 import build as B
-except ImportError:
-    import schema as S
-    import build as B
+from advisor.mapgraph import schema as S
+from advisor.mapgraph import build as B
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))))
 import common
 
 THREADS_INFER = 2
@@ -59,7 +56,7 @@ class Ranker:
             meta = json.load(open(meta_path, encoding="utf-8"))
             if meta.get("schema_hash") != S.schema_hash():
                 sys.stderr.write(
-                    "mapgraph3.rank: meta schema hash %s != code %s -- trained on a "
+                    "mapgraph.rank: meta schema hash %s != code %s -- trained on a "
                     "different graph; unready until retrain\n"
                     % (str(meta.get("schema_hash"))[:12], S.schema_hash()[:12]))
                 self.meta = meta
@@ -67,7 +64,7 @@ class Ranker:
             import torch
             torch.set_num_threads(THREADS_INFER)
             try:
-                from mapgraph3 import net as N
+                from advisor.mapgraph import net as N
             except ImportError:
                 import net as N
             cfg = meta.get("cfg") or {}
@@ -81,22 +78,22 @@ class Ranker:
             net.eval()
             self.net, self.meta, self.ready = net, meta, True
         except Exception as e:
-            sys.stderr.write("mapgraph3.rank: load failed -> %s -- unready, gnn draws "
+            sys.stderr.write("mapgraph.rank: load failed -> %s -- unready, gnn draws "
                              "fall back to random\n" % repr(e)[:160])
 
     def score_elig(self, offers, record):
         if not self.ready:
-            raise RuntimeError("mapgraph3.rank: score_elig on an unready Ranker")
+            raise RuntimeError("mapgraph.rank: score_elig on an unready Ranker")
         import torch
         try:
-            from mapgraph3 import net as N
+            from advisor.mapgraph import net as N
         except ImportError:
             import net as N
         g = B.build_graph(record)
         if g is None:
-            raise ValueError("mapgraph3.rank: record produced no graph")
+            raise ValueError("mapgraph.rank: record produced no graph")
         if not g.action_nodes:
-            raise ValueError("mapgraph3.rank: record produced no action nodes")
+            raise ValueError("mapgraph.rank: record produced no action nodes")
         data = N.to_data(g)
         with torch.no_grad():
             out = self.net(data)
@@ -121,7 +118,7 @@ class Ranker:
             if not self._warned:
                 self._warned = True
                 sys.stderr.write(
-                    "mapgraph3.rank: %d/%d offers had no action node this decision "
+                    "mapgraph.rank: %d/%d offers had no action node this decision "
                     "(scored at floor). The builder is not covering every offer type.\n"
                     % (miss, len(offers)))
         return scores

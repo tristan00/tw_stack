@@ -994,15 +994,6 @@ def _hero_action_gate_reach(bus, ctx, pick, before):
     return True, None
 
 
-def _target_already_on_screen(bus, kind, tid):
-    want = ("CcoCampaignCharacter:%s" % tid if kind == "character"
-            else "label_settlement:%s" % tid)
-    tr = bus.send("tree", "3d_ui_parent 12 6000", timeout=8.0) or {}
-    for n in (tr.get("nodes") or []):
-        hit = str(n.get("context")) if kind == "character" else str(n.get("id"))
-        if hit == want and n.get("x") is not None:
-            return True
-    return False
 
 
 _LUA_CHAR_REGION = ("local c=cm:get_character_by_cqi(%(tgt)s) if not c then return '' end "

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 import os, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -240,43 +240,13 @@ def close_popups(bus, max_rounds=8, settle=0.7):
     return clicked_paths
 
 
-def list_lords_and_heroes(bus):
-    r = bus.send("chars", "", timeout=_FIND_T) or {}
-    out = []
-    for c in (r.get("chars") or []):
-        out.append({"cqi": c.get("cqi"), "subtype": c.get("subtype"),
-                    "is_leader": c.get("is_leader"),
-                    "kind": "lord" if c.get("has_army") else "hero"})
-    seen, uniq = set(), []
-    for c in out:
-        if c["cqi"] not in seen:
-            seen.add(c["cqi"]); uniq.append(c)
-    return uniq
 
 
-def list_settlements(bus, include_enemy=True):
-    out = []
-    s = bus.send("setts", "", timeout=_FIND_T) or {}
-    for x in (s.get("setts") or []):
-        if x.get("region"):
-            out.append({"region": x.get("region"), "x": x.get("x"), "y": x.get("y"), "owner": "player"})
-    if include_enemy:
-        h = bus.send("hostiles", "", timeout=_FIND_T) or {}
-        for x in (h.get("hostiles") or []):
-            if x.get("kind") == "settlement" and x.get("region"):
-                out.append({"region": x.get("region"), "x": x.get("x"), "y": x.get("y"),
-                            "owner": x.get("faction")})
-    seen, uniq = set(), []
-    for x in out:
-        if x["region"] not in seen:
-            seen.add(x["region"]); uniq.append(x)
-    return uniq
 
 
 
 UI_BASE_W, UI_BASE_H = 1984.0, 1116.0
 CLIENT = (0, 0, 2560, 1440)
-CENTER = (1280, 720)
 
 
 def ui_to_screen(ux, uy, client=CLIENT):
@@ -356,12 +326,8 @@ def visible_roots(bus):
     return [k.get("id") for k in (r.get("kids") or []) if k.get("visible") and k.get("id")]
 
 
-def open_views(bus):
-    return [r for r in visible_roots(bus) if r not in BASE_ROOTS]
 
 
-def is_clean(bus):
-    return not open_views(bus)
 
 
 def deselect(bus):
@@ -370,30 +336,6 @@ def deselect(bus):
     return r
 
 
-def quit_views(bus, max_rounds=6):
-    for _ in range(max_rounds):
-        close_popups(bus)
-        views = open_views(bus)
-        if not views:
-            return True
-        acted = False
-        for root in views:
-            if root in DECISION_ROOTS:
-                continue
-            tr = bus.send("tree", "%s 22 5000" % root, timeout=_TREE_T) or {}
-            for n in (tr.get("nodes") or []):
-                idd = str(n.get("id") or "").lower()
-                if (n.get("visible") and str(n.get("state")) in _CLICKABLE_STATES
-                        and any(w in idd for w in ("button_close", "button_ok", "button_cancel",
-                                                   "button_dismiss", "button_tick"))):
-                    bus.send("click", n.get("path"), timeout=_FIND_T)
-                    acted = True; time.sleep(0.6); break
-            if acted:
-                break
-        if not acted:
-            deselect(bus)
-        time.sleep(0.5)
-    return is_clean(bus)
 
 
 def capital_region(bus):

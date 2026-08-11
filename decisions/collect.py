@@ -67,13 +67,6 @@ def _num(x):
         return None
 
 
-def _flags(raw):
-    out = {}
-    for part in str(raw or "").split(","):
-        if "=" in part:
-            k, v = part.rsplit("=", 1)
-            out[k] = (v == "true")
-    return out
 
 
 _LUA_TARGET = (_G +
@@ -138,36 +131,8 @@ def faction_resources(bus):
     return _parse_resources(_ev(bus, _LUA_FACTION_RESOURCES, timeout=25.0, allow_nil=True))
 
 
-_LUA_DIPLO = (
-    "local me=cm:get_local_faction(true) if not me then return '' end "
-    "local o={} local fl=cm:model():world():faction_list() "
-    "for i=0,fl:num_items()-1 do local f=fl:item_at(i) "
-    "if f and not f:is_null_interface() and f:name()~=me:name() then "
-    "  local ok,st=pcall(function() return me:diplomatic_standing_with(f) end) "
-    "  if ok and st~=nil then "
-    "    local function bl(fn) local k,v=pcall(fn) return (k and v) and 1 or 0 end "
-    "    o[#o+1]=f:name()..'~'..tostring(st) "
-    "      ..'~'..bl(function() return me:at_war_with(f) end) "
-    "      ..'~'..bl(function() return me:allied_with(f) end) "
-    "      ..'~'..bl(function() return f:is_vassal_of(me) end) "
-    "      ..'~'..bl(function() return me:is_vassal_of(f) end) "
-    "      ..'~'..bl(function() return me:trade_agreement_with(f) end) "
-    "  end end end "
-    "return table.concat(o,',')")
 
 
-def diplomacy_state(bus):
-    raw = str(_ev(bus, _LUA_DIPLO, timeout=30.0, allow_nil=True) or "")
-    out = []
-    for row in raw.split(","):
-        p = row.split("~")
-        if len(p) < 7 or not p[0]:
-            continue
-        out.append({"faction": p[0], "standing": _num(p[1]),
-                    "at_war": p[2] == "1", "allied": p[3] == "1",
-                    "their_vassal": p[4] == "1", "our_master": p[5] == "1",
-                    "trade": p[6] == "1"})
-    return out
 
 
 CAMPAIGN_UUID_KEY = "tw_stack_campaign_uuid"
@@ -442,7 +407,6 @@ def state_hash(bus):
             "roots": roots, "chars": blob.count("@"), "ts": time.time()}
 
 
-STANCE_STACK = "hud_campaign|BL_parent|land_stance_button_stack|clip_parent|stack_background"
 
 
 def _find(bus, path, timeout=8.0):
@@ -648,8 +612,6 @@ _LUA_LORD = (_G +
     "return math.floor(t)/100 end) return ts(ok and v or nil) end)()")
 
 
-def lord_state(bus, cqi):
-    return _parse_lord(_ev(bus, _LUA_LORD % {"cqi": cqi}, timeout=25.0), cqi)
 
 
 def _parse_lord(raw, cqi):
@@ -709,8 +671,6 @@ _LUA_PROVINCE = (_G +
     "end end return n end)()")
 
 
-def province_state(bus, region):
-    return _parse_province(_ev(bus, _LUA_PROVINCE % {"reg": region}, timeout=25.0), region)
 
 
 def _parse_province(raw, region):
@@ -857,7 +817,7 @@ def _skill_offers(sk_raw, has_pts):
 def _leave_garrison_offer(state, moves):
     """The inverse of `garrison`, and it was never emitted once in 9,013,360 offers.
 
-    `leave_garrison` is declared in advisor/features.py and mapgraph3/schema.py and has a
+    `leave_garrison` is declared in advisor/features.py and mapgraph/schema.py and has a
     working executor in launcher/cm_actions.py -- it was simply never offered, so an army
     that walked into a settlement had no recorded way back out and the action type had 0
     rows. cm:leave_garrison(lookup, x, y) needs a destination, and the only tiles known to
@@ -1469,12 +1429,6 @@ def _hero_action_offers(cqi, state, world, reach_c, reach_s, is_agent, type_key,
     return offers
 
 
-def hero_offers(bus, cqi, state, world):
-    ev_raw = _ev(bus, _LUA_HERO_OFFERS % {"cqi": cqi}, timeout=25.0, allow_nil=True)
-    moves = _move_offers(bus, cqi, state)
-    tgt_c, tgt_r = _hero_action_reach_targets(world, cqi)
-    reach_c, reach_s = _reach(bus, cqi, tgt_c, tgt_r)
-    return _hero_offers_assemble(cqi, state, ev_raw, moves, world, reach_c, reach_s)
 
 
 def _hero_action_reach_targets(world, cqi):

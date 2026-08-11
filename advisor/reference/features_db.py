@@ -66,7 +66,6 @@ def label(key):
 
 
 _AGENT_ACTION_NAME_PREFIX = "agent_actions_localised_action_name_"
-_AGENT_ACTION_DESC_PREFIX = "agent_actions_localised_action_description_"
 _TR_RE = re.compile(r"^\{\{tr:(.+)\}\}$")
 _TR_PREFIX = "ui_text_replacements_localised_text_"
 
@@ -81,24 +80,8 @@ def agent_action_label(action_key):
     return label(_TR_PREFIX + m.group(1))
 
 
-_performable_cache = None
 
 
-def performable_action_keys():
-    global _performable_cache
-    if _performable_cache is None:
-        con = _connect()
-        cats = {r["key"]: r["category"] for r in con.execute(
-            "SELECT key,category FROM agent_abilities")}
-        out = set()
-        for r in con.execute("SELECT key,ability,show_in_ui FROM agent_actions"):
-            if cats.get(r["ability"]) == "ambient":
-                continue
-            if str(r["show_in_ui"]).strip().lower() in ("0", "false", "none", ""):
-                continue
-            out.add(r["key"])
-        _performable_cache = out
-    return _performable_cache
 
 
 def agent_action_keys(name_suffix):
@@ -165,11 +148,6 @@ def verify_hero_action_mappings(hero_actions):
     return out
 
 
-_AGENT_ABILITIES = ("hinder_settlement", "hinder_army", "hinder_agent", "hinder_character",
-                    "hinder_province", "assist_army", "assist_settlement", "assist_province")
-_AGENT_KEY_RE = re.compile(
-    r"agent_action_([a-z0-9]+)_(%s)_(.+)$" % "|".join(_AGENT_ABILITIES))
-_matrix_cache = {}
 
 
 def agent_action_rows(name_suffix):
@@ -226,28 +204,8 @@ def permitted_agent_subtypes(faction):
         (str(faction),))]
 
 
-def agent_action_matrix(name_suffix):
-    suffixes = [name_suffix] if isinstance(name_suffix, str) else list(name_suffix or ())
-    ck = tuple(suffixes)
-    if ck not in _matrix_cache:
-        out = {}
-        for suffix in suffixes:
-            for key in agent_action_keys(suffix):
-                m = _AGENT_KEY_RE.search(key)
-                if m and key.endswith(suffix):
-                    out.setdefault(m.group(1), key)
-        _matrix_cache[ck] = out
-    return dict(_matrix_cache[ck])
 
 
-def agent_action_ability(name_suffix):
-    suffixes = [name_suffix] if isinstance(name_suffix, str) else list(name_suffix or ())
-    for suffix in suffixes:
-        for key in agent_action_keys(suffix):
-            m = _AGENT_KEY_RE.search(key)
-            if m and key.endswith(suffix):
-                return m.group(2)
-    return None
 
 
 _EDICT_PREFIX = "provincial_initiative_records_localised_name_"
@@ -268,65 +226,16 @@ def edict_options(race_tokens):
     return [(ek, txt) for tok, ek, txt in _edict_cache if tok in toks]
 
 
-_BUILD_NAME_PREFIX = "building_chains_encyclopedia_name_"
-_BUILD_VARIANT_PREFIX = "building_culture_variants_name_"
-_BUILD_TIP_PREFIX = "building_chains_chain_tooltip_"
-_BUILD_RE = re.compile(r"^wh\d?_[a-z0-9]+_([a-z]+)_")
-_building_cache = None
 
 
-def building_label(chain):
-    con = _connect()
-    for pfx in (_BUILD_NAME_PREFIX, _BUILD_VARIANT_PREFIX, _BUILD_TIP_PREFIX):
-        row = con.execute("SELECT text FROM loc WHERE key=?", (pfx + chain,)).fetchone()
-        txt = row["text"] if row else None
-        if txt and txt != "placeholder" and "{{tr:" not in txt:
-            return txt
-    return None
 
 
-def building_options(race_tokens):
-    global _building_cache
-    if _building_cache is None:
-        by_chain = {}
-        for row in _connect().execute("SELECT key,building_chain,level FROM buildings"):
-            key, chain = row["key"], row["building_chain"]
-            if not key or not chain:
-                continue
-            lvl = row["level"] if row["level"] is not None else 0
-            m = _BUILD_RE.match(key)
-            tok = m.group(1) if m else None
-            cur = by_chain.get(chain)
-            if cur is None or lvl < cur[1]:
-                by_chain[chain] = (key, lvl, tok)
-        _building_cache = [(key, tok, chain) for chain, (key, lvl, tok) in by_chain.items()]
-    toks = set(race_tokens or ())
-    return [(key, building_label(chain) or chain) for key, tok, chain in _building_cache if tok in toks]
 
 
-def occupation_label(card_id):
-    row = _connect().execute(
-        "SELECT text FROM loc WHERE key=?",
-        ("culture_settlement_occupation_options_tooltip_%s" % card_id,)).fetchone()
-    if not row or not row["text"]:
-        return None
-    return row["text"].split("||", 1)[0] or None
 
 
-def occupation_desc(card_id):
-    row = _connect().execute(
-        "SELECT text FROM loc WHERE key=?",
-        ("culture_settlement_occupation_options_tooltip_%s" % card_id,)).fetchone()
-    if not row or not row["text"] or "||" not in row["text"]:
-        return None
-    return row["text"].split("||", 1)[1] or None
 
 
-def captive_label(record_key):
-    row = _connect().execute(
-        "SELECT text FROM loc WHERE key=?",
-        ("campaign_post_battle_captive_options_onscreen_name_%s" % record_key,)).fetchone()
-    return row["text"] if row and row["text"] else None
 
 
 _CAPTIVE_BUTTONS = ("kill", "enslave", "release")

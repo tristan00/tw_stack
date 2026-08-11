@@ -906,15 +906,6 @@ def _newest_script_log() -> str | None:
     return best
 
 
-def _panel_opened(chunk: str) -> bool:
-    if "PanelOpenedCampaign" not in chunk:
-        return False
-    if '"event":"PanelOpenedCampaign"' in chunk:
-        return True
-    for ln in chunk.splitlines():
-        if "PanelOpenedCampaign" in ln and "added trigger condition" not in ln:
-            return True
-    return False
 
 
 def _opened_components(chunk: str) -> list:

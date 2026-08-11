@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Read and write the decision corpus.
 
-The storage layout is decisions/schema_v2.py; read its docstring for why it looks the way
+The storage layout is decisions/store_schema.py; read its docstring for why it looks the way
 it does. This file is the API, and the API is deliberately unchanged from v1: everything
 above the store still speaks (decision, entities, offers), and every reader outside this
 package still speaks v1 SQL through the compatibility views. Open the database with
@@ -27,7 +27,7 @@ import time
 import zlib
 
 from decisions import dbopen
-from decisions import schema_v2 as S
+from decisions import store_schema as S
 
 DB_NAME = "decisions.sqlite"
 ZLEVEL = 6

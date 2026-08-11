@@ -14,14 +14,9 @@ else is an edge or an identity embedding.
 import math
 import sys
 
-try:
-    from mapgraph3 import schema as S
-    from mapgraph3 import guard as G
-    from mapgraph3 import catalogue as C
-except ImportError:
-    import schema as S
-    import guard as G
-    import catalogue as C
+from advisor.mapgraph import schema as S
+from advisor.mapgraph import guard as G
+from advisor.mapgraph import catalogue as C
 
 _TI = {t: i for i, t in enumerate(S.NODE_TYPES)}
 _NREL = S.N_FORWARD_RELATIONS
@@ -76,10 +71,10 @@ class Graph:
         for k, v in (values or {}).items():
             col = pos.get(k)
             if col is None:
-                raise KeyError("mapgraph3.build: %r is not a field of node type %r -- the "
+                raise KeyError("mapgraph.build: %r is not a field of node type %r -- the "
                                "numeric budget is fixed in schema.TYPE_FIELDS" % (k, ntype))
             if not isinstance(v, G.Raw):
-                raise TypeError("mapgraph3.build: %s.%s was written as a plain number. "
+                raise TypeError("mapgraph.build: %s.%s was written as a plain number. "
                                 "Every scalar must come through guard.Reader so its "
                                 "provenance can be checked." % (ntype, k))
             row[col] = float(v)

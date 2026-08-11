@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.dirname(_HERE))
 
 import common  # noqa: E402
 from decisions import dbopen                       # noqa: E402
-from decisions import schema_v2 as S               # noqa: E402
+from decisions import store_schema as S               # noqa: E402
 from decisions.store import DecisionStore, IncompatibleStore   # noqa: E402
 
 FAILED = []

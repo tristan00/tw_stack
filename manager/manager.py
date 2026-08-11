@@ -109,7 +109,6 @@ def _run_guarded(run, ctx, kwargs, name, on_error):
         on_error("stream:" + name, e)
 
 
-CURRENT_POINTER = "CURRENT_RUN"
 RUN_DIR_NAME = "run"
 
 

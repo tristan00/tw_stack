@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""v3 training.
+"""Training.
 
 The target is `base_model.target(decision_deltas(...))` -- byte for byte the same
 quantity CatBoost is scored against. It is z-scored for the network output and
@@ -12,18 +12,18 @@ Two supervision channels, and they do different jobs:
                      exactly what a value head should predict.
 
   listwise NLL       -log p(taken action) under a softmax over that decision's candidate
-                     set. This is the term v2 did not have at all: v2 broadcast one
-                     outcome scalar onto every candidate and regressed them all to it, so
-                     no loss term ever compared two candidates and the ranking was
-                     unsupervised.
+                     set. This is the term the predecessor did not have at all: it
+                     broadcast one outcome scalar onto every candidate and regressed
+                     them all to it, so no loss term ever compared two candidates and
+                     the ranking was unsupervised.
 
   advantage weight   exp((y_z - v)/tau), clipped. Upweights decisions from turns that
                      went better than the state predicted, which is what turns plain
                      imitation into a policy-improvement step (MARWIL / AWR).
 
-There is deliberately no `mse(q, y_z)`. That term is what made v2's advantage a capacity
-artifact: q and v regressed to the same scalar, so q-v was zero by construction and
-non-zero only because v underfits.
+There is deliberately no `mse(q, y_z)`. That term is what made the predecessor's
+advantage a capacity artifact: q and v regressed to the same scalar, so q-v was zero by
+construction and non-zero only because v underfits.
 
 BUDGET. A retrain must fit in `time_budget_s` end to end, walk included, because it runs
 between campaigns with the game shut down. Measured on 20.4k graphs / RTX 5090:
@@ -36,8 +36,9 @@ Before this pass the same retrain got 4 epochs in 989s. What moved:
   - the backward of `param[node_type]` in TypeNorm/TypeEncoders was 90% of all gpu time
     (an atomic scatter from ~22k rows into 19); F.embedding's segment-reduced backward
     is the same maths ~50x cheaper. 75s/epoch -> 10.9s at batch 64.
-  - collate once and keep batches resident instead of re-collating every epoch (v2 knew
-    this; v3 had lost it), batch 16 -> 128, fused AdamW, one val sync per epoch not 364.
+  - collate once and keep batches resident instead of re-collating every epoch (the
+    predecessor knew this; this one had lost it), batch 16 -> 128, fused AdamW, one
+    val sync per epoch not 364.
   - to_data splits edges with array masks instead of a python loop over 61M edges.
 
 CORPUS CACHE -- the next thing, and the one that matters at scale. The walk is now 49%
@@ -59,20 +60,15 @@ import shutil
 import sys
 import time
 
-try:
-    from mapgraph3 import schema as S
-    from mapgraph3 import build as B
-except ImportError:
-    import schema as S
-    import build as B
+from advisor.mapgraph import schema as S
+from advisor.mapgraph import build as B
 
 # Resolve advisor/ and decisions/ against the checkout this file lives in -- common.py
 # derives ROOT from its own location -- not a hardcoded D:\tw_stack. In the live checkout
 # that is the same path; in a worktree it is the difference between testing your own edits
-# and silently importing the main checkout's copies alongside your own mapgraph3.
-# This block sits AFTER the import above on purpose: putting the repo root on sys.path
-# earlier would change which of the two branches wins when train.py is run as a script.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# and silently importing the main checkout's copies alongside your own mapgraph.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))))
 import common
 
 sys.path.insert(0, common.ADVISOR)
@@ -121,7 +117,8 @@ def _shard(args):
     for _v in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
                "NUMEXPR_NUM_THREADS"):
         _os.environ[_v] = "1"
-    root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+    root = _os.path.dirname(_os.path.dirname(
+        _os.path.dirname(_os.path.abspath(__file__))))
     if root not in _sys.path:
         _sys.path.insert(0, root)
     import common as _common
@@ -129,12 +126,8 @@ def _shard(args):
         if p not in _sys.path:
             _sys.path.insert(0, p)
     from store import DecisionStore
-    try:
-        from mapgraph3 import build as B2
-        from mapgraph3 import net as N2
-    except ImportError:
-        import build as B2
-        import net as N2
+    from advisor.mapgraph import build as B2
+    from advisor.mapgraph import net as N2
     import torch as _t
     _t.set_num_threads(1)
 
@@ -175,9 +168,9 @@ SHARD = 400
 def walk(runs_root=None, limit=None, log=print, workers=None):
     """Corpus -> (graph, y, taken-mask) examples.
 
-    Note what is NOT here: v2 called features.stamp_prev_actions and
+    Note what is NOT here: the predecessor called features.stamp_prev_actions and
     stamp_action_counts to write CatBoost history features into the record before
-    building the graph. v3 does not. The only advisor code touched is the label.
+    building the graph. This does not. The only advisor code touched is the label.
     """
     import concurrent.futures as cf
     import torch
@@ -187,7 +180,7 @@ def walk(runs_root=None, limit=None, log=print, workers=None):
     dbs = sorted(glob.glob(os.path.join(runs_root, "*", "decisions.sqlite")))
 
     try:
-        from mapgraph3 import corpus as CO
+        from advisor.mapgraph import corpus as CO
     except ImportError:
         import corpus as CO
 
@@ -200,7 +193,7 @@ def walk(runs_root=None, limit=None, log=print, workers=None):
             st = DecisionStore(run_dir, readonly=True)
         except IncompatibleStore as e:
             skipped.append(os.path.basename(run_dir))
-            log("mapgraph3.train: skipping %s -> %s" % (run_dir, str(e)[:100]))
+            log("mapgraph.train: skipping %s -> %s" % (run_dir, str(e)[:100]))
             continue
         try:
             for camp, turns in st.target_series().items():
@@ -275,7 +268,7 @@ def walk(runs_root=None, limit=None, log=print, workers=None):
             CO.save(cdir, merged, dirty=set(fresh), log=log)
         slots.extend(merged[k] for k in sorted(merged))
 
-    log("mapgraph3.train: walk %.1fs -- %d graphs built, %d reused from cache"
+    log("mapgraph.train: walk %.1fs -- %d graphs built, %d reused from cache"
         % (time.time() - t_walk, built, reused))
 
     examples = []
@@ -309,11 +302,11 @@ def _device(cfg, log):
     import torch
     want = str(cfg.get("device") or "auto")
     if want != "cpu" and torch.cuda.is_available():
-        log("mapgraph3.train: device cuda (%s)" % torch.cuda.get_device_name(0))
+        log("mapgraph.train: device cuda (%s)" % torch.cuda.get_device_name(0))
         return torch.device("cuda")
     if want == "cuda":
-        raise RuntimeError("mapgraph3.train: device=cuda requested, CUDA unavailable")
-    log("mapgraph3.train: device cpu")
+        raise RuntimeError("mapgraph.train: device=cuda requested, CUDA unavailable")
+    log("mapgraph.train: device cpu")
     return torch.device("cpu")
 
 
@@ -328,7 +321,8 @@ def _collate(items, size, dev, log, tag):
 
     The graphs are immutable after _tensorize, so re-running Batch.from_data_list every
     epoch -- which is what this did, ~160 times an epoch -- recomputes a result that
-    cannot have changed, and re-crosses PCIe with it. v2 had learned this and v3 had
+    cannot have changed, and re-crosses PCIe with it. The predecessor had learned this
+    and this one had
     lost it again.
 
     Residency is measured against free VRAM, never assumed: the corpus grows at every
@@ -343,18 +337,18 @@ def _collate(items, size, dev, log, tag):
         return batches, False
     need, free = _corpus_bytes(batches), torch.cuda.mem_get_info()[0]
     if need >= free * 0.5:
-        log("mapgraph3.train: %s corpus %.2fGB vs %.2fGB free -- streaming batches"
+        log("mapgraph.train: %s corpus %.2fGB vs %.2fGB free -- streaming batches"
             % (tag, need / 1e9, free / 1e9))
         return batches, False
     try:
         out = [b.to(dev, non_blocking=True) for b in batches]
         torch.cuda.synchronize()
-        log("mapgraph3.train: %s %d batches resident on gpu (%.2fGB of %.2fGB free)"
+        log("mapgraph.train: %s %d batches resident on gpu (%.2fGB of %.2fGB free)"
             % (tag, len(out), need / 1e9, free / 1e9))
         return out, True
     except torch.cuda.OutOfMemoryError:
         torch.cuda.empty_cache()
-        log("mapgraph3.train: %s did not fit VRAM -- streaming batches" % tag)
+        log("mapgraph.train: %s did not fit VRAM -- streaming batches" % tag)
         return batches, False
 
 
@@ -366,7 +360,7 @@ def _fit(datas, ys, groups, cfg, log=print):
     # campaigns), campaigns REMOVED from the holdout: grouped_split 71, stable_split 0.
     from base_model import stable_split
     try:
-        from mapgraph3 import net as N
+        from advisor.mapgraph import net as N
     except ImportError:
         import net as N
 
@@ -391,7 +385,7 @@ def _fit(datas, ys, groups, cfg, log=print):
     # batch ORDER. This is a real change to the optimisation and not a free win: the
     # model now draws from a fixed set of minibatch gradients instead of resampling a
     # fresh partition every epoch. It is what makes collate-once possible, and it is
-    # what v2 shipped. Validation is never shuffled -- the reported score is a
+    # what the predecessor shipped. Validation is never shuffled -- the reported score is a
     # graph-weighted mean, so it does not depend on batching or order.
     order0 = torch.randperm(len(trn_idx), generator=gen).tolist()
     trn = [datas[trn_idx[i]] for i in order0]
@@ -469,7 +463,7 @@ def _fit(datas, ys, groups, cfg, log=print):
                               for k, v in net.state_dict().items()}
             else:
                 bad += 1
-            log("mapgraph3.train: epoch %3d  val_nll %.4f  best %.4f  gate %s  %s  %.0fs"
+            log("mapgraph.train: epoch %3d  val_nll %.4f  best %.4f  gate %s  %s  %.0fs"
                 % (epoch + 1, score, best,
                    [round(float(v), 4) for v in net.encoder.a2e_gate],
                    "*" if improved else " ", time.time() - t0))
@@ -507,12 +501,12 @@ def train(runs_root=None, cfg=None, log=None):
     # than silently return an untrained one.
     walked = time.time() - t0
     fit_cfg = dict(cfg, time_budget_s=max(MIN_FIT_S, cfg["time_budget_s"] - walked))
-    log("mapgraph3.train: walk+tensorize %.1fs, %.1fs left of the %ds budget for the fit"
+    log("mapgraph.train: walk+tensorize %.1fs, %.1fs left of the %ds budget for the fit"
         % (walked, fit_cfg["time_budget_s"], cfg["time_budget_s"]))
     net, fit, y_mean, y_sd = _fit(datas, [e["y"] for e in ex],
                                   [e["campaign_id"] for e in ex], fit_cfg, log=log)
     import torch
-    meta = {"backend": "gnn3", "schema_version": S.SCHEMA_VERSION,
+    meta = {"backend": "mapgraph", "schema_version": S.SCHEMA_VERSION,
             "schema_hash": S.schema_hash(), "cfg": cfg, "rows": len(datas),
             "campaigns": sorted({e["campaign_id"] for e in ex}), "fit": fit,
             "y_mean": round(y_mean, 6), "y_sd": round(y_sd, 6),
@@ -531,7 +525,7 @@ def train(runs_root=None, cfg=None, log=None):
     for name in ("encoder.pt", "head.pt", "meta.json"):
         os.replace(os.path.join(stage, name), os.path.join(S.MODEL_DIR, name))
     shutil.rmtree(stage, ignore_errors=True)
-    return {"trained": True, "backend": "gnn3", "rows": len(datas), "fit": fit,
+    return {"trained": True, "backend": "mapgraph", "rows": len(datas), "fit": fit,
             "campaigns": len(meta["campaigns"]), "tally": w["tally"],
             "walk_seconds": round(time.time() - t0 - fit["seconds"], 1)}
 
@@ -540,12 +534,12 @@ def _overfit(limit=8):
     """Can it drive the listwise loss down on a handful of graphs?
 
     Spread is measured on q across the candidate set -- never on q-v, which is the
-    self-confirming artifact v2's _overfit gate was reading.
+    self-confirming artifact the predecessor's _overfit gate was reading.
     """
     import torch
     from torch_geometric.data import Batch
     try:
-        from mapgraph3 import net as N
+        from advisor.mapgraph import net as N
     except ImportError:
         import net as N
     w = walk(limit=limit)

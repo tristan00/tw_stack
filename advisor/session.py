@@ -349,7 +349,7 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                         # against this checkout, not a hardcoded one -- see policy.py
                         if common.ROOT not in sys.path:
                             sys.path.insert(0, common.ROOT)
-                        from mapgraph3 import train as GT
+                        from advisor.mapgraph import train as GT
                         t1 = time.time()
                         grep = GT.train(log=log)
                         grep["seconds"] = round(time.time() - t1, 1)
@@ -980,7 +980,7 @@ def train_events(runs_root=RUNS_ROOT):
 
 def _feature_version():
     import hashlib
-    for d in (common.MODEL_NN_GLOBAL, common.MODEL_GLOBAL):
+    for d in (common.MODEL_GLOBAL,):
         p = os.path.join(d, "meta.json")
         if not os.path.isfile(p):
             continue

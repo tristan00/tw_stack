@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""v3 network.
+"""The network.
 
 * Candidate actions are NODES, and `q = MLP(h_action)` reads that node alone after
   message passing. Nothing else is concatenated back in. If that is not enough to rank,
@@ -33,10 +33,7 @@ from torch_geometric.data import Data
 from torch_geometric.nn import MessagePassing
 from torch_geometric.utils import scatter, softmax
 
-try:
-    from mapgraph3 import schema as S
-except ImportError:
-    import schema as S
+from advisor.mapgraph import schema as S
 
 HIDDEN = 192
 ENTITY_LAYERS = 2
