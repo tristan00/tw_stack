@@ -63,6 +63,9 @@ CHECKS = [
     ("battle_facts", ["-m", "launcher.test_battle_facts"], False,
      "battle-result screen parses on every archived dump across 10 races -- the one place "
      "scraping is unavoidable, and the resources bar differs per race"),
+    ("game_prefs", ["launcher/test_game_prefs.py"], False,
+     "the game's settings file still has the game's own CRLF endings and the collection "
+     "throughput profile -- an LF rewrite changes no value and cost 3 failed launches"),
     ("graph_no_catboost", ["-m", "advisor.mapgraph.eval", "no-catboost"], False,
      "no mapgraph source imports advisor/features.py -- checked on OUR source, because "
      "base_model legitimately imports it for the label"),
