@@ -1782,6 +1782,23 @@ PANELS = (
     ("infra", "infrastructure", lambda con, run, q: render_infra(run)),
 )
 
+# How often a panel re-fetches itself, in seconds. One blanket 10s reload for every panel
+# was wrong in both directions: `live` is the run monitor and wants to be current, while
+# `matrix` aggregates the whole run history and does not meaningfully change inside a
+# minute -- reloading it every 10s spent query time to redraw the same pixels, and fought
+# the lazy sections, which take longer to compute than the interval that discarded them.
+# Cadence belongs to the panel, next to what the panel costs.
+REFRESH = {
+    "live": 5,            # the reason a refresh exists at all
+    "decisions": 20,      # newest-first log; new rows land every few seconds
+    "infra": 30, "training": 30, "models": 30,
+    "overview": 60, "starts": 60, "actions": 60, "interrupts": 60,
+    "diplomacy": 60, "timing": 60, "reward": 60, "timeline": 60, "matrix": 120,
+    # these are mostly a lazy placeholder; the section inside has its own TTL
+    "agreement": 120, "modelmetrics": 120,
+}
+REFRESH_DEFAULT = 60
+
 PANEL_MAP = {s: f for s, _t, f in PANELS}
 # Sections fetched by a panel AFTER it is on screen (see .lazy in _TABS_JS). They are
 # served by the same /panel/ route but are deliberately NOT in PANELS, so they get no tab.
@@ -1800,7 +1817,8 @@ def render_index(con, run_dir):
                      for s, _t, _f in PANELS)
     return _page("<div id=head>%s</div><div class=tabs>%s</div>%s%s"
                  % (render_head(con, run_dir), nav, bodies,
-                    _TABS_JS % json.dumps([s for s, _t, _f in PANELS])))
+                    _TABS_JS % (json.dumps([s for s, _t, _f in PANELS]),
+                                json.dumps(REFRESH), REFRESH_DEFAULT)))
 
 
 def render_campaigns(con):
@@ -1876,7 +1894,7 @@ def render_campaigns(con):
 
 _TABS_JS = """<script>
 (function(){
-  var slugs=%s, key='v7tab', cur=sessionStorage.getItem(key), pq={};
+  var slugs=%s, refresh=%s, key='v7tab', cur=sessionStorage.getItem(key), pq={};
   if(slugs.indexOf(cur)<0)cur=slugs[0];
   function paint(){
     document.querySelectorAll('.panel').forEach(function(p){p.hidden=(p.id!=='p-'+cur);});
@@ -1893,11 +1911,12 @@ _TABS_JS = """<script>
   // can answer cheaply paints immediately; only the expensive part waits, and it waits
   // in its own box instead of holding the whole tab behind it.
   //
-  // The cache is not an optimisation, it is what makes this usable at all. The panel
-  // reloads every 10s (setInterval below) and a lazy section takes 4-7s to compute, so
-  // without it the section appeared for ~6s out of every 10 and was blank the rest --
-  // it looked broken. Now the last good HTML repaints instantly on every reload and a
-  // refetch only runs when it is older than the TTL, swapping in when it arrives.
+  // The cache survives panel reloads. A lazy section takes 4-7s to compute, so any
+  // reload during that window used to leave it blank -- under the old blanket 10s
+  // interval it was blank about four seconds in every ten and looked broken. Per-panel
+  // cadence (see schedule) mostly removes that, but a reload can still land mid-fetch, so
+  // the last good HTML repaints instantly and a refetch only runs past the TTL, swapping
+  // in when it arrives.
   // innerHTML, not outerHTML: the .lazy div has to survive as the target for the next
   // refresh.
   var lzHtml={}, lzAt={}, lzBusy={}, LZ_TTL=60000;
@@ -1928,13 +1947,26 @@ _TABS_JS = """<script>
     var a=document.activeElement;
     return a&&el.contains(a)&&/^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName);
   }
+  // Each panel schedules its OWN next reload, after the previous one has landed, at the
+  // cadence declared for it. A shared setInterval could not do either: it fired on a wall
+  // clock regardless of whether the last fetch had returned, and used one rate for panels
+  // whose cost and volatility differ by two orders of magnitude. Only the visible panel is
+  // ever scheduled, and switching tabs cancels the old timer.
+  var timer=null;
+  function schedule(name){
+    if(name!==cur)return;
+    if(timer)clearTimeout(timer);
+    timer=setTimeout(function(){load(cur);},(refresh[name]||%d)*1000);
+  }
   function load(name){
     var el=document.getElementById('p-'+name);
-    if(editing(el))return;
+    if(timer){clearTimeout(timer);timer=null;}
+    if(editing(el)){schedule(name);return;}
     fetch('/panel/'+name+(pq[name]?'?'+pq[name]:''),{cache:'no-store'})
       .then(function(r){return r.text()})
-      .then(function(t){swap(el,t);})
-      .catch(function(e){el.innerHTML='<p class=bad>panel '+name+' fetch failed: '+e+'</p>';});
+      .then(function(t){swap(el,t);schedule(name);})
+      .catch(function(e){el.innerHTML='<p class=bad>panel '+name+' fetch failed: '+e+'</p>';
+        schedule(name);});
     fetch('/panel/head',{cache:'no-store'})
       .then(function(r){return r.text()})
       .then(function(t){document.getElementById('head').innerHTML=t;})
@@ -1950,7 +1982,6 @@ _TABS_JS = """<script>
     pq[cur]='seq='+a.dataset.seq;load(cur);
   });
   paint();load(cur);
-  setInterval(function(){load(cur);},10000);
 })();
 </script>"""
 
