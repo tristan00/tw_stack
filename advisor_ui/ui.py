@@ -2751,12 +2751,21 @@ def _mm_top1(con, lo, hi):
     rank=1 is what catboost would have done, gnn_rank=1 what the gnn would have done --
     on every decision, not only the ones each was drawn to decide. That is the point: it
     measures what a model WANTS, independent of what the draw let it do.
+
+    `score IS NOT NULL` is load-bearing and not a tidiness filter. An UNTRAINED catboost
+    returns score/exploit/impact as None for every offer, but policy.choose() then stamps
+    `r["rank"] = i + 1` over the list unconditionally -- so every decision before the first
+    retrain carries a full 1..N ranking that is `decision_rows` ENUMERATION ORDER, not an
+    opinion. Measured: 163,427 ranked offers before the first score exists, and 0 of them
+    scored. Counting those made an unfitted model look like it had a strong taste (top pick
+    `stance` on 54.5%) when it had none at all. gnn_rank needs no such guard: _score_with_gnn
+    writes it only alongside a value.
     """
     out = {"catboost": collections.Counter(), "gnn": collections.Counter()}
-    for at, r, g in con.execute(
-            "SELECT action_type, rank, gnn_rank FROM action_offers"
+    for at, r, g, s in con.execute(
+            "SELECT action_type, rank, gnn_rank, score FROM action_offers"
             " WHERE decision_id BETWEEN ? AND ? AND (rank=1 OR gnn_rank=1)", (lo, hi)):
-        if r == 1:
+        if r == 1 and s is not None:
             out["catboost"][at] += 1
         if g == 1:
             out["gnn"][at] += 1
@@ -2945,7 +2954,10 @@ def _mm_distributions(con, vs):
              "<b>top share</b> is how often its first pick is that one action type: high "
              "means the model is forcing a move. <b>entropy</b> is normalised over the types "
              "it actually uses, so 1.0 spreads evenly and 0.0 always says the same thing. "
-             "Shown per model version, because that is the thing that changes.</div>"
+             "Shown per model version, because that is the thing that changes. Versions "
+             "before a model had weights show <b>no ranked offers</b>: an untrained ranker "
+             "returns no score, and the 1..N rank stored alongside it is enumeration order "
+             "rather than an opinion, so it is not counted here.</div>"
              "<div class=scroll><table><tr><th>model version<th>model<th>features"
              "<th class=num>decisions<th>most common first pick<th class=num>top share"
              "<th class=num>entropy<th class=num>distinct types</tr>%s</table></div>"
