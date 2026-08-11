@@ -607,7 +607,11 @@ def handle_results(bus):
             sys.stderr.write("interrupts: %s clicked twice with no effect -- not hammering it\n"
                              % target)
             _record_choice("battle_results", "popup_battle_results", opts_before, target,
-                           extra={"battle": facts} if facts else None,
+                           # MUST be under "panel": write_interrupt persists only
+                       # row["panel"] into panel_blob and silently drops every other key.
+                       # Filed under "battle" first, and both rows landed with panel_blob
+                       # NULL -- the same silent-drop class this whole audit is about.
+                       extra={"panel": facts} if facts else None,
                            executed=True, confirmed=False, refusal="command_silently_refused")
             break
         last = target
@@ -616,7 +620,11 @@ def handle_results(bus):
         clicked = _click(bus, ctrls[target], settle=2.5)
         moved = set(roots(bus)) != roots_before
         _record_choice("battle_results", "popup_battle_results", opts_before, target,
-                       extra={"battle": facts} if facts else None,
+                       # MUST be under "panel": write_interrupt persists only
+                       # row["panel"] into panel_blob and silently drops every other key.
+                       # Filed under "battle" first, and both rows landed with panel_blob
+                       # NULL -- the same silent-drop class this whole audit is about.
+                       extra={"panel": facts} if facts else None,
                        executed=clicked, confirmed=bool(moved),
                        refusal=None if moved else ("command_silently_refused" if clicked
                                                    else "execute_failed"),
