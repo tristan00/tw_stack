@@ -86,9 +86,12 @@ def sequence(con, limit=SEQ_PAGE, offset=0):
         " t.context_kind, t.context_id, t.action_type, t.action_key, t.counted, t.refusal, t.policy,"
         " o.score, o.exploit, o.pct_global, o.pct_local, o.rank"
         + "".join(", o.%s" % c for c in gnn)
-        # how many offers the gnn scored on this decision -- the denominator its rank is
-        # out of. catboost ranks all n_offers, the gnn only the eligible ones, so the two
-        # ranks are on different scales and cannot be compared without both denominators.
+        # How many offers carry a gnn rank on this decision. It is normally exactly
+        # n_offers -- policy.choose() scores both models over the same `ranked` list on
+        # every decision, so both ranks are 1..N over the same N (measured: equal on 142
+        # of 146 decisions since the gnn had weights). Kept as its own count only so a
+        # decision whose gnn pass partly failed is not silently given the wrong
+        # denominator; it is NOT the gnn ranking a smaller set by design.
         + (", (SELECT COUNT(*) FROM action_offers g WHERE g.decision_id=d.decision_id"
            " AND g.gnn_rank IS NOT NULL) AS n_gnn" if "gnn_rank" in gnn else "") +
         " FROM decision_points d LEFT JOIN action_taken t ON t.decision_id=d.decision_id"
@@ -107,9 +110,9 @@ def sequence(con, limit=SEQ_PAGE, offset=0):
 def _pctile(rank, n):
     """Where a 1-based rank sits among n items, 100 = the model's own top pick.
 
-    catboost ranks every offer and the gnn only the eligible ones, so rank 5 means very
-    different things to each. Normalising to a percentile is the only way the two are
-    comparable on one row.
+    Both models rank the same offer set, so n is the same for each and rank 5 means the
+    same thing to both. The percentile is here so decisions with DIFFERENT OFFER COUNTS
+    compare against each other -- rank 5 of 8 and rank 5 of 70 are not the same standing.
     """
     try:
         rank, n = float(rank), float(n)
@@ -1399,9 +1402,9 @@ def render_decisions(con, q):
         if r["policy"] and str(r["policy"]).endswith("_random_fallback"):
             pol = "<span class=warn>%s</span>" % pol
         gi = r.get("gnn_impact")
-        # Both groups are bright. They used to dim whichever model did not decide, which
-        # made sense while the gnn only scored its own decisions -- but the other model's
-        # opinion of the action taken is now exactly what this table is for.
+        # Both groups are bright. Dimming whichever model did not decide would say one of
+        # them is the pipeline and the other an add-on; neither is. The other model's
+        # opinion of the action taken is exactly what this table is for.
         cat_p = _pctile(r.get("rank"), r.get("n_offers"))
         gnn_p = _pctile(r.get("gnn_rank"), r.get("n_gnn"))
         delta = ("%+0.1f" % (gnn_p - cat_p)) if (cat_p is not None
@@ -1456,9 +1459,9 @@ def render_decisions(con, q):
               "every offer both ranked on that decision &mdash; whole-ordering agreement, "
               "where &Delta;pct is agreement about one action. They can diverge: the models "
               "can place the chosen action alike and still order the rest differently. "
-              "Older rows "
-              "show <b>-</b> in the gnn columns &mdash; back then it scored only when it was "
-              "the strategy drawn. "
+              "Older rows show <b>-</b> in the gnn columns because those decisions predate "
+              "the gnn having any weights at all &mdash; not because it scores less than "
+              "catboost. Both score the same offer set on every decision. "
               "<b>ruleset</b> and <b>random</b> picks rank on no score at all &mdash; the "
               "rule that fired is named in <b>picked by</b>, and "
               "<span class=warn>*_random_fallback</span> means that strategy was drawn but "
@@ -1470,7 +1473,8 @@ def render_decisions(con, q):
               "<th class=grp colspan=4 title='E1-E2 impact percentiles and the rank of the "
               "taken action; computed for every offer on every decision'>catboost"
               "<th class=grp colspan=2 title='twin-head Q minus V and the rank of the taken "
-              "action, over the offers the gnn scored'>gnn"
+              "action; scored for every offer on every decision, the same set catboost "
+              "scores'>gnn"
               "<th class=grp colspan=2 title='&Delta;pct compares the two models on the "
               "action taken. rho compares their whole orderings of that decision'>agree"
               "<th class=grp>picked by</tr>"
@@ -1548,11 +1552,16 @@ def _median(vals):
 def _rho_for_decisions(con, dids):
     """decision_id -> Spearman rho between the two models' rankings of that decision.
 
-    Over the offers BOTH models ranked, which is the only set where the comparison means
-    anything: catboost ranks every offer, the gnn ranks only the ones it scored, so the
-    two ranks are out of different denominators and are not comparable row by row. The
-    intersection is what the agreement panel already reduces to, and _spearman is the
-    metric that panel already reports -- one metric for one question, not a second.
+    Over the offers both models ranked -- which is every offer on the decision. I wrote
+    "the gnn ranks only the ones it scored, so the two ranks are out of different
+    denominators" here and it was false, copied off a stale UI string rather than read off
+    policy.py. policy.choose() scores BOTH models on the same `ranked` list on every
+    decision, before eligibility and before the draw, so gnn_rank and rank are 1..N over
+    the same N. Measured: n_gnn == n_offers on 142 of 146 decisions since the gnn had
+    weights. The NULL gnn_rank rows are decisions from before it was ever trained.
+
+    _spearman is the metric the agreement panel already reports -- one metric for one
+    question, not a second.
 
     Scoped to the decision ids on the page rather than a lookback window: the decision log
     pages backwards through the whole run, so a fixed recent window would leave the column
@@ -1610,11 +1619,10 @@ def render_agreement(con):
     usable = {d: p for d, p in per.items() if len(p) >= 3}
     if not usable:
         return ("<h2>do the two models agree?</h2>"
-                "<div class=legend>Nothing to compare yet. This panel needs decisions where "
-                "<b>both</b> models ranked the same offers. The gnn only records a ranking "
-                "on decisions it actually scored &mdash; until it scores every decision, "
-                "the only overlap is the decisions it was drawn to win, which is a biased "
-                "sample and deliberately not reported here.</div>")
+                "<div class=legend>Nothing to compare yet. Both models score every offer on "
+                "every decision, so this fills as soon as the gnn has weights. A decision "
+                "carries no gnn ranking only if it was recorded before the gnn was ever "
+                "trained, or if a scoring pass failed.</div>")
     rhos, tops, sizes = [], [], []
     for pairs in usable.values():
         cat = [p[0] for p in pairs]
