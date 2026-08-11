@@ -458,6 +458,9 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
         stretch.append(entry)
         log("campaign %d -> %s in %.0fs" % (i + 1, entry["outcome"], entry["seconds"]))
         _write(out_path, report)
+        # The ledger is written here, not only at the end: a run stopped by `runctl down`
+        # used to leave no trial row at all. See _checkpoint_trial.
+        _checkpoint_trial(stretch, backend, backend_cfg, generation, report, trained, log)
 
     _flush_generation(stretch, backend, backend_cfg, generation, report, trained, log)
     report["seconds"] = round(time.time() - report["started"], 1)
@@ -712,7 +715,72 @@ def _flush_generation(stretch, backend, backend_cfg, gen_n, report, trained, log
     return row
 
 
-def _write_trial(row, log):
+def _checkpoint_trial(stretch, backend, backend_cfg, gen_n, report, trained, log):
+    """Persist the generation in progress after every campaign.
+
+    _flush_generation runs in exactly two places: at a retrain boundary, and once after
+    the campaign loop. A collection run is --no-retrain with retrain_every=0, so the
+    first never fires and the ledger gets a single write at the very end -- which means
+    a session stopped by `runctl down` (every relaunch, and every babysitter restart)
+    recorded nothing at all, while its decisions were already in the corpus.
+
+    Measured when this was found: 15 session reports on disk, 76 campaigns with an
+    outcome, and 3 sessions had produced a ledger row. The ledger accounted for 9.
+
+    Appending a row per campaign is safe because every reader already keys by trial id
+    and keeps the last one -- ui._trials_table and train_events both build a dict keyed
+    on `trial` -- so these are superseded in place by the next checkpoint and finally by
+    the completed row from _flush_generation. Cost is one _measure() pass per campaign,
+    the same query live_trial() already runs on every UI render.
+    """
+    row = _trial_row(stretch, backend, backend_cfg, gen_n,
+                     dict(report, running=True), trained, log)
+    if row is not None:
+        _write_trial(row, log, quiet=True)
+    return row
+
+
+def backfill_trials(runs_root=RUNS_ROOT, log=print):
+    """Rebuild ledger rows for sessions that ended before they could write one.
+
+    Reads the session reports rather than the corpus, because the report is what carries
+    per-campaign outcome, timing and policy -- the same input _flush_generation uses, so
+    a backfilled row is built by the identical code path and is not a second opinion.
+
+    Trials already in the ledger are left alone. A session with no `totals` did not
+    finish, so its row is marked stopped_short, which is what the UI already renders as
+    "cut short"; the live session is refreshed by _checkpoint_trial as it goes.
+    """
+    have = set()
+    try:
+        with open(EXPERIMENTS, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    have.add(json.loads(line).get("trial"))
+                except ValueError:
+                    continue
+    except OSError:
+        pass
+    written = 0
+    for path, rep in _session_reports(runs_root):
+        for gen, stretch in _stretches(rep["campaigns"]):
+            stretch = [c for c in stretch if c.get("outcome")]
+            if not stretch:
+                continue
+            extra = {} if rep.get("totals") else {"stopped_short": True}
+            backend, cfg, shadow, trained = _stretch_context(path, rep, gen, stretch, extra)
+            row = _trial_row(stretch, backend, cfg, gen, shadow, trained, log)
+            if row is None or row["trial"] in have:
+                continue
+            _write_trial(row, log, quiet=True)
+            have.add(row["trial"])
+            written += 1
+            log("   backfilled %s: %d campaigns" % (row["trial"], row["campaigns"]))
+    log("backfill: %d trial(s) written to %s" % (written, EXPERIMENTS))
+    return 0
+
+
+def _write_trial(row, log, quiet=False):
     try:
         os.makedirs(METRICS_DIR, exist_ok=True)
         with open(EXPERIMENTS, "a", encoding="utf-8") as fh:
@@ -720,6 +788,8 @@ def _write_trial(row, log):
     except OSError as e:
         raise RuntimeError("trial %s NOT written to %s -- refusing to run unrecorded "
                            "experiments: %s" % (row.get("trial"), EXPERIMENTS, repr(e)[:120]))
+    if quiet:
+        return
     s, l, t = row["settlements"], row["lord_level"], row.get("timing") or {}
     num = lambda v, f="%+.2f": "unmeasured" if v is None else f % v
     log("   trial %s logged: %d campaigns (%s), settlements %s total / %s mean / %s campaigns"
@@ -1052,6 +1122,8 @@ def _parse_turns(arg):
 
 def main():
     sys.path.insert(0, _HERE)
+    if "--backfill-trials" in sys.argv:
+        return backfill_trials()
     n = int(sys.argv[1]) if len(sys.argv) > 1 else 3
     turns = _parse_turns(sys.argv[2]) if len(sys.argv) > 2 else 20
     import backends as B
