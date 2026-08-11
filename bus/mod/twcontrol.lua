@@ -924,7 +924,11 @@ function handlers.hostiles(seq)
             if hvis == true then
               local hx = try(function() return c:logical_position_x() end)
               local hy = try(function() return c:logical_position_y() end)
+              -- visible was COMPUTED and then thrown away: it filtered the row in and
+              -- never reached the record, so mapgraph/build.py has always filtered on
+              -- h.get("visible") is False against a key that does not exist.
               out[#out + 1] = { kind = (at_war and "hero" or "neutral_hero"), faction = or_null(fname),
+                visible = or_null(hvis),
                 cqi = or_null(try(function() return c:command_queue_index() end)),
                 subtype = or_null(try(function() return c:character_subtype_key() end)),
                 agent_type = or_null(try(function() return c:character_type_key() end)),
@@ -948,6 +952,7 @@ function handlers.hostiles(seq)
               local x = try(function() return c:logical_position_x() end)
               local y = try(function() return c:logical_position_y() end)
               out[#out + 1] = { kind = (at_war and "army" or "neutral_army"), faction = or_null(fname),
+                visible = or_null(vis),
                 cqi = or_null(try(function() return c:command_queue_index() end)),
                 is_armed_citizenry = (try(function() return c:military_force():is_armed_citizenry() end) == true),
 

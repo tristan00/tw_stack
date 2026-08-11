@@ -40,9 +40,38 @@ class CollectError(RuntimeError):
     pass
 
 
+# Every reply line the mod writes carries `try_fails` when a pcall inside it failed --
+# deduplicated by message with a count, capped at 24 so a failing loop cannot flood.
+# bus/mod/twcontrol.lua has shipped them since it was written and NOTHING read them: _ev
+# and _bres took `error` and `result` and dropped the rest. So a property that silently
+# returned nil on every call looked identical to a property that genuinely has no value,
+# which is the exact confusion that let campaign.defeated sit broken for a whole corpus.
+# They are drained into the campaign state, which IS stored, so coverage can see them.
+_TRY_FAILS = []
+
+
+def _note_try_fails(reply):
+    tf = (reply or {}).get("try_fails")
+    if tf:
+        _TRY_FAILS.extend(tf)
+    return reply
+
+
+def _drain_try_fails():
+    """{error message: total count} since the last drain."""
+    out = {}
+    for row in _TRY_FAILS:
+        try:
+            out[str(row.get("err"))] = out.get(str(row.get("err")), 0) + int(row.get("n") or 1)
+        except AttributeError:
+            out[str(row)] = out.get(str(row), 0) + 1
+    del _TRY_FAILS[:]
+    return out
+
+
 def _ev(bus, lua, timeout=20.0, allow_nil=False):
     try:
-        r = bus.send("eval", lua, timeout=timeout) or {}
+        r = _note_try_fails(bus.send("eval", lua, timeout=timeout) or {})
     except Exception as e:
         raise CollectError("bus eval failed: %s" % repr(e)[:110])
     if r.get("error"):
@@ -1483,7 +1512,7 @@ def _hero_type_counts(world):
 
 
 def _bres(reply, what, allow_nil=False):
-    r = reply or {}
+    r = _note_try_fails(reply) or {}
     if r.get("error"):
         _e = str(r["error"])
         raise CollectError("lua error (%s): ...%s" % (what, _e[-240:]) if len(_e) > 240 else
@@ -1679,6 +1708,9 @@ def snapshot(bus, active=None):
     prof["_regions"] = len(regions)
     prof["_wave_b_cmds"] = len(wave_b)
     prof["_wave_c_cmds"] = len(wave_c)
+    # A read that failed inside the game is a fact about this decision, so it is recorded
+    # with it rather than printed and lost.
+    camp["read_failures"] = _drain_try_fails()
     # NO `offers` KEY. The recorder collects; the advisor infers.
     return {"ts": time.time(), "campaign": camp, "world": world,
             "entities": ents, "profile": prof}
