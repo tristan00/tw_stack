@@ -1892,12 +1892,36 @@ _TABS_JS = """<script>
   // A section marked .lazy is fetched AFTER its panel is on screen. Everything a panel
   // can answer cheaply paints immediately; only the expensive part waits, and it waits
   // in its own box instead of holding the whole tab behind it.
+  //
+  // The cache is not an optimisation, it is what makes this usable at all. The panel
+  // reloads every 10s (setInterval below) and a lazy section takes 4-7s to compute, so
+  // without it the section appeared for ~6s out of every 10 and was blank the rest --
+  // it looked broken. Now the last good HTML repaints instantly on every reload and a
+  // refetch only runs when it is older than the TTL, swapping in when it arrives.
+  // innerHTML, not outerHTML: the .lazy div has to survive as the target for the next
+  // refresh.
+  var lzHtml={}, lzAt={}, lzBusy={}, LZ_TTL=60000;
   function lazy(el){
     el.querySelectorAll('.lazy[data-src]').forEach(function(d){
-      fetch(d.dataset.src,{cache:'no-store'})
+      var src=d.dataset.src, now=Date.now();
+      if(lzHtml[src])d.innerHTML=lzHtml[src];
+      if(lzBusy[src])return;
+      if(lzHtml[src]&&(now-lzAt[src])<LZ_TTL)return;
+      lzBusy[src]=1;
+      fetch(src,{cache:'no-store'})
         .then(function(r){return r.text()})
-        .then(function(t){d.outerHTML=t;})
-        .catch(function(e){d.innerHTML='<p class=bad>section fetch failed: '+e+'</p>';});
+        .then(function(t){
+          lzHtml[src]=t;lzAt[src]=Date.now();lzBusy[src]=0;
+          var live=document.querySelector('.lazy[data-src="'+src+'"]');
+          if(live)live.innerHTML=t;
+        })
+        .catch(function(e){
+          lzBusy[src]=0;
+          if(!lzHtml[src]){
+            var live=document.querySelector('.lazy[data-src="'+src+'"]');
+            if(live)live.innerHTML='<p class=bad>section fetch failed: '+e+'</p>';
+          }
+        });
     });
   }
   function editing(el){
