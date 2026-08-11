@@ -420,7 +420,13 @@ class DecisionStore:
 
     def write_interrupt(self, row):
         """`tree` is accepted and dropped. interrupt_decisions.tree_json was 886 MB, 18.5%
-        of the v1 database, and had no readers anywhere in the repo."""
+        of the v1 database, and had no readers anywhere in the repo.
+
+        ONLY `panel` survives as a payload -- it is the single blob column here. Any other
+        key a caller invents is silently discarded, which has already cost once: battle
+        results were filed under `battle` and both rows landed with panel_blob NULL. Put
+        screen payloads under `panel`.
+        """
         self._assert_writable("write_interrupt")
         camp = row.get("campaign") or {}
         opts = row.get("options") or {}
