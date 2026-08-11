@@ -73,7 +73,7 @@ class Policy:
         if "ruleset" in self.strategies and self.ruleset is None:
             raise ValueError("strategy mix includes 'ruleset' but no ruleset name was given")
         self.gnn = None
-        if "gnn" in self.strategies:
+        if "gnn_marwil" in self.strategies:
             # Resolve mapgraph against the checkout this file lives in -- common.ROOT
             # is derived from common.py's own location. Hardcoding D:\tw_stack here meant
             # a worktree loaded the MAIN checkout's mapgraph while training wrote a model
@@ -121,8 +121,8 @@ class Policy:
         for i, r in enumerate(ranked):
             r["rank"] = i + 1
         gnn_scores = self._score_with_gnn(ranked, record)
-        if "gnn" in self.members:
-            self.members["gnn"].scored = gnn_scores
+        if "gnn_marwil" in self.members:
+            self.members["gnn_marwil"].scored = gnn_scores
         # Everything on the record is already a survivor -- the loop generated and
         # gated before the recorder stored it -- so there is nothing left to filter.
         elig = ranked

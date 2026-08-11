@@ -2,7 +2,17 @@ from __future__ import annotations
 
 import sys
 
-NAMES = ("random", "exploit_tree", "ruleset", "gnn")
+# Strategy names are ALGORITHM names, not architecture names. "gnn" described the encoder
+# -- a relational graph net over the decision graph -- which is the part every future
+# attempt will share, so it could not distinguish one attempt from the next. The learning
+# algorithm is what actually differs: `gnn_marwil` is MARWIL/AWR (exponentially
+# advantage-weighted imitation of logged actions, with a value baseline), which is what
+# mapgraph/train.py implements. A later IQL or CQL attempt on the same encoder gets its own
+# name beside this one rather than silently replacing what "gnn" meant.
+#
+# This is not a version suffix: `gnn_marwil` says what the thing IS. There is still exactly
+# one implementation of it, and no older generation is kept alongside.
+NAMES = ("random", "exploit_tree", "ruleset", "gnn_marwil")
 
 
 class Random:
@@ -57,7 +67,7 @@ def offer_key(r):
             r.get("action_type"), str(r.get("key")))
 
 
-class Gnn:
+class GnnMarwil:
 
     def __init__(self, gnn):
         self.gnn = gnn
@@ -104,6 +114,6 @@ def build(name, rng=None, ranker=None, ruleset=None, gnn=None):
         return ExploitTree(ranker)
     if name == "ruleset":
         return Ruleset(ruleset)
-    if name == "gnn":
-        return Gnn(gnn)
+    if name == "gnn_marwil":
+        return GnnMarwil(gnn)
     raise ValueError("unknown strategy %r -- known: %s" % (name, ", ".join(NAMES)))

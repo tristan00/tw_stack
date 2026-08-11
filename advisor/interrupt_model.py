@@ -254,7 +254,7 @@ class InterruptRanker:
                 return hit[0], "ruleset(%s)" % hit[1], {}
             return self.rng.choice(opts), "ruleset_random_fallback", {}
         prefix = ""
-        if drawn == "gnn":
+        if drawn == "gnn_marwil":
             prefix = "gnn_delegated_"
             if not self._gnn_noted:
                 self._gnn_noted = True
