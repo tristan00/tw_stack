@@ -1384,7 +1384,9 @@ def render_decisions(con, q):
     except (TypeError, ValueError):
         seq_offset = 0
     seq_offset = max(0, min(seq_offset, max(0, seq_total - 1)))
-    for r in sequence(con, SEQ_PAGE, seq_offset):
+    _rows = sequence(con, SEQ_PAGE, seq_offset)
+    _rho = _rho_for_decisions(con, [r["decision_id"] for r in _rows])
+    for r in _rows:
         if r["action_type"] is None:
             mark, cls = "-", "dim"
         elif r["refusal"] == "awaiting_execution":
@@ -1404,13 +1406,20 @@ def render_decisions(con, q):
         gnn_p = _pctile(r.get("gnn_rank"), r.get("n_gnn"))
         delta = ("%+0.1f" % (gnn_p - cat_p)) if (cat_p is not None
                                                  and gnn_p is not None) else "-"
+        # Whole-decision agreement, against delta's single-action agreement. The two
+        # answer different questions and can disagree: the models can rank the chosen
+        # action alike (delta ~ 0) while ordering everything else differently (rho low).
+        rv = _rho.get(r["decision_id"])
+        rho_cell = ("<span class=%s>%+0.2f</span>"
+                    % ("ok" if rv >= 0.5 else ("bad" if rv < 0.0 else "warn"), rv)
+                    if rv is not None else "<span class=dim>-</span>")
         seq.append("<tr><td><a href='/d/%d'>#%d</a></td><td>%s</td><td>%s</td>"
                    "<td class=gsep>%s:%s</td><td>%s</td><td>%s</td>"
                    "<td class='%s gsep'>%s</td><td class=dim style='white-space:normal'>%s</td>"
                    "<td class='num gsep'>%s</td><td class=num>%s</td><td class=num>%s</td>"
                    "<td class=num>%s</td>"
                    "<td class='num gsep'>%s</td><td class=num>%s</td>"
-                   "<td class='num gsep'>%s</td>"
+                   "<td class='num gsep'>%s</td><td class=num>%s</td>"
                    "<td class=gsep>%s</td></tr>"
                    % (r["decision_id"], r["decision_id"], _esc(r["turn"]), r["n_offers"],
                       _esc(r["context_kind"]), _esc(str(r["context_id"])[:26]),
@@ -1422,7 +1431,7 @@ def render_decisions(con, q):
                       _esc(r.get("rank") if r.get("rank") is not None else "-"),
                       ("%+0.4f" % float(gi)) if gi is not None else "-",
                       _esc(r.get("gnn_rank") if r.get("gnn_rank") is not None else "-"),
-                      delta, pol))
+                      delta, rho_cell, pol))
     _first = seq_offset + 1 if seq else 0
     _last = seq_offset + len(seq)
     _prev = max(0, seq_offset - SEQ_PAGE)
@@ -1434,7 +1443,7 @@ def render_decisions(con, q):
               % (_first, _last, seq_total, _prev,
                  _next if _next < seq_total else seq_offset))
     if not seq:
-        seq = ["<tr><td colspan=16 class=dim>no decisions recorded yet</tr>"]
+        seq = ["<tr><td colspan=17 class=dim>no decisions recorded yet</tr>"]
     seqtbl = ("<h2>every decision, newest first</h2>"
               "<div class=legend>one row per decision point, showing what <b>both</b> models "
               "made of the action that was actually taken. Both score every offer on every "
@@ -1442,7 +1451,12 @@ def render_decisions(con, q):
               "ranking of the same set. <b>&Delta;pct</b> puts each rank on a percentile so "
               "decisions with different offer counts still compare, and reports gnn minus "
               "catboost: <b>+</b> means the gnn rated the chosen action higher than catboost "
-              "did, <b>-</b> means lower, near zero means they agreed about it. Older rows "
+              "did, <b>-</b> means lower, near zero means they agreed about it. "
+              "<b>&rho;</b> is the Spearman rank correlation between the two models over "
+              "every offer both ranked on that decision &mdash; whole-ordering agreement, "
+              "where &Delta;pct is agreement about one action. They can diverge: the models "
+              "can place the chosen action alike and still order the rest differently. "
+              "Older rows "
               "show <b>-</b> in the gnn columns &mdash; back then it scored only when it was "
               "the strategy drawn. "
               "<b>ruleset</b> and <b>random</b> picks rank on no score at all &mdash; the "
@@ -1457,8 +1471,8 @@ def render_decisions(con, q):
               "taken action; computed for every offer on every decision'>catboost"
               "<th class=grp colspan=2 title='twin-head Q minus V and the rank of the taken "
               "action, over the offers the gnn scored'>gnn"
-              "<th class=grp title='gnn percentile minus catboost percentile for the action "
-              "taken; + means the gnn rated it higher'>agree"
+              "<th class=grp colspan=2 title='&Delta;pct compares the two models on the "
+              "action taken. rho compares their whole orderings of that decision'>agree"
               "<th class=grp>picked by</tr>"
               "<tr><th>#<th>turn<th>offers<th class=gsep>entity<th>action<th>key"
               "<th class=gsep>result<th>refusal"
@@ -1466,6 +1480,9 @@ def render_decisions(con, q):
               "<th class=num>rank"
               "<th class='gsep num'>Q&minus;V<th class=num>rank"
               "<th class='gsep num'>&Delta;pct"
+              "<th class=num title='Spearman rank correlation between the two models over "
+              "the offers both ranked on this decision. +1 identical order, 0 unrelated, "
+              "-1 reversed. Needs 3+ offers in common, otherwise -'>&rho;"
               "<th class=gsep>strategy</tr>"
               "%s</table></div>" % "".join(seq)) + _pager
     return seqtbl
@@ -1526,6 +1543,36 @@ def _median(vals):
         return None
     n = len(vals)
     return vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2.0
+
+
+def _rho_for_decisions(con, dids):
+    """decision_id -> Spearman rho between the two models' rankings of that decision.
+
+    Over the offers BOTH models ranked, which is the only set where the comparison means
+    anything: catboost ranks every offer, the gnn ranks only the ones it scored, so the
+    two ranks are out of different denominators and are not comparable row by row. The
+    intersection is what the agreement panel already reduces to, and _spearman is the
+    metric that panel already reports -- one metric for one question, not a second.
+
+    Scoped to the decision ids on the page rather than a lookback window: the decision log
+    pages backwards through the whole run, so a fixed recent window would leave the column
+    empty on every page but the first. len(pairs) < 3 returns None from _spearman, which
+    renders as "-" -- two offers in common admit only rho = +1 or -1 and would read as
+    perfect agreement or perfect inversion on no evidence.
+    """
+    out = {}
+    if not dids:
+        return out
+    per = {}
+    marks = ",".join("?" * len(dids))
+    for did, crank, grank in con.execute(
+            "SELECT decision_id, rank, gnn_rank FROM action_offers"
+            " WHERE decision_id IN (%s) AND rank IS NOT NULL AND gnn_rank IS NOT NULL"
+            % marks, tuple(dids)):
+        per.setdefault(did, []).append((crank, grank))
+    for did, pairs in per.items():
+        out[did] = _spearman([p[0] for p in pairs], [p[1] for p in pairs])
+    return out
 
 
 def _agreement_window(con):
