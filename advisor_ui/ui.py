@@ -2762,11 +2762,14 @@ def _mm_arm(p):
         return None
     if p.endswith("_random_fallback"):
         p = p[:-len("_random_fallback")]
-    # The interrupt side records "gnn_delegated_exploit_tree": the gnn was drawn and
-    # handed the choice to the tree. Same reasoning as the fallback -- the draw assigned
-    # gnn, so the row is gnn's. Without this it fell through to None and was dropped.
+    # "gnn_delegated_exploit_tree": the gnn was drawn and handed the choice to the tree.
+    # Attributed to the model that DECIDED -- exploit_tree -- not the one that was drawn.
+    # A delegation is not a failure to act like a fallback is: the gnn routed to another
+    # real model and that model's ranking is what picked, so crediting the gnn would put
+    # the tree's behaviour in the gnn's row. Without this branch it matched nothing and
+    # was silently dropped.
     if "_delegated_" in p:
-        p = p.split("_delegated_", 1)[0]
+        p = p.split("_delegated_", 1)[1]
     if p == "gnn":
         p = "gnn_marwil"
     if p.startswith("ruleset"):
