@@ -696,9 +696,6 @@ def _trial_row(stretch, backend, backend_cfg, gen_n, report, trained, log):
            "baseline": "pre_decision",
            "campaign_uuids": [c["campaign_uuid"] for c in stretch if c.get("campaign_uuid")],
            "run_dirs": sorted({c["run_dir"] for c in stretch if c.get("run_dir")})}
-    if report.get("rescored"):
-        row["rescored"] = True
-        row["rescored_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
     if report.get("stopped_short"):
         row["stopped_short"] = True
     if report.get("running"):
@@ -770,43 +767,8 @@ def _stretch_context(path, rep, gen, stretch, extra):
             shadow, trained)
 
 
-ARCHIVE_DIR = common.ARCHIVE_DIR
 
 
-def rescore(runs_root=RUNS_ROOT, log=print):
-    import shutil
-    rows = []
-    for path, rep in _session_reports(runs_root):
-        stretches = _stretches(rep["campaigns"])
-        cut_short = stretches[-1][0] if stretches and not rep.get("totals") else None
-        for gen, stretch in stretches:
-            backend, cfg, shadow, trained = _stretch_context(
-                path, rep, gen, stretch, {"rescored": True, "stopped_short": gen == cut_short})
-            row = _trial_row(stretch, backend, cfg, gen, shadow, trained, log)
-            if not row:
-                continue
-            if not row["settlements"]["campaigns_measured"]:
-                log("   dropped %s: no campaign in it could be tied to decision rows"
-                    % row["trial"])
-                continue
-            rows.append(row)
-    if not rows:
-        raise RuntimeError("rescore produced no trials -- refusing to replace %s with nothing"
-                           % EXPERIMENTS)
-    rows.sort(key=lambda r: r.get("started") or r.get("ts") or 0)
-    os.makedirs(METRICS_DIR, exist_ok=True)
-    tmp = EXPERIMENTS + ".new"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        for r in rows:
-            fh.write(json.dumps(r, default=str) + "\n")
-    if os.path.isfile(EXPERIMENTS):
-        dst = os.path.join(ARCHIVE_DIR, "experiments_%s" % time.strftime("%Y%m%d_%H%M%S"))
-        os.makedirs(dst, exist_ok=True)
-        shutil.move(EXPERIMENTS, os.path.join(dst, "experiments.jsonl"))
-        log("   previous ledger archived -> %s" % dst)
-    os.replace(tmp, EXPERIMENTS)
-    log("rescore: %d trials rebuilt from campaign data -> %s" % (len(rows), EXPERIMENTS))
-    return rows
 
 
 IN_FLIGHT_S = 600
@@ -1090,8 +1052,6 @@ def _parse_turns(arg):
 
 def main():
     sys.path.insert(0, _HERE)
-    if "--rescore" in sys.argv:
-        return 0 if rescore() else 1
     n = int(sys.argv[1]) if len(sys.argv) > 1 else 3
     turns = _parse_turns(sys.argv[2]) if len(sys.argv) > 2 else 20
     import backends as B
@@ -1099,8 +1059,6 @@ def main():
         raise SystemExit("usage: session.py <campaigns> <turns|min-max> --factions "
                          "all|<key,key,...> [--retrain] [--model %s] [--nn-KEY VALUE ...]\n"
                          "                  [--strategies a=x,b=y[,c=z]] [--ruleset <name>]\n"
-                         "       session.py --rescore    -- rebuild every trial row from the "
-                         "campaigns' own decision rows (archives the old ledger)\n"
                          "  --model     -- which ranker to play on (default %s):\n%s\n"
                          "  --nn-KEY V  -- backend hyperparameter, e.g. --nn-bottleneck 64\n"
                          "  --strategies -- per-decision sampling mix over %s\n"

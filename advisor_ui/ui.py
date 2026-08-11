@@ -2187,16 +2187,9 @@ def _kill_session():
         killed = (r.stdout or "").strip() or "killed"
     except Exception as e:
         return "kill failed: %s" % repr(e)[:120]
-    return "%s; %s" % (killed, _bank_trials())
+    return killed
 
 
-def _bank_trials():
-    import session as S
-    try:
-        rows = S.rescore(log=lambda m: None)
-    except Exception as e:
-        return "!! TRIALS NOT BANKED: %s" % repr(e)[:140]
-    return "trials banked: %s" % ", ".join(r["trial"] for r in rows)
 
 
 def _kill_recorder():

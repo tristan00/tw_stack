@@ -57,23 +57,13 @@ def kill_game():
         sys.stderr.write("runctl: kill game -> %s\n" % repr(e)[:110])
 
 
-def bank_trials():
-    sys.path.insert(0, os.path.join(TW_STACK, "advisor"))
-    try:
-        import session as S
-        rows = S.rescore(log=lambda m: None)
-    except Exception as e:
-        return "!! TRIALS NOT BANKED: %s" % repr(e)[:140]
-    return "trials banked: %d" % len(rows)
 
 
-def kill_session(game=True, bank=True):
+def kill_session(game=True):
     n = _ps_kill("session.py")
     if game:
         kill_game()
-    if not bank:
-        return "killed sessions=%d" % n
-    return "killed sessions=%d; %s" % (n, bank_trials())
+    return "killed sessions=%d" % n
 
 
 def kill_recorder():
