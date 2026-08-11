@@ -2891,11 +2891,17 @@ def _mm_campaign_table(con):
     is target_rows.campaign_id == campaigns.campaign_key.
 
     Outcomes come from target_rows and nowhere else: campaigns.outcome and
-    campaigns.defeated are NULL on every row in the corpus, and entity_snapshots stores
-    power_rank NEGATED relative to target_rows (-148 there against +46 here).
+    campaigns.defeated are NULL on every row in the corpus.
 
-    In target_rows a HIGHER power_rank is better -- measured, not assumed: of the campaigns
-    that gained settlements, power_rank rose in every one and fell in none.
+    The two outcomes are SETTLEMENT GAIN and LORD LEVEL GAIN, because those are the
+    objective the run is actually scored against -- the growth gate keeps a campaign alive
+    on "+1 settlements over 4 turns OR +1 legendary lord level over 3 turns" and kills it
+    otherwise. turns, income and power_rank were the wrong things to correlate: turns is
+    mostly how long the gate tolerated the campaign, and income and power_rank both drift
+    upward with turn count, so a faster arm scores on throughput alone.
+
+    PEAK minus first, not last minus first, for the same reason the gate uses a peak: a
+    campaign that takes a settlement and loses it again did the thing being measured.
     """
     rng = [(cid, key, lo, hi, turns) for cid, key, lo, hi, turns in con.execute(
         "SELECT campaign_id, campaign_key, first_decision_id, last_decision_id, turns"
@@ -2914,10 +2920,10 @@ def _mm_campaign_table(con):
             if a:
                 arms[i][a] += 1
     tgt = collections.defaultdict(list)
-    for key, turn, income, power in con.execute(
-            "SELECT campaign_id, turn, income, power_rank FROM target_rows"
+    for key, turn, setts, lord in con.execute(
+            "SELECT campaign_id, turn, settlements, lord_level FROM target_rows"
             " ORDER BY campaign_id, turn"):
-        tgt[key].append((turn, income, power))
+        tgt[key].append((turn, setts, lord))
     out = []
     for idx, (cid, key, lo, hi, turns) in enumerate(rng):
         c = arms[idx]
@@ -2925,11 +2931,14 @@ def _mm_campaign_table(con):
         rows = tgt.get(key) or []
         if not n or len(rows) < 2:
             continue
-        d = lambda j: ((float(rows[-1][j]) - float(rows[0][j]))
-                       if rows[-1][j] is not None and rows[0][j] is not None else None)
+
+        def gain(j):
+            vals = [float(r[j]) for r in rows if r[j] is not None]
+            return (max(vals) - vals[0]) if len(vals) >= 2 else None
+
         out.append({"n": n, "turns": float(turns or 0),
                     "share": {a: c.get(a, 0) / float(n) for a in MM_ARMS},
-                    "power": d(2), "income": d(1)})
+                    "setts": gain(1), "lord": gain(2)})
     return out
 
 
@@ -2955,9 +2964,8 @@ def _mm_corr_table(con):
     camps = _mm_campaign_table(con)
     if not camps:
         return "<div class=dim>no campaign has both a recorded share and an outcome yet</div>"
-    lanes = (("turns", lambda c: c["turns"]),
-             ("power rank", lambda c: c["power"]),
-             ("income", lambda c: c["income"]))
+    lanes = (("settlement gain", lambda c: c["setts"]),
+             ("lord level gain", lambda c: c["lord"]))
     rows = []
     for arm in MM_ARMS + ("model pool",):
         get = ((lambda c: c["share"]["exploit_tree"] + c["share"]["gnn_marwil"])
@@ -2978,10 +2986,10 @@ def _mm_corr_table(con):
         rows.append("<tr><td>%s</td><td class=num>%d</td>%s</tr>"
                     % (_esc(arm), len(used), "".join(cells)))
     return ("<table class=mmtbl><tr><th>arm<th class=num>campaigns"
-            "<th class=num>turns<th class=num>power rank<th class=num>income</tr>"
+            "<th class=num>settlement gain<th class=num>lord level gain</tr>"
             "%s</table>"
             "<div class=mms>each cell is Spearman rho of that arm's share of the "
-            "campaign's decisions against the change in that outcome, then <b>/gate</b> "
+            "campaign's decisions against that campaign's PEAK gain, then <b>/gate</b> "
             "&mdash; the smallest |rho| separable from chance at p&lt;0.005 for that n. "
             "Nothing here is significant until a rho exceeds its own gate.</div>"
             % "".join(rows))
