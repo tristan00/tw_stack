@@ -198,9 +198,17 @@ _LUA_CAMPAIGN_MAP = (
     "local out='' "
     "local function try(fn) if out~='' then return end "
     "  local ok,v=pcall(fn) if ok and v~=nil and tostring(v)~='' then out=tostring(v) end end "
+    # campaign_name_key() FIRST, and the ordering is the whole point. Verified live:
+    #   cm:model():campaign_name_key()  ->  wh3_main_combi   (the KEY we launch with)
+    #   cm:get_campaign_name()          ->  main_warhammer   (the SCRIPT PATH)
+    # Both identify Immortal Empires, but only the first is the identifier StartCampaign
+    # takes, so only the first lets a recorded campaign be matched back to how it was
+    # launched -- or to a modded campaign, where ChaosRobie's Old World Campaign is the key
+    # `cr_combi_expanded` while its script path is something else entirely. The first
+    # version of this probe asked get_campaign_name() first and recorded main_warhammer.
+    "try(function() return cm:model():campaign_name_key() end) "
     "try(function() return cm:get_campaign_name() end) "
     "try(function() return cm:model():campaign_name() end) "
-    "try(function() return cm:campaign_name() end) "
     # CcoCampaignRoot.CampaignKey is a real property (cco_audit confirms it against the
     # extracted CCO table). A `Key` fallback was tried and rejected by that same audit --
     # 'Key' exists on many record types but NOT on CcoCampaignRoot -- which is the check
