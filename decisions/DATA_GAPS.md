@@ -28,7 +28,7 @@ turns 1–7, no treaties signed); the ones below are not.
 | third-party wars | `world.war_graph`, met-clipped, O(n) via `factions_at_war_with()` |
 | world diplo state | `diplo_state` table, once per turn, with `known_factions` in the row |
 | battle outcomes | structured facts off the results screen, positional rows, generic resources sweep |
-| character wounded, loyalty | collected on the existing lord/hero eval — but `hero.wounded` is the only one of the three that carries information. See the two open items below |
+| character wounded, loyalty | fields on the existing lord/hero eval. `hero.wounded` varies; `lord.wounded` and `loyalty` carry one distinct value — see the open items below |
 | corruption | **not broken** — proven live: `vampiric=50` on Nuln. The 749 zeros were real |
 | `skills[].background` | deleted. `SkillList` structurally excludes background skills; 0 of 265 keys are flagged in reference.sqlite. Join `reference.sqlite.skills` if the flag is wanted |
 | `hostiles[].region` | **not a gap** — rows carry `province` 489/489 and the region reconstructs at 100% |
@@ -40,28 +40,13 @@ turns 1–7, no treaties signed); the ones below are not.
 (1→3 within a campaign), so the level is present; only the sub-level progress is missing.
 Needs a different property; none found on `CcoCampaignCharacter`.
 
-**`loyalty` — DEAD on both lords and heroes.** `0.0` in 1642/1642 snapshots (815 lord, 827
-hero) across 25 campaigns and ~100 distinct start factions. This is the `lord_pools.cqis`
-shape exactly: 100% "filled", one distinct value, no information. Unlike `cqis` it is not
-yet corroborated as the game answering truthfully — loyalty is a real mechanic for only
-some races (Dark Elves, Greenskins, Norsca, Ogres), so a genuine reading would be `null`
-or a sentinel off-mechanic and a positive integer on it, not a flat `0.0` everywhere.
-Suspect the property route before trusting the value. Not a wipe trigger — the field is
-static-joinable per subtype if it is ever resolved.
+**`loyalty` — one distinct value.** `0.0` in 1642/1642 snapshots (815 lord, 827 hero),
+corpus at 828 decisions / 25 campaigns. Not investigated further; no cause established.
 
-**`lord.wounded` — DEAD BY CONSTRUCTION, and this is the interesting one.** `false` in
-815/815 lord snapshots, while `campaign.ll_wounded` on the same corpus reads `true` on 3
-decisions and campaigns demonstrably end with `ended_by: ll_wounded`. So wounding happens
-and the record does capture it — just not on this field. In all 3 decisions where
-`ll_wounded` is true there are **0 lord snapshots at all**: a wounded lord is off-map and
-is therefore not enumerated by the eval that would have set `wounded`. The only state that
-could make the field true is exactly the state in which the field is not written.
-
-`hero.wounded` does vary (3 true / 824 false), so the collector itself works — this is a
-lord-side enumeration gap, not a broken read. Use `campaign.ll_wounded` for the legendary
-lord; a per-lord wounded signal needs the eval to walk wounded characters, which the
-current lord walk does not reach. Backfillable (a wounded lord is derivable from the
-roster delta), so not a wipe trigger.
+**`lord.wounded` — one distinct value.** `false` in 815/815 lord snapshots. Measured
+alongside it, same corpus: `hero.wounded` false 824 / true 3; `campaign.ll_wounded` false
+825 / true 3; and the 3 decisions where `ll_wounded` is true contain 0 lord snapshots.
+n=3 on every true. No cause established, and the sample is too small to support one.
 
 **`lord_pools.units` (`MainUnitRecordContext.Key`) — UNRESOLVED.** `None` in 2177/2177.
 `MainUnitRecordContext` is a *sibling* of `CharacterContext`, so nothing corroborates the
