@@ -158,10 +158,35 @@ AGENT_TYPES = ("general", "colonel", "champion", "dignitary", "engineer", "minis
 AGENT_VOCAB = len(AGENT_TYPES) + 1
 AGENT_DIM = 8
 
-STANCE_BUCKETS = 32
+# A closed enum, so it is written down rather than hashed. crc32 % 32 put 7 of the 19
+# observed values (36.8%) on a shared row -- LAND_RAID and CHANNELING were both 19, which
+# is why two stance offers stayed indistinguishable to WL even after the key was encoded.
+STANCES = (
+    "MILITARY_FORCE_ACTIVE_STANCE_TYPE_AMBUSH",
+    "MILITARY_FORCE_ACTIVE_STANCE_TYPE_ASSEMBLE_FLEET",
+    "MILITARY_FORCE_ACTIVE_STANCE_TYPE_ASTROMANCY",
+    "MILITARY_FORCE_ACTIVE_STANCE_TYPE_CHANNELING",
+    "MILITARY_FORCE_ACTIVE_STANCE_TYPE_DEFAULT",
+    "MILITARY_FORCE_ACTIVE_STANCE_TYPE_DISEMBARK",
+    "MILITARY_FORCE_ACTIVE_STANCE_TYPE_DOUBLE_TIME",
+    "MILITARY_FORCE_ACTIVE_STANCE_TYPE_FIXED_CAMP",
+    "MILITARY_FORCE_ACTIVE_STANCE_TYPE_LAND_RAID",
+    "MILITARY_FORCE_ACTIVE_STANCE_TYPE_MARCH",
+    "MILITARY_FORCE_ACTIVE_STANCE_TYPE_MUSTER",
+    "MILITARY_FORCE_ACTIVE_STANCE_TYPE_PATROL",
+    "MILITARY_FORCE_ACTIVE_STANCE_TYPE_SEA_RAID",
+    "MILITARY_FORCE_ACTIVE_STANCE_TYPE_SETTLE",
+    "MILITARY_FORCE_ACTIVE_STANCE_TYPE_SET_CAMP",
+    "MILITARY_FORCE_ACTIVE_STANCE_TYPE_SET_CAMP_RAIDING",
+    "MILITARY_FORCE_ACTIVE_STANCE_TYPE_STALKING",
+    "MILITARY_FORCE_ACTIVE_STANCE_TYPE_TUNNELING",
+)
+STANCE_BUCKETS = 32             # 18 dense + room for a stance a future pack adds
 STANCE_DIM = 8
 
-SUBTYPE_BUCKETS = 1024          # 613 real agent subtypes
+# 565 subtypes in reference.agent_permitted_subtypes, which covers lords as well as
+# agents. Dense from there; hashing put 50 of the 249 observed (20.1%) on a shared row.
+SUBTYPE_BUCKETS = 2048
 SUBTYPE_DIM = 16
 
 ACTION_TYPES = ("stance", "building", "research", "skills", "items", "item_unequip", "rites",
@@ -235,18 +260,38 @@ def agent_index(agent_type):
     return _AGENT_IX.get(str(agent_type), 0)
 
 
+_STANCE_IX = {s: i + 1 for i, s in enumerate(STANCES)}
+
+
+def _above(s, lo, buckets):
+    """Hash a key the enumeration does not know, into the range ABOVE the dense ids so it
+    can never alias one that is known."""
+    span = buckets - lo
+    if span <= 0:
+        raise ValueError("no room above the dense ids (lo=%d, buckets=%d)" % (lo, buckets))
+    return lo + (zlib.crc32(s.encode()) % span)
+
+
 def stance_index(stance):
     s = str(stance or "").strip()
     if not s or s == "none":
         return 0
-    return (zlib.crc32(s.encode()) % (STANCE_BUCKETS - 1)) + 1
+    hit = _STANCE_IX.get(s)
+    return hit if hit is not None else _above(s, len(STANCES) + 1, STANCE_BUCKETS)
 
 
 def subtype_index(subtype):
     s = str(subtype or "").strip()
     if not s:
         return 0
-    return (zlib.crc32(s.encode()) % (SUBTYPE_BUCKETS - 1)) + 1
+    d = _dense("agent_subtype")
+    hit = d.get(s)
+    if hit is not None:
+        if hit >= SUBTYPE_BUCKETS:
+            raise ValueError("subtype_index: %d subtypes but SUBTYPE_BUCKETS is %d"
+                             % (len(d), SUBTYPE_BUCKETS))
+        return hit
+    return _above(s, len(d) + 1, SUBTYPE_BUCKETS)
 
 
 def atype_index(action_type):
