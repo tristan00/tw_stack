@@ -187,7 +187,7 @@ def _leave_confirm(bus, ctx, pick, before):
 register("leave_garrison", {
     "layer": "cm", "signal": "in_settlement_false",
     "snapshot": _garrison_snapshot,
-    "gates": [lambda bus, ctx, pick, before: (before.get("in_settlement") == "true", "not_in_settlement")],
+    "gates": [],
     "execute": _leave_execute, "confirm": _leave_confirm,
     "timeout_s": 10.0, "poll_s": 1.5,
 })

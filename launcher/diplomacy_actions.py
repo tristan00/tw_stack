@@ -76,33 +76,21 @@ def _snapshot(bus, ctx, pick):
 
 
 def _gate(bus, ctx, pick, before):
-    key = _target(pick)
-    if not key:
+    """Validation of the PICK, not of the game.
+
+    Everything else this used to check -- already_allied, already_trading,
+    already_at_war, at_war_offers_only_peace, not_at_war, already_in_vassalage -- is
+    treaty state, and treaty state is in the snapshot as world.relations. The advisor
+    gates on it. What is left is whether the request is even well formed, which is a
+    property of the pick and knowable without asking the game anything.
+    """
+    if not _target(pick):
         return False, "no_target_faction"
     terms = _terms(pick)
-    tier = _gift(pick)
-    if not terms and not tier:
+    if not terms and not _gift(pick):
         return False, "no_terms"
     if len(terms) > diplomacy.MAX_TERMS:
         return False, "too_many_terms"
-    if tier and before.get("treasury") is None:
-        return False, "treasury_unreadable"
-    t = before.get("treaty")
-    if t is None:
-        return False, "treaty_state_unreadable"
-    if t.get("allied") and "military_alliance" in terms:
-        return False, "already_allied"
-    if t.get("trade") and "trade_agreement" in terms:
-        return False, "already_trading"
-    if t.get("at_war") and diplomacy.DECLARE_WAR in terms:
-        return False, "already_at_war"
-    if t.get("at_war") and not (diplomacy.PEACE in terms):
-        return False, "at_war_offers_only_peace"
-    if not t.get("at_war") and diplomacy.PEACE in terms:
-        return False, "not_at_war"
-    if t.get("our_master") or t.get("their_vassal"):
-        if "vassal" in terms or "confederation" in terms:
-            return False, "already_in_vassalage"
     return True, None
 
 

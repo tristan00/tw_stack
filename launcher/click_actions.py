@@ -407,17 +407,16 @@ def _recruit_snapshot(bus, ctx, pick):
 
 
 def _recruit_gate(bus, ctx, pick, before):
+    """Crash guard only -- NOT a judgement about whether the recruit is legal.
+
+    Clicking the recruitment buttons with the panel shut crashes the game, so this is a
+    precondition for the click being safe to make. The capacity checks that used to live
+    here decided game state and are gone: a full army is refused by the advisor, from
+    state.units. The queue branch went with them -- recruit_unit stopped carrying a queue
+    when the local/global split was found to be invented.
+    """
     if not before.get("units_panel_open"):
         return False, "units_panel_not_open_CTD_guard"
-    _unit, queue = split_key(pick)
-    cap = before.get("capacity") or {}
-    if queue and cap:
-        pools = {k: v for k, v in cap.items()
-                 if str(k).rstrip("0123456789") == queue or str(k) == queue}
-        if not pools:
-            return False, "queue_%s_not_offered_here" % queue
-        if not any((v or {}).get("free") for v in pools.values()):
-            return False, "%s_recruitment_slots_full" % queue
     return True, None
 
 
@@ -580,10 +579,9 @@ def _merc_snapshot(bus, ctx, pick):
 
 
 def _merc_gate(bus, ctx, pick, before):
+    """Crash guard only. `army_full` is decided by the advisor from state.units."""
     if not before.get("units_panel_open"):
         return False, "units_panel_not_open_CTD_guard"
-    if (before.get("unit_count") or 0) >= MAX_FORCE_UNITS:
-        return False, "army_full"
     return True, None
 
 
