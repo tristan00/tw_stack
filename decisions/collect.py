@@ -988,21 +988,6 @@ def _lord_targets(world):
     return armies, esetts, osetts, rsetts
 
 
-def lord_offers(bus, cqi, state, world, stationed=None, prof=None):
-    ev_raw = _tstage(prof, "lord_offers/ev", _ev, bus, _LUA_LORD_OFFERS % {"cqi": cqi},
-                     timeout=25.0, allow_nil=True)
-    recruit_rows = _tstage(prof, "lord_offers/recruitable", recruitable_units, bus, cqi)
-    armies, esetts, osetts, rsetts = _lord_targets(world)
-    reach_c, reach_s = _tstage(prof, "lord_offers/reach", _reach, bus, cqi,
-                               [a["cqi"] for a in armies],
-                               [s["region"] for s in esetts] + [s["region"] for s in osetts]
-                               + [s["region"] for s in rsetts])
-    moves = _move_offers(bus, cqi, state)
-    horde = _parse_horde_slots(_tstage(prof, "lord_offers/horde", _ev, bus,
-                                       _horde_slots_lua(cqi), timeout=30.0, allow_nil=True))
-    merc = _tstage(prof, "lord_offers/mercenary", mercenary_pools, bus, cqi)
-    return _lord_offers_assemble(cqi, state, world, stationed, ev_raw, recruit_rows,
-                                 reach_c, reach_s, moves, horde_slots=horde, merc_pools=merc)
 
 
 def _lord_offers_assemble(cqi, state, world, stationed, ev_raw, recruit_rows,
@@ -1860,12 +1845,6 @@ def current_research(bus, faction_cqi):
     return None if v in (None, "none", "nil") else str(v)
 
 
-def campaign_offers(bus, campaign, prof=None):
-    fac = campaign["faction_cqi"]
-    raw = _tstage(prof, "campaign_offers/ev", _ev, bus, _LUA_CAMPAIGN_OFFERS % {"fac": fac},
-                  timeout=30.0, allow_nil=True)
-    dip = _tstage(prof, "campaign_offers/diplomacy", diplomacy_offers, bus, campaign.get("turn"))
-    return _campaign_offers_assemble(raw, dip)
 
 
 def _campaign_offers_assemble(raw, diplo_offers):
@@ -1969,9 +1948,6 @@ def _roots(bus):
     return [k.get("id") for k in (r.get("kids") or [])] or list(r.get("roots") or [])
 
 
-def diplomacy_offers(bus, turn=None, epoch=None):
-    return _diplo_offers_build(bus, turn, epoch,
-                               _ev(bus, _LUA_DIPLO_TARGETS, timeout=30.0, allow_nil=True))
 
 
 def _parse_diplo_targets(raw):
@@ -2008,7 +1984,7 @@ def diplo_unseen_check(targets, world):
     return sorted(seen - known)
 
 
-def _diplo_offers_build(bus, turn, epoch, raw):
+def _diplo_offers_build(raw):
     targets = _parse_diplo_targets(raw)
     if targets is None:
         sys.stderr.write("collect: DIPLOMACY TARGET READ FAILED -- no diplomacy will be offered this "
@@ -2057,7 +2033,7 @@ def _bres(reply, what, allow_nil=False):
     return v
 
 
-def snapshot(bus, active=None, diplo_epoch=None):
+def snapshot(bus, active=None):
     prof = {}
     t0 = time.time()
     ra = bus.send_batch([("eval", _LUA_CAMPAIGN), ("eval", _LUA_FACTION_RESOURCES),
@@ -2113,7 +2089,7 @@ def snapshot(bus, active=None, diplo_epoch=None):
     dip = []
     if want_camp:
         t0 = time.time()
-        dip = _diplo_offers_build(bus, camp.get("turn"), diplo_epoch, diplo_raw)
+        dip = _diplo_offers_build(diplo_raw)
         prof["campaign_offers/diplomacy"] = int((time.time() - t0) * 1000)
 
     armies_t, esetts_t, osetts_t, rsetts_t = _lord_targets(world)

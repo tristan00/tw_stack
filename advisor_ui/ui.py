@@ -232,7 +232,7 @@ def run_history(con, runs_root=RUNS_ROOT):
     grouped queries rather than two per campaign, which is what the old version cost.
     """
     seen = {}
-    dbs = sorted(glob.glob(os.path.join(runs_root, "*", "decisions.sqlite")), key=os.path.getmtime)
+    dbs = common.run_dbs(runs_root)
     for db in dbs:
         try:
             c = dbopen.connect(db, timeout=5.0)
@@ -571,8 +571,7 @@ def render_interrupts(runs_root=RUNS_ROOT):
     offered = collections.Counter()
     policies = collections.Counter()
     total = 0
-    for db in sorted(glob.glob(os.path.join(runs_root, "*", "decisions.sqlite")),
-                     key=os.path.getmtime):
+    for db in common.run_dbs(runs_root):
         try:
             c = dbopen.connect(db, timeout=5.0)
         except sqlite3.Error:
@@ -627,8 +626,7 @@ def render_interrupts(runs_root=RUNS_ROOT):
                 "<p class=muted>no interrupt decisions recorded yet</p>" % state)
 
     recent = []
-    for db in sorted(glob.glob(os.path.join(runs_root, "*", "decisions.sqlite")),
-                     key=os.path.getmtime, reverse=True)[:3]:
+    for db in common.run_dbs(runs_root)[:3]:
         try:
             c = dbopen.connect(db, timeout=5.0)
         except sqlite3.Error:
@@ -720,8 +718,7 @@ def render_interrupts(runs_root=RUNS_ROOT):
 
 def starts_summary(runs_root=RUNS_ROOT):
     camps = {}
-    for db in sorted(glob.glob(os.path.join(runs_root, "*", "decisions.sqlite")),
-                     key=os.path.getmtime):
+    for db in common.run_dbs(runs_root):
         try:
             c = dbopen.connect(db, timeout=5.0)
         except sqlite3.Error:
@@ -786,8 +783,7 @@ def faction_action_stats(runs_root=RUNS_ROOT):
     import collections
     main = collections.defaultdict(lambda: [0, 0, 0.0])
     inter = collections.defaultdict(lambda: [0, 0, 0.0])
-    for db in sorted(glob.glob(os.path.join(runs_root, "*", "decisions.sqlite")),
-                     key=os.path.getmtime):
+    for db in common.run_dbs(runs_root):
         try:
             c = dbopen.connect(db, timeout=5.0)
         except sqlite3.Error:

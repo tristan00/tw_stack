@@ -221,7 +221,6 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
                   log=lambda m: log("   [watchdog] %s" % m)).start()
     rows = []
     growth_hist = {}
-    diplo_epoch = [0]
 
     def _gate_would_fail(state, turn_no):
         hist = dict(growth_hist)
@@ -245,7 +244,7 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
                     raise CampaignLost("watchdog fired but the faction is DEAD -- defeat, "
                                        "not a stall (%s)" % stuck["reason"])
                 raise GameStuck("%s: %s" % (stuck["reason"], stuck["detail"]))
-            row = _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch,
+            row = _run_turn(run_dir, executor, pol, wd, stuck, log,
                             act_hist, act_counts, pre_settle=_gate_would_fail)
             rows.append(row)
             _append(report_path, row)
@@ -338,15 +337,13 @@ _DIPLO_SCREENS = frozenset(("diplomacy_proposal", "diplomacy_notice", "ally_atta
                             "diplomacy", "diplomacy_hud"))
 
 
-def _drain_interrupts(run_dir, log, diplo_epoch=None):
+def _drain_interrupts(run_dir, log):
     try:
         import interrupts as I
         recs = I.drain_interrupt_records()
     except Exception as e:
         log("   !! could not drain interrupt records: %s" % repr(e)[:120])
         return
-    if diplo_epoch is not None and any(str(r.get("kind")) in _DIPLO_SCREENS for r in recs):
-        diplo_epoch[0] += 1
     for r in recs:
         try:
             journal.log_interrupt(run_dir, r)
@@ -357,11 +354,10 @@ def _drain_interrupts(run_dir, log, diplo_epoch=None):
             % (len(recs), ", ".join("%s->%s" % (x.get("kind"), x.get("chosen")) for x in recs)))
 
 
-def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None, act_hist=None,
+def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
               act_counts=None, pre_settle=None):
     import diplo_stream as DS
     import interrupts as I
-    diplo_epoch = diplo_epoch if diplo_epoch is not None else [0]
     act_hist = act_hist if act_hist is not None else []
     act_counts = act_counts if act_counts is not None else {}
     pol.new_turn()
@@ -371,7 +367,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None, act_hist
     _hk_parts = [{}]
     log("== TURN %s ==" % turn)
     opening = executor.resolve_interrupts()
-    _drain_interrupts(run_dir, log, diplo_epoch)
+    _drain_interrupts(run_dir, log)
     if opening:
         log("   opening interrupts: %s" % ", ".join(str(s) for s in opening))
     actions, confirmed, ended_by, picks = 0, 0, "action_cap", []
@@ -454,7 +450,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None, act_hist
         else:
             no_hud = 0
         t_housekeep0 = _last_done_ts[0]
-        decision_id, record = journal.request_snapshot(run_dir, active=active, diplo_epoch=diplo_epoch[0])
+        decision_id, record = journal.request_snapshot(run_dir, active=active)
         (record.setdefault("campaign", {}))["act_index"] = actions + 1
         record["campaign"]["move_index"] = moves + 1
         F.stamp_prev_actions(record["campaign"], act_hist)
@@ -542,8 +538,6 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None, act_hist
         ok = bool(result.get("counted"))
         confirmed += 1 if ok else 0
         pol.note_result(pick, ok)
-        if pick["action_type"] == "diplomacy":
-            diplo_epoch[0] += 1
         if ok:
             wd.beat("confirmed:%s" % pick["action_type"])
         log("   %-16s %-34s %s%s"
@@ -580,7 +574,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, diplo_epoch=None, act_hist
                 log("   post-attack interrupts: %s" % ", ".join(str(s) for s in pre))
                 wd.beat("post_attack_interrupt")
         _t = time.time()
-        _drain_interrupts(run_dir, log, diplo_epoch)
+        _drain_interrupts(run_dir, log)
         _hk_parts[0]["drain"] = int((time.time() - _t) * 1000)
         _t = time.time()
         steps = executor.resolve_interrupts()
