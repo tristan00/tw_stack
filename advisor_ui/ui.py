@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import collections
 import glob
 import html
 import json
+import math
+import random
 from urllib.parse import parse_qs, urlparse
 import os
 import re
@@ -80,31 +83,43 @@ def _optional_cols(con, table, wanted):
 
 
 def sequence(con, limit=SEQ_PAGE, offset=0):
+    """One row per decision: what it chose, and what each model made of that choice.
+
+    Two bounded queries instead of one join. The offer columns used to arrive through
+    `LEFT JOIN action_offers o ON o.offer_id = (SELECT MIN(o2.offer_id) FROM action_offers
+    o2 WHERE ...)` -- a correlated subquery evaluated once per row against a VIEW over
+    offers+actions, so its cost grew with the corpus rather than with the page. Measured
+    at ~3k decisions: base rows 0.01s, the same rows with that join 20s.
+
+    The page is 50 decisions, so their offers are a small bounded set. Fetch them in one
+    scan and match the taken action in python. MIN(offer_id) becomes "first row wins",
+    which is the same tie-break: offer_id is decision_id * 1048576 + offer_seq, so
+    ascending offer_id is offer order.
+    """
     gnn = _optional_cols(con, "action_offers", ("gnn_impact", "gnn_rank"))
-    return [dict(r) for r in con.execute(
+    rows = [dict(r) for r in con.execute(
         "SELECT d.decision_id, d.turn, d.decision_seq, d.n_entities, d.n_offers,"
-        " t.context_kind, t.context_id, t.action_type, t.action_key, t.counted, t.refusal, t.policy,"
-        " o.score, o.exploit, o.pct_global, o.pct_local, o.rank"
-        + "".join(", o.%s" % c for c in gnn)
-        # How many offers carry a gnn rank on this decision. It is normally exactly
-        # n_offers -- policy.choose() scores both models over the same `ranked` list on
-        # every decision, so both ranks are 1..N over the same N (measured: equal on 142
-        # of 146 decisions since the gnn had weights). Kept as its own count only so a
-        # decision whose gnn pass partly failed is not silently given the wrong
-        # denominator; it is NOT the gnn ranking a smaller set by design.
-        + (", (SELECT COUNT(*) FROM action_offers g WHERE g.decision_id=d.decision_id"
-           " AND g.gnn_rank IS NOT NULL) AS n_gnn" if "gnn_rank" in gnn else "") +
+        " t.context_kind, t.context_id, t.action_type, t.action_key, t.counted, t.refusal,"
+        " t.policy"
         " FROM decision_points d LEFT JOIN action_taken t ON t.decision_id=d.decision_id"
-        # offer_id, not rowid: action_offers is a VIEW over offers+actions and a view has
-        # no rowid, so this raised "no such column: o.rowid" and the whole panel 500'd.
-        # offer_id is the view's own synthetic key (decision_id * 1048576 + offer_seq),
-        # unique and ordered the same way rowid was, so MIN() still picks the first
-        # matching offer when a decision offered the same action twice.
-        " LEFT JOIN action_offers o ON o.offer_id ="
-        "   (SELECT MIN(o2.offer_id) FROM action_offers o2 WHERE o2.decision_id=t.decision_id"
-        "    AND o2.context_kind=t.context_kind AND o2.context_id=t.context_id"
-        "    AND o2.action_type=t.action_type AND o2.action_key=t.action_key)"
         " ORDER BY d.decision_id DESC LIMIT ? OFFSET ?", (limit, offset))]
+    dids = [r["decision_id"] for r in rows]
+    if not dids:
+        return rows
+    cols = ("score", "exploit", "pct_global", "pct_local", "rank") + tuple(gnn)
+    taken = {}
+    for o in con.execute(
+            "SELECT decision_id, context_kind, context_id, action_type, action_key, %s"
+            " FROM action_offers WHERE decision_id IN (%s) ORDER BY offer_id"
+            % (", ".join(cols), ",".join("?" * len(dids))), tuple(dids)):
+        key = (o[0], o[1], str(o[2]), o[3], str(o[4]))
+        if key not in taken:                       # first offer_id wins, as MIN() did
+            taken[key] = dict(zip(cols, o[5:]))
+    for r in rows:
+        hit = taken.get((r["decision_id"], r["context_kind"], str(r["context_id"]),
+                         r["action_type"], str(r["action_key"])))
+        r.update(hit or {c: None for c in cols})
+    return rows
 
 
 def _pctile(rank, n):
@@ -1388,8 +1403,11 @@ def render_decisions(con, q):
         seq_offset = 0
     seq_offset = max(0, min(seq_offset, max(0, seq_total - 1)))
     _rows = sequence(con, SEQ_PAGE, seq_offset)
-    _rho = _rho_for_decisions(con, [r["decision_id"] for r in _rows])
+    _dids = [r["decision_id"] for r in _rows]
+    _rho = _rho_for_decisions(con, _dids)
+    _ngnn = _gnn_counts(con, _dids)
     for r in _rows:
+        r["n_gnn"] = _ngnn.get(r["decision_id"], 0)
         if r["action_type"] is None:
             mark, cls = "-", "dim"
         elif r["refusal"] == "awaiting_execution":
@@ -1549,6 +1567,23 @@ def _median(vals):
     return vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2.0
 
 
+def _gnn_counts(con, dids):
+    """decision_id -> how many of its offers carry a gnn rank.
+
+    Normally exactly n_offers: policy.choose() scores both models over the same `ranked`
+    list on every decision, so both ranks are 1..N over the same N (measured: equal on
+    142 of 146 decisions since the gnn had weights). Counted rather than assumed only so
+    a decision whose gnn pass partly failed is not given the wrong denominator -- it is
+    NOT the gnn ranking a smaller set by design.
+    """
+    if not dids:
+        return {}
+    return dict(con.execute(
+        "SELECT decision_id, COUNT(*) FROM action_offers WHERE decision_id IN (%s)"
+        " AND gnn_rank IS NOT NULL GROUP BY decision_id" % ",".join("?" * len(dids)),
+        tuple(dids)))
+
+
 def _rho_for_decisions(con, dids):
     """decision_id -> Spearman rho between the two models' rankings of that decision.
 
@@ -1601,15 +1636,25 @@ def _agreement_window(con):
             "SELECT decision_id, rank, gnn_rank FROM action_offers"
             " WHERE decision_id > ? AND rank IS NOT NULL AND gnn_rank IS NOT NULL", (lo,)):
         per.setdefault(did, []).append((crank, grank))
-    taken = con.execute(
-        "SELECT t.decision_id, t.policy, d.n_offers, o.rank, o.gnn_rank"
-        " FROM action_taken t JOIN decision_points d ON d.decision_id=t.decision_id"
-        # see render_decisions: action_offers is a view, so rowid does not exist here
-        " LEFT JOIN action_offers o ON o.offer_id ="
-        "   (SELECT MIN(o2.offer_id) FROM action_offers o2 WHERE o2.decision_id=t.decision_id"
-        "    AND o2.context_kind=t.context_kind AND o2.context_id=t.context_id"
-        "    AND o2.action_type=t.action_type AND o2.action_key=t.action_key)"
-        " WHERE t.decision_id > ?", (lo,)).fetchall()
+    # Same shape as sequence(): the correlated MIN(offer_id) subquery here cost seconds
+    # because it ran once per taken row against a view. One pass over the window's offers,
+    # matched in python, is the same answer -- first offer_id wins, as MIN() did.
+    first_offer = {}
+    for o in con.execute(
+            "SELECT decision_id, context_kind, context_id, action_type, action_key,"
+            " rank, gnn_rank FROM action_offers WHERE decision_id > ? ORDER BY offer_id",
+            (lo,)):
+        key = (o[0], o[1], str(o[2]), o[3], str(o[4]))
+        if key not in first_offer:
+            first_offer[key] = (o[5], o[6])
+    taken = []
+    for did, pol, n_offers, ck, cid, at, ak in con.execute(
+            "SELECT t.decision_id, t.policy, d.n_offers, t.context_kind, t.context_id,"
+            " t.action_type, t.action_key"
+            " FROM action_taken t JOIN decision_points d ON d.decision_id=t.decision_id"
+            " WHERE t.decision_id > ?", (lo,)):
+        crank, grank = first_offer.get((did, ck, str(cid), at, str(ak)), (None, None))
+        taken.append((did, pol, n_offers, crank, grank))
     return {"lo": lo, "top": top, "per": per, "taken": taken}
 
 
@@ -1722,15 +1767,30 @@ PANELS = (
     ("timing", "timing", lambda con, run, q: render_timing(run)),
     ("actions", "actions", lambda con, run, q: render_actions(con, q)),
     ("decisions", "decision log", lambda con, run, q: render_decisions(con, q)),
-    ("agreement", "model agreement", lambda con, run, q: render_agreement(con)),
+    # the whole panel IS the calculation -- there is no cheap half to paint first, so the
+    # tab paints its heading immediately and the body arrives behind it
+    ("agreement", "model agreement", lambda con, run, q:
+        "<div class=lazy data-src='/panel/agreement_body'>"
+        "<h2>do the two models agree?</h2>"
+        "<div class=legend>comparing both rankings over the recent window&hellip;</div>"
+        "</div>"),
     ("timeline", "timeline", lambda con, run, q: render_timeline(con)),
     ("reward", "reward", lambda con, run, q: render_reward(con)),
+    ("modelmetrics", "model metrics", lambda con, run, q: render_model_metrics(con, run, q)),
     ("models", "models", lambda con, run, q: render_models()),
     ("training", "training", lambda con, run, q: render_training()),
     ("infra", "infrastructure", lambda con, run, q: render_infra(run)),
 )
 
 PANEL_MAP = {s: f for s, _t, f in PANELS}
+# Sections fetched by a panel AFTER it is on screen (see .lazy in _TABS_JS). They are
+# served by the same /panel/ route but are deliberately NOT in PANELS, so they get no tab.
+LAZY_PANELS = {
+    "modelmetrics_gate": lambda con, run, q: render_model_metrics_gate(con, run, q),
+    "modelmetrics_dist": lambda con, run, q: _mm_distributions(con, _mm_versions(con)),
+    "agreement_body": lambda con, run, q: render_agreement(con),
+}
+PANEL_MAP.update(LAZY_PANELS)
 
 
 def render_index(con, run_dir):
@@ -1827,6 +1887,18 @@ _TABS_JS = """<script>
     el.querySelectorAll('script').forEach(function(s){
       var n=document.createElement('script');n.textContent=s.textContent;
       s.parentNode.replaceChild(n,s);});
+    lazy(el);
+  }
+  // A section marked .lazy is fetched AFTER its panel is on screen. Everything a panel
+  // can answer cheaply paints immediately; only the expensive part waits, and it waits
+  // in its own box instead of holding the whole tab behind it.
+  function lazy(el){
+    el.querySelectorAll('.lazy[data-src]').forEach(function(d){
+      fetch(d.dataset.src,{cache:'no-store'})
+        .then(function(r){return r.text()})
+        .then(function(t){d.outerHTML=t;})
+        .catch(function(e){d.innerHTML='<p class=bad>section fetch failed: '+e+'</p>';});
+    });
   }
   function editing(el){
     var a=document.activeElement;
@@ -2560,6 +2632,296 @@ def _fit_config_table(events=()):
     return ("<h2>fit configuration</h2><div class=scroll><table>"
             "<tr><th>family<th>role<th>hyperparameters<th>compute</tr>%s</table></div>"
             % "".join(body))
+
+
+MM_VERSIONS = 12          # model versions shown, newest first -- bounds every query here
+MM_PERMS = 2000           # permutations per correlation; enough to separate 0.2 from 0.02
+
+
+def _mm_versions(con):
+    """Model versions, newest first, each with the decision range it produced.
+
+    A "model version" is a ledger trial: a session plus a retrain generation. The corpus
+    does not record which weights scored a decision, so the join goes
+    campaign -> campaign_uuid -> trial, which is exact because the trial row lists the
+    uuids it ran. decisions.version_id is the COLLECTOR version, a different thing.
+    """
+    import session as S
+    trials = {}
+    try:
+        with open(S.EXPERIMENTS, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    t = json.loads(line)
+                except ValueError:
+                    continue
+                trials[t.get("trial")] = t          # last row per trial wins
+    except OSError:
+        return []
+    by_uuid = {}
+    for t in trials.values():
+        for u in (t.get("campaign_uuids") or []):
+            by_uuid[u] = t
+    if not by_uuid:
+        return []
+    out = {}
+    for cid, first, last in con.execute(
+            "SELECT campaign_id, first_decision_id, last_decision_id FROM campaigns"
+            " WHERE first_decision_id IS NOT NULL ORDER BY campaign_id"):
+        row = con.execute("SELECT features FROM entity_snapshots WHERE context_kind='campaign'"
+                          " AND decision_id BETWEEN ? AND ? LIMIT 1", (first, last)).fetchone()
+        if not row:
+            continue
+        try:
+            u = json.loads(row[0]).get("campaign_uuid")
+        except (ValueError, TypeError):
+            continue
+        t = by_uuid.get(u)
+        if not t:
+            continue
+        v = out.setdefault(t.get("trial"), {
+            "trial": t.get("trial"), "generation": t.get("generation"),
+            "feature_version": t.get("feature_version") or "unfitted",
+            "strategies": t.get("strategies") or {}, "corpus": t.get("corpus_at_train") or {},
+            "lo": first, "hi": last, "campaigns": []})
+        v["lo"] = min(v["lo"], first)
+        v["hi"] = max(v["hi"], last)
+        v["campaigns"].append(cid)
+    return sorted(out.values(), key=lambda v: v["lo"], reverse=True)[:MM_VERSIONS]
+
+
+def _mm_top1(con, lo, hi):
+    """{model: Counter(action_type)} over each model's OWN top-ranked offer per decision.
+
+    rank=1 is what catboost would have done, gnn_rank=1 what the gnn would have done --
+    on every decision, not only the ones each was drawn to decide. That is the point: it
+    measures what a model WANTS, independent of what the draw let it do.
+    """
+    out = {"catboost": collections.Counter(), "gnn": collections.Counter()}
+    for at, r, g in con.execute(
+            "SELECT action_type, rank, gnn_rank FROM action_offers"
+            " WHERE decision_id BETWEEN ? AND ? AND (rank=1 OR gnn_rank=1)", (lo, hi)):
+        if r == 1:
+            out["catboost"][at] += 1
+        if g == 1:
+            out["gnn"][at] += 1
+    return out
+
+
+def _mm_concentration(counter):
+    """(top action, its share, normalised entropy, distinct). Entropy over log2(distinct)
+    so 1.0 is "spreads evenly over the types it uses" and 0.0 is "always the same move"."""
+    n = sum(counter.values())
+    if not n:
+        return None
+    top, cnt = counter.most_common(1)[0]
+    k = len(counter)
+    ent = -sum((v / n) * math.log(v / n, 2) for v in counter.values() if v)
+    return {"top": top, "share": 100.0 * cnt / n, "n": n, "distinct": k,
+            "entropy": (ent / math.log(k, 2)) if k > 1 else 0.0}
+
+
+def _mm_tv(a, b):
+    """Total variation distance between two action-type distributions. 0 identical,
+    1 disjoint. Chosen because it compares DISTRIBUTIONS, which is the question here --
+    how much the model's taste moved between versions."""
+    na, nb = sum(a.values()), sum(b.values())
+    if not na or not nb:
+        return None
+    return 0.5 * sum(abs(a.get(k, 0) / na - b.get(k, 0) / nb) for k in (set(a) | set(b)))
+
+
+def _mm_strategy_outcomes(con, v):
+    """Per-strategy share of a campaign's decisions against how that campaign ended."""
+    fam = lambda p: ("ruleset" if (p or "").startswith("ruleset")
+                     else (p if p in ("random", "exploit_tree", "gnn_marwil") else None))
+    rows = []
+    for cid in v["campaigns"]:
+        first, last, turns = con.execute(
+            "SELECT first_decision_id, last_decision_id, turns FROM campaigns"
+            " WHERE campaign_id=?", (cid,)).fetchone()
+        fams = [f for f in (fam(r[0]) for r in con.execute(
+            "SELECT policy FROM taken WHERE decision_id BETWEEN ? AND ?", (first, last))) if f]
+        if not fams:
+            continue
+        n = float(len(fams))
+        setts, lords = [], []
+        for (feat,) in con.execute(
+                "SELECT features FROM entity_snapshots WHERE context_kind='campaign'"
+                " AND decision_id BETWEEN ? AND ?", (first, last)):
+            try:
+                s = json.loads(feat)
+            except (ValueError, TypeError):
+                continue
+            if s.get("settlements") is not None:
+                setts.append(float(s["settlements"]))
+            if s.get("lord_level") is not None:
+                lords.append(float(s["lord_level"]))
+        rows.append({"turns": float(turns or 0),
+                     "sett": (max(setts) - setts[0]) if setts else None,
+                     "lord": (max(lords) - lords[0]) if lords else None,
+                     "share": {k: c / n for k, c in collections.Counter(fams).items()}})
+    return rows
+
+
+def _mm_perm_p(xs, ys, obs, rng):
+    """Two-sided permutation p for a Spearman rho. Shuffling the OUTCOMES against fixed
+    shares is the right null: it keeps both marginal distributions and destroys only the
+    pairing, which is exactly the hypothesis being tested."""
+    if obs is None:
+        return None
+    hits = 0
+    sh = list(ys)
+    for _ in range(MM_PERMS):
+        rng.shuffle(sh)
+        r = _spearman(xs, sh)
+        if r is not None and abs(r) >= abs(obs):
+            hits += 1
+    return hits / float(MM_PERMS)
+
+
+def render_model_metrics(con, run, q):
+    """The cheap sections, plus a placeholder the browser fills in afterwards.
+
+    Sections 2 and 3 are two bounded queries and some counting. Section 1 runs a
+    permutation test per strategy per outcome per model version, which is seconds of pure
+    CPU -- and holding the whole tab behind it would mean waiting on a number that cannot
+    conclude anything anyway. It loads into its own box once the rest is on screen.
+    """
+    vs = _mm_versions(con)
+    if not vs:
+        return ("<h2>model metrics</h2><div class=legend>No model versions yet. This panel "
+                "keys off the experiment ledger's per-trial campaign uuids, so it fills "
+                "once a session has written a trial row.</div>")
+    return ("<div class=lazy data-src='/panel/modelmetrics_gate'>"
+            "<h2>does a strategy's share predict the outcome?</h2>"
+            "<div class=legend>running the permutation tests&hellip;</div></div>"
+            "<div class=lazy data-src='/panel/modelmetrics_dist'>"
+            "<h2>what does each model want to do?</h2>"
+            "<div class=legend>counting each model's first picks per version&hellip;</div>"
+            "</div>")
+
+
+def render_model_metrics_gate(con, run, q):
+    vs = _mm_versions(con)
+    if not vs:
+        return "<div class=dim>no model versions yet</div>"
+    rng = random.Random(20260811)
+
+    # ---- section 1: does a strategy's share predict how the campaign went? ----
+    srows = []
+    for v in vs:
+        data = _mm_strategy_outcomes(con, v)
+        if len(data) < 4:
+            srows.append("<tr><td>%s</td><td class=dim colspan=13>%d campaign(s) &mdash; "
+                         "a rank correlation needs at least 4</td></tr>"
+                         % (_esc(v["trial"]), len(data)))
+            continue
+        cells = []
+        for strat in ("exploit_tree", "gnn_marwil", "ruleset", "random"):
+            xs = [d["share"].get(strat, 0.0) for d in data]
+            if len(set(round(x, 6) for x in xs)) < 2:
+                cells += ["<td class='num dim'>flat</td>", "<td class='num dim'>-</td>",
+                          "<td class='num dim'>-</td>"]
+                continue
+            for key in ("turns", "sett", "lord"):
+                pairs = [(x, d[key]) for x, d in zip(xs, data) if d[key] is not None]
+                rho = (_spearman([p[0] for p in pairs], [p[1] for p in pairs])
+                       if len(pairs) >= 4 else None)
+                if rho is None:
+                    cells.append("<td class='num dim'>-</td>")
+                    continue
+                p = _mm_perm_p([p[0] for p in pairs], [p[1] for p in pairs], rho, rng)
+                cls = "ok" if (p is not None and p < 0.005) else "dim"
+                cells.append("<td class=num><span class=%s>%+0.2f</span>"
+                             "<span class=dim> p=%.3f</span></td>" % (cls, rho, p))
+        srows.append("<tr><td>%s</td><td class=num>%d</td>%s</tr>"
+                     % (_esc(v["trial"]), len(data), "".join(cells)))
+
+    sect1 = ("<h2>does a strategy's share predict the outcome?</h2>"
+             "<div class=legend><b>This is a first-glance metric and it cannot settle "
+             "anything on its own.</b> The draw is randomised per decision, but this "
+             "aggregates it to a campaign-level share and correlates against a "
+             "campaign-level result &mdash; which throws away the randomisation and makes "
+             "the comparison observational. A strategy can also score well by accident: "
+             "overfit behaviour that happens to line up with one or two high-value moves, "
+             "like attacking the army standing in front of it, looks identical here to a "
+             "policy that is actually better and is worse over a full game. Reading it "
+             "properly needs stratification by turn, model version and decision sequence, "
+             "which needs far more data than exists. Rows are split by model version and "
+             "never pooled across them: the mix, the feature set and the faction pool have "
+             "all changed mid-run, so a pooled number would measure the config change. "
+             "Spearman rho with a %d-permutation two-sided p; only p&lt;0.005 is "
+             "highlighted, and even that is not a green light.</div>"
+             "<div class=scroll><table>"
+             "<tr><th rowspan=2>model version<th class=num rowspan=2>campaigns"
+             "<th class=grp colspan=3>exploit_tree<th class=grp colspan=3>gnn_marwil"
+             "<th class=grp colspan=3>ruleset<th class=grp colspan=3>random</tr>"
+             "<tr>%s</tr>%s</table></div>"
+             % (MM_PERMS,
+                ("<th class=num>turns<th class=num>sett+<th class=num>lord+" * 4),
+                "".join(srows) or "<tr><td colspan=14 class=dim>nothing yet</tr>"))
+    return sect1
+
+
+def _mm_distributions(con, vs):
+    # ---- section 2: what does each model want to do? ----
+    dists, rows2 = {}, []
+    for v in vs:
+        d = _mm_top1(con, v["lo"], v["hi"])
+        dists[v["trial"]] = d
+        for model in ("catboost", "gnn"):
+            c = _mm_concentration(d[model])
+            if not c:
+                rows2.append("<tr><td>%s</td><td>%s</td><td class=dim colspan=5>no ranked "
+                             "offers</td></tr>" % (_esc(v["trial"]), model))
+                continue
+            forced = "bad" if c["share"] >= 50.0 else ("warn" if c["share"] >= 35.0 else "ok")
+            rows2.append("<tr><td>%s</td><td>%s</td><td class=dim>%s</td>"
+                         "<td class=num>%d</td><td>%s</td>"
+                         "<td class=num><span class=%s>%.1f%%</span></td>"
+                         "<td class=num>%.3f</td><td class=num>%d</td></tr>"
+                         % (_esc(v["trial"]), model, _esc(v["feature_version"]), c["n"],
+                            _esc(c["top"]), forced, c["share"], c["entropy"], c["distinct"]))
+    sect2 = ("<h2>what does each model want to do?</h2>"
+             "<div class=legend>The action type each model puts <b>first</b>, over every "
+             "decision it scored &mdash; not only the ones it was drawn to decide, so this "
+             "is what the model wants rather than what the draw let it do. "
+             "<b>top share</b> is how often its first pick is that one action type: high "
+             "means the model is forcing a move. <b>entropy</b> is normalised over the types "
+             "it actually uses, so 1.0 spreads evenly and 0.0 always says the same thing. "
+             "Shown per model version, because that is the thing that changes.</div>"
+             "<div class=scroll><table><tr><th>model version<th>model<th>features"
+             "<th class=num>decisions<th>most common first pick<th class=num>top share"
+             "<th class=num>entropy<th class=num>distinct types</tr>%s</table></div>"
+             % "".join(rows2))
+
+    # ---- section 3: how much did that taste move between versions? ----
+    rows3 = []
+    for older, newer in zip(vs[1:], vs[:-1]):
+        for model in ("catboost", "gnn"):
+            tv = _mm_tv(dists[older["trial"]][model], dists[newer["trial"]][model])
+            if tv is None:
+                rows3.append("<tr><td>%s</td><td>%s</td><td>%s</td><td class=dim>one side "
+                             "scored nothing</td></tr>"
+                             % (_esc(older["trial"]), _esc(newer["trial"]), model))
+                continue
+            cls = "bad" if tv >= 0.5 else ("warn" if tv >= 0.25 else "ok")
+            rows3.append("<tr><td>%s</td><td>%s</td><td>%s</td>"
+                         "<td class=num><span class=%s>%.3f</span></td></tr>"
+                         % (_esc(older["trial"]), _esc(newer["trial"]), model, cls, tv))
+    sect3 = ("<h2>how much did that move between versions?</h2>"
+             "<div class=legend>Total variation distance between one version's first-pick "
+             "distribution and the next: <b>0</b> identical taste, <b>1</b> no overlap at "
+             "all. A model whose taste lurches every retrain has not converged on anything, "
+             "whatever its validation number says. Expect one large jump at the boundary "
+             "where a model first got weights &mdash; an unfitted ranker has a taste too, "
+             "and it is not a meaningful one.</div>"
+             "<div class=scroll><table><tr><th>from<th>to<th>model"
+             "<th class=num>TV distance</tr>%s</table></div>"
+             % ("".join(rows3) or "<tr><td colspan=4 class=dim>needs two model versions</tr>"))
+
+    return sect2 + sect3
 
 
 def render_models():
