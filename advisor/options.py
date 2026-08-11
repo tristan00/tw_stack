@@ -811,8 +811,23 @@ FACTION_WIDE_CAPS = frozenset(("recruit_lord", "recruit_hero", "research", "rite
 # stored. noop and building_dismantle are both switched off this way on purpose. It is
 # stated here rather than by deleting the type, so the generator still enumerates it and
 # turning it back on is one number.
+# diplomacy is capped at 1 for THROUGHPUT, not because a second deal is illegal.
+# Measured over 519 executed actions: diplomacy is the most expensive action in the game at
+# 7.9s median (p90 9.8s) and 26.3% of all execution time -- 480s of 1829s -- while failing
+# 81% of the time (25 of 31 silently refused). Roughly 21% of the executor's entire budget
+# went into diplomacy the game then declined.
+#
+# Dropping 3 -> 1 keeps diplomacy in the corpus and keeps it learnable: every turn still
+# offers the full slate of targets and terms, the agent still picks one, and the refusals
+# still get recorded. It only stops the SECOND and THIRD attempt in the same turn, which
+# historically were the ones most likely to be refused anyway.
+#
+# This is deliberately NOT a gate on which deals are legal. That would need a much larger
+# failure sample to separate "this term is never offerable" from "the AI declined this
+# particular offer at this standing", and getting it wrong silently removes legitimate
+# options -- gated candidates are never stored, so a bad gate cannot be audited afterwards.
 PER_TURN_CAPS = {"recruit_lord": 1, "recruit_hero": 1, "recruit_unit": 4, "edict": 1,
-                 "research": 1, "rites": 1, "diplomacy": 3, "noop": 0, "stance": 1,
+                 "research": 1, "rites": 1, "diplomacy": 1, "noop": 0, "stance": 1,
                  "hero_action": 3, "building_dismantle": 0, "raise_dead": 4,
                  "recruit_ror": 1, "recruit_blessed": 4, "recruit_imperial": 1}
 # Everything that moves the character across the map. The executor was refusing these
