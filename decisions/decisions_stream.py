@@ -61,7 +61,12 @@ def run(ctx):
                         t2 = time.time()
                         seq += 1
                         counts["snapshot"] += 1
-                        journal.respond(out_dir, rid, decision_id=did,
+                        # The RECORD travels back with the reply. The advisor used to
+                        # take the decision_id and open decisions.sqlite itself to read
+                        # what had just been written -- a second reader of the recorder's
+                        # own database, in the component that is supposed to touch no
+                        # database at all. The recorder already holds it in memory.
+                        journal.respond(out_dir, rid, decision_id=did, record=snap,
                                         collect_ms=int((t1 - t0) * 1000),
                                         store_ms=int((t2 - t1) * 1000),
                                         pickup_lag_ms=pickup_lag_ms)

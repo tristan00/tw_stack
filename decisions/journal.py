@@ -2,14 +2,12 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 import sys
 import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import common
-from decisions import dbopen
 
 REQUESTS = "decisions_requests.jsonl"
 RESPONSES = "decisions_responses.jsonl"
@@ -112,7 +110,11 @@ def request_snapshot(run_dir, active=None, timeout=180.0):
     _append(run_dir, REQUESTS, {"kind": "snapshot", "req_id": rid, "active": active})
     reply = _await(run_dir, rid, timeout)
     did = reply.get("decision_id")
-    rec = read_decision(run_dir, did)
+    rec = reply.get("record")
+    if rec is None:
+        raise RuntimeError(
+            "recorder answered snapshot %s without a record. The advisor does not read "
+            "the decision database -- the recorder owns it and hands the record back." % rid)
     rec["_t_request"] = t_request
     rec["_t_received"] = time.time()
     rec["_collect_ms"] = reply.get("collect_ms")
@@ -164,38 +166,7 @@ def log_verification(run_dir, decision_id, result):
     _append(run_dir, REQUESTS, {"kind": "verification", "decision_id": decision_id, "result": result})
 
 
-def _con(run_dir):
-    path = os.path.join(run_dir, DB_NAME)
-    if not os.path.exists(path):
-        raise RuntimeError("no decisions.sqlite in %s -- the recorder has not opened it yet" % run_dir)
-    con = dbopen.connect(path, timeout=15.0)
-    con.row_factory = sqlite3.Row
-    return con
 
 
-def read_decision(run_dir, decision_id):
-    con = _con(run_dir)
-    try:
-        dp = con.execute("SELECT * FROM decision_points WHERE decision_id=?",
-                         (decision_id,)).fetchone()
-        if dp is None:
-            raise RuntimeError("decision %s not in the store" % decision_id)
-        ents, by_snap = [], {}
-        for r in con.execute("SELECT * FROM entity_snapshots WHERE decision_id=?", (decision_id,)):
-            e = {"snapshot_id": r["snapshot_id"], "context_kind": r["context_kind"],
-                 "context_id": r["context_id"], "state": json.loads(r["features"]), "offers": []}
-            by_snap[r["snapshot_id"]] = e
-            ents.append(e)
-        for r in con.execute("SELECT * FROM action_offers WHERE decision_id=?", (decision_id,)):
-            e = by_snap.get(r["snapshot_id"])
-            if e is not None:
-                e["offers"].append({"offer_id": r["offer_id"], "action_type": r["action_type"],
-                                    "key": r["action_key"],
-                                    "params": json.loads(r["params"] or "{}")})
-        return {"decision_id": decision_id, "turn": dp["turn"], "campaign_id": dp["campaign_id"],
-                "campaign": json.loads(dp["campaign"] or "{}"),
-                "world": json.loads(dp["world"] or "{}"), "entities": ents}
-    finally:
-        con.close()
 
 
