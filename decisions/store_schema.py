@@ -71,9 +71,16 @@ CREATE TABLE IF NOT EXISTS actions(
   action_type TEXT NOT NULL, action_key TEXT NOT NULL, params TEXT NOT NULL,
   UNIQUE(context_kind, context_id, action_type, action_key, params));
 
+-- campaign_map is WHICH MAP was played: wh3_main_combi (Immortal Empires, 534 factions),
+-- wh3_main_chaos (Realm of Chaos), a custom key, or NULL for rows recorded before it was
+-- collected. Immortal Empires and a small map are different environments -- different
+-- faction counts, topology, end-turn cost and diplomatic structure -- so pooling them
+-- unlabelled would repeat the mixed-schema mistake in a form no later reader could unpick.
+-- With the column, collecting across configurations is a deliberate choice rather than a
+-- silent one, and every consumer can group or filter on it.
 CREATE TABLE IF NOT EXISTS campaigns(
   campaign_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  campaign_key TEXT NOT NULL UNIQUE, faction TEXT,
+  campaign_key TEXT NOT NULL UNIQUE, faction TEXT, campaign_map TEXT,
   first_decision_id INTEGER, last_decision_id INTEGER,
   outcome TEXT, defeated INTEGER, turns INTEGER);
 

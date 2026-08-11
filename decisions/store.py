@@ -92,10 +92,27 @@ class DecisionStore:
             self.con.execute("PRAGMA journal_mode=WAL")
         self._assert_compatible(fresh=fresh)
         self.con.executescript(S.DDL)
+        self._add_missing_columns()
         self.con.executescript(S.VIEWS)
         self.con.execute("INSERT OR IGNORE INTO meta(k,v) VALUES('schema_version',?)",
                          (S.SCHEMA_VERSION,))
         self.con.commit()
+
+    # Columns added to an EXISTING database. `CREATE TABLE IF NOT EXISTS` is a no-op once
+    # the table exists, so a new column in store_schema reaches a fresh db and silently
+    # misses every db already on disk -- the reader then sees the column in the DDL, queries
+    # it, and gets an error or a null it misreads as data.
+    #
+    # Additive only, and only where NULL is a truthful answer for old rows: campaign_map is
+    # null for campaigns recorded before the map was collected, which is exactly right --
+    # we genuinely do not know which map those were played on.
+    _ADD_COLUMNS = (("campaigns", "campaign_map", "TEXT"),)
+
+    def _add_missing_columns(self):
+        for table, col, decl in self._ADD_COLUMNS:
+            have = {r[1] for r in self.con.execute("PRAGMA table_info(%s)" % table)}
+            if col not in have:
+                self.con.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, col, decl))
 
     # ------------------------------------------------------------------ compatibility
 
@@ -169,12 +186,21 @@ class DecisionStore:
     def campaign_key(self, faction, uuid=None):
         return str(uuid) if uuid else "%s@%s" % (faction, self.run_id)
 
-    def _campaign_id(self, key, faction=None):
+    def _campaign_id(self, key, faction=None, campaign_map=None):
         hit = self._campaign_cache.get(key)
         if hit is not None:
+            # The map arrives with the first decision but the campaign row may have been
+            # created by an earlier write (a target row, say) that did not carry it. Fill it
+            # in once rather than leaving the column null for the campaign's whole life.
+            if campaign_map:
+                self.con.execute(
+                    "UPDATE campaigns SET campaign_map=? "
+                    "WHERE campaign_id=? AND (campaign_map IS NULL OR campaign_map='')",
+                    (campaign_map, hit))
             return hit
-        self.con.execute("INSERT OR IGNORE INTO campaigns(campaign_key,faction) VALUES(?,?)",
-                         (key, faction))
+        self.con.execute(
+            "INSERT OR IGNORE INTO campaigns(campaign_key,faction,campaign_map) VALUES(?,?,?)",
+            (key, faction, campaign_map))
         cid = self.con.execute("SELECT campaign_id FROM campaigns WHERE campaign_key=?",
                                (key,)).fetchone()[0]
         self._campaign_cache[key] = cid
@@ -212,7 +238,7 @@ class DecisionStore:
                              % (len(ents), S.MAX_ENTITIES_PER_DECISION - 1))
         cid = self._campaign_id(self.campaign_key(camp.get("faction"),
                                                   camp.get("campaign_uuid")),
-                                camp.get("faction"))
+                                camp.get("faction"), camp.get("campaign_map"))
         cur = self.con.execute(
             "INSERT INTO decisions(campaign_id,ts,turn,decision_seq,policy,version_id,"
             "n_entities,n_offers,campaign_blob,world_blob)"
