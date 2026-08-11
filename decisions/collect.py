@@ -1237,14 +1237,18 @@ _LUA_LORD_POOLS = (_G +
     "local cq=ts(g(f,e..'['..i..'].CharacterContext.CQI')) "
     "local st=ts(g(f,e..'['..i..'].CharacterContext.AgentSubtypeRecordContext.Key')) "
     "local un=ts(g(f,e..'['..i..'].MainUnitRecordContext.Key')) "
-    "o[#o+1]=can..'^'..trs..'^'..ts(oka and ia)..'^'..bg..'^'..cq..'^'..st..'^'..un end "
+    # Rank is read even though a pool entry is not yet a character and this may well come
+    # back a constant. That is coverage's call to make from the data, not a comment's.
+    "local rk=ts(g(f,e..'['..i..'].CharacterContext.Rank')) "
+    "o[#o+1]=can..'^'..trs..'^'..ts(oka and ia)..'^'..bg..'^'..cq..'^'..st..'^'..un"
+    "..'^'..rk end "
     "out[#out+1]=sub..'='..n..':'..table.concat(o,',') end "
     "return table.concat(out,';;')")
 
 
 def _pool_cols():
     return {"n": 0, "can": [], "traits": [], "agents": [], "bg_skills": [],
-            "cqis": [], "subtypes": [], "units": []}
+            "cqis": [], "subtypes": [], "units": [], "ranks": []}
 
 
 def _lord_pools(bus, faction_cqi, subtypes):
@@ -1282,6 +1286,7 @@ def _parse_lord_pools(raw):
             col["cqis"].append(_s(4))
             col["subtypes"].append(_s(5))
             col["units"].append(_s(6))
+            col["ranks"].append(_num(_s(7)) if _s(7) is not None else None)
         try:
             col["n"] = int(float(n))
         except ValueError:

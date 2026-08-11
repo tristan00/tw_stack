@@ -640,14 +640,14 @@ def _province_options(region, state, campaign):
             else:
                 ok = bool(_at("can", i))
                 gate = None if ok else "cannot_recruit_character"
-            # `is_agent` is not recorded: it restates action_type exactly (True in
-            # 100% of recruit_hero rows, False in 100% of recruit_lord), so it is a
-            # constant per type by construction rather than a fact about the candidate.
-            # `cand_rank` is not recorded either -- a pool entry is not yet a character,
-            # and Rank read back 0.0 in all 349,934 rows of the corpus while a failed
-            # read would have produced None, so the value is a real, invariant zero.
-            # What actually differs between two cards on the recruitment panel is the
-            # background skill, the unit/mount, and (rarely) traits.
+            # `is_agent` and `cand_rank` are RECORDED, not argued away. Both were
+            # dropped on the reasoning that is_agent restates action_type and Rank reads
+            # a constant 0.0 for a pool entry that is not yet a character. Both readings
+            # may well be right -- and neither is a reason to delete the field. The
+            # standing rule is that a field the game answered gets collected and coverage
+            # decides whether it carries information; a value argued away in a comment is
+            # a value nobody can check. If they are constant, coverage will say so, and
+            # that is a finding rather than an assumption.
             # `region` matters and was never recorded: _lord_execute_inner opens the
             # settlement panel for the entity it was offered on, so raising this candidate
             # at region A and at region B put the character in different places. The pool
@@ -661,7 +661,8 @@ def _province_options(region, state, campaign):
                                  traits=tr, trait=(tr[0] if tr else None),
                                  n_traits=(None if tr is None else len(tr)),
                                  bg_skill=_at("bg_skills", i), cqi=_at("cqis", i),
-                                 unit_key=_at("units", i),
+                                 unit_key=_at("units", i), is_agent=is_agent,
+                                 cand_rank=_at("ranks", i),
                                  cand_subtype=_at("subtypes", i),
                                  agent_type=agent_type, type_fielded=fielded))
     offers.extend(_slot_action_offers(region, slot_states))
