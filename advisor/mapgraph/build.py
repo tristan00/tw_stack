@@ -180,6 +180,24 @@ def build_graph(record):
             if rel.get(flag):
                 g.edge(mi, fj, name)
 
+    # Third-party wars. Every diplomacy edge above is incident on the player, because every
+    # diplomacy read in the recorder was `me:at_war_with(x)` -- measured, 989 of 989 edges
+    # touched the player node. So "the faction I am about to attack is already fighting
+    # someone else" was not representable, and neither was a war bloc. dip_war is already a
+    # pair-capable relation; it simply never had a source for A-vs-B.
+    #
+    # world.war_graph is met-clipped at collection, both axes, so nothing here can introduce
+    # a faction the player has not met. Edges land only between factions that ALREADY have
+    # nodes -- an unmet faction has no node, so id2idx misses and the edge is skipped.
+    for row in (world.get("war_graph") or ()):
+        ai = g.id2idx.get("f:" + str(row.get("faction") or ""))
+        if ai is None:
+            continue
+        for peer in row.get("at_war_with") or ():
+            bi = g.id2idx.get("f:" + str(peer))
+            if bi is not None and bi != ai:
+                g.edge(ai, bi, "dip_war")
+
     # ---------------- regions, provinces, settlements ---------------------
     # public_order is read off the REGION interface; corruption off the PROVINCE
     # pooled-resource manager. Different owners, so different nodes.
@@ -424,6 +442,20 @@ def _wire_char(g, ci, cqi, row, faction, prov_of_region, st):
             g.edge(ci, si, "besieging")
     for uk in (st or {}).get("pending_recruit_keys") or ():
         g.edge(ci, g.cat_node("unit", str(uk)), "queued")
+    # What the army IS, one edge per unit held. Deduped by key: a stack of four spearmen is
+    # one edge, because the catalogue node is shared and re-adding it says nothing new.
+    # The per-unit strength/xp are deliberately NOT lifted onto the character as an average
+    # -- that is the hand-engineered summary this design exists to avoid, and `hp` already
+    # carries the aggregate.
+    seen_units = set()
+    for u in (st or {}).get("unit_cards") or ():
+        uk = str((u or {}).get("key") or "")
+        if uk and uk not in seen_units:
+            seen_units.add(uk)
+            g.edge(ci, g.cat_node("unit", uk), "in_army")
+    for sk in (st or {}).get("hidden_skills") or ():
+        if sk:
+            g.edge(ci, g.cat_node("skill", str(sk)), "innate")
 
 
 def _wire_knn(g):
