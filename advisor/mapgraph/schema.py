@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""The graph schema: 22 numbers, and everything else is structure.
+"""The graph schema: a hard budget of 22 numbers, and everything else is structure.
 
 This is the only graph model in the tree. What it replaced was a 90-field flat node
 vector plus a 24-slot per-offer block transcribed from CatBoost's `opt_*` columns;
@@ -9,7 +9,8 @@ parallel package. Adversarial review of the first draft of this one found it was
 ~76% CatBoost by feature -- the province block was `features.py:182-209` with the
 `prov_` prefix removed.
 
-So there is a hard numeric budget: 22 raw scalars across the entire ontology. Anything
+The budget is 22 raw scalars across the entire ontology, and N_SCALARS asserts what is
+actually spent so the number in this sentence cannot drift from the code again. Anything
 that can be a relation is a relation, and anything that has a stable game key is a
 shared catalogue node.
 
@@ -50,11 +51,17 @@ CATALOGUE_TYPES = ("building", "chain", "unit", "tech", "skill", "ritual",
 NODE_TYPES = INSTANCE_TYPES + CATALOGUE_TYPES
 ACTION_TYPE_INDEX = NODE_TYPES.index("action")
 
-# ---- the entire numeric budget: 22 values -------------------------------
+# ---- the numeric budget: 22 allowed, see N_SCALARS for what is spent ----
 # public_order is read off the REGION interface (r:public_order()); corruption comes
 # from the PROVINCE pooled-resource manager. They are not the same owner.
 TYPE_FIELDS = {
-    "faction":      ("is_player",),                                    # 1
+    # standing is a RECORDED per-faction fact (world.relations[].standing), and it is here
+    # because identity alone is not enough. Two met factions of the same race that own no
+    # visible settlement and share their treaty flags were the same node to WL, so every
+    # diplomacy action aimed at them was the same action -- measured at 6.9% of action
+    # nodes on fresh data, all diplomacy. A catalogue id separates them unless two keys
+    # hash together; standing means even then they differ.
+    "faction":      ("is_player", "standing"),                         # 2
     "region":       ("x", "y", "public_order"),                        # 3
     # x,y are free here too (MAX_FIELDS is 6) and both own and enemy settlement rows
     # carry them. Distance to a settlement is most of what an attack decision is about.
@@ -77,7 +84,14 @@ TYPE_FIELDS = {
     "ritual": (), "agent_action": (), "edict": (), "item": (), "race": (),
     "agent_subtype": (),
 }
-N_SCALARS = sum(len(v) for v in TYPE_FIELDS.values())   # 19; the "== 22" here was stale
+# The file said 22 in its docstring, 19 in this comment, and computed 20 -- three
+# numbers for one quantity, none of them checked. It is computed, the ceiling is named,
+# and going over is an error rather than a stale comment.
+SCALAR_BUDGET = 22
+N_SCALARS = sum(len(v) for v in TYPE_FIELDS.values())
+if N_SCALARS > SCALAR_BUDGET:
+    raise ValueError("mapgraph.schema: %d scalars against a budget of %d -- a field was "
+                     "added without deciding what it replaces" % (N_SCALARS, SCALAR_BUDGET))
 MAX_FIELDS = max(max(len(v) for v in TYPE_FIELDS.values()), 1)
 # {node type: {field name: column}} -- the same information as TYPE_FIELDS, indexed the
 # way build.Graph.add needs it. Building a graph writes ~1000 field values, and
@@ -223,7 +237,12 @@ CAT_BUCKETS = {"building": 8192, "chain": 4096, "unit": 4096, "tech": 4096,
                # recruit_lord and recruit_hero linked to no catalogue node at all: their
                # key is a character SUBTYPE, and `unit` is the wrong vocabulary for it.
                # 565 distinct in reference.agent_permitted_subtypes.
-               "agent_subtype": 2048}
+               "agent_subtype": 2048,
+               # A faction key is a stable game key, which by this file's own rule makes
+               # it a catalogue node -- and it was the one instance type with no identity
+               # at all. reference.sqlite has no faction table, so these hash instead of
+               # being dense: 16384 rows against roughly 600 factions in Immortal Empires.
+               "faction": 16384}
 CAT_DIM = 32
 
 G_CTX_FIELDS = ("turn", "treasury", "income", "settlements", "armies",
