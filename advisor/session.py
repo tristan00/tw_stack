@@ -1149,12 +1149,46 @@ def main():
                          "  all         -- sample from EVERY playable start in the installed game,\n"
                          "                 read from launcher/startable_factions.json (harvested\n"
                          "                 from the game's own frontend: 104 factions, 24 cultures)\n"
+                         "  no-cutscene -- every start EXCEPT the 14 that open on an intro\n"
+                         "                 movie (launcher/cutscene_starts.py, measured from\n"
+                         "                 the launcher's own cinematic-key counts). Those 14\n"
+                         "                 take 68-119s to reach a playable HUD against 17-30s\n"
+                         "                 for the rest.\n"
                          "  <key,...>   -- game faction keys, e.g. wh2_main_hef_nagarythe")
     arg = sys.argv[sys.argv.index("--factions") + 1].strip()
     if arg == "all":
         sys.path.insert(0, common.LAUNCHER)
         import bus_launcher
         keys = bus_launcher.BusLauncher().startable_factions()
+    elif arg == "no-cutscene":
+        # Every start that has never been seen opening on a cutscene, measured rather than
+        # listed: launcher/cutscene_starts.py reads the cinematic-key count the launcher
+        # already logs. 14 of 102 starts play an intro movie and take 68-119s to reach an
+        # interactive HUD against 17-30s for the rest, so dropping them buys ~9s per
+        # campaign on average -- about 77 minutes across a 500-campaign run.
+        #
+        # `unknown` is NOT included. A start with too few launches to classify is not
+        # assumed clean, because assuming clean is the direction that costs time.
+        sys.path.insert(0, common.LAUNCHER)
+        import bus_launcher
+        import cutscene_starts
+        # Resolved for the map this session will actually play. A cutscene belongs to the
+        # (map, faction) pair: the Ice Court opens on an intro movie on Realm of Chaos and
+        # on nothing on Immortal Empires, so pooling the maps put it in both lists.
+        _name = (sys.argv[sys.argv.index("--campaign") + 1].strip()
+                 if "--campaign" in sys.argv else "Immortal Empires")
+        _map = bus_launcher.BusLauncher.CAMPAIGN_KEYS.get(_name, _name)
+        r = cutscene_starts.classify(campaign_map=_map)
+        keys = [x["faction"] for x in r["clean"]]
+        if not keys:
+            raise SystemExit(
+                "--factions no-cutscene found no classified starts. It is derived from the "
+                "launcher's own logs under %s; with none on disk there is nothing to "
+                "filter, and silently falling back to every start would hide that."
+                % common.TWDATA)
+        print("--factions no-cutscene on %s: %d clean starts, excluding %d with a cutscene "
+              "and %d unclassified" % (_map, len(keys), len(r["cutscene"]),
+                                       len(r["unknown"])))
     else:
         keys = [k.strip() for k in arg.split(",") if k.strip()]
     if not keys:
