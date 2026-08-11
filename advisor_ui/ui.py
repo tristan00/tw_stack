@@ -2964,8 +2964,11 @@ def _mm_corr_table(con):
     camps = _mm_campaign_table(con)
     if not camps:
         return "<div class=dim>no campaign has both a recorded share and an outcome yet</div>"
-    lanes = (("settlement gain", lambda c: c["setts"]),
-             ("lord level gain", lambda c: c["lord"]))
+    # Settlement gain is THE objective. Lord level is a proxy that exists to support it,
+    # so it is reported second and reads as supporting evidence, not as a co-equal result:
+    # a run that levels its lord and takes no ground has not done the thing.
+    lanes = (("settlements", lambda c: c["setts"]),
+             ("lord level", lambda c: c["lord"]))
     rows = []
     for arm in MM_ARMS + ("model pool",):
         get = ((lambda c: c["share"]["exploit_tree"] + c["share"]["gnn_marwil"])
@@ -2986,12 +2989,18 @@ def _mm_corr_table(con):
         rows.append("<tr><td>%s</td><td class=num>%d</td>%s</tr>"
                     % (_esc(arm), len(used), "".join(cells)))
     return ("<table class=mmtbl><tr><th>arm<th class=num>campaigns"
-            "<th class=num>settlement gain<th class=num>lord level gain</tr>"
+            "<th class=num>settlement gain<th class='num mmdimc'>lord level gain</tr>"
             "%s</table>"
             "<div class=mms>each cell is Spearman rho of that arm's share of the "
             "campaign's decisions against that campaign's PEAK gain, then <b>/gate</b> "
             "&mdash; the smallest |rho| separable from chance at p&lt;0.005 for that n. "
-            "Nothing here is significant until a rho exceeds its own gate.</div>"
+            "Nothing here is significant until a rho exceeds its own gate. "
+            "<b>Settlement gain is the objective</b>; lord level is a proxy that exists to "
+            "support taking ground, so it is supporting evidence rather than a second "
+            "result &mdash; a run that levels its lord and takes no ground has not done "
+            "the thing. Settlement gain currently takes only 0 or 1 because campaigns end "
+            "at 4-12 turns; that widens as campaigns run longer and is not a property of "
+            "the measure.</div>"
             % "".join(rows))
 
 
