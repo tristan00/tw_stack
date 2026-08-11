@@ -15,7 +15,7 @@ import ruleset as R
 import strategies as S
 
 
-MAX_ACTIONS_PER_TURN = 16
+MAX_ACTIONS_PER_TURN = 8
 MAX_ACTIONS_PER_ENTITY = 6
 
 EPSILON = 0.10
