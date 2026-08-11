@@ -41,7 +41,6 @@ def _log_send(seq, channel, payload):
                 f.write(row)
     except OSError:
         pass
-POLL_SECONDS = 1.0
 
 READ_POLL_SECONDS = 0.05
 DEFAULT_TIMEOUT = 30

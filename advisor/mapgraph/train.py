@@ -160,9 +160,6 @@ def _shard(args):
     return out
 
 
-# Small enough that a slow shard cannot stall the pool at the tail: graph cost varies a
-# lot with turn number, so a few big shards leave most workers idle at the end.
-SHARD = 400
 
 
 def walk(runs_root=None, limit=None, log=print, workers=None):

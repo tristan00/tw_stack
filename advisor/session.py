@@ -233,7 +233,6 @@ def _postmortem(runs_root, entry, ex, log):
         log("   !! post-mortem NOT written: %s" % repr(e)[:160])
 
 
-NO_MODEL_DIR = common.MODEL_COLD_START
 
 
 def _epsilon_mix(epsilon):

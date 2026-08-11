@@ -409,12 +409,6 @@ def state_hash(bus):
 
 
 
-def _find(bus, path, timeout=8.0):
-    try:
-        r = bus.send("find", path, timeout=timeout) or {}
-        return (r.get("result") or {}), (r.get("child_ids") or [])
-    except Exception as e:
-        raise CollectError("bus find %s: %s" % (path.rsplit("|", 1)[-1], repr(e)[:80]))
 
 
 _LUA_RECRUITABLE = (_G +
@@ -446,9 +440,6 @@ def _parse_recruitable(raw):
     return out
 
 
-def recruitable_units(bus, cqi):
-    return _parse_recruitable(_ev(bus, _LUA_RECRUITABLE % {"cqi": cqi},
-                                  timeout=30.0, allow_nil=True))
 
 
 _LUA_MERC_POOLS = (_G +
@@ -548,9 +539,6 @@ def _parse_merc_pools(raw):
     return pools
 
 
-def mercenary_pools(bus, cqi):
-    return _parse_merc_pools(_ev(bus, _LUA_MERC_POOLS % {"cqi": cqi},
-                                 timeout=40.0, allow_nil=True))
 
 
 def _merc_offers(state, merc_pools):
@@ -569,13 +557,6 @@ def _merc_offers(state, merc_pools):
     return offers
 
 
-def edict_options(bus, region):
-    raw = _ev(bus, _G + "local s=cco('CcoCampaignSettlement','settlement:%s');"
-                        "local m=g(s,'FactionProvinceManagerContext'); if not m then return '' end "
-                        "local l=g(m,'InitiativeList'); if type(l)~='table' then return '' end local o={} "
-                        "for i=1,#l do o[#o+1]=ts(g(l[i],'Key')) end return table.concat(o,',')"
-              % region, timeout=20.0)
-    return [k for k in str(raw or "").split(",") if k and k != "nil"]
 
 
 _LUA_LORD = (_G +
@@ -853,11 +834,6 @@ def _parse_moves(raw):
     return out
 
 
-def _move_offers(bus, cqi, state):
-    lua = _move_lua(cqi, state)
-    if lua is None:
-        return []
-    return _parse_moves(_ev(bus, lua, timeout=25.0, allow_nil=True))
 
 
 def _reach_lua(cqi, target_cqis, regions):
@@ -882,11 +858,6 @@ def _parse_reach(raw):
     return chars, setts
 
 
-def _reach(bus, cqi, target_cqis, regions):
-    if not target_cqis and not regions:
-        return {}, {}
-    return _parse_reach(_ev(bus, _reach_lua(cqi, target_cqis, regions), timeout=40.0,
-                            allow_nil=True))
 
 
 _LUA_LORD_OFFERS = (_G +
@@ -1934,18 +1905,8 @@ _LUA_DIPLO_TARGETS = (
 
 
 
-def _bus(bus, cmd, arg=None, timeout=20.0):
-    try:
-        return bus.send(cmd, arg, timeout=timeout) if arg is not None else \
-            bus.send(cmd, timeout=timeout)
-    except Exception as e:
-        sys.stderr.write("collect: bus %s failed -> %s\n" % (cmd, repr(e)[:110]))
-        return None
 
 
-def _roots(bus):
-    r = _bus(bus, "roots") or {}
-    return [k.get("id") for k in (r.get("kids") or [])] or list(r.get("roots") or [])
 
 
 

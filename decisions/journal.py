@@ -193,12 +193,3 @@ def read_decision(run_dir, decision_id):
         con.close()
 
 
-def labelled_decisions(run_dir):
-    import sys
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from store import DecisionStore
-    s = DecisionStore(run_dir)
-    try:
-        return s.labelled_decisions(), s.target_series()
-    finally:
-        s.close()
