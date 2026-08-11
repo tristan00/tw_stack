@@ -60,6 +60,9 @@ CHECKS = [
     ("options", ["-m", "advisor.test_options"], False,
      "generate -> gate -> store end to end: nothing gated is stored, and options.py "
      "touches no bus, db or file"),
+    ("graph_no_catboost", ["-m", "advisor.mapgraph.eval", "no-catboost"], False,
+     "no mapgraph source imports advisor/features.py -- checked on OUR source, because "
+     "base_model legitimately imports it for the label"),
     ("coverage_selftest", ["-m", "decisions.coverage", "--selftest"], False,
      "the acceptance gate can be seen failing -- a constant field is reported, a "
      "varying one is not"),
@@ -82,6 +85,12 @@ CHECKS = [
      "drive the game directly on chosen factions: horde_slots populates for a horde "
      "LORD and not its faction-mates, and equipped populates for a lord that starts "
      "with items"),
+    ("graph_discrim", ["-m", "advisor.mapgraph.eval", "discrim"], True,
+     "the model beats uniform and most-common-type on held-out accuracy@1 and MRR of the "
+     "taken action"),
+    ("graph_ablate", ["-m", "advisor.mapgraph.eval", "ablate"], True,
+     "rewiring the MAP edges alone changes the ranking -- if it does not, the world "
+     "structure is decoration"),
     ("cco_commands", ["launcher/verify_cco_commands.py"], True,
      "every executor CCO command is accepted by the running game"),
 ]
