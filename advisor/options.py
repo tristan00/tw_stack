@@ -593,7 +593,7 @@ def _province_options(region, state, campaign):
                              slot_index=slot_i, is_upgrade=(not b.get("empty")),
                              can_upgrade=b.get("can_upgrade"), cost=b.get("cost"),
                              upkeep=b.get("upkeep"), level=b.get("level"),
-                             can_afford=b.get("can_afford")))
+                             can_afford_resources=b.get("can_afford_resources")))
     # An edict applies to the whole PROVINCE, but this assemble runs per REGION, so a
     # province with two owned regions offered every one of its edicts twice -- 748 of
     # 3,310 (22.6%) were literal repeats, splitting the listwise softmax between two
