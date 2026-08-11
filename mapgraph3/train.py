@@ -576,6 +576,7 @@ def _overfit(limit=8):
 
 
 if __name__ == "__main__":
+    common.require_venv()
     a = sys.argv[1:]
     if a and a[0] == "overfit":
         _overfit(int(a[a.index("--limit") + 1]) if "--limit" in a else 8)

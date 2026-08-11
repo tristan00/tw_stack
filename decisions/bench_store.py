@@ -22,6 +22,7 @@ import time
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(_HERE))
 
+import common  # noqa: E402
 from decisions.store import DecisionStore     # noqa: E402
 
 
@@ -207,4 +208,5 @@ def main(argv):
 
 
 if __name__ == "__main__":
+    common.require_venv()
     raise SystemExit(main(sys.argv[1:]))

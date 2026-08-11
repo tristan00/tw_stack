@@ -58,6 +58,7 @@ it, so any project import here is a cycle.
 from __future__ import annotations
 
 import os
+import sys
 
 
 def native(p):
@@ -162,6 +163,36 @@ RUNNER = _env("TW_RUNNER", r"D:\totalwar_runner")
 _RN = posix(RUNNER)
 
 VENV_PY = os.path.join(RUNNER, ".venv", "Scripts", "python.exe")
+
+
+def require_venv(what=None):
+    """Refuse to run under any interpreter but the project venv.
+
+    This is the ONE python that has torch, catboost, numpy and lupa; the README has said
+    so since the beginning and nothing enforced it. A check run under a bare system python
+    does not fail -- it degrades, skips the half of itself that needed the missing import,
+    and prints a summary that reads green. That happened: `mapgraph3.invariants` was run
+    under C:\\Python314, reported that the network invariants "need torch", and the
+    conclusion "torch is not on this machine" was written into a handoff. Both were false.
+    A wrong interpreter is now a hard stop with the right command in the message.
+
+    TW_ALLOW_ANY_PYTHON=1 escapes it, for the case where someone means it.
+    """
+    if os.environ.get("TW_ALLOW_ANY_PYTHON") == "1":
+        return
+    want = os.path.normcase(os.path.abspath(VENV_PY))
+    have = os.path.normcase(os.path.abspath(sys.executable))
+    if want == have:
+        return
+    argv = " ".join(sys.argv) if sys.argv else (what or "")
+    raise SystemExit(
+        "wrong interpreter.\n"
+        "  running : %s\n"
+        "  required: %s\n"
+        "This project's dependencies (torch, catboost, numpy, lupa) live only in the venv,\n"
+        "so running elsewhere silently skips checks instead of failing them. Re-run as:\n"
+        "  %s %s\n"
+        "(set TW_ALLOW_ANY_PYTHON=1 to override)" % (sys.executable, VENV_PY, VENV_PY, argv))
 RUNNER_DATA = _RN + "/data"
 # The lua mod inside the game writes these two; bus/mod/twcontrol.lua carries its own
 # copies of the literals and cannot import python -- see the note there.

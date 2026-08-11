@@ -20,6 +20,7 @@ import sys
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(_HERE))
 
+import common  # noqa: E402
 MOD_DIR = os.path.join(_HERE, "mod")
 # Modules whose module-level strings are Lua fragments sent to the game.
 LUA_STRING_MODULES = ("decisions.collect", "launcher.cco_actions", "launcher.cm_actions",
@@ -115,4 +116,5 @@ def main():
 
 
 if __name__ == "__main__":
+    common.require_venv()
     raise SystemExit(main())

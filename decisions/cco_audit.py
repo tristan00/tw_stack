@@ -590,6 +590,7 @@ def selftest(tsv=None):
 
 
 if __name__ == "__main__":
+    common.require_venv()
     a = sys.argv[1:]
     if "--selftest" in a:
         raise SystemExit(1 if selftest(a[a.index("--tsv") + 1] if "--tsv" in a else None)

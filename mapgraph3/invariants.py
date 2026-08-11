@@ -204,19 +204,17 @@ def check(verbose=True):
 
 
 if __name__ == "__main__":
+    common.require_venv()
     print("mapgraph3 v3 invariants")
     print(" catalogue:")
     bad = check_catalogue()
     print(" network:")
-    try:
-        bad += check()
-    except ImportError as e:
-        # Say which checks did not run. A suite that silently shrinks is worse than one
-        # that fails, because the summary line still reads green.
-        print("  SKIP  the network invariants need torch -> %s" % repr(e)[:80])
-        print("\ncatalogue invariants %s -- NETWORK INVARIANTS DID NOT RUN"
-              % ("hold" if not bad else "BROKEN (%d)" % len(bad)))
-        raise SystemExit(1 if bad else 0)
+    # No try/except around this. It used to skip on ImportError and report that the
+    # network invariants "need torch", which read as an environment limitation and was
+    # written into a handoff as one. torch is in the project venv; the run was simply
+    # under the wrong python. common.require_venv() above makes that impossible, so an
+    # ImportError here is a real broken dependency and must fail the build.
+    bad += check()
     print("\n%s" % ("all invariants hold" if not bad else
                     "%d INVARIANT(S) BROKEN" % len(bad)))
     raise SystemExit(1 if bad else 0)

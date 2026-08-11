@@ -161,4 +161,6 @@ def _selftest():
 
 
 if __name__ == "__main__":
+    # No interpreter guard here on purpose: this file imports nothing but `math`, so it
+    # behaves identically under any python and has no half to silently skip.
     _selftest()
