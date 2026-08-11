@@ -49,7 +49,7 @@ def _records(target, n):
 
 
 def main(argv):
-    target = next((a for a in argv if not a.startswith("--")), None)
+    target = common.cli_path(argv, ("--n",))
     if not target:
         import common
         target = os.path.join(common.RUNS_ROOT.replace("/", os.sep), "run")

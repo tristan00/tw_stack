@@ -111,6 +111,29 @@ RUN_DIR = RUNS_ROOT + "/run"
 DECISIONS_DB = "decisions.sqlite"
 
 
+def cli_path(argv, takes_value=()):
+    """The first bare token in argv that is not an option's VALUE.
+
+    `next(a for a in argv if not a.startswith("--"))` is the obvious way to find a
+    positional path and it is wrong: an option's value is also a bare token, so
+    `--n 40` yields "40" and the tool then tries to open a run directory called 40.
+    Three separate tools had their own copy of that line -- coverage, mapgraph.wl and
+    mapgraph.test_build -- and all three failed the same way, reporting a missing corpus
+    rather than a command line they had mis-read.
+    """
+    skip = False
+    for a in argv:
+        if skip:
+            skip = False
+            continue
+        if a in takes_value:
+            skip = True
+            continue
+        if not a.startswith("--"):
+            return a
+    return None
+
+
 def run_dbs(runs_root=None):
     """The decision databases a trainer reads. There is exactly ONE run dir.
 
