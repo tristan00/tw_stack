@@ -180,7 +180,19 @@ class InterruptRanker:
         self.rng = random.Random(seed)
         self.strategies = P.normalize_strategies(strategies)
         self.ruleset = ruleset
-        self._gnn_noted = False
+        # The graph arm. Its own model in its own directory -- this is not the action
+        # model's encoder, exactly as e1/e2 here are not model.py's e1/e2.
+        self.gnn = None
+        self.gnn_score_errors = 0
+        if "gnn_marwil" in self.strategies and model_dir != common.MODEL_COLD_START:
+            try:
+                if common.ROOT not in sys.path:
+                    sys.path.insert(0, common.ROOT)
+                from advisor.mapgraph import interrupt_rank as GNN
+                self.gnn = GNN.Ranker()
+            except Exception as e:
+                sys.stderr.write("interrupt_model: graph arm unavailable -> %s -- gnn "
+                                 "draws fall back to random\n" % repr(e)[:160])
         try:
             from catboost import CatBoostRegressor
             p1 = os.path.join(model_dir, "e1.cbm")
@@ -241,46 +253,84 @@ class InterruptRanker:
                 return name
         return names[-1]
 
-    def choose(self, screen, options, campaign, panel=None, world=None, meta=None):
-        opts = sorted(options)
-        if not opts:
-            return None, "none", {}
-        drawn = self._draw()
-        if drawn == "random":
-            return self.rng.choice(opts), "random", {}
-        if drawn == "ruleset":
-            hit = self.ruleset.match_screen(str(screen), opts) if self.ruleset else None
-            if hit:
-                return hit[0], "ruleset(%s)" % hit[1], {}
-            return self.rng.choice(opts), "ruleset_random_fallback", {}
-        prefix = ""
-        if drawn == "gnn_marwil":
-            prefix = "gnn_delegated_"
-            if not self._gnn_noted:
-                self._gnn_noted = True
-                sys.stderr.write("interrupt_model: 'gnn' has no interrupt-side model -- "
-                                 "delegating its draws to exploit_tree this campaign "
-                                 "(provenance %sexploit_tree)\n" % prefix)
-        elif drawn != "exploit_tree":
-            raise RuntimeError("interrupt_model: drawn strategy %r has no interrupt branch -- "
-                               "refusing to silently play exploit_tree" % (drawn,))
+    def _score_with_gnn(self, screen, opts, record, panel, meta):
+        """Graph scores for this screen, or {}. Swallows its own failures on purpose:
+        an unscored screen costs a comparison, a raised one costs the run."""
+        if self.gnn is None or not self.gnn.ready:
+            return {}
+        try:
+            return self.gnn.score(screen, opts, record, panel, meta)
+        except Exception as e:
+            self.gnn_score_errors += 1
+            sys.stderr.write("interrupt_model: gnn scoring failed (%d so far) -> %s\n"
+                             % (self.gnn_score_errors, repr(e)[:140]))
+            return {}
+
+    def _exploit_ready(self, screen):
+        """(usable, why) for the CatBoost arm on THIS screen -- it is fitted per screen."""
         sr = self.meta.get("screen_rows")
         if sr is not None:
             seen = int(sr.get(str(screen), 0))
-            why = "%d/%d rows recorded for this screen" % (seen, MIN_ROWS)
-        else:
-            seen = MIN_ROWS if str(screen) in (self.meta.get("screens") or []) else 0
-            why = "screen not in the fitted set (meta predates screen_rows)"
-        if seen < MIN_ROWS:
+            return seen >= MIN_ROWS, "%d/%d rows recorded for this screen" % (seen, MIN_ROWS)
+        seen = MIN_ROWS if str(screen) in (self.meta.get("screens") or []) else 0
+        return seen >= MIN_ROWS, "screen not in the fitted set (meta predates screen_rows)"
+
+    def choose(self, screen, options, campaign, panel=None, record=None, meta=None):
+        """Pick one option, and score the screen with EVERY arm that can score it.
+
+        Both models run on every screen regardless of which one the draw hands the
+        decision to -- which is what policy.py:113-135 already does on the action path,
+        and it is what makes the two arms comparable at all. Whatever they produce is
+        returned as the rich scores, lands in options_json, and is the evidence for
+        whether the graph arm is worth more than 10%.
+        """
+        opts = sorted(options)
+        if not opts:
+            return None, "none", {}
+        world = (record or {}).get("world")
+
+        usable, why = self._exploit_ready(screen)
+        exploit = (self.score(screen, options, campaign, panel, world, meta)
+                   if usable else {})
+        gnn = self._score_with_gnn(screen, opts, record, panel, meta)
+        rich = {}
+        for o in opts:
+            cell = {}
+            if o in exploit:
+                cell["exploit"] = exploit[o]
+            if o in gnn:
+                cell["gnn"] = gnn[o]
+            if cell:
+                rich[o] = cell
+
+        drawn = self._draw()
+        if drawn == "random":
+            return self.rng.choice(opts), "random", rich
+        if drawn == "ruleset":
+            hit = self.ruleset.match_screen(str(screen), opts) if self.ruleset else None
+            if hit:
+                return hit[0], "ruleset(%s)" % hit[1], rich
+            return self.rng.choice(opts), "ruleset_random_fallback", rich
+        if drawn == "gnn_marwil":
+            # No delegation. This arm used to be handed to exploit_tree and recorded as
+            # gnn_delegated_exploit_tree, which meant the gnn share of the mix was decided
+            # by CatBoost on every blocking screen and the arm's measured share was
+            # fiction. It has its own model now; when that model cannot score, the arm
+            # falls back to RANDOM and says so, the same way policy.py:141-148 does.
+            if not gnn:
+                return self.rng.choice(opts), "gnn_marwil_random_fallback", rich
+            return max(gnn, key=gnn.get), "gnn_marwil", rich
+        if drawn != "exploit_tree":
+            raise RuntimeError("interrupt_model: drawn strategy %r has no interrupt branch -- "
+                               "refusing to silently play exploit_tree" % (drawn,))
+        if not usable:
             pick = self.rng.choice(opts)
-            sys.stderr.write("interrupt_model: %s -> %r (%sexploit_tree_random_fallback, %s)\n"
-                             % (screen, pick, prefix, why))
-            return pick, prefix + "exploit_tree_random_fallback", {}
-        exploit = self.score(screen, options, campaign, panel, world, meta)
+            sys.stderr.write("interrupt_model: %s -> %r (exploit_tree_random_fallback, %s)\n"
+                             % (screen, pick, why))
+            return pick, "exploit_tree_random_fallback", rich
         if not exploit:
-            return self.rng.choice(opts), prefix + "exploit_tree_random_fallback", {}
-        rich = {o: {"exploit": exploit.get(o)} for o in exploit}
-        return max(exploit, key=exploit.get), prefix + "exploit_tree", rich
+            return self.rng.choice(opts), "exploit_tree_random_fallback", rich
+        return max(exploit, key=exploit.get), "exploit_tree", rich
 
 
 def main():

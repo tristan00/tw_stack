@@ -173,6 +173,10 @@ MODEL_GLOBAL = os.path.join(MODELS, "global")
 MODEL_LOCAL = os.path.join(MODELS, "local")
 MODEL_INTERRUPT = os.path.join(MODELS, "interrupt")
 MODEL_MAPGRAPH = os.path.join(MODELS, "mapgraph")
+# The graph model for BLOCKING SCREENS. Its own weights, not the action model's: same
+# architecture and same ontology, trained on a different decision family -- which is
+# exactly how interrupt_model.py relates to model.py on the CatBoost side.
+MODEL_MAPGRAPH_INTERRUPT = os.path.join(MODELS, "mapgraph_interrupt")
 # not a real directory: the sentinel a run points at to force cold start.
 MODEL_COLD_START = os.path.join(MODELS, "__cold_start__")
 

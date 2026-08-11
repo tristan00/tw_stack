@@ -86,7 +86,7 @@ def _unknown_controls(ctrls, known):
 
 _CHOOSER = [None]
 _CAMPAIGN = [None]
-_WORLD = [None]
+_RECORD = [None]
 _LAST_POLICY = [None]
 _LAST_SCORES = [None]
 
@@ -95,17 +95,24 @@ def set_chooser(fn):
     _CHOOSER[0] = fn
 
 
-def set_snapshot(campaign, world=None):
+def set_snapshot(campaign, record=None):
+    """The last decision snapshot, kept whole.
+
+    It used to keep only `world`. The graph model needs the ENTITIES too -- province
+    state, built slots, unit rosters, innate skills -- which are half the graph and live
+    nowhere else. The record a blocking screen collects for itself is not a substitute:
+    with a panel up, world_state returns no relations, no citizenry and no war_graph.
+    """
     _CAMPAIGN[0] = campaign
-    _WORLD[0] = world
+    _RECORD[0] = record
 
 
 def _campaign_hint():
     return _CAMPAIGN[0]
 
 
-def _world_hint():
-    return _WORLD[0]
+def _record_hint():
+    return _RECORD[0]
 
 
 def _choose(screen, options, campaign=None, panel=None, meta=None, live=None):
@@ -124,7 +131,7 @@ def _choose(screen, options, campaign=None, panel=None, meta=None, live=None):
             "screen must be able to re-read what it is offering at pick time, otherwise a "
             "recommendation cannot be checked against the panel and phantom options enter the "
             "corpus as confirmed actions (offered=%s)" % (screen, opts))
-    got, policy, scores = fn(screen, opts, campaign, panel, _world_hint(), meta)
+    got, policy, scores = fn(screen, opts, campaign, panel, _record_hint(), meta)
     if got not in options:
         raise RuntimeError(
             "chooser returned %r which is NOT among the legal options %s for %s. Taking it anyway "

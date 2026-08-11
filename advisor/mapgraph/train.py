@@ -349,7 +349,11 @@ def _collate(items, size, dev, log, tag):
         return batches, False
 
 
-def _fit(datas, ys, groups, cfg, log=print):
+def fit_net(datas, ys, groups, cfg, log=print):
+    """Fit a Net on (graphs, labels, campaign groups). Public: interrupt_train calls it
+    with the blocking-screen corpus, and nothing in here knows which corpus it got --
+    the loss, the split and the budget handling are the same job either way. Not named
+    `fit` because train() below binds that name to the fit REPORT."""
     import torch
     # stable_split, not grouped_split: the latter reshuffles the whole campaign list as
     # the corpus grows, so the held-out set is redrawn every retrain and the metric
@@ -516,7 +520,7 @@ def train(runs_root=None, cfg=None, log=None):
     fit_cfg = dict(cfg, time_budget_s=max(MIN_FIT_S, cfg["time_budget_s"] - walked))
     log("mapgraph.train: walk+tensorize %.1fs, %.1fs left of the %ds budget for the fit"
         % (walked, fit_cfg["time_budget_s"], cfg["time_budget_s"]))
-    net, fit, y_mean, y_sd = _fit(datas, [e["y"] for e in ex],
+    net, fit, y_mean, y_sd = fit_net(datas, [e["y"] for e in ex],
                                   [e["campaign_id"] for e in ex], fit_cfg, log=log)
     import torch
     meta = {"backend": "mapgraph", "schema_version": S.SCHEMA_VERSION,

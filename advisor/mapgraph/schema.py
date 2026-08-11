@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""The graph schema: a hard budget of 22 numbers, and everything else is structure.
+"""The graph schema: as few numbers as the job needs, and everything else is structure.
 
 This is the only graph model in the tree. What it replaced was a 90-field flat node
 vector plus a 24-slot per-offer block transcribed from CatBoost's `opt_*` columns;
@@ -9,10 +9,11 @@ parallel package. Adversarial review of the first draft of this one found it was
 ~76% CatBoost by feature -- the province block was `features.py:182-209` with the
 `prov_` prefix removed.
 
-The budget is 22 raw scalars across the entire ontology, and N_SCALARS asserts what is
-actually spent so the number in this sentence cannot drift from the code again. Anything
-that can be a relation is a relation, and anything that has a stable game key is a
-shared catalogue node.
+N_SCALARS counts the raw scalars across the entire ontology and is computed, not written
+down, so the number cannot drift from the code. Anything that can be a relation is a
+relation, and anything that has a stable game key is a shared catalogue node -- that rule
+is what keeps the count small, not a ceiling. What IS capped is MAX_FIELDS, the widest
+single node type: every node carries a row that wide, so one greedy type taxes all of them.
 
     at_war / allied / trade / vassal    ->  distinct edge types
     built{slot: key} / free / locked    ->  slot nodes and building nodes
@@ -37,7 +38,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 import common
 
-SCHEMA_VERSION = 3
+# 4: the blocking screens joined the ontology -- a `screen` node, screen_* action types,
+# and the option/dilemma/fact/term catalogues. Every embedding table that indexes those
+# changed WIDTH, so a v3 encoder.pt is not loadable against this and rank.py's hash gate
+# is what says so instead of a state_dict shape error at inference.
+SCHEMA_VERSION = 4
 
 # --------------------------------------------------------------------------
 # node types
@@ -45,13 +50,16 @@ SCHEMA_VERSION = 3
 # instance nodes  -- one per thing in this decision
 # catalogue nodes -- one per stable game key, shared across all decisions
 INSTANCE_TYPES = ("faction", "region", "settlement", "province", "slot",
-                  "lord", "hero", "action", "cgroup")
+                  "lord", "hero", "action", "cgroup", "screen")
 CATALOGUE_TYPES = ("building", "chain", "unit", "tech", "skill", "ritual",
-                   "agent_action", "edict", "item", "race", "agent_subtype")
+                   "agent_action", "edict", "item", "race", "agent_subtype",
+                   # blocking screens: the option, the dilemma behind it, a named panel
+                   # fact, a treaty term on the table
+                   "screen_option", "dilemma", "screen_fact", "treaty_term")
 NODE_TYPES = INSTANCE_TYPES + CATALOGUE_TYPES
 ACTION_TYPE_INDEX = NODE_TYPES.index("action")
 
-# ---- the numeric budget: 22 allowed, see N_SCALARS for what is spent ----
+# ---- the raw scalars; N_SCALARS below is the computed total, MAX_FIELDS the widest ----
 # public_order is read off the REGION interface (r:public_order()); corruption comes
 # from the PROVINCE pooled-resource manager. They are not the same owner.
 TYPE_FIELDS = {
@@ -83,19 +91,34 @@ TYPE_FIELDS = {
     # information, which the network still had to learn to ignore.
     "action":       ("x", "y"),                                        # 2
     "cgroup":       (),
+    # One per INTERRUPT decision -- the blocking screen itself. These six are the panel's
+    # own numbers, read off the open panel as a single entity, and they are the same six
+    # the CatBoost interrupt model already reads as isc_dip_* columns
+    # (interrupt_model.py:57-77). They are numbers, so they are scalars; the panel's
+    # STRING facts (attitude_label, result, casualties, outcome, reliability, race) are
+    # screen_fact catalogue nodes instead.
+    # Exactly 6, which is MAX_FIELDS as set by `lord` -- so this type is free: it widens
+    # nothing. A 7th would tax every node of every type in every graph.
+    "screen":       ("attitude", "amount_demanded", "amount_offered",
+                     "strength_them", "strength_us", "settlements"),   # 6
     # catalogue nodes are pure identity -- their content is their embedding
     "building": (), "chain": (), "unit": (), "tech": (), "skill": (),
     "ritual": (), "agent_action": (), "edict": (), "item": (), "race": (),
     "agent_subtype": (),
+    "screen_option": (), "dilemma": (), "screen_fact": (), "treaty_term": (),
 }
-# The file said 22 in its docstring, 19 in this comment, and computed 20 -- three
-# numbers for one quantity, none of them checked. It is computed, the ceiling is named,
-# and going over is an error rather than a stale comment.
-SCALAR_BUDGET = 22
+# The file said 22 in its docstring, 19 in this comment, and computed 20 -- three numbers
+# for one quantity, none of them checked. So it is computed, and it is REPORTED (meta.json
+# and the models card), which is the part that was actually load-bearing.
+#
+# There was a SCALAR_BUDGET = 22 ceiling here that raised on the 23rd field. It is gone.
+# It had reached exactly 22 of 22 -- `region.income` spent the last slot -- so the next
+# honest field anywhere in the ontology was an ImportError, and the thing it was
+# protecting was never the count. Adding a 7th field to any ONE type is what costs:
+# `x` is [N, MAX_FIELDS] for every node and TypeEncoders projects _NT * MAX_FIELDS, so a
+# single wide type widens the input row of every node of every type in every graph.
+# MAX_FIELDS is the real budget, it is asserted in test_build.py, and it is unchanged.
 N_SCALARS = sum(len(v) for v in TYPE_FIELDS.values())
-if N_SCALARS > SCALAR_BUDGET:
-    raise ValueError("mapgraph.schema: %d scalars against a budget of %d -- a field was "
-                     "added without deciding what it replaces" % (N_SCALARS, SCALAR_BUDGET))
 MAX_FIELDS = max(max(len(v) for v in TYPE_FIELDS.values()), 1)
 # {node type: {field name: column}} -- the same information as TYPE_FIELDS, indexed the
 # way build.Graph.add needs it. Building a graph writes ~1000 field values, and
@@ -169,8 +192,23 @@ ACT_RELATIONS = (
     "of_ego",           # candidate group <-> the actor it belongs to
 )
 
+# Blocking screens: dilemmas, pre-battle, battle results, occupation, diplomacy. The
+# option is an action node like any other -- what is new is the screen it sits on.
+SCREEN_RELATIONS = (
+    "on_screen",        # action <-> the screen it is an option of
+    "of_dilemma",       # action <-> the dilemma catalogue node (shared across occurrences,
+                        # which is the whole point: the same dilemma recurs across
+                        # campaigns and its options should mean the same thing each time)
+    "screen_fact",      # screen <-> a string-valued panel fact (forecast, outcome,
+                        # attitude label, reliability) as a catalogue node
+    "demanded",         # screen <-> a treaty term THEY want from us
+    "offered",          # screen <-> a treaty term they are giving
+    "in_treaty",        # screen <-> a treaty already standing between us
+)
+
 RELATIONS = (WORLD_RELATIONS + DIPLO_RELATIONS + PROVINCE_RELATIONS
-             + CATALOGUE_RELATIONS + ABILITY_RELATIONS + ACT_RELATIONS)
+             + CATALOGUE_RELATIONS + ABILITY_RELATIONS + ACT_RELATIONS
+             + SCREEN_RELATIONS)
 REL_INDEX = {r: i for i, r in enumerate(RELATIONS)}
 N_RELATIONS = len(RELATIONS) * 2        # forward and reverse are different relations
 REL_DIM = 24
@@ -226,14 +264,41 @@ STANCE_DIM = 8
 SUBTYPE_BUCKETS = 2048
 SUBTYPE_DIM = 16
 
+# Every blocking screen the launcher can answer, taken from the `_choose` / `_sticky_choice`
+# / `_drive_decision` call sites in launcher/interrupts.py. Closed set -- it is OUR code
+# that decides a screen is answerable at all, so an unknown one here means the two files
+# have drifted, which mapgraph.invariants cross-checks by AST rather than trusting this
+# comment. The builder RAISES on a screen it does not know: a screen silently landing on
+# atype 0 would be answered by a model that cannot tell which panel it is looking at.
+SCREEN_TYPES = ("ally_attacked", "battle_results", "declare_war_cancel", "dilemma",
+                "diplomacy", "diplomacy_notice", "diplomacy_proposal", "event_ack",
+                "occupation", "pre_battle", "war_declared")
+
+# An interrupt option is an action node like any other. The screen it belongs to is its
+# action TYPE, prefixed -- `diplomacy` alone is already a map action type (a proposal we
+# send), and the incoming panel is a different thing entirely.
+SCREEN_ACTION_TYPES = tuple("screen_%s" % s for s in SCREEN_TYPES)
+
 ACTION_TYPES = ("stance", "building", "research", "skills", "items", "item_unequip", "rites",
                 "recruit_unit", "recruit_lord", "edict", "attack_army", "attack_settlement",
                 "colonize", "horde_building", "garrison", "leave_garrison", "end_turn", "noop",
                 "move", "diplomacy", "hero_action", "recruit_hero",
                 "building_repair", "building_dismantle",
-                "raise_dead", "recruit_ror", "recruit_blessed", "recruit_imperial")
+                "raise_dead", "recruit_ror", "recruit_blessed",
+                "recruit_imperial") + SCREEN_ACTION_TYPES
 ATYPE_VOCAB = len(ACTION_TYPES) + 1
 ATYPE_DIM = 24
+
+
+def screen_action_type(screen):
+    """`screen_<name>`, raising on a screen this schema does not know."""
+    s = str(screen or "")
+    if s not in SCREEN_TYPES:
+        raise ValueError(
+            "mapgraph.schema: %r is not a known interrupt screen. Add it to SCREEN_TYPES "
+            "-- an unknown screen would be encoded as atype 0 and the model could not tell "
+            "which panel it was answering. Known: %s" % (s, ", ".join(SCREEN_TYPES)))
+    return "screen_%s" % s
 
 # 12 diplomacy terms observed in the corpus; replaces 3,624 hashed key buckets
 DIPLO_TERMS = ("declare_war", "peace", "trade_agreement", "nonaggression_pact",
@@ -261,7 +326,21 @@ CAT_BUCKETS = {"building": 8192, "chain": 4096, "unit": 4096, "tech": 4096,
                # it a catalogue node -- and it was the one instance type with no identity
                # at all. reference.sqlite has no faction table, so these hash instead of
                # being dense: 16384 rows against roughly 600 factions in Immortal Empires.
-               "faction": 16384}
+               "faction": 16384,
+               # ---- interrupt screens ----
+               # An option's identity, "<screen>|<dilemma_id>|<option_id>". 48 distinct in
+               # the corpus at the time of writing (21 occupation, 15 dilemma, 6
+               # battle_results, 4 pre_battle, 2 diplomacy) and it grows with every new
+               # dilemma the game shows us, so it is sized for the tail, not for today.
+               "screen_option": 4096,
+               # The dilemma itself, shared by its own options and across occurrences --
+               # the same dilemma recurs in campaign after campaign.
+               "dilemma": 4096,
+               # A string-valued panel fact: "pre_battle.result=<state>",
+               # "diplomacy.attitude_label=<label>", "battle_results.outcome=<...>".
+               "screen_fact": 2048,
+               # DEAL_ITEMS and whatever else a diplomacy panel lists.
+               "treaty_term": 64}
 CAT_DIM = 32
 
 # The VALUE head's context. These are raw recorded campaign facts, not derived ones, and
@@ -289,6 +368,20 @@ TREASURY_SCALE = 10000.0
 # per-region income. Observed 0..736 across the corpus; 500 puts the common range inside
 # [0,1.5] and the clip catches the rest.
 INCOME_SCALE = 500.0
+
+# ---- interrupt panel numbers ----
+# Diplomatic attitude runs roughly -100..100 on the panel's dy_value node.
+ATTITUDE_SCALE = 100.0
+# Gold on the table. Deals in the corpus run to a few thousand; 5000 puts the common
+# range inside [0,1] and the clip catches a ransom.
+DEAL_GOLD_SCALE = 5000.0
+# "Strength Rank: 12" -- a rank, not a strength, so smaller is stronger. Same scale for
+# both sides so the two are comparable AS NUMBERS on one node; the model is free to
+# subtract them, which it may do because they are two facts of one panel, not two
+# entities (guard.Raw is what would stop a cross-entity subtraction, and does not apply).
+STRENGTH_RANK_SCALE = 50.0
+# Their settlement count, off `opponent_settlement_number`.
+SCREEN_SETTLEMENTS_SCALE = 10.0
 
 KNN_K = 4
 MODEL_DIR = common.MODEL_MAPGRAPH

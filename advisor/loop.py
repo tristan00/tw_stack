@@ -194,10 +194,10 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
     act_hist = []
     act_counts = {}
     I.reset_answers()
-    I.set_chooser(lambda screen, options, campaign, panel=None, world=None, meta=None:
+    I.set_chooser(lambda screen, options, campaign, panel=None, record=None, meta=None:
                   ranker.choose(screen, options, F.stamp_action_counts(
                       F.stamp_prev_actions(dict(campaign or {}), act_hist), act_counts),
-                      panel, world, meta))
+                      panel, record, meta))
     if ranker.ready:
         log("interrupt policy: mix %s, trained(%d rows, screens=%s)"
             % (json.dumps(ranker.strategies), (ranker.meta or {}).get("rows", 0),
@@ -206,6 +206,14 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
         log("interrupt policy: mix %s, exploit_tree unready -> random fallback%s"
             % (json.dumps(ranker.strategies),
                " (FORCED -- cold start)" if cold else ""))
+    if "gnn_marwil" in ranker.strategies:
+        gm = (ranker.gnn.meta or {}) if ranker.gnn else {}
+        gf = gm.get("fit") or {}
+        log("interrupt graph arm: %s"
+            % ("trained(%d screens, val_nll %s vs uniform %s)"
+               % (gm.get("rows", 0), gf.get("val_listwise_nll"), gm.get("uniform_nll"))
+               if ranker.gnn and ranker.gnn.ready
+               else "unready -> gnn_marwil_random_fallback"))
 
     def _stuck(reason, detail):
         stuck.update(fired=True, reason=reason, detail=detail)
@@ -463,7 +471,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
         record["campaign"]["move_index"] = moves + 1
         F.stamp_prev_actions(record["campaign"], act_hist)
         F.stamp_action_counts(record["campaign"], act_counts)
-        I.set_snapshot(record["campaign"], record.get("world"))
+        I.set_snapshot(record["campaign"], record)
         last_record = record
         if (record.get("campaign") or {}).get("ll_wounded"):
             log("   legendary lord is WOUNDED -- no further actions, ending the turn now")

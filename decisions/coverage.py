@@ -139,13 +139,18 @@ def declared_types():
     sys.path.insert(0, common.ADVISOR)
     feats = importlib.import_module("features")
     gs = importlib.import_module("advisor.mapgraph.schema")
-    a, b = set(feats.ACTION_TYPES), set(gs.ACTION_TYPES)
+    # MAP action types only. schema.ACTION_TYPES also carries the screen_* types, which
+    # are options on blocking panels -- they are never generated as offers, never reach
+    # features.py, and have no coverage to report. Comparing the full sets would demand
+    # that the CatBoost map feature builder declare a vocabulary for a decision family it
+    # does not see.
+    a, b = set(feats.ACTION_TYPES), set(gs.ACTION_TYPES) - set(gs.SCREEN_ACTION_TYPES)
     if a != b:
         raise SystemExit(
             "the action-type registries disagree -- advisor/features.py has %s and "
             "mapgraph/schema.py has %s. One of them is training on a vocabulary the other "
             "does not have." % (sorted(a - b) or "none extra", sorted(b - a) or "none extra"))
-    for at in sorted(a):
+    for at in sorted(set(gs.ACTION_TYPES)):
         if gs.atype_index(at) == 0:
             raise SystemExit("action type %r has no index in mapgraph.schema.atype_index "
                              "-- it would embed as the unknown-type row" % at)
