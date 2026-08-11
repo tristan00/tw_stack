@@ -23,6 +23,7 @@ sys.path.insert(0, common.DECISIONS)
 
 import features as F
 import journal
+import options as O
 import policy as P
 
 sys.path.insert(0, common.LAUNCHER)
@@ -449,6 +450,14 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
             no_hud = 0
         t_housekeep0 = _last_done_ts[0]
         decision_id, record = journal.request_snapshot(run_dir, active=active)
+        # THE PIPELINE. The recorder stored state; the advisor builds the move universe
+        # from it, gates it, and hands the survivors back for the recorder to store.
+        # Nothing gated is ever written.
+        _t_gen = time.time()
+        options = pol.gate.apply(record, actions_taken=actions)
+        journal.log_options(run_dir, decision_id, options)
+        O.attach(record, options)
+        _hk_parts[0]["generate_ms"] = int((time.time() - _t_gen) * 1000)
         (record.setdefault("campaign", {}))["act_index"] = actions + 1
         record["campaign"]["move_index"] = moves + 1
         F.stamp_prev_actions(record["campaign"], act_hist)

@@ -105,6 +105,12 @@ def run(ctx):
                         ctx.emit({"kind": "decisions_interrupt", "screen": row.get("kind_screen")
                                   or row.get("screen"), "chosen": row.get("chosen"),
                                   "turn": cs.get("turn")})
+                    elif kind == "options":
+                        did = row.get("decision_id")
+                        n = store.attach_options(did, row.get("options"))
+                        counts["options"] = counts.get("options", 0) + n
+                        ctx.emit({"kind": "decisions_options", "decision_id": did,
+                                  "options": n})
                     elif kind == "pick":
                         did = row.get("decision_id")
                         store.attach_scores(did, row.get("scores"))

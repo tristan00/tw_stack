@@ -65,9 +65,6 @@ CREATE TABLE IF NOT EXISTS blobs(
   blob_id INTEGER PRIMARY KEY AUTOINCREMENT,
   sha TEXT NOT NULL UNIQUE, n INTEGER NOT NULL, z BLOB NOT NULL);
 
-CREATE TABLE IF NOT EXISTS gates(
-  gate_id INTEGER PRIMARY KEY AUTOINCREMENT, gate TEXT NOT NULL UNIQUE);
-
 CREATE TABLE IF NOT EXISTS actions(
   action_id INTEGER PRIMARY KEY AUTOINCREMENT,
   context_kind TEXT NOT NULL, context_id TEXT NOT NULL,
@@ -85,7 +82,7 @@ CREATE TABLE IF NOT EXISTS decisions(
   campaign_id INTEGER NOT NULL REFERENCES campaigns(campaign_id),
   ts REAL, turn INTEGER, decision_seq INTEGER NOT NULL DEFAULT 0,
   policy TEXT, version_id INTEGER REFERENCES collector_versions(version_id),
-  n_entities INTEGER NOT NULL, n_offers INTEGER NOT NULL, n_available INTEGER NOT NULL,
+  n_entities INTEGER NOT NULL, n_offers INTEGER NOT NULL,
   campaign_blob INTEGER REFERENCES blobs(blob_id),
   world_blob INTEGER REFERENCES blobs(blob_id),
   timings TEXT);
@@ -99,7 +96,6 @@ CREATE TABLE IF NOT EXISTS entities(
 CREATE TABLE IF NOT EXISTS offers(
   decision_id INTEGER NOT NULL, offer_seq INTEGER NOT NULL,
   entity_seq INTEGER NOT NULL, action_id INTEGER NOT NULL REFERENCES actions(action_id),
-  available INTEGER NOT NULL, gate_id INTEGER REFERENCES gates(gate_id),
   PRIMARY KEY(decision_id, offer_seq)) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS taken(
@@ -180,7 +176,7 @@ SELECT (o.decision_id * {OS} + o.offer_seq) AS offer_id, o.decision_id AS decisi
        (o.decision_id * {ES} + o.entity_seq) AS snapshot_id,
        a.context_kind AS context_kind, a.context_id AS context_id,
        a.action_type AS action_type, a.action_key AS action_key,
-       o.available AS available, g.gate AS gate, a.params AS params,
+       a.params AS params,
        -- Correlated subqueries, NOT a join. `scores` holds one packed row per decision
        -- averaging 15 KB, so joining it probed a fat row once per offer: a plain
        -- `count(*)` over this view spent 163 seconds re-reading the same blob 553 times
@@ -201,8 +197,7 @@ SELECT (o.decision_id * {OS} + o.offer_seq) AS offer_id, o.decision_id AS decisi
        f32((SELECT packed FROM scores WHERE decision_id=o.decision_id),
            o.offer_seq * {NS} + 6) AS gnn_rank
 FROM offers o
-LEFT JOIN actions a ON a.action_id = o.action_id
-LEFT JOIN gates g ON g.gate_id = o.gate_id;
+LEFT JOIN actions a ON a.action_id = o.action_id;
 
 DROP VIEW IF EXISTS action_taken;
 CREATE VIEW action_taken AS
@@ -237,6 +232,8 @@ LEFT JOIN blobs bp ON bp.blob_id = i.panel_blob;
            NS=len(SCORE_FIELDS))
 
 
+# Every stored offer is a candidate, so the invariant is a count rather than a
+# partition: n_offers must equal the number of rows actually written.
 LAYOUT_INVARIANT = (
-    "SELECT count(*) FROM offers o JOIN decisions d USING(decision_id) "
-    "WHERE (o.offer_seq < d.n_available) != (o.available = 1)")
+    "SELECT count(*) FROM decisions d WHERE d.n_offers != "
+    "(SELECT count(*) FROM offers o WHERE o.decision_id = d.decision_id)")

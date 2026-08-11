@@ -67,7 +67,10 @@ TYPE_FIELDS = {
     # unused zero columns and the encoder input width does not move. `move` recorded a
     # destination that nothing downstream could see -- the only thing distinguishing one
     # move candidate from another was its sample_index.
-    "action":       ("available", "x", "y"),                           # 3
+    # `available` was here while the store held gated rows. Every stored action is a
+    # candidate now, so the field was a constant 1.0 -- an input column carrying no
+    # information, which the network still had to learn to ignore.
+    "action":       ("x", "y"),                                        # 2
     "cgroup":       (),
     # catalogue nodes are pure identity -- their content is their embedding
     "building": (), "chain": (), "unit": (), "tech": (), "skill": (),
