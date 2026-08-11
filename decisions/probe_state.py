@@ -55,6 +55,15 @@ EXPECTS = {
     # Items. Confirmed live rather than assumed: a cold random campaign on this faction
     # produced equipped ancillaries on 8 of 51 lord snapshots, and an
     # item_unequip on a rune ancillary executed successfully.
+    # EDICTS need TWO things at once and a faction can have one without the other:
+    # a province owned COMPLETE, and a race that actually has province initiatives.
+    # Measured: Argwylon owns its single-settlement province outright on turn 1
+    # (complete_owner True, is_capital True on 46 of 46 snapshots) and its InitiativeList
+    # is EMPTY -- Wood Elves appear to have no province edicts. Greenskins carry 3 edicts
+    # on every province snapshot and own none of them completely (complete_owner False on
+    # 10 of 10). So neither is a probe for `edict` on its own; the probe is a race WITH
+    # initiatives that has finished a province, which is why the ruleset drives
+    # attack_settlement behind the scarce types.
     "wh2_dlc17_dwf_thorek_ironbrow": [
         ("lord", "equipped", "Thorek starts carrying unique rune ancillaries"),
     ],
