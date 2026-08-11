@@ -770,12 +770,13 @@ END_TURN_AFTER = 5
 
 FACTION_WIDE_CAPS = frozenset(("recruit_lord", "recruit_hero", "research", "rites",
                                "building_dismantle"))
-# A cap of 0 does not mean "rare", it means UNREACHABLE: the gate refuses at
-# `count >= cap` and the count starts at 0. noop sat here at 0, so it could never be
-# picked -- and loop.py's noop branch, the only thing that ever calls pol.retire, had
-# therefore never run. noop is meant to be gated, but through a rule that says so.
+# A cap of 0 is how a type is DELIBERATELY DISABLED: the gate refuses at `count >= cap`
+# and the count starts at 0, so the type is generated, gated every time, and never
+# stored. noop and building_dismantle are both switched off this way on purpose. It is
+# stated here rather than by deleting the type, so the generator still enumerates it and
+# turning it back on is one number.
 PER_TURN_CAPS = {"recruit_lord": 1, "recruit_hero": 1, "recruit_unit": 4, "edict": 1,
-                 "research": 1, "rites": 1, "diplomacy": 3, "stance": 1,
+                 "research": 1, "rites": 1, "diplomacy": 3, "noop": 0, "stance": 1,
                  "hero_action": 3, "building_dismantle": 0, "raise_dead": 4,
                  "recruit_ror": 1, "recruit_blessed": 4, "recruit_imperial": 1}
 ATTACK_PAIR_TYPES = frozenset(("attack_army", "attack_settlement"))
@@ -892,27 +893,12 @@ class Gate:
         taken is not part of the decision it faced.
         """
         self.last_drops = []
-        out, noops = [], []
-        real = set()
+        out = []
         for ck, cid, o in generate(record):
-            at = o.get("action_type")
-            row = {"context_kind": ck, "context_id": cid, "action_type": at,
-                   "key": o.get("key"), "params": o.get("params") or {}}
+            row = {"context_kind": ck, "context_id": cid,
+                   "action_type": o.get("action_type"), "key": o.get("key"),
+                   "params": o.get("params") or {}}
             why = self.reason(ck, cid, o, actions_taken)
-            if at == "noop":
-                # noop is "there is nothing worth doing with this entity, retire it", so
-                # it is a candidate exactly when the entity has no other survivor. Held
-                # back and decided below, once the entity's real options are known.
-                noops.append((ck, cid, row, why))
-                continue
-            if why is None:
-                out.append(row)
-                real.add((ck, str(cid)))
-            else:
-                self.last_drops.append(dict(row, reason=why))
-        for ck, cid, row, why in noops:
-            if why is None and (ck, str(cid)) in real:
-                why = "entity_has_real_options"
             if why is None:
                 out.append(row)
             else:
