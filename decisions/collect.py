@@ -26,7 +26,14 @@ _G = ("local function g(c,p) local ok,v=pcall(function() return c:Call(p) end);"
       # because CcoCampaignAncillary has no 'Key' property, and the `a["key"] or name`
       # fallback never fired. 42 call sites use ts(g(...)); one wrong property name
       # anywhere is silent. Empty is falsy, so a missing value now reads as missing.
-      "local function ts(v) if v==nil then return '' end return tostring(v) end ")
+      "local function ts(v) if v==nil then return '' end return tostring(v) end "
+      # tv(ok, v) exists because `tv(ok,v)` CANNOT EMIT false. In lua only nil
+      # and false are falsy, so for a boolean v==false the expression collapses to nil and
+      # ts() yields '' -- which the python side reads as "unread". campaign.defeated was
+      # null in 100% of a 22,136-decision corpus for exactly this reason while the harness
+      # independently recorded 18 defeated campaigns, and ll_wounded was null in 100% of
+      # rows. Numbers were never affected: 0 is truthy in lua.
+      "local function tv(ok,v) if ok and v~=nil then return tostring(v) end return '' end ")
 
 
 class CollectError(RuntimeError):
@@ -75,7 +82,7 @@ _LUA_TARGET = (_G +
     "..'|'..allies..'|'..vassals..'|'..ts(g(fc,'StrengthRank'))"
     "..'|'..(function() local l=f:faction_leader() "
     "if not l or l:is_null_interface() then return 'nil' end "
-    "local ok,v=pcall(function() return l:rank() end) return ts(ok and v or nil) end)()")
+    "local ok,v=pcall(function() return l:rank() end) return tv(ok,v) end)()")
 
 
 def target_row(bus):
@@ -164,7 +171,7 @@ _LUA_CAMPAIGN = (_G + "local okc,t0=pcall(os.clock) "
                  "if ok and v then return v else return -1 end end)()"
                  "..'|'..(function() local l=f:faction_leader() "
                  "if not l or l:is_null_interface() then return 'nil' end "
-                 "local ok,v=pcall(function() return l:rank() end) return ts(ok and v or nil) end)()"
+                 "local ok,v=pcall(function() return l:rank() end) return tv(ok,v) end)()"
                  "..'|'..allies..'|'..vassals..'|'..ts(g(fc,'StrengthRank'))"
                  "..'|'..(function() if okc and t0 then "
                  "local ok2,t1=pcall(os.clock) if ok2 and t1 then "
@@ -172,7 +179,7 @@ _LUA_CAMPAIGN = (_G + "local okc,t0=pcall(os.clock) "
                  "..'|'..(function() local l=f:faction_leader() "
                  "if not l or l:is_null_interface() then return 'nil' end "
                  "local ok,v=pcall(function() return l:is_wounded() end) "
-                 "return ts(ok and v or nil) end)()"
+                 "return tv(ok,v) end)()"
                  # field 15: is this faction dead. Until now `defeated` was the hardcoded
                  # literal False in _parse_campaign -- never queried, False in all 22,136
                  # decisions of the previous corpus while the harness independently
@@ -180,7 +187,7 @@ _LUA_CAMPAIGN = (_G + "local okc,t0=pcall(os.clock) "
                  # `survival` term in the label. This is the harness's own probe
                  # (launcher/interrupts.py DEFEAT_PROBE), so the expression is proven.
                  "..'|'..(function() local ok,v=pcall(function() return f:is_dead() end) "
-                 "return ts(ok and v or nil) end)()")
+                 "return tv(ok,v) end)()")
 
 
 _GAME_VERSION = ["unread"]
@@ -571,7 +578,7 @@ _LUA_LORD = (_G +
     "..'|'..(function() if not (ch and ch:has_military_force()) then return 'nil' end "
     "local ok,v=pcall(function() local ul=ch:military_force():unit_list() local t=0 "
     "for i=0,ul:num_items()-1 do t=t+ul:item_at(i):percentage_proportion_of_full_strength() end "
-    "return math.floor(t)/100 end) return ts(ok and v or nil) end)()")
+    "return math.floor(t)/100 end) return tv(ok,v) end)()")
 
 
 
@@ -1315,6 +1322,7 @@ _LUA_DIPLO_TARGETS = (
     "      local ally=b(function() return me:allied_with(f) end) "
     "      local trade=b(function() return me:trade_agreement_with(f) end) "
     "      local vas=b(function() return f:is_vassal_of(me) end) "
+    "      local mstr=b(function() return me:is_vassal_of(f) end) "
     "      local st=0 local o2,v2=pcall(function() return me:diplomatic_standing_with(nm) end) "
     "      if o2 and type(v2)=='number' then st=v2 end "
     "      local mila=b(function() return me:military_allies_with(f) end) "
@@ -1322,7 +1330,7 @@ _LUA_DIPLO_TARGETS = (
     "      local nap=b(function() return me:non_aggression_pact_with(f) end) "
     "      local macc=b(function() return me:military_access_pact_with(f) end) "
     "      out[#out+1]=nm..'~'..war..'~'..ally..'~'..trade..'~'..vas..'~'..st..'~'..excl"
-    "..'~'..mila..'~'..defa..'~'..nap..'~'..macc "
+    "..'~'..mila..'~'..defa..'~'..nap..'~'..macc..'~'..mstr "
     "    end "
     "  end "
     "end "
@@ -1355,7 +1363,11 @@ def _parse_diplo_targets(raw):
                         "mil_ally": len(p) > 7 and p[7] == "1",
                         "def_ally": len(p) > 8 and p[8] == "1",
                         "nap": len(p) > 9 and p[9] == "1",
-                        "mil_access": len(p) > 10 and p[10] == "1"})
+                        "mil_access": len(p) > 10 and p[10] == "1",
+                        # Are WE their vassal. `their_vassal` is the other direction, and
+                        # only that one was recorded -- so "already in vassalage" was
+                        # unanswerable from the snapshot and the launcher gated it instead.
+                        "our_master": len(p) > 11 and p[11] == "1"})
     return targets
 
 
