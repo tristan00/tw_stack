@@ -1660,7 +1660,16 @@ def _parse_buildable(raw):
         out.append({"slot_index": int(float(slot)) if slot not in ("nil", "") else None,
                     "key": p[1], "active": p[2] == "true", "empty": p[3] == "true",
                     "can_upgrade": p[4] == "true", "cost": _num(p[5]), "upkeep": _num(p[6]),
-                    "level": _num(p[7]), "can_afford": p[8] == "true"})
+                    "level": _num(p[7]),
+                    # NOT treasury affordability. The Lua reads
+                    # CanAffordResourceCostForSlot, which answers the POOLED-RESOURCE
+                    # question (food, labour, dev points) and is True in 645 of 645 rows
+                    # because none of the buildings in that corpus cost a pooled resource.
+                    # It was named `can_afford`, which is the treasury question, and read as
+                    # such. Treasury affordability is derivable from what is already
+                    # stored -- `cost` here against campaign.treasury -- so nothing is lost
+                    # by naming this one honestly rather than inventing a second read.
+                    "can_afford_resources": p[8] == "true"})
     return out, [k for k in cparts[2].split(",") if k and k != "nil"]
 
 
