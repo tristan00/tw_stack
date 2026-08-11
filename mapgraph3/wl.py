@@ -31,6 +31,7 @@ import sys
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(_HERE))
 
+import common  # noqa: E402
 from mapgraph3 import build as B      # noqa: E402
 from mapgraph3 import schema as S     # noqa: E402
 
@@ -217,4 +218,5 @@ def main(argv):
 
 
 if __name__ == "__main__":
+    common.require_venv()
     raise SystemExit(main(sys.argv[1:]))

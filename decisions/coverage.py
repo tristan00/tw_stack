@@ -193,6 +193,7 @@ def check(db=None, sample=None, min_rows=200, verbose=True):
 
 
 if __name__ == "__main__":
+    common.require_venv()
     a = sys.argv[1:]
     db = next((x for x in a if not x.startswith("--")), None)
 
