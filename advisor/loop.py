@@ -160,9 +160,10 @@ NO_MODEL_DIR = common.MODEL_COLD_START
 def _verify_action_catalogues(log):
     try:
         sys.path.insert(0, common.REFERENCE)
-        import collect as C
+        # HERO_ACTIONS lives with the generator that uses it, not with the collector.
         import features_db as DB
-        mapped = DB.verify_hero_action_mappings(C.HERO_ACTIONS)
+        import options as O
+        mapped = DB.verify_hero_action_mappings(O.HERO_ACTIONS)
         dead = sorted(k for k, v in mapped.items() if not v)
         log("hero actions: %d/%d executable%s"
             % (len(mapped) - len(dead), len(mapped),
