@@ -478,8 +478,13 @@ def _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me):
         pd = G.Reader(params, "offer:%s:%s:%s" % (ck, cid, key), "offers[].params")
         avals["x"] = pd.num("x") / S.COORD_SCALE
         avals["y"] = pd.num("y") / S.COORD_SCALE
+    # A `stance` offer's whole identity is its key, and nothing carried it: every stance
+    # candidate in a decision was the same node to WL, so the model could not tell
+    # "march" from "ambush". stance_idx is embedded for every node type already, so this
+    # costs nothing and is the field that exists for exactly this.
     ai = g.add("a:%s:%s:%s:%d" % (ck, cid, key, len(g.action_nodes)), "action",
-               avals, atype=S.atype_index(at), term=term)
+               avals, atype=S.atype_index(at), term=term,
+               stance=S.stance_index(key) if at == "stance" else 0)
     g.action_keys.append((str(ck), str(cid), at, key))
     g.edge(ai, ego, "act_actor")
 
