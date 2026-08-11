@@ -43,22 +43,19 @@ def _snapshot(turn, faction="wh_main_emp", uuid="camp-1", n_lords=2):
             "state": {"cqi": str(100 + i), "rank": 3 + i, "garrisoned": i == 0,
                       "region": "reg_%d" % i},
             "offers": [
-                {"action_type": "move", "key": "xy:1,%d" % i, "available": True,
-                 "gate": None, "params": {"x": 1, "y": i}},
-                {"action_type": "attack_army", "key": "cqi:9", "available": False,
-                 "gate": "cannot_reach", "params": {"target_cqi": 9}},
-                {"action_type": "building", "key": "b_a", "available": True,
-                 "gate": None, "params": {"slot_index": 0, "cost": 100}},
+                {"action_type": "move", "key": "xy:1,%d" % i,
+                 "params": {"x": 1, "y": i}},
+                {"action_type": "building", "key": "b_a",
+                 "params": {"slot_index": 0, "cost": 100}},
                 # same action_key, different params -- the v1 collision case
-                {"action_type": "building", "key": "b_a", "available": False,
-                 "gate": "not_buildable_now", "params": {"slot_index": 1, "cost": 120}},
-                {"action_type": "noop", "key": "noop", "available": True,
-                 "gate": None, "params": {}},
+                {"action_type": "building", "key": "b_a",
+                 "params": {"slot_index": 1, "cost": 120}},
+                {"action_type": "noop", "key": "noop", "params": {}},
             ]})
     ents.append({"context_kind": "campaign", "context_id": faction,
                  "state": {"turn": turn, "faction": faction, "defeated": False},
                  "offers": [{"action_type": "end_turn", "key": "end_turn",
-                             "available": True, "gate": None, "params": {}}]})
+                             "params": {}}]})
     return {"ts": 1000.0 + turn, "campaign": {"faction": faction, "campaign_uuid": uuid,
                                               "turn": turn, "treasury": 2500 + turn},
             "world": {"hostiles": [{"kind": "army", "cqi": 9, "faction": "orcs"}],
@@ -74,24 +71,31 @@ def main():
         st = DecisionStore(run)
         st.register_collector("sha-abc", git_sha="deadbeef", note="test")
 
-        dids = [st.write_decision(_snapshot(t), decision_seq=t, policy="random")
+        def _write(snap, decision_seq, policy):
+            """State in, then the gated survivors -- the two halves the pipeline has."""
+            opts = [dict(o, context_kind=e["context_kind"], context_id=e["context_id"])
+                    for e in snap["entities"] for o in e.pop("offers", [])]
+            did = st.write_decision(snap, decision_seq=decision_seq, policy=policy)
+            st.attach_options(did, opts)
+            return did
+
+        dids = [_write(_snapshot(t), decision_seq=t, policy="random")
                 for t in range(1, 6)]
         check(len(dids) == 5 and all(dids), "write_decision returns ids")
 
         # ---- the layout invariant -------------------------------------------------
-        check(st.layout_violations() == 0, "offer_seq < n_available <=> available")
-        n_off, n_av = st.con.execute(
-            "SELECT n_offers,n_available FROM decisions WHERE decision_id=?",
+        check(st.layout_violations() == 0, "n_offers equals the rows actually stored")
+        n_off, = st.con.execute(
+            "SELECT n_offers FROM decisions WHERE decision_id=?",
             (dids[0],)).fetchone()
-        seqs = [r[0] for r in st.con.execute(
-            "SELECT offer_seq FROM offers WHERE decision_id=? AND available=1"
-            " ORDER BY offer_seq", (dids[0],))]
-        check(seqs == list(range(n_av)), "available offers are a contiguous prefix 0..n-1")
-        check(n_off == 11 and n_av == 7, "counts: %d offers, %d available" % (n_off, n_av))
+        check(n_off == 9, "counts: %d options stored" % n_off)
+        check(st.con.execute("SELECT count(*) FROM offers WHERE decision_id=?",
+                             (dids[0],)).fetchone()[0] == n_off,
+              "every stored option is a candidate -- nothing gated reaches the database")
 
         # ---- read_decision round-trips --------------------------------------------
         rec = st.read_decision(dids[0])
-        check(rec["campaign"]["treasury"] == 2501, "campaign blob round-trips")
+        check(rec["campaign"]["treasury"] == 4501, "campaign blob round-trips")
         check(rec["world"]["hostiles"][0]["faction"] == "orcs", "world blob round-trips")
         check(len(rec["entities"]) == 3, "entity count")
         got = {(e["context_kind"], e["context_id"]) for e in rec["entities"]}
@@ -99,18 +103,16 @@ def main():
               "entity identity round-trips")
         lord0 = [e for e in rec["entities"] if e["context_id"] == "100"][0]
         check(lord0["state"]["garrisoned"] is True, "entity features round-trip")
-        check(len(lord0["offers"]) == 5, "offers land on their own entity")
+        check(len(lord0["offers"]) == 4, "options land on their own entity")
         bs = [o for o in lord0["offers"] if o["key"] == "b_a"]
         check(len(bs) == 2 and {o["params"]["slot_index"] for o in bs} == {0, 1},
               "two offers sharing action_key keep their distinct params")
-        check([o for o in lord0["offers"] if not o["available"]][0]["gate"]
-              == "cannot_reach", "gate round-trips")
 
         # ---- interning actually interned -------------------------------------------
         n_actions = st.con.execute("SELECT count(*) FROM actions").fetchone()[0]
         n_offers = st.con.execute("SELECT count(*) FROM offers").fetchone()[0]
-        check(n_offers == 55 and n_actions == 11,
-              "%d offers interned to %d actions" % (n_offers, n_actions))
+        check(n_offers == 45 and n_actions == 9,
+              "%d options interned to %d actions" % (n_offers, n_actions))
         # 5 decisions x (campaign + world + 3 entity states) = 25 payloads written.
         # Distinct: 5 campaigns and 5 campaign-entity states vary by turn; the world and
         # the two lord states are byte-identical every time. 25 -> 13.
@@ -168,8 +170,8 @@ def main():
         check([r[0]["decision_id"] for r in lab] == sorted(r[0]["decision_id"] for r in lab),
               "labelled_decisions is in decision_id order")
         rec0 = lab[0][0]
-        check(rec0["entities"][0]["offers"][0]["available"] is True,
-              "labelled_decisions offers start with the available prefix")
+        check(len(rec0["entities"][0]["offers"]) >= 1,
+              "labelled_decisions carries the stored options")
         one = st.labelled_decisions(after=dids[0], before=dids[1])
         check(len(one) == 1 and one[0][0]["decision_id"] == dids[1],
               "after/before bound the read")
@@ -184,18 +186,18 @@ def main():
         dp = con.execute("SELECT decision_id,campaign_id,turn,n_entities,n_offers,campaign,"
                          "world FROM decision_points ORDER BY decision_id").fetchall()
         check(len(dp) == 5 and dp[0][1] == "camp-1", "decision_points view")
-        check(json.loads(dp[0][5])["treasury"] == 2501, "decision_points.campaign is text")
+        check(json.loads(dp[0][5])["treasury"] == 4501, "decision_points.campaign is text")
         es = con.execute("SELECT snapshot_id,decision_id,context_kind,context_id,features"
                          " FROM entity_snapshots WHERE decision_id=?", (dids[0],)).fetchall()
         check(len(es) == 3 and json.loads(es[0][4])["rank"] == 3, "entity_snapshots view")
         check(len({r[0] for r in con.execute("SELECT snapshot_id FROM entity_snapshots")})
               == 15, "synthetic snapshot_ids are unique across decisions")
-        check(len({r[0] for r in con.execute("SELECT offer_id FROM action_offers")}) == 55,
+        check(len({r[0] for r in con.execute("SELECT offer_id FROM action_offers")}) == 45,
               "synthetic offer_ids are unique across decisions")
         joined = con.execute(
             "SELECT COUNT(*) FROM action_offers o JOIN entity_snapshots e"
             " ON e.snapshot_id=o.snapshot_id").fetchone()[0]
-        check(joined == 55, "action_offers.snapshot_id joins entity_snapshots")
+        check(joined == 45, "action_offers.snapshot_id joins entity_snapshots")
         at = con.execute("SELECT decision_id,context_kind,context_id,action_type,action_key,"
                          "counted FROM action_taken ORDER BY decision_id").fetchall()
         check(at[0][1:] == ("lord", "100", "building", "b_a", 1), "action_taken view")
@@ -227,7 +229,7 @@ def main():
         cs = st.campaign_snapshots()
         check(len(cs) == 5 and cs[0][0] == "camp-1", "campaign_snapshots")
         s = st.summary()
-        check(s["decisions"] == 5 and s["offers"] == 55 and s["taken"] == 2, "summary")
+        check(s["decisions"] == 5 and s["offers"] == 45 and s["taken"] == 2, "summary")
         check(st.max_decision_id() == dids[-1], "max_decision_id")
 
         # ---- pragmas ------------------------------------------------------------------

@@ -75,7 +75,6 @@ class DecisionStore:
         self.readonly = bool(readonly)
         self._blob_cache = {}
         self._action_cache = {}
-        self._gate_cache = {}
         self._campaign_cache = {}
         if self.readonly:
             if not os.path.exists(self.path):
@@ -151,18 +150,6 @@ class DecisionStore:
         self._blob_cache[sha] = bid
         return bid
 
-    def _gate_id(self, gate):
-        if gate is None:
-            return None
-        gate = str(gate)
-        hit = self._gate_cache.get(gate)
-        if hit is not None:
-            return hit
-        self.con.execute("INSERT OR IGNORE INTO gates(gate) VALUES(?)", (gate,))
-        gid = self.con.execute("SELECT gate_id FROM gates WHERE gate=?", (gate,)).fetchone()[0]
-        self._gate_cache[gate] = gid
-        return gid
-
     def _action_id(self, ck, cid, atype, akey, params_text):
         k = (ck, cid, atype, akey, params_text)
         hit = self._action_cache.get(k)
@@ -214,32 +201,24 @@ class DecisionStore:
         self._assert_writable("write_decision")
         camp = snapshot.get("campaign") or {}
         ents = snapshot.get("entities") or []
-        flat = []
-        for ei, e in enumerate(ents):
-            for oi, o in enumerate(e.get("offers") or []):
-                flat.append((ei, oi, o))
+        if any(e.get("offers") for e in ents):
+            raise ValueError(
+                "write_decision was handed offers. The recorder stores STATE; the advisor "
+                "generates and gates the options and hands the survivors back through "
+                "attach_options. An offer arriving here means inference has leaked back "
+                "into the collector.")
         if len(ents) >= S.MAX_ENTITIES_PER_DECISION:
             raise ValueError("decision has %d entities; the view id packing allows %d"
                              % (len(ents), S.MAX_ENTITIES_PER_DECISION - 1))
-        if len(flat) >= S.MAX_OFFERS_PER_DECISION:
-            raise ValueError("decision has %d offers; the view id packing allows %d"
-                             % (len(flat), S.MAX_OFFERS_PER_DECISION - 1))
-
-        # THE LAYOUT INVARIANT. Available offers take seq 0..n_available-1; gated offers
-        # follow. Ties keep (entity, offer) emission order, so the sequence is a pure
-        # function of the snapshot and two runs of the same data agree.
-        flat.sort(key=lambda t: (0 if t[2].get("available") else 1, t[0], t[1]))
-        n_available = sum(1 for _e, _o, o in flat if o.get("available"))
-
         cid = self._campaign_id(self.campaign_key(camp.get("faction"),
                                                   camp.get("campaign_uuid")),
                                 camp.get("faction"))
         cur = self.con.execute(
             "INSERT INTO decisions(campaign_id,ts,turn,decision_seq,policy,version_id,"
-            "n_entities,n_offers,n_available,campaign_blob,world_blob)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            "n_entities,n_offers,campaign_blob,world_blob)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?)",
             (cid, snapshot.get("ts") or time.time(), int(camp.get("turn") or 0),
-             int(decision_seq), policy, self._version_id, len(ents), len(flat), n_available,
+             int(decision_seq), policy, self._version_id, len(ents), 0,
              self._blob(_dumps(camp)), self._blob(_dumps(snapshot.get("world") or {}))))
         did = cur.lastrowid
 
@@ -250,23 +229,44 @@ class DecisionStore:
               self._blob(_dumps(e.get("state") or {})))
              for ei, e in enumerate(ents)])
 
-        rows = []
-        for seq, (ei, _oi, o) in enumerate(flat):
-            e = ents[ei]
-            rows.append((did, seq, ei,
-                         self._action_id(e.get("context_kind"), str(e.get("context_id")),
-                                         o.get("action_type"), str(o.get("key")),
-                                         _dumps(o.get("params") or {})),
-                         1 if o.get("available") else 0, self._gate_id(o.get("gate"))))
-        self.con.executemany(
-            "INSERT INTO offers(decision_id,offer_seq,entity_seq,action_id,available,gate_id)"
-            " VALUES(?,?,?,?,?,?)", rows)
         self.con.execute(
             "UPDATE campaigns SET first_decision_id=COALESCE(first_decision_id,?),"
             "last_decision_id=?, turns=MAX(COALESCE(turns,0),?) WHERE campaign_id=?",
             (did, did, int(camp.get("turn") or 0), cid))
         self.con.commit()
         return did
+
+    def attach_options(self, decision_id, options):
+        """Store the options the advisor's gate let through. Only survivors reach here.
+
+        A gated candidate is not stored -- not as a row with a reason, not as anything.
+        An action the agent could not have taken is not part of the decision it faced, and
+        a corpus that carries them makes every count downstream mean something else.
+        """
+        self._assert_writable("attach_options")
+        ents = {(k, str(i)): seq for seq, (k, i) in enumerate(
+            self.con.execute("SELECT context_kind,context_id FROM entities"
+                             " WHERE decision_id=? ORDER BY entity_seq", (decision_id,)))}
+        rows = []
+        for o in options or []:
+            ei = ents.get((o.get("context_kind"), str(o.get("context_id"))))
+            if ei is None:
+                raise ValueError("option %s:%s names an entity the decision does not have"
+                                 % (o.get("context_kind"), o.get("context_id")))
+            rows.append((decision_id, len(rows), ei,
+                         self._action_id(o.get("context_kind"), str(o.get("context_id")),
+                                         o.get("action_type"), str(o.get("key")),
+                                         _dumps(o.get("params") or {}))))
+        if len(rows) >= S.MAX_OFFERS_PER_DECISION:
+            raise ValueError("decision has %d options; the view id packing allows %d"
+                             % (len(rows), S.MAX_OFFERS_PER_DECISION - 1))
+        self.con.executemany(
+            "INSERT INTO offers(decision_id,offer_seq,entity_seq,action_id)"
+            " VALUES(?,?,?,?)", rows)
+        self.con.execute("UPDATE decisions SET n_offers=? WHERE decision_id=?",
+                         (len(rows), decision_id))
+        self.con.commit()
+        return len(rows)
 
     def attach_timings(self, decision_id, timings):
         if not timings:
@@ -451,18 +451,17 @@ class DecisionStore:
                  "context_kind": ck, "context_id": cid,
                  "state": json.loads(feats or "{}"), "offers": []})
         w = where.replace("e.decision_id", "o.decision_id") if where else ""
-        for did, seq, ei, at, ak, avail, gate, params in self.con.execute(
+        for did, seq, ei, at, ak, params in self.con.execute(
                 "SELECT o.decision_id,o.offer_seq,o.entity_seq,a.action_type,a.action_key,"
-                "o.available,g.gate,a.params FROM offers o"
-                " JOIN actions a ON a.action_id=o.action_id"
-                " LEFT JOIN gates g ON g.gate_id=o.gate_id" + w +
+                "a.params FROM offers o"
+                " JOIN actions a ON a.action_id=o.action_id" + w +
                 " ORDER BY o.decision_id,o.offer_seq", args):
             ents = ents_by_dec.get(did)
             if ents is None or ei >= len(ents):
                 continue
             ents[ei]["offers"].append(
                 {"offer_id": did * S.MAX_OFFERS_PER_DECISION + seq,
-                 "action_type": at, "key": ak, "available": bool(avail), "gate": gate,
+                 "action_type": at, "key": ak,
                  "params": json.loads(params or "{}")})
         return ents_by_dec
 

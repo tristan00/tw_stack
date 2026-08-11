@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(_HERE))
 import common
 
 import model as M
+import options as O
 import ruleset as R
 import strategies as S
 
@@ -111,85 +112,26 @@ class Policy:
         self.fallback = self.members.get("random") or S.build("random", rng=self.rng)
         self.max_actions_per_turn = max_actions_per_turn
         self.max_actions_per_entity = max_actions_per_entity
-        self.retired = set()
-        self.blacklist = set()
-        self.failed_types = set()
-        self.entity_actions = {}
-        self.type_actions = {}
-        self.pair_actions = {}
-        self.gift_actions = 0
+        # ONE gate, and it is options.Gate. Policy used to carry a second, private
+        # copy of the same idea in `eligible()`, working on rows the collector had
+        # already marked available -- two components deciding the same question.
+        self.gate = O.Gate(max_actions_per_entity=max_actions_per_entity)
         self.last_drops = []
         self.last_choice = {}
         self.gnn_score_errors = 0
 
     def new_turn(self):
-        self.retired.clear()
-        self.blacklist.clear()
-        self.failed_types.clear()
-        self.entity_actions.clear()
-        self.type_actions.clear()
-        self.pair_actions.clear()
-        self.gift_actions = 0
+        self.gate.new_turn()
+
+    @property
+    def retired(self):
+        return self.gate.retired
 
     def retire(self, context_kind, context_id):
-        self.retired.add((context_kind, str(context_id)))
+        self.gate.retire(context_kind, context_id)
 
     def note_result(self, pick, counted):
-        k = (pick["context_kind"], str(pick["context_id"]))
-        tk = _cap_key(k[0], k[1], pick["action_type"])
-        self.type_actions[tk] = self.type_actions.get(tk, 0) + 1
-        if pick["action_type"] in ATTACK_PAIR_TYPES or pick["action_type"] == "diplomacy":
-            pk = _pair_key(k[0], k[1], pick["action_type"], pick["key"])
-            self.pair_actions[pk] = self.pair_actions.get(pk, 0) + 1
-        if pick["action_type"] == "diplomacy" and _is_gift(pick["key"]):
-            self.gift_actions += 1
-        if counted:
-            n = self.entity_actions.get(k, 0) + 1
-            self.entity_actions[k] = n
-            if n >= self.max_actions_per_entity:
-                self.retired.add(k)
-        elif pick["action_type"] != "end_turn":
-            self.blacklist.add((k[0], k[1], pick["action_type"], str(pick["key"])))
-            self.failed_types.add(pick["action_type"])
-
-    def eligible(self, ranked, actions_taken=0):
-        out = []
-        self.last_drops = []
-        for r in ranked:
-            k = (r["context_kind"], str(r["context_id"]))
-            cap = PER_TURN_CAPS.get(r["action_type"])
-            reason = None
-            if not r.get("available"):
-                reason = "unavailable:%s" % (r.get("gate") or "no_gate_recorded")
-            elif r["action_type"] == "end_turn" and actions_taken < 5:
-                reason = "end_turn_before_6th_decision"
-            elif str(r.get("key")) in FORBIDDEN_KEYS:
-                reason = "forbidden_key"
-            elif k in self.retired and r["action_type"] != "end_turn":
-                reason = "entity_retired"
-            elif r["action_type"] in self.failed_types:
-                reason = "type_failed_this_turn"
-            elif (k[0], k[1], r["action_type"], str(r["key"])) in self.blacklist:
-                reason = "blacklisted_this_turn"
-            elif r["action_type"] in ATTACK_PAIR_TYPES and self.pair_actions.get(
-                    _pair_key(k[0], k[1], r["action_type"], r["key"]), 0) >= ATTACK_PAIR_CAP:
-                reason = "attack_pair_cap:%d" % ATTACK_PAIR_CAP
-            elif (r["action_type"] == "diplomacy" and _is_gift(r.get("key"))
-                  and self.gift_actions >= DIPLO_GIFT_CAP):
-                reason = "diplo_gift_cap:%d" % DIPLO_GIFT_CAP
-            elif r["action_type"] == "diplomacy" and self.pair_actions.get(
-                    _pair_key(k[0], k[1], r["action_type"], r["key"]), 0) >= DIPLO_TARGET_CAP:
-                reason = "diplo_target_cap:%d" % DIPLO_TARGET_CAP
-            elif cap is not None and self.type_actions.get(
-                    _cap_key(k[0], k[1], r["action_type"]), 0) >= cap:
-                reason = "per_turn_cap:%d" % cap
-            if reason is None:
-                out.append(r)
-            else:
-                self.last_drops.append(
-                    {"context_kind": k[0], "context_id": k[1], "action_type": r["action_type"],
-                     "key": r.get("key"), "rank": r.get("rank"), "reason": reason})
-        return out
+        self.gate.note_result(pick, counted)
 
     def choose(self, record, actions_taken=0):
         # Both models score the same offers, on every decision, before anything is drawn
@@ -204,7 +146,10 @@ class Policy:
         gnn_scores = self._score_with_gnn(ranked, record)
         if "gnn" in self.members:
             self.members["gnn"].scored = gnn_scores
-        elig = self.eligible(ranked, actions_taken=actions_taken)
+        # Everything on the record is already a survivor -- the loop generated and
+        # gated before the recorder stored it -- so there is nothing left to filter.
+        elig = ranked
+        self.last_drops = list(self.gate.last_drops)
         self.last_choice = {"hot": bool(hot), "n_ranked": len(ranked), "n_eligible": len(elig),
                             "n_dropped": len(self.last_drops), "actions_taken": actions_taken,
                             "drop_reasons": _tally(d["reason"] for d in self.last_drops),

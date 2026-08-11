@@ -586,9 +586,7 @@ def action_block(offer, locus, treasury, world=None, self_units=None, self_hp=No
                  near_before=None, self_cqi=None):
     atype, key = offer.get("action_type"), str(offer.get("key"))
     params = offer.get("params") or {}
-    out = {"opt_type": atype, "opt_key": key,
-           "opt_available": 1.0 if offer.get("available") else 0.0,
-           "opt_gate": offer.get("gate") or "none"}
+    out = {"opt_type": atype, "opt_key": key}
     out.update(_diplomacy_feats(atype, params, world))
     out.update(_hero_action_feats(atype, params, locus, world))
     out.update(_recruit_hero_feats(atype, params))
@@ -740,7 +738,7 @@ def decision_rows(record, base_sink=None):
 
 
 MODEL_COLUMNS = frozenset((
-    "opt_type", "opt_key", "opt_available", "opt_gate", "opt_cost", "opt_cost_vs_treasury",
+    "opt_type", "opt_key", "opt_cost", "opt_cost_vs_treasury",
     "opt_hp_ratio", "opt_hp_diff", "opt_self_hp", "opt_self_units",
     "opt_strength_ratio", "opt_strength_diff",
     "opt_target_faction", "opt_target_race", "opt_target_dist", "opt_is_active", "ctx_kind",

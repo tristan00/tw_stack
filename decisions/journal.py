@@ -149,6 +149,12 @@ def request_hash(run_dir, timeout=45.0):
     return r.get("hash"), r.get("roots") or []
 
 
+def log_options(run_dir, decision_id, options):
+    """Hand the advisor's surviving options to the recorder, which owns every write."""
+    _append(run_dir, REQUESTS, {"kind": "options", "decision_id": decision_id,
+                                "options": options})
+
+
 def log_pick(run_dir, decision_id, pick, scores=None, timings=None):
     _append(run_dir, REQUESTS, {"kind": "pick", "decision_id": decision_id,
                                 "pick": pick, "scores": scores, "timings": timings})
@@ -184,8 +190,8 @@ def read_decision(run_dir, decision_id):
             e = by_snap.get(r["snapshot_id"])
             if e is not None:
                 e["offers"].append({"offer_id": r["offer_id"], "action_type": r["action_type"],
-                                    "key": r["action_key"], "available": bool(r["available"]),
-                                    "gate": r["gate"], "params": json.loads(r["params"] or "{}")})
+                                    "key": r["action_key"],
+                                    "params": json.loads(r["params"] or "{}")})
         return {"decision_id": decision_id, "turn": dp["turn"], "campaign_id": dp["campaign_id"],
                 "campaign": json.loads(dp["campaign"] or "{}"),
                 "world": json.loads(dp["world"] or "{}"), "entities": ents}

@@ -463,12 +463,10 @@ def _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me):
     at = str(o.get("action_type") or "")
     key = str(o.get("key") or "")
     params = o.get("params") or {}
-    rd = G.Reader({"available": o.get("available")}, "offer:%s:%s:%s" % (ck, cid, key),
-                  "offers[]")
     term = 0
     if at == "diplomacy":
         term = S.term_index(key.split(":", 1)[-1])
-    avals = {"available": rd.flag("available")}
+    avals = {}
     if _pos_ok(params.get("x"), params.get("y")):
         pd = G.Reader(params, "offer:%s:%s:%s" % (ck, cid, key), "offers[].params")
         avals["x"] = pd.num("x") / S.COORD_SCALE
