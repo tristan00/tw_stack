@@ -260,12 +260,6 @@ def _edict_snapshot(bus, ctx, pick):
     return {"selected": _selected_edict(bus, region), "options": edict_options(bus, region)}
 
 
-def _edict_gate(bus, ctx, pick, before):
-    if pick["key"] not in (before.get("options") or []):
-        return False, "edict_not_available_in_province"
-    if before.get("selected") == pick["key"]:
-        return False, "already_selected"
-    return True, None
 
 
 _LUA_EDICT_CLICK = (
@@ -298,7 +292,7 @@ def _edict_confirm(bus, ctx, pick, before):
 
 register("edict", {
     "layer": "click", "signal": "selected_initiative_key",
-    "snapshot": _edict_snapshot, "gates": [_edict_gate],
+    "snapshot": _edict_snapshot, "gates": [],
     "execute": _edict_execute, "confirm": _edict_confirm,
     "timeout_s": 6.0, "poll_s": 1.2,
 })

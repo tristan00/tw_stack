@@ -265,49 +265,10 @@ def _stance_snapshot(bus, ctx, pick):
 _STANCE_STACK = "hud_campaign|BL_parent|land_stance_button_stack|clip_parent|stack_background"
 
 
-def _legal_stances(bus):
-    try:
-        r = bus.send("find", _STANCE_STACK, timeout=12.0) or {}
-    except Exception as e:
-        sys.stderr.write("cco_actions: stance stack find -> %s\n" % repr(e)[:90])
-        return set()
-    out = set()
-    for k in (r.get("child_ids") or []):
-        if not k.startswith("button_") or k == "button_default":
-            continue
-        try:
-            b = bus.send("find", "%s|%s" % (_STANCE_STACK, k), timeout=8.0) or {}
-        except Exception:
-            continue
-        if (b.get("result") or {}).get("state") != "inactive":
-            out.add(k[len("button_"):])
-    return out
 
 
-def _stance_gate_whitelist(bus, ctx, pick, before):
-    """Stance legality is the ADVISOR's decision, so this no longer re-decides it.
-
-    This scraped the stance button stack over the bus -- one `find` for the stack and one
-    more per button -- and refused anything the UI showed as inactive. That made the
-    launcher a second gating authority, disagreeing with the advisor using data the
-    advisor had never seen, and it spent N+1 round-trips per stance click to do it.
-
-    The advisor gates stance on can_activate and can_afford, read off StanceList in the
-    snapshot. If that proves too weak, the answer is to record what is missing in the
-    snapshot, not to re-decide here: gating lives in one component, and a refusal the
-    game itself issues is honest data, while a refusal invented by the launcher is not.
-    """
-    return True, None
 
 
-def _stance_gate_state(bus, ctx, pick, before):
-    if not before.get("target_in_list"):
-        return False, "stance_not_in_list"
-    if before.get("active_stance") == pick["key"]:
-        return False, "already_active"
-    if not (before.get("can_activate") and before.get("can_afford")):
-        return False, "can_activate_or_afford_false"
-    return True, None
 
 
 def _stance_execute(bus, ctx, pick, before):
@@ -323,7 +284,7 @@ def _stance_confirm(bus, ctx, pick, before):
 register("stance", {
     "layer": "cco", "signal": "is_active_flip",
     "snapshot": _stance_snapshot,
-    "gates": [_stance_gate_whitelist, _stance_gate_state],
+    "gates": [],
     "execute": _stance_execute, "confirm": _stance_confirm,
     "timeout_s": 5.0, "poll_s": 1.2,
 })
@@ -408,16 +369,6 @@ def _horde_build_snapshot(bus, ctx, pick):
             "treasury": _treasury(bus)}
 
 
-def _horde_build_gate(bus, ctx, pick, before):
-    slot, key = _horde_parts(pick)
-    if not slot or not key:
-        return False, "unparseable_horde_key"
-    st = str(before.get("state") or "")
-    if st.startswith("NO-CTX"):
-        return False, "slot_context_missing"
-    if st.split("|")[1:2] == ["true"]:
-        return False, "slot_already_constructing"
-    return True, None
 
 
 def _horde_build_execute(bus, ctx, pick, before):
@@ -441,7 +392,7 @@ def _horde_build_confirm(bus, ctx, pick, before):
 
 register("horde_building", {
     "layer": "cco", "signal": "force_slot_construction_queued",
-    "snapshot": _horde_build_snapshot, "gates": [_horde_build_gate],
+    "snapshot": _horde_build_snapshot, "gates": [],
     "execute": _horde_build_execute, "confirm": _horde_build_confirm,
     "timeout_s": 10.0, "poll_s": 1.5, "spends_gold": True,
 })
@@ -495,10 +446,6 @@ def _research_snapshot(bus, ctx, pick):
     return {"faction": str(fac), "researching": _researching(bus), "current": _current_tech(bus, fac)}
 
 
-def _research_gate(bus, ctx, pick, before):
-    if before.get("researching") == "true":
-        return False, "already_researching"
-    return True, None
 
 
 def _research_execute(bus, ctx, pick, before):
@@ -523,7 +470,7 @@ def _research_confirm(bus, ctx, pick, before):
 
 register("research", {
     "layer": "cco", "signal": "is_researching_and_current_tech",
-    "snapshot": _research_snapshot, "gates": [_research_gate],
+    "snapshot": _research_snapshot, "gates": [],
     "execute": _research_execute, "confirm": _research_confirm,
     "timeout_s": 6.0, "poll_s": 1.5,
 })
@@ -549,17 +496,6 @@ def _skills_snapshot(bus, ctx, pick):
     }
 
 
-def _skills_gate(bus, ctx, pick, before):
-    if before.get("has_skill") == "true":
-        return False, "already_has_skill"
-    try:
-        if float(before.get("points") or 0) < 1:
-            return False, "no_skill_points"
-    except (TypeError, ValueError):
-        return False, "skill_points_unreadable"
-    if before.get("status") != "active":
-        return False, "skill_status_%s" % before.get("status")
-    return True, None
 
 
 def _skills_execute(bus, ctx, pick, before):
@@ -586,7 +522,7 @@ def _skills_confirm(bus, ctx, pick, before):
 
 register("skills", {
     "layer": "cco", "signal": "has_skill_flip_and_committed",
-    "snapshot": _skills_snapshot, "gates": [_skills_gate],
+    "snapshot": _skills_snapshot, "gates": [],
     "execute": _skills_execute, "confirm": _skills_confirm,
     "timeout_s": 6.0, "poll_s": 1.2,
 })
@@ -624,12 +560,6 @@ def _items_snapshot(bus, ctx, pick):
     return {"faction": str(fac), "equipped": _equipped_names(bus, cqi), "can_equip": can}
 
 
-def _items_gate(bus, ctx, pick, before):
-    if pick.get("params", {}).get("pool_index") is None:
-        return False, "no_pool_index"
-    if before.get("can_equip") != "true":
-        return False, "can_character_equip_%s" % before.get("can_equip")
-    return True, None
 
 
 def _items_execute(bus, ctx, pick, before):
@@ -654,7 +584,7 @@ def _items_confirm(bus, ctx, pick, before):
 
 register("items", {
     "layer": "cco", "signal": "equipped_count_increase",
-    "snapshot": _items_snapshot, "gates": [_items_gate],
+    "snapshot": _items_snapshot, "gates": [],
     "execute": _items_execute, "confirm": _items_confirm,
     "timeout_s": 6.0, "poll_s": 1.2,
 })
@@ -708,10 +638,6 @@ def _rites_snapshot(bus, ctx, pick):
     return {"faction": str(fac), "flags": _rite_flags(bus, fac, idx)}
 
 
-def _rites_gate(bus, ctx, pick, before):
-    if not str(before.get("flags", "")).startswith("true/"):
-        return False, "cannot_perform_%s" % before.get("flags")
-    return True, None
 
 
 def _rites_execute(bus, ctx, pick, before):
@@ -729,7 +655,7 @@ def _rites_confirm(bus, ctx, pick, before):
 
 register("rites", {
     "layer": "cco", "signal": "can_perform_false_and_complete",
-    "snapshot": _rites_snapshot, "gates": [_rites_gate],
+    "snapshot": _rites_snapshot, "gates": [],
     "execute": _rites_execute, "confirm": _rites_confirm,
     "timeout_s": 8.0, "poll_s": 1.5,
 })
@@ -1000,19 +926,6 @@ def _hero_action_gate_target(bus, ctx, pick, before):
     return True, None
 
 
-def _hero_action_gate_reach(bus, ctx, pick, before):
-    """Reach is settled at snapshot time, so this no longer asks the game again.
-
-    The flow is snapshot -> predict -> act -> snapshot. One fresh snapshot is taken per
-    decision, immediately before that decision's single action, and it is the player's
-    turn, so nothing moves in between. This gate re-read reach over the bus anyway and
-    could only ever confirm what the snapshot already recorded -- at the cost of a
-    round-trip per hero action.
-
-    The advisor gates on the recorded reach_chars / reach_setts. If those are ever wrong,
-    the fix is the collector's read, not a second opinion here.
-    """
-    return True, None
 
 
 
@@ -1337,7 +1250,7 @@ def _hero_action_confirm(bus, ctx, pick, before):
 register("hero_action", {
     "layer": "click", "signal": "agent_action_event",
     "snapshot": _hero_action_snapshot,
-    "gates": [_hero_action_gate_target, _hero_action_gate_reach],
+    "gates": [_hero_action_gate_target],
     "execute": _hero_action_execute, "confirm": _hero_action_confirm,
     "timeout_s": 8.0, "poll_s": 0.05,
 })

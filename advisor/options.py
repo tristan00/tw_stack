@@ -889,6 +889,11 @@ class Gate:
             return o.get("gate") or "no_gate_recorded"
         if self._no_movement_left(o.get("_state"), at):
             return "no_action_points"
+        # Walking away breaks the siege, so the launcher refused it. That was the one
+        # launcher check with no advisor equivalent, which is why it moves here rather
+        # than simply being deleted -- `besieging` is on every lord snapshot.
+        if at == "move" and (o.get("_state") or {}).get("besieging"):
+            return "besieging"
         if at == "end_turn" and actions_taken < END_TURN_AFTER:
             return "end_turn_before_6th_decision"
         if key in FORBIDDEN_KEYS:

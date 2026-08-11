@@ -57,10 +57,6 @@ def _attack_army_snapshot(bus, ctx, pick):
                                   "return tostring(ok and v)" % (cqi, tgt), timeout=10.0)}
 
 
-def _attack_army_gate(bus, ctx, pick, before):
-    if before.get("can_reach") != "true":
-        return False, "cannot_reach_target"
-    return True, None
 
 
 def _attack_army_execute(bus, ctx, pick, before):
@@ -93,7 +89,7 @@ def _attack_army_doomed(bus, ctx, pick, before, after):
 
 register("attack_army", {
     "layer": "cm", "signal": "pre_battle_popup",
-    "snapshot": _attack_army_snapshot, "gates": [_attack_army_gate],
+    "snapshot": _attack_army_snapshot, "gates": [],
     "execute": _attack_army_execute, "confirm": _attack_army_confirm,
     "doomed": _attack_army_doomed,
     "timeout_s": 20.0, "poll_s": 2.0, "retryable": False,
@@ -111,10 +107,6 @@ def _attack_sett_snapshot(bus, ctx, pick):
                                   "return tostring(ok and v)" % (cqi, region), timeout=10.0)}
 
 
-def _attack_sett_gate(bus, ctx, pick, before):
-    if before.get("can_reach") != "true":
-        return False, "cannot_reach_settlement"
-    return True, None
 
 
 def _attack_sett_execute(bus, ctx, pick, before):
@@ -140,7 +132,7 @@ def _attack_sett_confirm(bus, ctx, pick, before):
 
 register("attack_settlement", {
     "layer": "cm", "signal": "pre_battle_or_captured_or_is_besieging",
-    "snapshot": _attack_sett_snapshot, "gates": [_attack_sett_gate],
+    "snapshot": _attack_sett_snapshot, "gates": [],
     "execute": _attack_sett_execute, "confirm": _attack_sett_confirm,
     "timeout_s": 20.0, "poll_s": 2.0, "retryable": False,
 })
@@ -148,7 +140,7 @@ register("attack_settlement", {
 
 register("colonize", {
     "layer": "cm", "signal": "pre_battle_or_captured_or_is_besieging",
-    "snapshot": _attack_sett_snapshot, "gates": [_attack_sett_gate],
+    "snapshot": _attack_sett_snapshot, "gates": [],
     "execute": _attack_sett_execute, "confirm": _attack_sett_confirm,
     "timeout_s": 20.0, "poll_s": 2.0, "retryable": False,
 })
@@ -159,10 +151,6 @@ def _garrison_snapshot(bus, ctx, pick):
             "acted": _char_scalar(bus, ctx["entity_id"], "c:performed_action_this_turn()")}
 
 
-def _garrison_gate(bus, ctx, pick, before):
-    if before.get("in_settlement") == "true":
-        return False, "already_in_settlement"
-    return True, None
 
 
 def _garrison_execute(bus, ctx, pick, before):
@@ -178,7 +166,7 @@ def _garrison_confirm(bus, ctx, pick, before):
 
 register("garrison", {
     "layer": "cm", "signal": "in_settlement_true",
-    "snapshot": _garrison_snapshot, "gates": [_garrison_gate],
+    "snapshot": _garrison_snapshot, "gates": [],
     "execute": _garrison_execute, "confirm": _garrison_confirm,
     "timeout_s": 10.0, "poll_s": 1.5,
 })
@@ -228,15 +216,6 @@ def _move_snapshot(bus, ctx, pick):
             "acted": _char_scalar(bus, cqi, "c:performed_action_this_turn()")}
 
 
-def _move_gate(bus, ctx, pick, before):
-    try:
-        if float(before.get("ap") or 0) <= 0.0:
-            return False, "no_action_points"
-    except (TypeError, ValueError):
-        pass
-    if str(before.get("besieging")).lower() == "true":
-        return False, "besieging"
-    return True, None
 
 
 def _move_execute(bus, ctx, pick, before):
@@ -299,7 +278,7 @@ def _await_standstill(bus, cqi, after):
 
 register("move", {
     "layer": "cm", "signal": "position_changed",
-    "snapshot": _move_snapshot, "gates": [_move_gate],
+    "snapshot": _move_snapshot, "gates": [],
     "execute": _move_execute, "confirm": _move_confirm,
     "timeout_s": 6.0, "poll_s": 1.0, "retryable": False,
 })
