@@ -22,29 +22,41 @@ def _con(run_dir):
     return dbopen.connect(os.path.join(run_dir, "decisions.sqlite"))
 
 
-def offer_honesty(con):
+def refusal_report(con):
+    """What actually happened to the actions the agent took.
+
+    This replaces `offer_honesty`, which asked "picked while `available`, did it happen?".
+    Only survivors are stored now, so that question answers itself -- every stored row was
+    available by construction and the number would be a tautology reported as a finding.
+
+    The honest version reads the EXECUTOR's verdict instead. The gates in
+    launcher/*_actions.py re-read live state at click time, so `diagnostics.gates` on the
+    taken row is the only remaining record of "eligible when the advisor generated it,
+    refused when the launcher clicked it" -- which is the real quantity that column was
+    reaching for.
+    """
     rows = []
     for at, in con.execute("SELECT DISTINCT action_type FROM action_taken"):
-        r = con.execute(
-            "SELECT COUNT(*), COALESCE(SUM(t.counted),0) FROM action_taken t"
-            " LEFT JOIN action_offers o ON o.offer_id=t.offer_id"
-            " WHERE t.action_type=? AND t.refusal IS NOT 'awaiting_execution'"
-            " AND COALESCE(o.available,1)=1", (at,)).fetchone()
-        n, ok = r[0] or 0, r[1] or 0
+        n, ok, pre = con.execute(
+            "SELECT COUNT(*), COALESCE(SUM(counted),0),"
+            " COALESCE(SUM(COALESCE(json_extract(diagnostics,'$.gates'),'') != ''),0)"
+            " FROM action_taken WHERE action_type=?"
+            " AND refusal IS NOT 'awaiting_execution'", (at,)).fetchone()
+        n, ok, pre = n or 0, ok or 0, pre or 0
         if n:
-            rows.append((at, n, ok, 100.0 * ok / n))
+            rows.append((at, n, ok, 100.0 * ok / n, pre))
     return sorted(rows, key=lambda x: x[3])
 
 
 def offered_vs_taken(con):
     out = {}
-    for at, n, av in con.execute(
-            "SELECT action_type, COUNT(*), SUM(available) FROM action_offers GROUP BY action_type"):
-        out[at] = {"offered": n, "available": av or 0}
+    for at, n in con.execute(
+            "SELECT action_type, COUNT(*) FROM action_offers GROUP BY action_type"):
+        out[at] = {"offered": n}
     for at, n in con.execute(
             "SELECT action_type, COUNT(*) FROM action_taken"
             " WHERE refusal IS NOT 'awaiting_execution' GROUP BY action_type"):
-        out.setdefault(at, {"offered": 0, "available": 0})["picked"] = n
+        out.setdefault(at, {"offered": 0})["picked"] = n
     return out
 
 
@@ -79,16 +91,16 @@ def main():
     turns = con.execute("SELECT COALESCE(MAX(turn),0) FROM decision_points").fetchone()[0]
     print("decisions=%d  campaigns=%d  max_turn=%s" % (n, len(camps), turns))
 
-    print("\nOFFER HONESTY -- picked while `available`, did it happen?")
-    print("%-20s %6s %6s %8s" % ("action", "picked", "ok", "honesty"))
-    for at, tot, ok, pct in offer_honesty(con):
-        flag = "  <-- offers are lying" if pct < 50 else ""
-        print("%-20s %6d %6d %7.0f%%%s" % (at, tot, ok, pct, flag))
+    print("\nWHAT THE EXECUTOR DID WITH WHAT THE ADVISOR CHOSE")
+    print("%-20s %6s %6s %8s %9s" % ("action", "picked", "ok", "rate", "pre-check"))
+    for at, tot, ok, pct, pre in refusal_report(con):
+        flag = "  <-- the click keeps failing" if pct < 50 else ""
+        print("%-20s %6d %6d %7.0f%% %9d%s" % (at, tot, ok, pct, pre, flag))
 
-    print("\nOFFERED vs PICKED (dead weight check)")
-    print("%-20s %9s %11s %8s" % ("action", "offered", "available", "picked"))
+    print("\nGENERATED vs PICKED (dead weight check)")
+    print("%-20s %9s %8s" % ("action", "generated", "picked"))
     for at, d in sorted(offered_vs_taken(con).items(), key=lambda kv: -kv[1]["offered"]):
-        print("%-20s %9d %11d %8s" % (at, d["offered"], d["available"], d.get("picked", 0)))
+        print("%-20s %9d %8s" % (at, d["offered"], d.get("picked", 0)))
 
     t = time_split(con)
     if t["wall"] > 0:

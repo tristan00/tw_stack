@@ -247,7 +247,7 @@ class Ranker:
         if not self.ready or not triples:
             return [{"context_kind": e["context_kind"], "context_id": e["context_id"],
                      "action_type": o["action_type"], "key": o["key"],
-                     "available": o["available"], "gate": o["gate"], "params": o.get("params") or {},
+                     "params": o.get("params") or {},
                      "exploit": None, "impact": None, "score": None}
                     for e, o, _r in triples]
         from catboost import Pool
@@ -300,7 +300,6 @@ class Ranker:
                 exploit = pctg
             out.append({"context_kind": e["context_kind"], "context_id": e["context_id"],
                         "action_type": o["action_type"], "key": o["key"],
-                        "available": o["available"], "gate": o["gate"],
                         "params": o.get("params") or {},
                         "impact": round(impact, 5),
                         "impact_local": (round(lo_imp, 5) if lo_imp is not None else None),

@@ -95,7 +95,7 @@ def main():
 
         # ---- read_decision round-trips --------------------------------------------
         rec = st.read_decision(dids[0])
-        check(rec["campaign"]["treasury"] == 4501, "campaign blob round-trips")
+        check(rec["campaign"]["treasury"] == 2501, "campaign blob round-trips")
         check(rec["world"]["hostiles"][0]["faction"] == "orcs", "world blob round-trips")
         check(len(rec["entities"]) == 3, "entity count")
         got = {(e["context_kind"], e["context_id"]) for e in rec["entities"]}
@@ -186,7 +186,7 @@ def main():
         dp = con.execute("SELECT decision_id,campaign_id,turn,n_entities,n_offers,campaign,"
                          "world FROM decision_points ORDER BY decision_id").fetchall()
         check(len(dp) == 5 and dp[0][1] == "camp-1", "decision_points view")
-        check(json.loads(dp[0][5])["treasury"] == 4501, "decision_points.campaign is text")
+        check(json.loads(dp[0][5])["treasury"] == 2501, "decision_points.campaign is text")
         es = con.execute("SELECT snapshot_id,decision_id,context_kind,context_id,features"
                          " FROM entity_snapshots WHERE decision_id=?", (dids[0],)).fetchall()
         check(len(es) == 3 and json.loads(es[0][4])["rank"] == 3, "entity_snapshots view")

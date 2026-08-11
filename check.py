@@ -57,6 +57,12 @@ CHECKS = [
      "the WL identity check fails on the bug and passes on the fix"),
     ("graph_guard", ["advisor/mapgraph/guard.py"], False,
      "cross-entity arithmetic raises, so derived features stay unwritable"),
+    ("options", ["-m", "advisor.test_options"], False,
+     "generate -> gate -> store end to end: nothing gated is stored, and options.py "
+     "touches no bus, db or file"),
+    ("coverage_selftest", ["-m", "decisions.coverage", "--selftest"], False,
+     "the acceptance gate can be seen failing -- a constant field is reported, a "
+     "varying one is not"),
 
     # need a live game, a bus, or a populated corpus
     ("coverage", ["-m", "decisions.coverage"], True,

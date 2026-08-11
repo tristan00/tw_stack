@@ -126,11 +126,9 @@ def _synthetic(item_keys, building_keys):
     for i, bk in enumerate(building_keys):
         for at in ("building_repair", "building_dismantle", "building_cancel"):
             prov_offers.append({"action_type": at, "key": "reg_a@%d" % i,
-                                "available": True, "gate": None,
                                 "params": {"region": "reg_a", "slot_index": i,
                                            "building_key": bk}})
     lord_offers = [{"action_type": "items", "key": ik or "item_%d" % i,
-                    "available": True, "gate": None,
                     "params": {"pool_index": i, "item_name": "Warhorse", "item_key": ik}}
                    for i, ik in enumerate(item_keys)]
     return {"campaign": {"faction": "me", "turn": 5, "treasury": 1000},
