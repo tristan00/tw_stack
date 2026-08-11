@@ -54,7 +54,7 @@ class Executor:
                        counted=rec.get("counted"), refusal=rec.get("refusal"),
                        gate=rec.get("gate"), confirm=rec.get("confirm"),
                        before=rec.get("before"), after=rec.get("after"),
-                       gates=rec.get("gates"), execute_error=rec.get("execute_error"),
+                       gates=rec.get("prechecks"), execute_error=rec.get("execute_error"),
                        doomed=rec.get("doomed"), timing=rec.get("timing"),
                        params=run["params"], stderr=rec.get("stderr"))
         self.executed += 1

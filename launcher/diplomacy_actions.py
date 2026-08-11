@@ -75,7 +75,7 @@ def _snapshot(bus, ctx, pick):
             "treasury": _treasury(bus) if _gift(pick) else None}
 
 
-def _gate(bus, ctx, pick, before):
+def _validate_pick(bus, ctx, pick, before):
     """Validation of the PICK, not of the game.
 
     Everything else this used to check -- already_allied, already_trading,
@@ -166,7 +166,7 @@ def _doomed_unsent(bus, ctx, pick, before, after):
 
 register("diplomacy", {
     "layer": "click", "signal": "treaty_changed",
-    "snapshot": _snapshot, "gates": [_gate], "execute": _execute, "confirm": _confirm,
+    "snapshot": _snapshot, "prechecks": [_validate_pick], "execute": _execute, "confirm": _confirm,
     "doomed": _doomed_unsent,
     "timeout_s": 0.0, "poll_s": 0.0, "confirm_settle_s": 0.6,
     "retryable": False,

@@ -22,7 +22,15 @@ except Exception as e:
 
 
 def _append_tail(ctx, base, data: bytes) -> str:
-    d = os.path.join(BULK_ROOT, "logs")
+    """Append to <run dir>/logs/<name>.tail.
+
+    This took `ctx` and ignored it, writing to a global STREAM_ROOT instead -- so log
+    tails were pooled across every run that ever executed rather than landing in the run
+    they belong to. It also broke a consumer silently: actions_stream._current_turn globs
+    `<out_dir>/logs/script_log_*.tail` to work out which turn a UI action happened on, and
+    could never find one.
+    """
+    d = os.path.join(ctx.out_dir, "logs")
     os.makedirs(d, exist_ok=True)
     dst = os.path.join(d, base + ".tail")
     with open(dst, "ab") as f:
@@ -57,7 +65,7 @@ def _write_scriptlog_chunk(ctx, src, chunk: bytes, on_state, swap) -> None:
 
 
 def run(ctx, log_dirs, poll_every: float = LOGTAIL_EVERY, own_slack: float = 2.0) -> None:
-    os.makedirs(os.path.join(BULK_ROOT, "logs"), exist_ok=True)
+    os.makedirs(os.path.join(ctx.out_dir, "logs"), exist_ok=True)
     off = {}
     cutoff = time.time() - own_slack
 
