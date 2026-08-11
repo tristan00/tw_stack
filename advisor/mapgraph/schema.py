@@ -62,7 +62,11 @@ TYPE_FIELDS = {
     # nodes on fresh data, all diplomacy. A catalogue id separates them unless two keys
     # hash together; standing means even then they differ.
     "faction":      ("is_player", "standing"),                         # 2
-    "region":       ("x", "y", "public_order"),                        # 3
+    # income is the region's own earnings. The only economy signals on a region were
+    # public_order and, one hop away, a province-pooled corruption -- so a region
+    # embedding could not tell the rich capital from a frontier holding earning 40, while
+    # every action node hangs off a region through at_region / has_slot / sett_of.
+    "region":       ("x", "y", "public_order", "income"),              # 4
     # x,y are free here too (MAX_FIELDS is 6) and both own and enemy settlement rows
     # carry them. Distance to a settlement is most of what an attack decision is about.
     "settlement":   ("garrison_units", "x", "y"),                      # 3
@@ -112,6 +116,11 @@ WORLD_RELATIONS = (
     "at_region",        # char <-> region
     "at_sett",          # char <-> settlement   (was the `garrisoned` flag)
     "besieging",        # char <-> settlement   (was the `besieging` flag)
+    "garrisons",        # char <-> settlement -- an enemy armed-citizenry stack and the
+                        # settlement it defends. MOBILE_KINDS admits it as an ordinary
+                        # `lord` node and the citizenry skip filters only OUR own, so the
+                        # defenders were built floating free of their walls; coincident
+                        # x,y was the only thing tying them together.
     "in_province",      # char <-> province     (province-wide lord modifiers)
     "near",             # char <-> char
 )
@@ -277,6 +286,9 @@ RANK_SCALE = 10.0
 ORDER_SCALE = 100.0
 CORRUPT_SCALE = 100.0
 TREASURY_SCALE = 10000.0
+# per-region income. Observed 0..736 across the corpus; 500 puts the common range inside
+# [0,1.5] and the clip catches the rest.
+INCOME_SCALE = 500.0
 
 KNN_K = 4
 MODEL_DIR = common.MODEL_MAPGRAPH

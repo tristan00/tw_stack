@@ -133,6 +133,15 @@ def build_graph(record):
     g.player_faction = me
 
     citizenry = {str(c) for c in (world.get("citizenry") or [])}
+    # world.citizenry holds command-queue indices INTO world.armies, not army rows, so
+    # the garrison holding each of our regions is one lookup away. Keyed by region because
+    # that is how the settlement loop finds it.
+    _armies_by_cqi = {str(a.get("cqi")): a for a in (world.get("armies") or [])}
+    own_citizenry = {}
+    for _c in citizenry:
+        _a = _armies_by_cqi.get(_c)
+        if _a is not None and _a.get("region"):
+            own_citizenry[str(_a.get("region"))] = _a
     relations = {str(r.get("faction")): r for r in (world.get("relations") or [])
                  if r.get("faction")}
 
@@ -212,6 +221,7 @@ def build_graph(record):
         if st is not None:
             pd = G.Reader(st, "region:" + key, "entities.province.state")
             vals["public_order"] = (pd.num("public_order") / S.ORDER_SCALE).clip(-1.0, 1.0)
+            vals["income"] = (pd.num("income") / S.INCOME_SCALE).clip(-1.0, 2.0)
         ri = g.add("r:" + key, "region", vals, own=(str(r.get("owner") or "") == me))
         prov_of_region[key] = str(r.get("province") or "")
         fj = g.id2idx.get("f:" + str(r.get("owner") or ""))
@@ -227,6 +237,10 @@ def build_graph(record):
                 pd = G.Reader(st, "region:" + key, "entities.province.state")
                 vals["public_order"] = (pd.num("public_order") /
                                         S.ORDER_SCALE).clip(-1.0, 1.0)
+                # the second build site: a region reached only through a character or a
+                # province. Omitting income here leaves it a silent 0 on exactly the
+                # regions the record did not enumerate.
+                vals["income"] = (pd.num("income") / S.INCOME_SCALE).clip(-1.0, 2.0)
             g.add("r:" + key, "region", vals)
             prov_of_region.setdefault(key, str((st or {}).get("province") or ""))
 
@@ -255,8 +269,21 @@ def build_graph(record):
         key = str(s.get("region") or "")
         if not key:
             continue
+        # garrison_units comes off the citizenry stack, not world.settlements[].units.
+        # That field is the mod-side mislabel in DATA_GAPS -- it reports the occupying
+        # field army, so it is falsy on 2,933 of 3,405 own-settlement rows and this
+        # scalar, the only defensive number in the graph, was a constant 0 on most of
+        # them. Own citizenry are skipped in the character loop below, so nothing else
+        # carried the fact. Exactly one citizenry army holds each own settlement (3,401
+        # with one, 22 with none, never two), so this stays a single-entity Reader read
+        # and no cross-entity arithmetic is involved.
+        gar = own_citizenry.get(key)
         sd = G.Reader(s, "settlement:" + key, "world.settlements[]")
-        svals = {"garrison_units": sd.num("units") / S.UNITS_SCALE}
+        if gar is not None:
+            gd = G.Reader(gar, "char:" + str(gar.get("cqi") or ""), "world.armies[]")
+            svals = {"garrison_units": gd.num("units") / S.UNITS_SCALE}
+        else:
+            svals = {}
         if _pos_ok(s.get("x"), s.get("y")):
             svals["x"] = sd.num("x") / S.COORD_SCALE
             svals["y"] = sd.num("y") / S.COORD_SCALE
@@ -385,6 +412,28 @@ def build_graph(record):
         fj = g.id2idx.get("f:" + str(h.get("faction") or ""))
         if fj is not None:
             g.edge(fj, si, "owns_sett")
+
+    # An enemy garrison is admitted by MOBILE_KINDS as an ordinary `lord` node -- the
+    # citizenry skip above filters only OUR own -- so the defenders were built floating
+    # free of the walls they hold, with coincident x,y the only thing relating them.
+    # The edge makes "this stack is the settlement's defence, not a manoeuvring threat"
+    # structural. It carries no scalar: the stack's units and hp are already on its node,
+    # so filling the settlement's garrison_units from the same rows would write the
+    # number twice. An enemy settlement tile carries at most one such row (2,962 with
+    # one, 8,316 with none, never two), so this is one edge per settlement at most.
+    _enemy_setts = {(h.get("x"), h.get("y")): str(h.get("region") or "")
+                    for h in (world.get("hostiles") or [])
+                    if str(h.get("kind") or "") == "settlement" and h.get("region")}
+    for h in world.get("hostiles") or []:
+        if not h.get("is_armed_citizenry") or h.get("visible") is False:
+            continue
+        ci = g.id2idx.get("c:" + str(h.get("cqi") or ""))
+        rkey = _enemy_setts.get((h.get("x"), h.get("y")))
+        if ci is None or not rkey:
+            continue
+        sj = g.id2idx.get("s:" + rkey)
+        if sj is not None:
+            g.edge(ci, sj, "garrisons")
 
     # _wire_knn reads node_type and x to find characters, so the node buffers have to be
     # materialised before it runs. It only ADDS edges, so the final finalize() below
