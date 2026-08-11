@@ -42,9 +42,6 @@ JUSTIFIED = {
     ("campaign", "game_version"):
         "one game build per corpus by construction; a change here is an era boundary "
         "and should invalidate the corpus rather than vary within it",
-    ("state:province", "settlement_present"):
-        "the recorder only emits provinces that have a settlement, so this is a "
-        "tautology of the filter -- remove the field or widen the filter",
     ("state:hero", "besieging"):
         "laying siege is a property of an army (CcoCampaignMilitaryForce.IsLayingSiege) "
         "and a hero commands none, so False for every hero is the game speaking. Note "
@@ -128,6 +125,45 @@ def _rows(con, col, table, where=(), args=(), sample=None):
     return (r[0] for r in con.execute(sql, args))
 
 
+def declared_types():
+    """The action types this project claims to support, from the three places that
+    declare them -- and they have to agree.
+
+    coverage used to enumerate types with SELECT DISTINCT action_type, which can only
+    ever report the types that are PRESENT. A type that is declared, executable and never
+    generated is invisible to that query: four types were refused 100% of the time in the
+    last run and nothing said a word, because a type with zero rows has no rows to judge.
+    """
+    import importlib
+    sys.path.insert(0, os.path.join(common.ADVISOR, "mapgraph"))
+    sys.path.insert(0, common.ADVISOR)
+    feats = importlib.import_module("features")
+    gs = importlib.import_module("advisor.mapgraph.schema")
+    a, b = set(feats.ACTION_TYPES), set(gs.ACTION_TYPES)
+    if a != b:
+        raise SystemExit(
+            "the action-type registries disagree -- advisor/features.py has %s and "
+            "mapgraph/schema.py has %s. One of them is training on a vocabulary the other "
+            "does not have." % (sorted(a - b) or "none extra", sorted(b - a) or "none extra"))
+    for at in sorted(a):
+        if gs.atype_index(at) == 0:
+            raise SystemExit("action type %r has no index in mapgraph.schema.atype_index "
+                             "-- it would embed as the unknown-type row" % at)
+    return sorted(a)
+
+
+def survivor_report(con):
+    """Declared types against what actually survived the gate.
+
+    A declared type with zero stored options is a real finding: either the generator
+    never emits it, or the gate refuses it every time. Both are bugs and neither is
+    visible from the rows, because there are none.
+    """
+    have = {r[0]: r[1] for r in con.execute(
+        "SELECT action_type, COUNT(*) FROM action_offers GROUP BY action_type")}
+    return [(at, have.get(at, 0)) for at in declared_types()]
+
+
 def check(db=None, sample=None, min_rows=200, verbose=True):
     db = db or os.path.join(common.RUNS_ROOT.replace("/", os.sep), "run",
                             "decisions.sqlite")
@@ -138,7 +174,9 @@ def check(db=None, sample=None, min_rows=200, verbose=True):
     for (kind,) in con.execute("SELECT DISTINCT context_kind FROM entity_snapshots"):
         _scan(_rows(con, "features", "entity_snapshots", ["context_kind=?"], (kind,),
                     sample), "state:%s" % kind, out)
-    for (at,) in con.execute("SELECT DISTINCT action_type FROM action_offers"):
+    seen_types = {r[0] for r in con.execute(
+        "SELECT DISTINCT action_type FROM action_offers")}
+    for at in sorted(seen_types):
         _scan(_rows(con, "params", "action_offers", ["action_type=?"], (at,), sample),
               "offer:%s" % at, out)
 
@@ -165,6 +203,8 @@ def check(db=None, sample=None, min_rows=200, verbose=True):
         m["empty"] += s["empty"]
         m["vals"].update(s["vals"])
 
+    zero = [(at, n) for at, n in survivor_report(dbopen.connect(db, timeout=300))
+            if n == 0]
     dead, thin = [], []
     for (scope, field), s in sorted(merged.items()):
         if s["n"] < min_rows:
@@ -181,6 +221,12 @@ def check(db=None, sample=None, min_rows=200, verbose=True):
         print("constant fields      : %d  (%d justified, %d NOT)"
               % (len(dead), len(dead) - len(unjust), len(unjust)))
         print("below --min-rows %-4d: %d (not judged)" % (min_rows, len(thin)))
+        print("declared action types : %d  (%d with zero surviving options)"
+              % (len(declared_types()), len(zero)))
+        if zero:
+            print("\nDECLARED BUT NEVER A CANDIDATE:")
+            for at, _n in zero:
+                print("  %-26s 0 options survived the gate" % at)
         if unjust:
             print("\nCARRY NO INFORMATION AND NOBODY HAS SAID WHY:")
             for scope, field, n, only, _ in unjust:
@@ -189,7 +235,61 @@ def check(db=None, sample=None, min_rows=200, verbose=True):
         for scope, field, n, only, why in dead:
             if why and verbose:
                 pass
-    return [d for d in dead if not d[4]]
+    return [d for d in dead if not d[4]] + [("declared", at, 0, "no options", None)
+                                            for at, _n in zero]
+
+
+def selftest():
+    """The acceptance gate has to be seen failing before a green run means anything.
+
+    coverage decides whether a corpus is fit to train on and had no test of its own, so
+    "coverage OK" was a claim about the data that rested on an untested claim about the
+    checker. This builds one store whose fields vary and one where they do not, and
+    requires the checker to tell them apart.
+    """
+    import shutil
+    import tempfile
+    sys.path.insert(0, common.DECISIONS)
+    from decisions.store import DecisionStore
+
+    def _build(run, constant):
+        st = DecisionStore(run)
+        st.register_collector("sha-selftest")
+        for turn in range(1, 6):
+            snap = {"ts": 1000.0 + turn,
+                    "campaign": {"faction": "f", "campaign_uuid": "u", "turn": turn,
+                                 "treasury": 10 if constant else 10 * turn},
+                    "world": {}, "entities": [
+                        {"context_kind": "lord", "context_id": "1",
+                         "state": {"cqi": "1", "rank": 1 if constant else turn}}]}
+            did = st.write_decision(snap, decision_seq=turn)
+            st.attach_options(did, [{"context_kind": "lord", "context_id": "1",
+                                     "action_type": "noop", "key": "noop", "params": {}}])
+        st.close()
+
+    d = tempfile.mkdtemp(prefix="covselftest_")
+    try:
+        bad_dir = os.path.join(d, "constant")
+        good_dir = os.path.join(d, "varying")
+        os.makedirs(bad_dir)
+        os.makedirs(good_dir)
+        _build(bad_dir, True)
+        _build(good_dir, False)
+        bad = check(os.path.join(bad_dir, "decisions.sqlite"), min_rows=1, verbose=False)
+        good = check(os.path.join(good_dir, "decisions.sqlite"), min_rows=1, verbose=False)
+        # only the FIELD findings; the declared-type rows are a different check and a
+        # fixture this small never exercises them
+        bad_fields = {f for s, f, _n, _o, _w in bad if s != "declared"}
+        good_fields = {f for s, f, _n, _o, _w in good if s != "declared"}
+        ok1 = "treasury" in bad_fields and "rank" in bad_fields
+        ok2 = "treasury" not in good_fields and "rank" not in good_fields
+        print("  %s constant fields are reported   (%s)"
+              % ("ok  " if ok1 else "FAIL", ", ".join(sorted(bad_fields))[:60]))
+        print("  %s varying fields are not         (%s)"
+              % ("ok  " if ok2 else "FAIL", ", ".join(sorted(good_fields))[:60] or "none"))
+        return 0 if (ok1 and ok2) else 1
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 if __name__ == "__main__":
@@ -200,6 +300,8 @@ if __name__ == "__main__":
     def _opt(name, default):
         return int(a[a.index(name) + 1]) if name in a else default
 
+    if "--selftest" in a:
+        raise SystemExit(selftest())
     bad = check(db, sample=_opt("--sample", 0) or None, min_rows=_opt("--min-rows", 200))
     print("\n%s" % ("coverage OK" if not bad else
                     "%d FIELD(S) CARRY NO INFORMATION" % len(bad)))

@@ -170,12 +170,12 @@ def ranking(con, did, limit=80):
     taken = con.execute("SELECT context_kind,context_id,action_type,action_key,counted,refusal"
                         " FROM action_taken WHERE decision_id=?", (did,)).fetchone()
     rows = [dict(r) for r in con.execute(
-        "SELECT context_kind,context_id,action_type,action_key,available,gate,exploit,"
+        "SELECT context_kind,context_id,action_type,action_key,exploit,"
         "pct_global,pct_local,rank"
         + "".join(",%s" % c for c in _optional_cols(con, "action_offers",
                                                     ("gnn_impact", "gnn_rank"))) +
         " FROM action_offers WHERE decision_id=?"
-        " ORDER BY (exploit IS NULL), exploit DESC, available DESC LIMIT ?", (did, limit))]
+        " ORDER BY (exploit IS NULL), exploit DESC LIMIT ?", (did, limit))]
     tk = (dict(taken) if taken else None)
     for r in rows:
         r["taken"] = bool(tk and r["context_kind"] == tk["context_kind"]
@@ -1883,35 +1883,33 @@ def render_decision(con, did):
     rows = []
     for o in d["offers"]:
         cls = "take" if o["taken"] else ""
-        avail = "<span class=ok>yes</span>" if o["available"] else "<span class=dim>no</span>"
         fmt = lambda v: ("%.4f" % v) if isinstance(v, float) else ("" if v is None else str(v))
         pl = o.get("pct_local")
         pl_cell = fmt(pl) if pl is not None else "<span class=dim>n/a</span>"
         gi = o.get("gnn_impact")
-        rows.append("<tr class='%s'><td>%s</td><td>%s:%s</td><td>%s</td><td>%s</td><td>%s</td>"
+        rows.append("<tr class='%s'><td>%s</td><td>%s:%s</td><td>%s</td><td>%s</td>"
                     "<td>%s</td><td>%s</td><td>%s</td>"
-                    "<td class=gsep>%s</td><td>%s</td>"
-                    "<td class=dim>%s</td></tr>"
+                    "<td class=gsep>%s</td><td>%s</td></tr>"
                     % (cls, _esc(o["rank"]), _esc(o["context_kind"]),
                        _esc(str(o["context_id"])[:22]), _esc(o["action_type"]),
-                       _esc(str(o["action_key"])[:44]), avail,
+                       _esc(str(o["action_key"])[:44]),
                        fmt(o["exploit"]), fmt(o.get("pct_global")), pl_cell,
                        ("%+0.4f" % float(gi)) if gi is not None else "<span class=dim>-</span>",
-                       _esc(o.get("gnn_rank") if o.get("gnn_rank") is not None else "-"),
-                       _esc(o["gate"])))
+                       _esc(o.get("gnn_rank") if o.get("gnn_rank") is not None else "-")))
     tbl = ("<h2>the ranking it produced over the whole faction</h2>"
            "<div class=legend>both models rank every offer on every decision, so the two "
            "rank columns are over the same set and can be read against each other directly. "
-           "Neither model's rank 1 is necessarily what got picked: a strategy chooses the "
-           "best <b>eligible</b> offer, and the top-ranked one is often capped out. On older "
+           "Neither model's rank 1 is necessarily what got picked: the gate runs before "
+           "scoring now, so every row here already survived it and the top-ranked one can "
+           "still lose the draw. On older "
            "decisions the gnn columns are blank &mdash; back then it only scored when it was "
            "the strategy drawn.</div>"
            "<div class=scroll><table>"
-           "<tr><th colspan=5>offer<th class=grp colspan=3>catboost"
-           "<th class=grp colspan=2>gnn<th class=grp>&nbsp;</tr>"
-           "<tr><th>rank<th>entity<th>action<th>key<th>available"
+           "<tr><th colspan=4>offer<th class=grp colspan=3>catboost"
+           "<th class=grp colspan=2>gnn</tr>"
+           "<tr><th>rank<th>entity<th>action<th>key"
            "<th class=gsep>exploit<th>global<th>local"
-           "<th class=gsep>Q&minus;V<th>rank<th class=gsep>gate</tr>"
+           "<th class=gsep>Q&minus;V<th>rank</tr>"
            "%s</table></div>" % "".join(rows))
     ent = []
     for e in d["entities"]:
