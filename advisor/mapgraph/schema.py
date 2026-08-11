@@ -132,6 +132,16 @@ CATALOGUE_RELATIONS = (
     "researching",      # faction <-> tech
     "unlocks",          # skill <-> agent_action
     "queued",           # lord <-> unit  (pending_recruit_keys; was a count)
+    # An army's actual composition, not what it has ordered. `units` was a bare COUNT for
+    # the whole life of the corpus, so two 10-stacks were identical to the model whether one
+    # was ten spearmen and the other ten dragons. As an EDGE per unit the roster is
+    # structure the encoder can read, and it joins reference.sqlite for caste/tier/cost --
+    # no new scalar, so the budget is untouched.
+    "in_army",          # lord|hero <-> unit
+    # Background/innate skills, which live in HiddenSkillList and are what a character IS
+    # rather than what it has spent points on. SkillList (the assignable tree) reaches the
+    # graph only as the target of a `skills` offer; nothing described the character itself.
+    "innate",           # lord|hero <-> skill
 )
 
 # what the action DOES, as the edge type. agent_abilities is a 9-value closed
