@@ -83,6 +83,10 @@ CHECKS = [
      "real decisions build graphs with the expected node and edge counts"),
     ("panels", ["advisor_ui/lint_panels.py"], True,
      "every UI panel renders, no empty columns, no leaked markup"),
+    ("ui_live", ["advisor_ui/lint_live.py"], True,
+     "every tab fetched over HTTP the way the browser does (/panel/<tab>, not /?tab=, "
+     "which serves the same shell for all 16), and cross-checked against the corpus: an "
+     "arm with recorded decisions may not render as 0 campaigns / 0 turns"),
     ("bus_live", ["bus/test_bus_live.py"], True, "a live eval round-trips through the bus"),
     ("shots", ["shots/test_shots.py"], True, "the screenshot stream writes jpgs"),
     ("manager_live", ["manager/test_manager.py"], True, "the recorder captures a fresh game log"),
