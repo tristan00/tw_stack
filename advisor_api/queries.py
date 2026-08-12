@@ -1576,8 +1576,22 @@ def _trials() -> list:
                                      for k, v in (d.get("outcomes") or {}).items()) or None)))
     except OSError:
         return []
+    # Newest first, then one row per TRIAL rather than one per ledger line. The ledger is
+    # append-only and writes a snapshot per campaign as a trial progresses -- 86 lines for
+    # 25 trials on the current file -- so listing lines makes one experiment look like ten
+    # near-identical rows. The first row seen after reversing is that trial's newest state
+    # (its close-out line is written last), and `snapshots` records how many were folded
+    # in so the collapse is visible rather than silent.
     out.reverse()
-    return out[:200]
+    seen: dict = {}
+    for row in out:
+        first = seen.get(row.trial)
+        if first is None:
+            seen[row.trial] = row
+            row.snapshots = 1
+        else:
+            first.snapshots += 1
+    return list(seen.values())[:200]
 
 
 # ----------------------------------------------------------------------------------------

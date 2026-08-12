@@ -564,6 +564,11 @@ class CorrelationsPage(BaseModel):
 
 class TrialRow(BaseModel):
     trial: str
+    snapshots: int = Field(
+        default=1,
+        description="how many ledger lines this trial wrote. The ledger appends a snapshot "
+                    "per campaign as a trial progresses, so one trial owns many lines; the "
+                    "row shows its newest state and this says how many were folded in.")
     backend: str | None = None
     cfg: str | None = None
     mix: dict = Field(default_factory=dict)
