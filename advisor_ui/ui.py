@@ -3128,7 +3128,7 @@ def _mm_corr_tables(con):
 def render_model_metrics(con, run, q):
     return ("<h2>what each model wants to do</h2>"
             "<div class=lazy data-src='/panel/mm_forcing'>"
-            "<div class=mms>counting first picks against what was on the menu&hellip;</div>"
+            "<div class=mms>&hellip;</div>"
             "</div>"
             "<h2>does a strategy's share track how the campaign went?</h2>"
             + _mm_corr_tables(con))
@@ -3137,24 +3137,28 @@ def render_model_metrics(con, run, q):
 def render_mm_forcing(con, run, q):
     lo, hi = _mm_window(con)
     if lo is None:
-        return ("<div class=mms>no model has weights yet, so neither has expressed a "
-                "preference.</div>")
+        return "<div class=mms>no weights yet</div>"
     offered, first, n_dec = _mm_first_picks(con, lo, hi)
     if not offered:
-        return "<div class=mms>no offers in the scored window.</div>"
+        return "<div class=mms>no offers in the scored window</div>"
+    # The chart is the content. Definitions live in title= -- conditioning on
+    # availability, the Wilson interval and the right-hand count are all things you look
+    # up once, not things that need to sit on the page.
     tiles = []
     for model, cls in (("catboost", "mmcat"), ("gnn_marwil", "mmgnn")):
         picks = first[model]
         top = picks.most_common(1)
-        sub = ("most often puts <b>%s</b> first" % _esc(top[0][0])) if top else "no picks"
+        sub = ("<b>%s</b>" % _esc(top[0][0])) if top else "&mdash;"
         tiles.append("<div class=mmtile><div class='mmt %s'>%s</div>%s"
-                     "<div class=mms>%s</div></div>"
+                     "<div class=mms title='the type this model puts first most often'>"
+                     "%s</div></div>"
                      % (cls, _esc(model), _mm_bars_svg(_mm_fold(offered, picks), cls), sub))
-    return ("<div class=mms title='Conditioned on availability: a model cannot pick what "
-            "was never offered. Hairline is a Wilson 95%% interval; right-hand number is "
-            "how many decisions offered the type.'>first pick, of the decisions that "
-            "offered the type &middot; top %d, %d decisions</div>"
-            "<div class=mmgrid>%s</div>" % (MM_TOP_TYPES, n_dec, "".join(tiles)))
+    return ("<div class=mms title='Share of the decisions that OFFERED a type on which the "
+            "model put it first &mdash; conditioned on availability, since a model cannot "
+            "pick what was never offered. Hairline is a Wilson 95%% interval; right-hand "
+            "number is how many decisions offered the type.'>top %d &middot; %s decisions"
+            "</div><div class=mmgrid>%s</div>"
+            % (MM_TOP_TYPES, "{:,}".format(n_dec), "".join(tiles)))
 
 
 def render_models():
