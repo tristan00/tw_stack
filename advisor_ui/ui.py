@@ -808,7 +808,10 @@ def render_interrupts(runs_root=RUNS_ROOT):
                     % (_esc(kind), _esc(_clean(opt)), _esc(_short(opt, 48)), n, seen,
                        "&mdash;" if rate is None else "%.0f%%" % rate))
     screens = " &middot; ".join("%s <b>%d</b>" % (_esc(k), v) for k, v in per_screen.items())
-    head = ("<h2>blocking menus <span class=dim>(%d decisions)</span></h2>"
+    # "(N decisions)" here counts BLOCKING-MENU decisions only -- 385 against the corpus's
+    # 3,756 on the actions tab, both previously written as a bare "decisions" one click
+    # apart. Same word, populations an order of magnitude apart.
+    head = ("<h2>blocking menus <span class=dim>(%d blocking-menu decisions)</span></h2>"
             "<p class=muted>sampler: %s</p>"
             "<p class=muted>%s</p>" % (total, state, screens))
     arm_rows = []
@@ -1354,7 +1357,12 @@ def render_endings(runs_root=RUNS_ROOT, limit=20):
             "Only harness_failure and SUSPICIOUS/MISLABELED are flagged, so an absence of red "
             "is a real signal rather than a column that never fills. turn:settlements is the "
             "settlement count at each turn.'>campaign endings &mdash; was it a real defeat? "
-            "<span class=dim>(last %d of %d)</span></h2>"
+            # "of %d" here counts LINES IN postmortems.jsonl, which is appended across run
+            # dirs and so runs ahead of the campaign count in the header -- 126 against
+            # 120, one click apart, both saying "campaigns". Say which population this is.
+            "<span class=dim title='endings written to postmortems.jsonl, which spans "
+            "earlier run dirs and so exceeds the campaign count in the header'>"
+            "(last %d of %d endings recorded)</span></h2>"
             "<div class='dim htot'>%s &middot; <b class='%s'>%d</b> suspicious or "
             "mislabelled</div>"
             "<div class=scroll><table><tr><th>when<th>faction<th>outcome<th class=num>turns"
@@ -1432,11 +1440,20 @@ def render_head(con, run_dir):
         (("turn", _int(s["turn_now"])), ("setts", _int(s["settlements"])),
          ("rank", _int(s["power_rank"])), ("lord", _int(s["lord_level"]))))
     when = (_age_words(age) if age is not None else "never")
+    # Every one of these is a count of a DIFFERENT population and they were all labelled
+    # the same way, on tabs that sit one click apart: 120 campaigns here (those that
+    # recorded a decision), 117 on reward (those with a turn series), 126 on overview
+    # (lines in postmortems.jsonl, which spans earlier run dirs). Three true numbers
+    # reading as one number contradicting itself. Each now says what it counted.
     totals = " &middot; ".join(
-        "%s <i>%s</i>" % (v, k) for k, v in
-        (("campaigns", s["campaigns"]), ("turns", s["turns"]),
-         ("decisions", s["decisions"]), ("offers", s["offers"]),
-         ("confirmed", "%.0f%%" % s["confirm_rate"])))
+        "<span title='%s'>%s <i>%s</i></span>" % (h, v, k) for k, v, h in
+        (("campaigns", s["campaigns"],
+          "campaigns that recorded at least one decision in this run dir"),
+         ("turns", s["turns"], "turn rows recorded"),
+         ("decisions", s["decisions"], "decision points recorded"),
+         ("offers", s["offers"], "options generated across all decisions"),
+         ("confirmed", "%.0f%%" % s["confirm_rate"],
+          "share of taken actions the game confirmed")))
     return ("<div class=hd><h1>advisor v7</h1>"
             "<span class='hfac %s' title='live campaign state, recorded %s'>%s</span>%s"
             "<span class=hgap></span>"
@@ -1466,7 +1483,7 @@ def render_actions(con, q):
     rcls = "ok" if rate >= 80 else ("warn" if rate >= 40 else "bad")
     types = by_action_type(con)
     cards = _statcards([
-        ("decisions acted on", "%d" % n, ""),
+        ("decisions acted on in this run dir", "%d" % n, ""),
         ("confirmed by the game", "%d" % ok, ""),
         ("confirm rate", "%.0f%%" % rate, rcls),
         ("awaiting execution", "%d" % (tot["waiting"] or 0),
@@ -1656,14 +1673,18 @@ def render_reward(con, limit=REWARD_CAMPAIGNS):
                      % (_camp_label(camp), len(series),
                         _age_words(time.time() - ts if ts else None),
                         trows or "<tr><td class=dim colspan=6>no turns recorded</td></tr>"))
-    return ("<h2>reward inputs per turn <span class=dim>(%d most recent campaigns of %d)"
+    # "of %d" counts campaigns with a TURN SERIES, which is fewer than the campaigns that
+    # recorded a decision (117 against 120) -- a campaign that died before its first
+    # target row has decisions and no series. Both were labelled "campaigns".
+    return ("<h2>reward inputs per turn <span class=dim title='campaigns with at least one "
+            "recorded turn series; fewer than the header count, which is campaigns that "
+            "recorded a decision'>(%d most recent of %d campaigns with a turn series)"
             "</span></h2>"
-            "<div class=legend>One lane per campaign, newest first. These values are only a "
-            "series <b>within</b> a campaign &mdash; turn numbers restart each time, so the "
-            "run dir's %d campaigns cannot share a turn axis. <b>power rank</b> counts "
-            "downwards, so a falling number is improving. <b>allies</b> and <b>vassals</b> "
-            "are 0/1 in practice: %d of %d recorded turns across the whole run dir have any "
-            "vassal at all.</div>%s"
+            "<div class=legend title='Turn numbers restart each campaign, so the run dir&#39;s "
+            "%d campaigns cannot share a turn axis. allies and vassals are 0/1 in practice: "
+            "%d of %d recorded turns across the whole run dir have any vassal at all.'>"
+            "One lane per campaign, newest first &middot; <b>power rank</b> counts downwards, "
+            "so falling is improving</div>%s"
             % (len(recent), n_camps, n_camps, vas or 0, tot or 0, "".join(lanes)))
 
 

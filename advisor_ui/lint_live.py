@@ -151,6 +151,33 @@ def main():
     print("  cross-check %d table(s) against corpus arms %s"
           % (len(tiles), {k: sorted(v) for k, v in arms.items()}))
 
+    # ---- two panels may not print the same label with different values -------
+    # The largest trust failure found in the visual audit: campaigns rendered as 117, 118,
+    # 124 and 126 on tabs one click apart, and decisions as 3689/3691/3692. Each number was
+    # correct for its own population -- campaigns that recorded a decision, campaigns with
+    # a turn series, lines in postmortems.jsonl -- and every one of them was labelled just
+    # "campaigns", so they read as a dashboard contradicting itself. The rule is not "make
+    # them equal" (they count different things) but "say which population", so a bare
+    # unqualified count is the defect.
+    QUALIFIERS = ("with", "recorded", "endings", "series", "this", "run dir", "of the",
+                  "last", "blocking-menu", "acted on", "most recent", "scored", "window")
+    for word in ("campaigns", "decisions"):
+        seen = {}
+        for tab, body in bodies.items():
+            txt = _text(body)
+            for m in re.finditer(r"([\d][\d,]*)\s+%s\b(.{0,40})" % word, txt):
+                n, tail = m.group(1).replace(",", ""), m.group(2).lower()
+                head = txt[max(0, m.start() - 60):m.start()].lower()
+                if any(q in tail or q in head for q in QUALIFIERS):
+                    continue
+                seen.setdefault(n, set()).add(tab)
+        if len(seen) > 1:
+            problems.append(
+                "%s printed as %s on tabs %s with no qualifier saying which population "
+                "each counts" % (word, "/".join(sorted(seen)),
+                                 sorted({t for v in seen.values() for t in v})))
+    print("  cross-check bare counts: %s" % ("ok" if not problems else "see below"))
+
     print("\n%d problem(s)%s" % (len(problems), ":" if problems else ""))
     for p in problems:
         print("   ", p)
