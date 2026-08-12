@@ -148,9 +148,15 @@ def _ending_evidence(rd, entry, ex):
     outcome = entry.get("outcome")
     if outcome == "stagnant":
         g = entry.get("growth") or {}
-        verdict = ("abandoned_on_the_growth_bar at turn %s: %s"
-                   % (g.get("turn"),
-                      "; ".join("%s %s->%s" % (m.get("label"), m.get("then"), m.get("now"))
+        # %g, not %s. These come off the campaign state as floats, so %s wrote
+        # "settlements 1.0->1.0" and "at turn 4.0" into a string that is then displayed
+        # verbatim -- a turn is not 4.0 and a settlement count is not 1.0. Line 143 above
+        # already used %g for exactly the same quantities, so the two halves of one
+        # function disagreed about how to print a number.
+        verdict = ("abandoned_on_the_growth_bar at turn %g: %s"
+                   % (float(g.get("turn") or 0),
+                      "; ".join("%s %g->%g" % (m.get("label"), float(m.get("then") or 0),
+                                               float(m.get("now") or 0))
                                 for m in (g.get("metrics") or {}).values()) or "no metrics"))
     elif outcome == "defeated":
         verdict = ("consistent_with_real_defeat" if reasons

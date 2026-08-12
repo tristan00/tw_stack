@@ -67,6 +67,17 @@ def _num(v, nd=4):
     return "-" if v is None else ("%%.%df" % nd) % float(v)
 
 
+def _rank(v):
+    """An ordinal, printed as one. sqlite returns these as floats, so a rank of 1 arrived
+    as 1.0 and every rank column in the UI read "1.0" -- which is not a position."""
+    if v is None:
+        return "<span class=dim>-</span>"
+    try:
+        return "%d" % round(float(v))
+    except (TypeError, ValueError):
+        return _esc(v)
+
+
 def _optional_cols(con, table, wanted):
     """Columns from `wanted` that this database actually has.
 
@@ -426,6 +437,7 @@ text.mmlab{fill:var(--fg);font:10px ui-monospace,monospace}
 text.mmdim{fill:var(--dim);font:10px ui-monospace,monospace}
 .mmci{stroke:var(--fg);opacity:.55}.mmax{stroke:var(--dim);opacity:.6}
 .mmdimc{color:var(--dim)}.mmhot{color:var(--ok)}
+.mmfav{float:right;text-transform:none;letter-spacing:0;color:var(--fg)}
 
 .mmok{fill:var(--ok)}.mmbad{fill:var(--bad)}.mmdim{fill:var(--dim)}
 text.sl{fill:var(--fg);font:10px ui-monospace,monospace}
@@ -1331,19 +1343,24 @@ def render_endings(runs_root=RUNS_ROOT, limit=20):
                      _esc(tline)))
     spread = ", ".join("%s %d" % (k, v) for k, v in
                        sorted(outcomes.items(), key=lambda kv: -kv[1]))
-    return ("<h2>campaign endings &mdash; was it a real defeat? "
+    # The seven-line paragraph that used to sit here explained the verdict vocabulary, that
+    # a verdict is not a quality score, and why an absence of red is meaningful. All of it
+    # was true and none of it belonged above the data: it pushed the table below the fold
+    # and got read once, ever. The counts it carried are the only part with daily value, so
+    # they stay as a one-line summary; the rest is on the heading's tooltip.
+    return ("<h2 title='Verdicts are advisory -- they argue from the trajectory, the engine "
+            "death row and final-turn battles. A verdict is not a quality score: "
+            "consistent_with_real_defeat means the death was genuine and is shown neutrally. "
+            "Only harness_failure and SUSPICIOUS/MISLABELED are flagged, so an absence of red "
+            "is a real signal rather than a column that never fills. turn:settlements is the "
+            "settlement count at each turn.'>campaign endings &mdash; was it a real defeat? "
             "<span class=dim>(last %d of %d)</span></h2>"
-            "<p class=muted>Verdicts are advisory: they argue from the trajectory, the engine "
-            "death row, and final-turn battles. turn:settlements shows the death spiral or the "
-            "healthy line that just stopped. A verdict is <b>not</b> a quality score &mdash; "
-            "<i>consistent_with_real_defeat</i> means the death was genuine, so it is shown "
-            "neutrally; only <span class=warn>harness_failure</span> and "
-            "<span class=bad>SUSPICIOUS/MISLABELED</span> are flagged. Over all %d recorded "
-            "endings: %s &mdash; and <b>%d</b> were flagged suspicious or mislabelled, so an "
-            "absence of red below is a real signal rather than a column that never fills.</p>"
+            "<div class='dim htot'>%s &middot; <b class='%s'>%d</b> suspicious or "
+            "mislabelled</div>"
             "<div class=scroll><table><tr><th>when<th>faction<th>outcome<th class=num>turns"
             "<th>verdict<th>evidence<th>turn:settlements</tr>%s</table></div>"
-            % (len(rows), total, total, _esc(spread), suspicious, "".join(tr)))
+            % (len(rows), total, _esc(spread), "bad" if suspicious else "dim",
+               suspicious, "".join(tr)))
 
 
 def render_faction_matrix():
@@ -1540,9 +1557,12 @@ def render_decisions(con, q):
                       _num(r.get("exploit")), _num(r.get("pct_global")),
                       (_num(r.get("pct_local")) if r.get("pct_local") is not None
                        else "<span class=dim>n/a</span>"),
-                      _esc(r.get("rank") if r.get("rank") is not None else "-"),
+                      # A rank is an ordinal -- 1st, 2nd -- and sqlite hands it back as a
+                      # float, so _esc printed "1.0". lint_panels has been reporting this
+                      # on every run for as long as the column has existed.
+                      _rank(r.get("rank")),
                       ("%+0.4f" % float(gi)) if gi is not None else "-",
-                      _esc(r.get("gnn_rank") if r.get("gnn_rank") is not None else "-"),
+                      _rank(r.get("gnn_rank")),
                       delta, rho_cell, pol))
     _first = seq_offset + 1 if seq else 0
     _last = seq_offset + len(seq)
@@ -2956,7 +2976,14 @@ def _mm_bars_svg(rows, cls):
     on which this model put it first. Wilson 95% hairline on each bar."""
     if not rows:
         return "<div class=dim>nothing offered in this window</div>"
-    lab_w, bar_w, rowh = 132, 150, 20
+    # Four fixed columns: label, bar, percent, offered-count. The percent used to be
+    # positioned at the END OF THE BAR plus 5px, so it moved with the value -- it sat
+    # against the bar at every size, and past ~85% it ran into the offered-count column on
+    # the right. A number that changes column depending on its own magnitude cannot be
+    # scanned down, which is the only thing a column of numbers is for. Both numeric
+    # columns are now right-aligned at fixed x, so they line up and nothing can collide.
+    lab_w, bar_w, rowh = 132, 120, 20
+    pct_x, n_x = lab_w + bar_w + 40, MM_TILE_W
     h = len(rows) * rowh + 22
     out = ["<svg width='%d' height='%d' role='img'>" % (MM_TILE_W, h)]
     for i, (t, n, k) in enumerate(rows):
@@ -2968,11 +2995,10 @@ def _mm_bars_svg(rows, cls):
         a, b = _mm_wilson(k, n)
         out.append("<line x1='%.1f' y1='%.1f' x2='%.1f' y2='%.1f' class='mmci'/>"
                    % (lab_w + a * bar_w, y + 4.5, lab_w + b * bar_w, y + 4.5))
-        out.append("<text x='%.1f' y='%d' class='%s'>%d%%</text>"
-                   % (lab_w + max(f * bar_w, 2) + 5, y + 8,
-                      "mmlab" if f >= 0.15 else "mmdim", round(100 * f)))
-        out.append("<text x='%d' y='%d' class='mmdim'>%d</text>"
-                   % (MM_TILE_W - 26, y + 8, n))
+        out.append("<text x='%d' y='%d' text-anchor='end' class='%s'>%d%%</text>"
+                   % (pct_x, y + 8, "mmlab" if f >= 0.15 else "mmdim", round(100 * f)))
+        out.append("<text x='%d' y='%d' text-anchor='end' class='mmdim'>%d</text>"
+                   % (n_x, y + 8, n))
     out.append("<line x1='%d' y1='%d' x2='%d' y2='%d' class='mmax'/>"
                % (lab_w, h - 8, lab_w + bar_w, h - 8))
     out.append("</svg>")
@@ -3086,10 +3112,22 @@ def _mm_within_corr_rows(blocks):
             gate = MM_GATE_Z / math.sqrt(max(len(seen) - 1, 1))
             hot = r is not None and abs(r) >= gate
             camps_used |= seen
-            cells.append("<td class=num title='gate from %d campaigns'>"
-                         "<span class='%s'>%+0.2f</span>"
-                         "<span class=mmdimc> /%.2f</span></td>"
-                         % (len(seen), "mmhot" if hot else "", r or 0.0, gate))
+            # A gate at or above 1.0 cannot be exceeded -- a correlation lives in [-1,1] --
+            # so printing "/1.98" beside a number states a threshold that no result could
+            # ever clear and invites reading the rho as if it were being tested. Say the
+            # sample is too small instead, and do not print a bar nothing can clear.
+            if gate >= 1.0:
+                cells.append("<td class=num title='%d campaigns is too few to test at "
+                             "p&lt;0.005 -- the threshold would be |r| &ge; %.2f, which is "
+                             "outside the range of a correlation'>"
+                             "<span class=mmdimc>%+0.2f</span>"
+                             "<span class=mmdimc> n/a</span></td>"
+                             % (len(seen), gate, r or 0.0))
+            else:
+                cells.append("<td class=num title='gate from %d campaigns'>"
+                             "<span class='%s'>%+0.2f</span>"
+                             "<span class=mmdimc> /%.2f</span></td>"
+                             % (len(seen), "mmhot" if hot else "", r or 0.0, gate))
         # Volume is counted from where the arm ACTUALLY PLAYED, never from camps_used.
         # camps_used only fills inside the lanes loop above, and only when a correlation
         # was computable -- so an arm with real decisions but too few points for a rho
@@ -3117,11 +3155,15 @@ def _mm_within_corr_rows(blocks):
             "<th class=num title='turns contributing'>turns"
             "<th class=num title='mean share of a turn&#39;s decisions &middot; decisions "
             "per campaign'>share &middot; /camp"
-            "<th class=num title='Spearman rho of share against peak settlement gain from "
-            "that turn on, both centred within campaign &middot; gate is the smallest |rho| "
-            "beating chance at p&lt;0.005'>settlements &rho;/gate"
+            # NOT &rho;. In this monospace face a Greek rho is indistinguishable from a
+            # latin p, so the header read "p/gate" -- p being the one letter that means
+            # something else entirely here, and the exact wrong thing: a p-value. `r` is
+            # the conventional symbol for a correlation and cannot be misread.
+            "<th class=num title='Spearman r of share against peak settlement gain from "
+            "that turn on, both centred within campaign &middot; gate is the smallest |r| "
+            "beating chance at p&lt;0.005'>settlements r/gate"
             "<th class='num mmdimc' title='same, against peak lord-level gain'>"
-            "lord &rho;/gate</tr>%s</table>"
+            "lord r/gate</tr>%s</table>"
             % "".join(rows))
 
 
@@ -3174,15 +3216,18 @@ def render_mm_forcing(con, run, q):
     # The chart is the content. Definitions live in title= -- conditioning on
     # availability, the Wilson interval and the right-hand count are all things you look
     # up once, not things that need to sit on the page.
+    # The model's favourite type used to sit UNDER the chart as a bare word -- "move",
+    # "end_turn" -- with no label and nothing next to it, reading as a caption that had
+    # lost its sentence. It belongs on the title line, where the tile already had empty
+    # space and where it reads as a description of the tile rather than an orphan.
     tiles = []
     for model, cls in (("catboost", "mmcat"), ("gnn_marwil", "mmgnn")):
         picks = first[model]
         top = picks.most_common(1)
-        sub = ("<b>%s</b>" % _esc(top[0][0])) if top else "&mdash;"
-        tiles.append("<div class=mmtile><div class='mmt %s'>%s</div>%s"
-                     "<div class=mms title='the type this model puts first most often'>"
-                     "%s</div></div>"
-                     % (cls, _esc(model), _mm_bars_svg(_mm_fold(offered, picks), cls), sub))
+        sub = ("<span class=mmdimc>favours</span> %s" % _esc(top[0][0])) if top else ""
+        tiles.append("<div class=mmtile><div class='mmt %s'>%s <span class=mmfav>%s</span>"
+                     "</div>%s</div>"
+                     % (cls, _esc(model), sub, _mm_bars_svg(_mm_fold(offered, picks), cls)))
     return ("<div class=mms title='Share of the decisions that OFFERED a type on which the "
             "model put it first &mdash; conditioned on availability, since a model cannot "
             "pick what was never offered. Hairline is a Wilson 95%% interval; right-hand "
