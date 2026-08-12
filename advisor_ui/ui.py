@@ -3065,21 +3065,26 @@ def _mm_within_corr_rows(blocks):
                          "<span class='%s'>%+0.2f</span>"
                          "<span class=mmdimc> /%.2f</span></td>"
                          % (len(seen), "mmhot" if hot else "", r or 0.0, gate))
-        # Campaigns is the clustering the gate comes from, so it belongs in the table --
-        # but on its own it says nothing about how much of the play the arm actually drove.
-        # A campaign counts here whether the arm took 2 decisions in it or 200. So the
-        # intensity sits beside it: the mean share of a turn's decisions this arm took,
-        # and how many decisions that came to per campaign it was active in.
-        used = [b for cid in camps_used for b in by_camp[cid]]
-        shares = [share(b[2]) for b in used if share(b[2]) is not None]
-        n_dec = sum((b[2].get("exploit_tree", 0) + b[2].get("gnn_marwil", 0))
-                    if arm == "model pool" else b[2].get(arm, 0) for b in used)
+        # Volume is counted from where the arm ACTUALLY PLAYED, never from camps_used.
+        # camps_used only fills inside the lanes loop above, and only when a correlation
+        # was computable -- so an arm with real decisions but too few points for a rho
+        # rendered as "0 campaigns, 0 turns, no share", which reads as "this arm never
+        # played". It bit the interrupt table first: gnn_marwil had answered a live
+        # screen, the row said 0/0/-, and the panel looked like it had stopped updating.
+        # The rho cell is allowed to be "-"; the play behind it is not.
+        def n_of(c):
+            return ((c.get("exploit_tree", 0) + c.get("gnn_marwil", 0))
+                    if arm == "model pool" else c.get(arm, 0))
+        played = [b for b in blocks if n_of(b[2])]
+        active = {b[0] for b in played}
+        shares = [share(b[2]) for b in played if share(b[2]) is not None]
+        n_dec = sum(n_of(b[2]) for b in played)
         vol = ("%.0f%% <span class=mmdimc>&middot; %.0f/camp</span>"
-               % (100.0 * sum(shares) / len(shares), n_dec / float(len(camps_used)))
-               ) if shares and camps_used else "<span class=mmdimc>-</span>"
+               % (100.0 * sum(shares) / len(shares), n_dec / float(len(active)))
+               ) if shares and active else "<span class=mmdimc>-</span>"
         rows.append("<tr><td>%s</td><td class=num>%d</td><td class=num>%d</td>"
                     "<td class=num>%s</td>%s</tr>"
-                    % (_esc(arm), len(camps_used), len(used), vol, "".join(cells)))
+                    % (_esc(arm), len(active), len(played), vol, "".join(cells)))
     # The table carries its own meaning: headers name the quantity, title= holds the
     # definition for anyone who wants it. No paragraph above it.
     return ("<table class=mmtbl><tr><th>arm"
