@@ -166,10 +166,23 @@ def _fmt_scores(scores):
 UNHANDLED_LOG = common.UNHANDLED_LOG
 
 
-def _report_unhandled(bus, screen, unknown, offered, root=None):
+def _report_unhandled(bus, screen, unknown, offered, root=None, history=None):
     import json
     rec = {"ts": time.time(), "when": time.strftime("%Y-%m-%d %H:%M:%S"), "screen": screen,
            "unknown": list(unknown), "offered": list(offered), "root": root}
+    # What was up WHEN the condition was detected, everything that has been up at any
+    # poll since, and what is still up now. The record used to hold only the last of
+    # those, because the roots are re-read after each wait -- so a surface that appeared
+    # and closed inside the wait window left no trace at all, and the record named
+    # whatever happened to still be standing.
+    if history:
+        rec["roots_at_detection"] = sorted(history.get("at") or ())
+        rec["roots_seen_since"] = sorted(history.get("seen") or ())
+        rec["roots_now"] = sorted(history.get("now") or ())
+        rec["roots_gone_since_detection"] = sorted(
+            set(history.get("seen") or ()) - set(history.get("now") or ()))
+        rec["polls"] = history.get("polls")
+        rec["waited_s"] = history.get("waited_s")
     try:
         rec["roots"] = roots(bus)
     except Exception:
@@ -1527,17 +1540,31 @@ def _is_dilemma(bus, root):
 def resolve(bus, max_rounds=6):
     steps = []
     waited = 0
+    # Roots observed from the moment a blocking pending is first detected onward. `at` is
+    # the first observation, `seen` accumulates every poll, `now` is the latest. Facts
+    # only -- this records what was there and when, and draws no conclusion about which
+    # root is responsible.
+    watch = {"at": None, "seen": set(), "now": (), "polls": 0, "waited_s": 0.0}
     for _ in range(max_rounds):
         before = tuple(roots(bus))
+        watch["now"] = before
+        watch["polls"] += 1
+        if watch["at"] is not None:
+            watch["seen"].update(before)
         if before and before == _stuck_sig[0]:
             owned = pending_owned(bus, list(before))
             if owned:
+                if watch["at"] is None:
+                    watch["at"] = before
+                    watch["seen"].update(before)
                 _report_unhandled(bus, "pending_surface", [owned[0]], owned[1],
-                                  root=",".join(owned[1]))
+                                  root=",".join(owned[1]), history=watch)
                 raise UnhandledScreen(
-                    "engine pending %s while %s is open on a stuck screen -- refusing to "
-                    "blind-dismiss a decision surface the interrupt model has not answered."
-                    % owned)
+                    "engine pending %s on a stuck screen and no handler claimed it -- "
+                    "refusing to blind-dismiss a decision surface the interrupt model has "
+                    "not answered. roots at detection %s; seen since %s; still open %s"
+                    % (owned[0], sorted(watch["at"] or ()), sorted(watch["seen"]),
+                       sorted(watch["now"])))
             try:
                 n = len(nav.close_popups(bus))
             except Exception as e:
@@ -1601,17 +1628,24 @@ def resolve(bus, max_rounds=6):
             continue
         owned = pending_owned(bus, list(before))
         if owned:
+            if watch["at"] is None:
+                watch["at"] = before
+                watch["seen"].update(before)
             if waited < 2:
                 waited += 1
                 sys.stderr.write("interrupts: pending %s with %s unclaimed -- waiting for the "
                                  "panel to finish rendering (%d)\n" % (owned + (waited,)))
                 time.sleep(3.0)
+                watch["waited_s"] += 3.0
                 continue
             _report_unhandled(bus, "pending_surface", [owned[0]], owned[1],
-                              root=",".join(owned[1]))
+                              root=",".join(owned[1]), history=watch)
             raise UnhandledScreen(
-                "engine pending %s while %s is open and no handler claimed it -- refusing to "
-                "blind-dismiss a decision surface the interrupt model has not answered." % owned)
+                "engine pending %s and no handler claimed it -- refusing to blind-dismiss a "
+                "decision surface the interrupt model has not answered. roots at detection "
+                "%s; seen since %s; still open %s (%.0fs, %d polls)"
+                % (owned[0], sorted(watch["at"] or ()), sorted(watch["seen"]),
+                   sorted(watch["now"]), watch["waited_s"], watch["polls"]))
         try:
             n = len(nav.close_popups(bus))
         except Exception as e:
