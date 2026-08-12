@@ -97,33 +97,78 @@ def stamp(run: str | None = None) -> tuple:
     return tuple(out)
 
 
+def cached_on(key_fn):
+    """Memoize fn(*args) on a cheap key recomputed per call.
+
+    The key is what makes this safe: it must move whenever the underlying data could
+    have changed. `cached` below passes the corpus stamp; `cached_files` passes the size
+    and mtime of the files a function reads. A memoized value is only ever as correct as
+    its key, so a key that cannot move is a bug, not an optimisation -- see stamp().
+    """
+    def deco(fn):
+        state: dict = {"key": None, "vals": {}}
+        lock = threading.Lock()
+
+        @functools.wraps(fn)
+        def wrapper(*args):
+            k = key_fn()
+            with lock:
+                if state["key"] != k:
+                    state["key"] = k
+                    state["vals"] = {}
+                hit = state["vals"].get(args, _MISS)
+            if hit is not _MISS:
+                return hit
+            val = fn(*args)
+            with lock:
+                if state["key"] == k:
+                    state["vals"][args] = val
+            return val
+
+        wrapper.cache_clear = lambda: state.update(key=None, vals={})
+        return wrapper
+    return deco
+
+
 def cached(fn):
     """Memoize a query fn(con, *args) on the corpus stamp.
 
     Cache key is args; the whole cache is dropped when the stamp moves, so it cannot
     grow without bound and can never serve a value from an older corpus.
+
+    Note the connection is part of the argument tuple but is per-thread and stable, so it
+    does not fragment the cache in practice -- and including it is safer than dropping it,
+    since two connections may point at different run dirs.
+
+    The key is bound late (`lambda: stamp()`, not `stamp`) so that replacing module-level
+    stamp() replaces it for already-decorated functions too. Capturing the function object
+    instead silently pinned every existing cache against a swapped stamp, which the
+    invalidation test caught.
     """
-    state: dict = {"stamp": None, "vals": {}}
-    lock = threading.Lock()
+    return cached_on(lambda: stamp())(fn)
 
-    @functools.wraps(fn)
-    def wrapper(con, *args):
-        st = stamp()
-        with lock:
-            if state["stamp"] != st:
-                state["stamp"] = st
-                state["vals"] = {}
-            hit = state["vals"].get(args, _MISS)
-        if hit is not _MISS:
-            return hit
-        val = fn(con, *args)
-        with lock:
-            if state["stamp"] == st:
-                state["vals"][args] = val
-        return val
 
-    wrapper.cache_clear = lambda: state.update(stamp=None, vals={})
-    return wrapper
+def file_stamp(*paths) -> tuple:
+    """(size, mtime) per path -- the change marker for file-backed sources.
+
+    Postmortems, the training ledger and the model metadata are files the session writes,
+    not corpus tables, so the corpus stamp does not move when they change. A missing file
+    contributes a distinct marker rather than being skipped, so a file appearing is itself
+    a change.
+    """
+    out = []
+    for p in paths:
+        try:
+            st = os.stat(p)
+            out.append((int(st.st_size), int(st.st_mtime_ns)))
+        except OSError:
+            out.append(None)
+    return tuple(out)
+
+
+def cached_files(*paths):
+    """Memoize a zero-or-more-arg function on the stamp of the files it reads."""
+    return cached_on(lambda: file_stamp(*paths))
 
 
 def columns(con, name: str) -> set:
