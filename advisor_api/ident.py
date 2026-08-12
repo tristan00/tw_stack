@@ -108,7 +108,13 @@ def faction(key: str) -> dict:
     code, _, rest = body.partition("_")
     names = culture_names()
     if code in names and rest:
-        return {"raw": raw, "label": titlecase(rest), "culture": names[code]}
+        label = titlecase(rest)
+        culture = names[code]
+        # A culture's namesake faction decodes to its own culture name -- Bretonnia is the
+        # Bretonnia faction of the Bretonnia culture -- and printing both reads as a
+        # stutter rather than as information.
+        return {"raw": raw, "label": label,
+                "culture": None if culture.lower() == label.lower() else culture}
     # Unknown culture code: the whole remainder is the name. Better a correct name with
     # no culture than a culture invented from a three-letter prefix we do not recognise.
     return {"raw": raw, "label": titlecase(body) or raw, "culture": None}

@@ -24,7 +24,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
 
 import common
 from advisor_api import db, ident, proc, queries as q
@@ -368,33 +367,31 @@ def health():
 # the built client
 # ----------------------------------------------------------------------------------------
 
-def mount_client():
-    """Serve the built client, if it has been built.
+@app.get("/{full_path:path}", include_in_schema=False)
+def spa(full_path: str):
+    """Serve the built client.
 
-    Mounted last so it can own "/" without shadowing /api. Every unknown path returns
-    index.html because the client owns its routes -- a deep link like /campaigns/x is a
-    client route, not a file, and must not 404 on refresh.
+    Declared last so it owns "/" without shadowing /api, and every unknown path returns
+    index.html because the client owns its routes -- a deep link like /campaigns/<key> is
+    a client route, not a file, and must not 404 when the page is refreshed.
+
+    Resolved per request rather than at import. The client is routinely rebuilt while the
+    server is running, and deciding once at startup that there was no build meant every
+    later request served that verdict until someone restarted the process.
     """
-    if not os.path.isdir(UI_DIST):
-        @app.get("/")
-        def _no_build():
-            return {"error": "the client is not built",
-                    "fix": "cd ui && npm install && npm run build",
-                    "expected": UI_DIST}
-        return
-
-    app.mount("/assets", StaticFiles(directory=os.path.join(UI_DIST, "assets")),
-              name="assets")
-
-    @app.get("/{full_path:path}")
-    def spa(full_path: str):
-        candidate = os.path.join(UI_DIST, full_path)
-        if full_path and os.path.isfile(candidate):
-            return FileResponse(candidate)
-        return FileResponse(os.path.join(UI_DIST, "index.html"))
-
-
-mount_client()
+    index = os.path.join(UI_DIST, "index.html")
+    if not os.path.isfile(index):
+        return {"error": "the client is not built",
+                "fix": "cd ui && npm install && npm run build",
+                "expected": UI_DIST}
+    # Only ever serve files from inside the build directory: a path that escapes it after
+    # normalisation is a traversal attempt, not a client route.
+    candidate = os.path.normpath(os.path.join(UI_DIST, full_path))
+    if (full_path and os.path.isfile(candidate)
+            and os.path.commonpath([os.path.abspath(candidate),
+                                    os.path.abspath(UI_DIST)]) == os.path.abspath(UI_DIST)):
+        return FileResponse(candidate)
+    return FileResponse(index)
 
 
 def main():

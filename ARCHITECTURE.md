@@ -16,8 +16,8 @@
    interrupt model · watchdog
    features ← reference/features_db ← D:\twdata\reference\reference.sqlite
                  │
-   advisor_ui (FRONTEND: ui.py :8779 — dashboard over decisions.sqlite,
-   service control: start/kill session, health)
+   advisor_api (FRONTEND: :8777 — typed JSON API over decisions.sqlite + SSE,
+   serving the built client in ui/; service control: start/kill session, health)
 ```
 
 ## Projects
@@ -32,8 +32,16 @@
   `reference/` is the offline game-data lookup layer (`features_db.py`, rebuilt by
   `build_reference.py` from the WH3 packs). `mapgraph/` is the graph ranker — one model, no
   version suffix; it lives here because it is an advisor model, not a peer of the recorder.
-- **advisor_ui** — the frontend. `ui.py [port]` (:8779 in production): decision browser, run
-  history, timeline, blocking menus, infrastructure health, session start/kill.
+- **advisor_api** — the frontend's server half. `python -m advisor_api.app [port]` (:8777):
+  a typed JSON API over the corpus, an SSE channel that emits when the corpus grows, and
+  the built client served from `ui/dist`. Pydantic models are the contract; the client's
+  TypeScript types are generated from the OpenAPI document it publishes, so the two cannot
+  drift silently. Every endpoint is bounded and memoized on a corpus stamp.
+- **ui** — the frontend's client half. React + Vite + TypeScript + TanStack Table, built to
+  `ui/dist` and served by `advisor_api`. Five destinations — run, campaigns, decisions,
+  models, infra — each answering one question, with drill-down to a campaign or a decision.
+  Every view is a URL. `npm run check` typechecks it, verifies every colour token against
+  WCAG in both themes, and builds it; `check.py` runs that as the `client` check.
 - **launcher** — the driver. Game lifecycle (`bus_launcher.py`, `launcher.py`), the executor
   registry (`executor.py`, 18 action types incl. diplomacy), navigation, interrupt handling,
   PowerShell capture/input bridge (`ps/`). `config.py` is the only file allowed absolute paths.

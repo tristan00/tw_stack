@@ -87,7 +87,7 @@ if not os.path.isdir(os.path.join(ROOT, "decisions")):
     ROOT = r"D:\tw_stack"
 
 ADVISOR = os.path.join(ROOT, "advisor")
-ADVISOR_UI = os.path.join(ROOT, "advisor_ui")
+ADVISOR_API = os.path.join(ROOT, "advisor_api")
 BUS = os.path.join(ROOT, "bus")
 DECISIONS = os.path.join(ROOT, "decisions")
 LAUNCHER = os.path.join(ROOT, "launcher")
