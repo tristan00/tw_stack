@@ -343,9 +343,26 @@ _CSS = """
 font:13px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}
 a{color:inherit}h1{font-size:16px;margin:0 0 4px}h2{font-size:13px;margin:22px 0 8px;color:var(--dim);
 text-transform:uppercase;letter-spacing:.08em}
-.tabs{display:flex;gap:2px;margin:16px 0 0;border-bottom:1px solid var(--line)}
+/* One row, no wrapping. Sixteen tabs at 14px padding with two-word labels wrapped onto
+   two ragged lines and stopped being scannable; short labels and tighter padding keep
+   them on one line at any width worth using. */
+.tabs{display:flex;gap:0;margin:14px 0 0;border-bottom:1px solid var(--line);
+overflow-x:auto;scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
 .tab{appearance:none;background:none;border:0;border-bottom:2px solid transparent;color:var(--dim);
-font:inherit;text-transform:uppercase;letter-spacing:.08em;padding:8px 14px;cursor:pointer}
+font:inherit;text-transform:uppercase;letter-spacing:.06em;padding:7px 11px;cursor:pointer;
+white-space:nowrap}
+/* the header status line: one hero string, small dim numbers beside it */
+.hd{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.hd h1{margin:0}
+.hfac{font-size:19px;letter-spacing:-.01em}
+.hb{margin-left:2px}
+.hb b{font-size:15px;font-weight:600}
+.hb i{color:var(--dim);font-style:normal;font-size:11px;margin-left:3px;
+text-transform:uppercase;letter-spacing:.06em}
+.hgap{flex:1}
+.htot{font-size:11px;margin-top:3px}
+.htot i{font-style:normal;text-transform:uppercase;letter-spacing:.06em;opacity:.75}
 .tab:hover{color:var(--fg)}
 .tab.on{color:var(--fg);border-bottom-color:var(--ok)}
 .panel[hidden]{display:none}
@@ -1381,36 +1398,36 @@ def render_starts():
 
 
 def render_head(con, run_dir):
-    """Two groups, because these are two different things. The first five describe one
-    campaign at one moment; the rest are lifetime totals over every campaign ever
-    recorded into this run dir. Rendering them as one undifferentiated row invited
-    reading the totals as the current campaign's."""
+    """One status line, not twelve boxes.
+
+    This was two rows of equal-weight cards -- five for the live campaign, seven for
+    lifetime totals -- plus a sentence explaining which was which. Twelve boxes of
+    identical size and colour before any content, so nothing read as important and the
+    page opened on a wall. The live state is what you check at a glance, so it is the
+    only thing here with size; the totals are reference and sit dim on one line; and the
+    sentence is unnecessary once the two are not competing.
+    """
     s = summary(con)
     age = s.get("state_age")
     stale = age is not None and age > 900
-    state = "".join("<div class=card><div class=k>%s</div><div class='v %s'>%s</div></div>"
-                    % (k, cls, v) for k, v, cls in
-                    (("faction", _esc(s["faction"]), "dim" if stale else ""),
-                     ("turn", _int(s["turn_now"]), ""),
-                     ("settlements", _int(s["settlements"]), ""),
-                     ("power rank", _int(s["power_rank"]), ""),
-                     ("lord level", _int(s["lord_level"]), "")))
-    totals = "".join("<div class=card><div class=k>%s</div><div class=v>%s</div></div>"
-                     % (k, v) for k, v in
-                     (("campaigns", s["campaigns"]), ("turns", s["turns"]),
-                      ("decisions", s["decisions"]), ("offers", s["offers"]),
-                      ("taken", s["taken"]), ("confirmed", s["counted"]),
-                      ("confirm %", "%.1f%%" % s["confirm_rate"])))
-    when = ("<span class=%s>%s</span>" % ("warn" if stale else "dim", _age_words(age))
-            if age is not None else "<span class=dim>never</span>")
-    return ("<h1>advisor v7</h1><div class=dim>%s</div>"
-            "<div class=cards>%s</div>"
-            "<div class=dim style='margin:2px 0 0'>state above: <b>%s</b>, recorded %s "
-            "&middot; totals below: every one of the %s campaigns ever recorded into this "
-            "run dir, not just the live one</div>"
-            "<div class=cards>%s</div>"
-            % (_esc(run_dir), state, _camp_label(s["campaign"]), when,
-               s["campaigns"], totals))
+    bits = " ".join(
+        "<span class=hb><b>%s</b><i>%s</i></span>" % (v, k) for k, v in
+        (("turn", _int(s["turn_now"])), ("setts", _int(s["settlements"])),
+         ("rank", _int(s["power_rank"])), ("lord", _int(s["lord_level"]))))
+    when = (_age_words(age) if age is not None else "never")
+    totals = " &middot; ".join(
+        "%s <i>%s</i>" % (v, k) for k, v in
+        (("campaigns", s["campaigns"]), ("turns", s["turns"]),
+         ("decisions", s["decisions"]), ("offers", s["offers"]),
+         ("confirmed", "%.0f%%" % s["confirm_rate"])))
+    return ("<div class=hd><h1>advisor v7</h1>"
+            "<span class='hfac %s' title='live campaign state, recorded %s'>%s</span>%s"
+            "<span class=hgap></span>"
+            "<span class='dim hage %s'>%s</span></div>"
+            "<div class='dim htot' title='every campaign ever recorded into %s, not just "
+            "the live one'>%s</div>"
+            % ("dim" if stale else "", _esc(when), _esc(s["faction"]), bits,
+               "warn" if stale else "", _esc(when), _esc(run_dir), totals))
 
 
 def _statcards(items):
@@ -1835,25 +1852,25 @@ PANELS = (
     ("overview", "overview",
      lambda con, run, q: render_endings() + render_campaigns(con)),
     ("starts", "starts", lambda con, run, q: render_starts()),
-    ("matrix", "action x faction", lambda con, run, q: render_faction_matrix()),
-    ("interrupts", "blocking menus", lambda con, run, q: render_interrupts()),
+    ("matrix", "matrix", lambda con, run, q: render_faction_matrix()),
+    ("interrupts", "menus", lambda con, run, q: render_interrupts()),
     ("diplomacy", "diplomacy", lambda con, run, q: render_diplomacy(run)),
     ("timing", "timing", lambda con, run, q: render_timing(run)),
     ("actions", "actions", lambda con, run, q: render_actions(con, q)),
-    ("decisions", "decision log", lambda con, run, q: render_decisions(con, q)),
+    ("decisions", "log", lambda con, run, q: render_decisions(con, q)),
     # the whole panel IS the calculation -- there is no cheap half to paint first, so the
     # tab paints its heading immediately and the body arrives behind it
-    ("agreement", "model agreement", lambda con, run, q:
+    ("agreement", "agreement", lambda con, run, q:
         "<div class=lazy data-src='/panel/agreement_body'>"
         "<h2>do the two models agree?</h2>"
         "<div class=legend>comparing both rankings over the recent window&hellip;</div>"
         "</div>"),
     ("timeline", "timeline", lambda con, run, q: render_timeline(con)),
     ("reward", "reward", lambda con, run, q: render_reward(con)),
-    ("modelmetrics", "model metrics", lambda con, run, q: render_model_metrics(con, run, q)),
+    ("modelmetrics", "metrics", lambda con, run, q: render_model_metrics(con, run, q)),
     ("models", "models", lambda con, run, q: render_models()),
     ("training", "training", lambda con, run, q: render_training()),
-    ("infra", "infrastructure", lambda con, run, q: render_infra(run)),
+    ("infra", "infra", lambda con, run, q: render_infra(run)),
 )
 
 # How often a panel re-fetches itself, in seconds. One blanket 10s reload for every panel
@@ -1967,7 +1984,13 @@ def render_campaigns(con):
 
 _TABS_JS = """<script>
 (function(){
-  var slugs=%s, refresh=%s, key='v7tab', cur=sessionStorage.getItem(key), pq={};
+  // ?tab= wins over the remembered tab. It was never read at all: the tab lived only in
+  // sessionStorage, so every link and every refresh landed on `live` no matter what the
+  // URL said, and /?tab=X served an identical shell for all sixteen X. Deep links now
+  // work, and switching tabs rewrites the URL so a refresh or a shared link stays put.
+  var slugs=%s, refresh=%s, key='v7tab', pq={};
+  var want=new URLSearchParams(location.search).get('tab');
+  var cur=(slugs.indexOf(want)>=0)?want:sessionStorage.getItem(key);
   if(slugs.indexOf(cur)<0)cur=slugs[0];
   function paint(){
     document.querySelectorAll('.panel').forEach(function(p){p.hidden=(p.id!=='p-'+cur);});
@@ -2048,7 +2071,9 @@ _TABS_JS = """<script>
   }
   document.querySelectorAll('.tab').forEach(function(b){
     b.addEventListener('click',function(){
-      cur=b.dataset.t;sessionStorage.setItem(key,cur);paint();load(cur);});
+      cur=b.dataset.t;sessionStorage.setItem(key,cur);
+      history.replaceState(null,'','?tab='+cur);
+      paint();load(cur);});
   });
   document.addEventListener('click',function(e){
     var a=e.target.closest('a.pg');if(!a)return;e.preventDefault();
