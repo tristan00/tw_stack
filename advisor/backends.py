@@ -14,7 +14,8 @@ NO_MODEL_DIR = common.MODEL_COLD_START
 # deleted: nothing selected it, and it consumed exactly the engineered feature block the
 # graph model exists to replace. This registry is now an indirection over a single value
 # and should be collapsed into a direct `import model` at its three call sites
-# (session.py, advisor_ui/ui.py, runctl.py) once the UI form that reads it is reworked.
+# (session.py, advisor_api/app.py, runctl.py) once the launch form that reads it is
+# reworked.
 BACKENDS = {
     "catboost": {"module": "model", "label": "CatBoost E1/E2 impact"},
 }

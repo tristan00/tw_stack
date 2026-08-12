@@ -72,6 +72,9 @@ CHECKS = [
     ("coverage_selftest", ["-m", "decisions.coverage", "--selftest"], False,
      "the acceptance gate can be seen failing -- a constant field is reported, a "
      "varying one is not"),
+    ("client", ["ui/check_client.py"], False,
+     "the dashboard client typechecks against the types generated from the API's own "
+     "OpenAPI document, every colour token clears WCAG in BOTH themes, and it builds"),
 
     # need a live game, a bus, or a populated corpus
     ("replay_options", ["-m", "advisor.replay_options", "--n", "200"], True,
@@ -81,12 +84,14 @@ CHECKS = [
      "no recorded field is constant/null without a stated reason"),
     ("graph_build", ["-m", "advisor.mapgraph.test_build"], True,
      "real decisions build graphs with the expected node and edge counts"),
-    ("panels", ["advisor_ui/lint_panels.py"], True,
-     "every UI panel renders, no empty columns, no leaked markup"),
-    ("ui_live", ["advisor_ui/lint_live.py"], True,
-     "every tab fetched over HTTP the way the browser does (/panel/<tab>, not /?tab=, "
-     "which serves the same shell for all 16), and cross-checked against the corpus: an "
-     "arm with recorded decisions may not render as 0 campaigns / 0 turns"),
+    ("api_corpus", ["advisor_api/test_db.py"], True,
+     "the corpus access layer: every cache-invalidation probe executes, so a memoized "
+     "answer can never be pinned to a stale corpus while every endpoint still reads 200"),
+    ("api", ["advisor_api/test_api.py"], True,
+     "every dashboard view answers under budget and agrees with direct SQL; every count "
+     "names the population it counted and every rate carries its denominator; the "
+     "outcome-to-campaign join stays one-to-one; an arm with recorded decisions may not "
+     "render as 0 campaigns / 0 turns"),
     ("bus_live", ["bus/test_bus_live.py"], True, "a live eval round-trips through the bus"),
     ("shots", ["shots/test_shots.py"], True, "the screenshot stream writes jpgs"),
     ("manager_live", ["manager/test_manager.py"], True, "the recorder captures a fresh game log"),

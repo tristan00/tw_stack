@@ -71,7 +71,7 @@ def kill_recorder():
 
 
 def kill_ui():
-    return "killed uis=%d" % _ps_kill("ui.py")
+    return "killed uis=%d" % _ps_kill("advisor_api")
 
 
 def start_recorder(shots=DEFAULT_SHOTS, dev=False):
@@ -82,8 +82,13 @@ def start_recorder(shots=DEFAULT_SHOTS, dev=False):
 
 
 def start_ui(port=DEFAULT_PORT):
+    """The dashboard: one process serving the JSON API and the built client.
+
+    Run as a module, not a script path, so `advisor_api` resolves as a package from the
+    repo root -- the same reason check.py invokes its harnesses the way it does.
+    """
     log = os.path.join(SERVICES_LOG_DIR, "ui_%s.log" % _stamp())
-    _spawn([VENV_PY, "-u", "advisor_ui/ui.py", str(port)], log)
+    _spawn([VENV_PY, "-u", "-m", "advisor_api.app", str(port)], log)
     return "ui :%d -> %s" % (port, log)
 
 

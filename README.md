@@ -151,13 +151,32 @@ start or stop a run **must** bank on kill — see [The experiment ledger](#the-e
 
 ```powershell
 cd D:\tw_stack
-D:\totalwar_runner\.venv\Scripts\python.exe advisor_ui\ui.py 8779
+D:\totalwar_runner\.venv\Scripts\python.exe -m advisor_api.app 8777
 ```
 
-Browse **http://127.0.0.1:8779**. The `live` tab shows session/game/recorder health,
-current campaign/turn, and the log tail; `overview`/`timing`/`diplomacy` cover results;
-`infrastructure` has the service controls — including **kill session + game** and
-**restart** buttons, so after the UI is up you can drive everything from the browser.
+Browse **http://127.0.0.1:8777**. Five destinations, each answering one question:
+
+| | answers |
+|---|---|
+| **run** | is it healthy right now — services, throughput, timing, log tail |
+| **campaigns** | how are campaigns going — every campaign with its outcome, per-start quality, confirm rate by action type. Click a campaign for its turn series, diplomacy and decisions |
+| **decisions** | what did it choose and why — the filterable log, blocking screens, the timeline. Click a row for the full ranking both models produced |
+| **models** | are the models learning — what is on disk, what each arm picks, whether they agree, the trial ledger |
+| **infra** | services, stream freshness, and the controls: **kill session + game**, **launch run**, **cold start** |
+
+Every view is a URL, so a filtered log or a single campaign can be bookmarked and pasted.
+It updates when the corpus changes rather than on a timer, so nothing steals your scroll.
+
+The dashboard serves a built client. After changing anything under `ui/`:
+
+```powershell
+cd D:\tw_stack\ui
+npm install    # first time only
+npm run build
+```
+
+`python check.py` runs that build, the typecheck and the contrast audit as the `client`
+check, and the API's own gates as `api` and `api_corpus`.
 
 ## Recording a session you play by hand (no advisor)
 

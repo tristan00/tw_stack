@@ -32,8 +32,16 @@ from __future__ import annotations
 import os
 import sys
 import time
+import warnings
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Starlette warns that its test client will want httpx2. It is a library-version notice,
+# not a result, and check.py reports each harness by its LAST output line -- so left
+# alone it becomes the summary and hides whether the checks actually passed. Matched on
+# the message rather than the module: the warning is attributed to fastapi.testclient,
+# which re-exports it, not to the starlette module that raises it.
+warnings.filterwarnings("ignore", message=r".*httpx.*")
 
 from fastapi.testclient import TestClient
 
