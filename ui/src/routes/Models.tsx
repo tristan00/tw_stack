@@ -27,8 +27,42 @@ const VIEWS = [
   { key: 'forcing', label: 'what each wants', asks: 'what does each arm pick' },
   { key: 'agreement', label: 'agreement', asks: 'do the two models agree' },
   { key: 'correlations', label: 'does it help', asks: 'does an arm track how it went' },
-  { key: 'training', label: 'trials', asks: 'what has been tried' },
+  { key: 'training', label: 'training', asks: 'what has been tried, and did the retrain help' },
 ]
+
+/** The arms a trial drew from, in a fixed order so trials compare by eye. */
+const MIX_ARMS: { key: string; short: string; cls: string }[] = [
+  { key: 'exploit_tree', short: 'ET', cls: 'bg-cat' },
+  { key: 'gnn_marwil', short: 'GN', cls: 'bg-gnn' },
+  { key: 'random', short: 'RD', cls: 'bg-dim' },
+  { key: 'ruleset', short: 'RS', cls: 'bg-warn' },
+]
+
+function MixBar({ mix }: { mix: Record<string, unknown> | undefined }) {
+  const vals = MIX_ARMS.map((a) => {
+    const v = mix?.[a.key]
+    return typeof v === 'number' ? v : 0
+  })
+  const total = vals.reduce((a, b) => a + b, 0)
+  if (!total) return <span className="text-dim">—</span>
+  return (
+    <span className="flex items-center gap-2">
+      <span className="flex h-2.5 w-24 overflow-hidden rounded">
+        {MIX_ARMS.map((a, i) => (
+          <span
+            key={a.key}
+            className={a.cls}
+            style={{ width: `${(vals[i] / total) * 100}%` }}
+            title={`${a.key} ${vals[i]}`}
+          />
+        ))}
+      </span>
+      <span className="num text-2xs text-dim whitespace-nowrap">
+        {vals.map((v) => Math.round((v / total) * 100)).join('/')}
+      </span>
+    </span>
+  )
+}
 
 function OnDisk() {
   const { data, error, loading, reload } = useApi<ModelsPage>('/api/models')
@@ -340,7 +374,26 @@ function Training() {
   if (loading || !data) return <Skeleton rows={10} />
 
   const cols: Col<TrialRow>[] = [
-    { key: 'trial', label: 'trial', value: (r) => r.trial, render: (r) => r.trial },
+    {
+      key: 'trial',
+      label: 'trial',
+      value: (r) => r.trial,
+      render: (r) => (
+        <span className="flex items-center gap-1.5 whitespace-nowrap">
+          <span className="num text-2xs">{r.trial}</span>
+          {r.live && <Chip state="ok">running</Chip>}
+        </span>
+      ),
+    },
+    {
+      key: 'snapshots',
+      label: 'updates',
+      align: 'right',
+      optional: true,
+      help: 'The ledger appends a line per campaign as a trial runs. This row is the trial\'s newest state; this is how many lines it has written.',
+      value: (r) => r.snapshots ?? 1,
+      render: (r) => n(r.snapshots ?? 1),
+    },
     {
       key: 'backend',
       label: 'backend',
@@ -352,6 +405,13 @@ function Training() {
       label: 'ruleset',
       value: (r) => r.ruleset ?? '',
       render: (r) => r.ruleset ?? '—',
+    },
+    {
+      key: 'mix',
+      label: 'strategy mix',
+      help: 'The share each arm was drawn with: exploit_tree / gnn_marwil / random / ruleset. This is the independent variable of the experiment — two trials are only comparable if it matches.',
+      value: (r) => JSON.stringify(r.mix ?? {}),
+      render: (r) => <MixBar mix={r.mix as Record<string, unknown> | undefined} />,
     },
     {
       key: 'campaigns',
@@ -407,10 +467,11 @@ function Training() {
     },
     {
       key: 'notes',
-      label: 'notes',
-      optional: true,
+      label: 'outcomes',
+      group: 'result',
+      help: 'How the campaigns in this trial ended, tallied.',
       value: (r) => r.notes ?? '',
-      render: (r) => <span className="text-dim text-2xs">{r.notes ?? ''}</span>,
+      render: (r) => <span className="text-dim text-2xs">{r.notes ?? '—'}</span>,
     },
   ]
 

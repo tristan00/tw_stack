@@ -1354,6 +1354,12 @@ export interface components {
         TrialRow: {
             /** Trial */
             trial: string;
+            /**
+             * Snapshots
+             * @description how many ledger lines this trial wrote. The ledger appends a snapshot per campaign as a trial progresses, so one trial owns many lines; the row shows its newest state and this says how many were folded in.
+             * @default 1
+             */
+            snapshots: number;
             /** Backend */
             backend?: string | null;
             /** Cfg */
