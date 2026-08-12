@@ -71,16 +71,50 @@ GET_ENDPOINTS = [
     "/api/infra",
 ]
 
-_client = TestClient(app)
+import atexit
+
+# Entered as a context manager so the app's LIFESPAN runs -- without it the process probe
+# never starts, every service reports down, and the tests quietly exercise a different
+# application than the one that ships. The empty-column gate is what surfaced that: the
+# `started` field was empty on every service row here and populated in the real server.
+_client_cm = TestClient(app)
+_client = _client_cm.__enter__()
+atexit.register(_client_cm.__exit__, None, None, None)
+
+
+def _await_first_probe(timeout=15.0):
+    """Block until the process probe has taken a sample, or give up.
+
+    The probe is asynchronous by design, so a test that reads services immediately races
+    it. Waiting is honest; asserting against a half-initialised probe is not.
+    """
+    from advisor_api import proc
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        _procs, at = proc.snapshot()
+        if at:
+            return True
+        time.sleep(0.25)
+    return False
+
+
+_await_first_probe()
 
 
 def _walk(node, path="$"):
-    """Every dict and list in a response, with the path that reached it."""
+    """Every dict AND every list in a response, with the path that reached it.
+
+    Yielding the list itself matters: the first version recursed into lists but only ever
+    yielded dicts, so a check written as `if isinstance(node, list)` matched nothing and
+    passed by inspecting zero rows. It was the empty-column check -- a check that silently
+    checked nothing, which is the exact defect it exists to catch.
+    """
     if isinstance(node, dict):
         yield path, node
         for k, v in node.items():
             yield from _walk(v, "%s.%s" % (path, k))
     elif isinstance(node, list):
+        yield path, node
         for i, v in enumerate(node):
             yield from _walk(v, "%s[%d]" % (path, i))
 
@@ -272,6 +306,91 @@ def test_constant_columns_are_reported():
                     "%s is constant across %d turns of %s but was not reported"
                     % (field, len(pts), row.campaign.raw))
     assert checked, "no campaign had enough turns to check"
+
+
+def test_no_column_is_empty_in_every_row():
+    """No field may be null on every row of a list that has rows to judge.
+
+    A column wired to a field the producer never writes renders perfectly -- as a tidy
+    column of dashes -- and nothing complains. It shipped here: the trial ledger was read
+    with four guessed key names (`corpus`, `sett_per_camp`, `turns_per_camp`,
+    `lord_per_camp`), none of which the session writes, so four columns were empty on all
+    85 rows and looked exactly like "this run recorded no results".
+
+    This is the rule the previous dashboard's linter enforced over rendered HTML. Checking
+    it on the API instead makes it unambiguous: an empty column is a field that is null in
+    every row, not a cell that happens to look blank.
+
+    A field that is null in every row is only a defect when SOME row could have had it, so
+    lists shorter than 3 are skipped, and fields that are legitimately absent everywhere
+    right now are listed with the reason.
+    """
+    # The collections that back a TABLE, named explicitly. Scoped rather than universal
+    # because the interesting failure is "a table column reads a key nobody writes", and
+    # a blanket sweep instead flags every optional presentation field that happens to be
+    # unset -- Ident.culture on a list of action types, Metric.unit on a unitless metric,
+    # the conditional note on a policy row. A check that cries wolf gets exempted into
+    # uselessness, so this one states exactly what it covers.
+    TABLES = [
+        ("/api/run", "$.collect_timing"),
+        ("/api/run", "$.cycle_timing"),
+        ("/api/run", "$.totals"),
+        ("/api/run", "$.services"),
+        ("/api/campaigns", "$.rows"),
+        ("/api/campaigns/starts", "$.rows"),
+        ("/api/campaigns/matrix?kind=action", "$.totals"),
+        ("/api/decisions", "$.rows"),
+        ("/api/decisions/actions", "$.by_type"),
+        ("/api/decisions/actions", "$.denominators"),
+        ("/api/decisions/menus", "$.rows"),
+        ("/api/decisions/menus", "$.coverage"),
+        ("/api/models/training", "$.trials"),
+        ("/api/models/training", "$.history"),
+        ("/api/infra", "$.activity"),
+    ]
+    # Genuinely absent right now, each with the reason it is absent. A row here is a
+    # statement about the data, not a licence to leave a column unwired.
+    EXPECTED_EMPTY = {
+        ("$.rows", "gnn_impact"):
+            "the log page's offers carry rank but impact is only stored for scored arms",
+        ("$.trials", "cfg"):
+            "no trial has run with a backend config override",
+        ("$.trials", "notes"):
+            "notes are only written for trials with a recorded outcome tally",
+        ("$.services", "started"):
+            "the process probe reports a start time only for processes it matched",
+    }
+    responses = _all_responses()
+    bad = []
+    checked = 0
+    for ep, jpath in TABLES:
+        r = responses.get(ep)
+        if r is None or r.status_code != 200:
+            bad.append("%s did not answer, so %s could not be audited" % (ep, jpath))
+            continue
+        node = next((n for p, n in _walk(r.json())
+                     if p == jpath and isinstance(n, list)), None)
+        if node is None:
+            bad.append("%s has no list at %s -- the audit list is out of date" % (ep, jpath))
+            continue
+        if len(node) < 3 or not all(isinstance(x, dict) for x in node):
+            continue
+        checked += 1
+        keys = set()
+        for x in node:
+            keys |= set(x)
+        for k in sorted(keys):
+            if (jpath, k) in EXPECTED_EMPTY:
+                continue
+            vals = [x.get(k) for x in node]
+            if all(v is None or v == "" or v == [] or v == {} for v in vals):
+                bad.append("%s %s -> every one of %d rows has %r empty"
+                           % (ep, jpath, len(node), k))
+    assert checked, "no table had enough rows to audit"
+    assert not bad, ("fields that are empty on every row:\n  " + "\n  ".join(bad)
+                     + "\n\nEither the field is wired to a key the producer does not "
+                       "write, or it is legitimately absent -- in which case add it to "
+                       "EXPECTED_EMPTY with the reason.")
 
 
 def test_correlation_tiles_are_separable():

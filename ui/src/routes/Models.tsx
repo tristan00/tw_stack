@@ -415,14 +415,94 @@ function Training() {
   ]
 
   return (
-    <Section title="experiment ledger" scope={data.scope}>
+    <div className="space-y-6">
+      <Section title="experiment ledger" scope={data.scope}>
+        <DataTable
+          rows={data.trials}
+          cols={cols}
+          rowId={(r, i) => `${r.trial}-${i}`}
+          searchPlaceholder="search trial, ruleset…"
+          emptyWhat="no trial recorded yet"
+          emptyWhy="the ledger is written when a run completes"
+        />
+      </Section>
+      <TrainingHistory data={data} />
+    </div>
+  )
+}
+
+type TrainingEvent = Schemas['TrainingEvent']
+
+/**
+ * One row per retrain: what the corpus was, and what each model's fit produced.
+ *
+ * Columns are derived from the groups the data actually carries, so a new metric appears
+ * without a code change and a metric that stopped being recorded stops occupying a
+ * column. The old view hard-coded 27 columns across two header rows, which forced a
+ * horizontal scrollbar and left half the numbers off screen; here the corpus and the
+ * headline fit numbers are shown and the rest is one click away in the column picker.
+ */
+function TrainingHistory({ data }: { data: TrainingPage }) {
+  const history = data.history ?? []
+  const groups = data.group_order ?? []
+
+  // Every metric present anywhere, in group order, so a row missing one renders a dash
+  // rather than shifting its neighbours.
+  const metricCols: Col<TrainingEvent>[] = []
+  for (const g of groups) {
+    const keys: string[] = []
+    for (const ev of history) {
+      const bag = (ev.groups ?? {})[g] as Record<string, unknown> | undefined
+      for (const k of Object.keys(bag ?? {})) if (!keys.includes(k)) keys.push(k)
+    }
+    for (const k of keys) {
+      metricCols.push({
+        key: `${g}.${k}`,
+        label: k,
+        group: g,
+        align: 'right',
+        // Only the corpus size and the headline fit numbers are shown by default.
+        optional: !(g === 'corpus' || k.includes('rmse') || k.includes('NLL')),
+        value: (r) => {
+          const v = ((r.groups ?? {})[g] as Record<string, unknown> | undefined)?.[k]
+          return typeof v === 'number' ? v : String(v ?? '')
+        },
+        render: (r) => {
+          const v = ((r.groups ?? {})[g] as Record<string, unknown> | undefined)?.[k]
+          if (v === undefined || v === null) return <span className="text-dim">—</span>
+          return typeof v === 'number' ? n(v, Number.isInteger(v) ? 0 : 4) : String(v)
+        },
+      })
+    }
+  }
+
+  const cols: Col<TrainingEvent>[] = [
+    { key: 'when', label: 'when', group: 'retrain', value: (r) => r.when ?? '', render: (r) => r.when ?? '—' },
+    {
+      key: 'trial',
+      label: 'trial',
+      group: 'retrain',
+      value: (r) => r.trial ?? '',
+      render: (r) => <span className="num text-2xs">{r.trial}</span>,
+    },
+    ...metricCols,
+  ]
+
+  return (
+    <Section
+      title="training history"
+      scope={{
+        text: 'one row per retrain, newest first',
+        detail: 'read from the session reports; open the column picker for the full fit',
+      }}
+    >
       <DataTable
-        rows={data.trials}
+        rows={history}
         cols={cols}
         rowId={(r, i) => `${r.trial}-${i}`}
-        searchPlaceholder="search trial, ruleset…"
-        emptyWhat="no trial recorded yet"
-        emptyWhy="the ledger is written when a run completes"
+        dense
+        emptyWhat="no retrain recorded yet"
+        emptyWhy="a retrain is written when a run crosses its retrain interval"
       />
     </Section>
   )

@@ -323,13 +323,61 @@ def throughput(con) -> list:
         " FROM action_taken WHERE refusal IS NOT 'awaiting_execution'").fetchone()
     attempted, confirmed = _i(taken["a"], 0) or 0, _i(taken["c"], 0) or 0
     pct = (100.0 * confirmed / attempted) if attempted else None
+    # Sparklines over the same window, so a rate that is FALLING looks different from one
+    # that is merely low -- the single number cannot distinguish those and it is the
+    # distinction you want at a glance. Bucketed by wall clock rather than by row count,
+    # so a stall shows as a dip instead of being compressed away.
+    camp_spark, turn_spark = _rate_sparks(rows)
     out.append(Metric(label="campaigns/hr", value=round(camps / span_h, 1),
-                      sub="over the last %d decisions" % len(rows)))
+                      sub="over the last %d decisions" % len(rows), spark=camp_spark))
     out.append(Metric(label="turns/hr", value=round(turns / span_h, 1),
-                      sub="over the last %d decisions" % len(rows)))
+                      sub="over the last %d decisions" % len(rows), spark=turn_spark))
     out.append(Metric(label="confirm rate", value=(round(pct, 1) if pct is not None else None),
                       unit="%", sub="%d of %d attempted actions" % (confirmed, attempted),
-                      state=_rate_state(pct)))
+                      state=_rate_state(pct), spark=_confirm_spark(con)))
+    return out
+
+
+SPARK_BUCKETS = 16
+
+
+def _rate_sparks(rows, buckets=SPARK_BUCKETS):
+    """Distinct campaigns and campaign-turns per equal-width time bucket, oldest first."""
+    stamps = [(_f(r["ts"]) or 0.0, r["campaign_id"], r["turn"]) for r in rows]
+    stamps = [s for s in stamps if s[0]]
+    if len(stamps) < buckets:
+        return [], []
+    lo, hi = min(s[0] for s in stamps), max(s[0] for s in stamps)
+    width = (hi - lo) / buckets or 1.0
+    camp_sets = [set() for _ in range(buckets)]
+    turn_sets = [set() for _ in range(buckets)]
+    for ts, cid, turn in stamps:
+        i = min(buckets - 1, int((ts - lo) / width))
+        camp_sets[i].add(cid)
+        turn_sets[i].add((cid, turn))
+    per_hour = 3600.0 / width
+    return ([round(len(s) * per_hour, 2) for s in camp_sets],
+            [round(len(s) * per_hour, 2) for s in turn_sets])
+
+
+@db.cached
+def _confirm_spark(con, buckets=SPARK_BUCKETS):
+    """Confirm rate per equal-count bucket over the recent window, oldest first."""
+    rows = con.execute(
+        "SELECT counted, refusal FROM action_taken"
+        " ORDER BY decision_id DESC LIMIT 2000").fetchall()
+    rows = [r for r in rows if r["refusal"] != "awaiting_execution"]
+    if len(rows) < buckets:
+        return []
+    rows.reverse()
+    size = len(rows) // buckets or 1
+    out = []
+    for i in range(buckets):
+        chunk = rows[i * size:(i + 1) * size]
+        if not chunk:
+            continue
+        ok = sum(1 for r in chunk if _i(r["counted"], 0))
+        out.append(round(100.0 * ok / len(chunk), 1))
     return out
 
 
@@ -1380,6 +1428,103 @@ def _pearson_gated(xs, ys, min_n=12):
         return None, "undefined"
 
 
+SESSION_REPORTS = 12
+
+
+def training_history() -> list:
+    """One row per retrain, newest first: what the corpus was and what the fit produced.
+
+    Read straight from the session reports rather than by importing advisor.session,
+    which pulls in catboost and torch at module scope -- a dashboard that cannot start
+    because a training dependency failed to import is a dashboard that is down exactly
+    when you want to see why training failed.
+
+    Metrics are grouped rather than flattened into one very wide row. The old view was 27
+    columns across two header rows, which forced a horizontal scrollbar and put half the
+    numbers off screen; grouping lets the client show a group and let the reader open the
+    rest.
+    """
+    return _training_history()
+
+
+@db.cached_files(common.native(common.RUNS_ROOT))
+def _training_history() -> list:
+    import glob
+
+    root = common.native(common.RUNS_ROOT)
+    reports = sorted(glob.glob(os.path.join(root, "session_*.json")))[-SESSION_REPORTS:]
+    out = []
+    for path in reports:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                rep = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        stamp = os.path.basename(path).replace("session_", "").replace(".json", "")
+        gen = 0
+        for camp in rep.get("campaigns") or []:
+            rt = camp.get("retrain")
+            if not rt:
+                continue
+            gen += 1
+            local = rt.get("local") or {}
+            irt = camp.get("retrain_interrupt") or {}
+            gnn = camp.get("retrain_gnn") or {}
+            fit = rt.get("fit") or {}
+            e1, e2 = (fit.get("e1") or {}), (fit.get("e2") or {})
+            r1, r2 = _f(e1.get("val_rmse")), _f(e2.get("val_rmse"))
+            groups = {
+                "corpus": _clean({
+                    "rows": _i(rt.get("rows")),
+                    "campaigns": _i(rt.get("campaigns")),
+                    "decisions": _i(rt.get("n_decisions")),
+                    "seconds": _f(rt.get("seconds")),
+                }),
+                "catboost global": _clean({
+                    "e1 rmse": r1,
+                    "e2 rmse": r2,
+                    # e2 is the baseline e1 is measured against; the lift is the number
+                    # that says whether this retrain was worth anything.
+                    "lift": (round(r2 - r1, 4) if (r1 is not None and r2 is not None)
+                             else None),
+                    "val rows": _i(e1.get("val_rows")),
+                    "best iter": _i(e1.get("best_iteration")),
+                    "in-sample MAE": _f(rt.get("mae_in_sample")),
+                }),
+                "local": _clean({
+                    "rows": _i(local.get("rows")),
+                    "e1 rmse": _f(((local.get("fit") or {}).get("local_e1") or {})
+                                  .get("val_rmse")),
+                }),
+                "interrupt": _clean({
+                    "rows": _i(irt.get("rows")),
+                    "screens": (len(irt.get("screens")) if isinstance(irt.get("screens"), (list, dict))
+                                else _i(irt.get("screens"))),
+                }),
+                "gnn": _clean({
+                    "rows": _i(gnn.get("rows")),
+                    "listwise NLL": _f((gnn.get("fit") or {}).get("val_listwise_nll")),
+                    "epochs": _i((gnn.get("fit") or {}).get("epochs_run")),
+                    "device": (gnn.get("fit") or {}).get("device"),
+                    "stopped by": (gnn.get("fit") or {}).get("stopped_by"),
+                }),
+            }
+            out.append(TrainingEvent(
+                when=time.strftime("%Y-%m-%d %H:%M",
+                                   time.localtime(_f(camp.get("started"), 0.0) or 0.0)),
+                trial="%s-g%d" % (stamp, gen),
+                corpus_rows=_i(rt.get("rows")),
+                corpus_campaigns=_i(rt.get("campaigns")),
+                groups={k: v for k, v in groups.items() if v}))
+    out.reverse()
+    return out
+
+
+def _clean(d: dict) -> dict:
+    """Drop keys with no value, so an empty group is visibly empty rather than a row of dashes."""
+    return {k: v for k, v in d.items() if v is not None}
+
+
 def trials():
     return _trials()
 
@@ -1397,23 +1542,38 @@ def _trials() -> list:
                     d = json.loads(line)
                 except ValueError:
                     continue
+                # Field names read off the ledger the session actually writes, not
+                # guessed. The first version of this guessed `sett_per_camp`, `corpus`
+                # and `turns_per_camp`; every one of those keys is absent, so four
+                # columns rendered as a dash on all 85 rows -- perfectly, silently, and
+                # exactly the failure this rebuild exists to remove. There is now a gate
+                # for it: test_no_column_is_empty_in_every_row.
+                corpus = d.get("corpus_at_train") or {}
+                setts = d.get("settlements") or {}
+                lord = d.get("lord_level") or {}
+                timing = d.get("timing") or {}
                 out.append(TrialRow(
-                    trial=str(d.get("trial") or d.get("name") or ""),
-                    backend=d.get("backend"), cfg=d.get("cfg") if isinstance(d.get("cfg"), str)
-                    else (json.dumps(d.get("cfg")) if d.get("cfg") else None),
-                    mix=d.get("mix") or d.get("strategies") or {},
-                    # ruleset is written as a bare name by older rows and as
-                    # {name, sha} by newer ones. The name is what identifies the run.
+                    trial=str(d.get("trial") or ""),
+                    backend=d.get("backend"),
+                    cfg=(json.dumps(d["backend_cfg"], sort_keys=True)
+                         if d.get("backend_cfg") else None),
+                    mix=d.get("strategies") or {},
+                    # ruleset is {name, sha256}; the name is what identifies the run.
                     ruleset=_text(d.get("ruleset")),
-                    campaigns=_i(d.get("campaigns")), corpus=_i(d.get("corpus")),
-                    settlements_per_campaign=_f(d.get("sett_per_camp")),
-                    settlements_total=_f(d.get("sett_total")),
-                    grew=str(d.get("grew")) if d.get("grew") is not None else None,
-                    lord_per_campaign=_f(d.get("lord_per_camp")),
-                    turns_per_campaign=_f(d.get("turns_per_camp")),
-                    seconds_per_campaign=_f(d.get("s_per_camp")),
-                    seconds_per_turn=_f(d.get("s_per_turn")),
-                    notes=d.get("notes")))
+                    campaigns=_i(d.get("campaigns")),
+                    corpus=_i(corpus.get("rows")),
+                    settlements_per_campaign=_f(setts.get("mean")),
+                    settlements_total=_f(setts.get("total")),
+                    grew=("%s of %s" % (setts.get("campaigns_that_gained"),
+                                        setts.get("campaigns_measured"))
+                          if setts.get("campaigns_measured") is not None else None),
+                    lord_per_campaign=_f(lord.get("mean")),
+                    turns_per_campaign=_f(d.get("turns_per_campaign")),
+                    seconds_per_campaign=_f(timing.get("s_per_campaign")),
+                    seconds_per_turn=_f(timing.get("s_per_turn")),
+                    live=bool(d.get("running")),
+                    notes=(", ".join("%s %s" % (k, v)
+                                     for k, v in (d.get("outcomes") or {}).items()) or None)))
     except OSError:
         return []
     out.reverse()

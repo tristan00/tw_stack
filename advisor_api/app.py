@@ -275,10 +275,19 @@ def get_correlations() -> CorrelationsPage:
 
 @app.get("/api/models/training", response_model=TrainingPage, tags=["models"])
 def get_training() -> TrainingPage:
+    history = q.training_history()
+    # Group order is decided here, once, so the client renders whatever groups exist
+    # without hard-coding a column list that drifts from the data.
+    seen: list = []
+    for ev in history:
+        for name in ev.groups:
+            if name not in seen:
+                seen.append(name)
     return TrainingPage(
-        scope=_scope("every recorded trial, newest first", "from the experiment ledger"),
-        trials=q.trials(), history=[],
-        group_order=["run", "corpus", "catboost", "gnn", "what it played"])
+        scope=_scope("every trial and every retrain, newest first",
+                     "trials come from the experiment ledger; retrains from the session "
+                     "reports"),
+        trials=q.trials(), history=history, group_order=seen)
 
 
 @app.get("/api/models", response_model=ModelsPage, tags=["models"])
