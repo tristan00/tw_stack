@@ -56,6 +56,9 @@
 2. The **manager** owns bus reads and sqlite writes; the **launcher** executes; the **advisor**
    decides; the **UI** reads.
 3. An action is taken only when `executed AND confirmed` — unverified clicks are voided.
-4. **No logs, data, DBs, or models in this repo.** Everything lives under `TWDATA` (see README):
-   `runs/` `models/{global,local,interrupt}/` `reference/` `logs/{advisor,launcher,services}/`
-   `scratch/` `tmp/catboost/` `repo_archive/`.
+4. **No logs, data, DBs, or models in this repo.** Everything a run produces lives under
+   `TWDATA` (see README): `runs/` `models/{global,local,interrupt}/` `reference/`
+   `logs/{advisor,launcher,services}/` `scratch/` `tmp/catboost/` `repo_archive/`.
+   The exception is `rules/` — a rule set is an INPUT that decides how the agent plays, so
+   a run is not reproducible elsewhere if it lives outside the checkout. `<TWDATA>/rules/`
+   is still searched first, as a local override for trying a variant.
