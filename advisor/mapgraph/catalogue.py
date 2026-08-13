@@ -96,6 +96,52 @@ def dense_ids():
     return _DENSE
 
 
+_ATTR_QUERY = {
+    "building": ("SELECT key, create_cost, level, create_time FROM buildings",
+                 ("create_cost", "level", "create_time")),
+    "unit": ("SELECT key, recruitment_cost, upkeep_cost, num_men, tier, create_time "
+             "FROM units",
+             ("recruitment_cost", "upkeep_cost", "num_men", "unit_tier", "create_time")),
+    "skill": ("SELECT key, unlocked_at_rank, is_background_skill FROM skills",
+              ("unlocked_at_rank", "is_background_skill")),
+    "tech": ("SELECT key, tier, research_points_required FROM tech",
+             ("tech_tier", "research_points_required")),
+}
+_ATTRS = {}
+
+
+def attrs():
+    if _ATTRS:
+        return _ATTRS
+    out = {k: {} for k in _ATTR_QUERY}
+    path = S.REFERENCE_DB
+    if os.path.exists(path):
+        try:
+            cx = sqlite3.connect("file:%s?mode=ro" % path.replace("\\", "/"), uri=True)
+            try:
+                for kind, (sql, names) in _ATTR_QUERY.items():
+                    for row in cx.execute(sql):
+                        key = row[0]
+                        if not key:
+                            continue
+                        vals = {}
+                        for name, v in zip(names, row[1:]):
+                            if v is None:
+                                continue
+                            try:
+                                vals[name] = float(v)
+                            except (TypeError, ValueError):
+                                continue
+                        if vals:
+                            out[kind][key] = vals
+            finally:
+                cx.close()
+        except Exception as e:
+            sys.stderr.write("mapgraph.catalogue: attr load failed -> %s\n" % repr(e)[:200])
+    _ATTRS.update(out)
+    return _ATTRS
+
+
 def chain_of(building_key):
     return _load()["building_chain"].get(building_key)
 
