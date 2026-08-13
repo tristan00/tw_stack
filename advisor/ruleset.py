@@ -127,6 +127,32 @@ def _move_dist_to_smaller_enemy(row, ctx):
     return best
 
 
+def _move_dist_to_enemy(row, ctx):
+    """Distance from a move's destination to the nearest KNOWN enemy army or settlement.
+
+    `world.hostiles` is already shroud-clipped, so this only ever sees what the faction
+    can see -- a move is never scored against a settlement nobody has found. neutral_army
+    is excluded: it is not an enemy.
+    """
+    if row.get("action_type") != "move":
+        return None
+    p = row.get("params") or {}
+    x, y = p.get("x"), p.get("y")
+    if x is None or y is None:
+        return None
+    best = None
+    for h in ctx.hostiles:
+        if h.get("kind") not in ("army", "settlement"):
+            continue
+        hx, hy = h.get("x"), h.get("y")
+        if hx is None or hy is None:
+            continue
+        d = math.hypot(float(x) - float(hx), float(y) - float(hy))
+        if best is None or d < best:
+            best = d
+    return best
+
+
 def _in_own_territory(row, ctx):
     cqi = (((ctx.entity_of(row) or {}).get("state")) or {}).get("cqi")
     if cqi is None:
@@ -196,6 +222,7 @@ DERIVED = {"target_units": _target_units,
            "units_advantage": _units_advantage,
            "chain_key": _chain_key,
            "move_dist_to_smaller_enemy": _move_dist_to_smaller_enemy,
+           "move_dist_to_enemy": _move_dist_to_enemy,
            "in_own_territory": _in_own_territory,
            "in_enemy_territory": _in_enemy_territory,
            "target_army_units": _target_army_units,
