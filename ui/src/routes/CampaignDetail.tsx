@@ -173,14 +173,13 @@ export function CampaignDetail() {
               <span>
                 settlements{' '}
                 <b className="num text-fg">
-                  {n(row.first_settlements)} → {n(row.final_settlements)}
-                </b>{' '}
-                (peak {n(row.peak_settlements)})
+                  {n(row.first_settlements)} → {n(row.peak_settlements)}
+                </b>
               </span>
               <span>
                 lord level{' '}
                 <b className="num text-fg">
-                  {n(row.first_lord_level)} → {n(row.final_lord_level)}
+                  {n(row.first_lord_level)} → {n(row.peak_lord_level)}
                 </b>
               </span>
               <span>

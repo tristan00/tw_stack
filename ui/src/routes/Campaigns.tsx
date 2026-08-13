@@ -135,7 +135,7 @@ const campaignCols: Col<CampaignRow>[] = [
       <Growth
         row={r}
         first={r.first_settlements}
-        last={r.final_settlements}
+        last={r.peak_settlements}
         delta={r.settlements_growth}
       />
     ),
@@ -172,7 +172,7 @@ const campaignCols: Col<CampaignRow>[] = [
       <Growth
         row={r}
         first={r.first_lord_level}
-        last={r.final_lord_level}
+        last={r.peak_lord_level}
         delta={r.lord_growth}
       />
     ),
