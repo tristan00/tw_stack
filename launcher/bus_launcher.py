@@ -221,7 +221,10 @@ class BusLauncher:
             if "hud_campaign" in vis:
                 if hud_since is None:
                     hud_since = time.time()
-                blocked = vis & {"cinematic_bars", "black_fade"}
+                # cinematic_bars ONLY. black_fade is in BASE_ROOTS and PERSISTENT_ROOTS --
+                # permanent furniture that can read visible indefinitely -- so waiting on
+                # it never cleared and every start paid the whole grace: 25s -> 49.2s.
+                blocked = vis & {"cinematic_bars"}
                 waited = time.time() - hud_since
                 if not blocked or waited >= HUD_GRACE:
                     _log("interactive HUD reached in %.1fs (%d cinematic keys%s)"
