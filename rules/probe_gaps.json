@@ -1,0 +1,129 @@
+{
+  "rules": [
+    {
+      "name": "edict_whenever_possible",
+      "priority": 100,
+      "action": {
+        "action_type": "edict"
+      },
+      "match": {
+        "entity": {
+          "kind": "province"
+        }
+      }
+    },
+    {
+      "name": "colonise_any_ruin",
+      "priority": 95,
+      "action": {
+        "action_type": "colonize"
+      },
+      "match": {}
+    },
+    {
+      "name": "supported_hero_action",
+      "priority": 90,
+      "action": {
+        "action_type": "hero_action"
+      },
+      "match": {
+        "entity": {
+          "kind": "hero"
+        }
+      }
+    },
+    {
+      "name": "take_the_weakest_settlement",
+      "priority": 80,
+      "action": {
+        "action_type": "attack_settlement"
+      },
+      "match": {},
+      "prefer": {
+        "field": "target_units",
+        "order": "min"
+      }
+    },
+    {
+      "name": "court_our_best_friend",
+      "priority": 70,
+      "action": {
+        "action_type": "diplomacy"
+      },
+      "match": {
+        "offer": {
+          "params": {
+            "diplomacy_term": {
+              "not_in": [
+                "declare_war"
+              ]
+            }
+          }
+        }
+      },
+      "prefer": {
+        "field": "target_faction_standing",
+        "order": "max"
+      }
+    },
+    {
+      "name": "close_on_the_nearest_enemy",
+      "priority": 20,
+      "action": {
+        "action_type": "move"
+      },
+      "match": {
+        "entity": {
+          "kind": "lord"
+        }
+      },
+      "prefer": {
+        "field": "move_dist_to_enemy",
+        "order": "min"
+      }
+    },
+    {
+      "name": "spread_out",
+      "priority": 10,
+      "action": {
+        "action_type": "move"
+      },
+      "match": {
+        "entity": {
+          "kind": "lord"
+        }
+      }
+    }
+  ],
+  "screens": [
+    {
+      "name": "occupation_prefer_vassalage",
+      "priority": 200,
+      "match": {
+        "screen": "occupation"
+      },
+      "action": {
+        "options": [
+          "occupy and vassalise",
+          "resettle and vassalise",
+          "subjugate"
+        ]
+      }
+    },
+    {
+      "name": "occupation_then_occupy",
+      "priority": 100,
+      "match": {
+        "screen": "occupation"
+      },
+      "action": {
+        "options": [
+          "occupy",
+          "occupy as factory",
+          "occupy as outpost",
+          "occupy heathland"
+        ]
+      }
+    }
+  ]
+}

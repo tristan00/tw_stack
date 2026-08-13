@@ -179,6 +179,10 @@ CCO_TSV = os.path.join(REFERENCE_DIR, "ui3_extraction", "CCO.tsv")
 WIKI_ROOT = _TD + "/wiki"
 
 # scratch, metrics, archive
+# Rule sets are SOURCE, not run output: a run is not reproducible on another machine if
+# the rules it played by live outside the checkout. RULES_DIR stays as the local override
+# so an operator can try a variant without editing the repo; the repo copy is the default.
+RULES_DIR_REPO = os.path.join(ROOT, "rules")
 RULES_DIR = os.path.join(TWDATA, "rules")
 METRICS_DIR = os.path.join(TWDATA, "metrics")
 OPTUNA_DIR = os.path.join(METRICS_DIR, "optuna")

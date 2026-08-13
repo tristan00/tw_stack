@@ -1,0 +1,100 @@
+{
+  "rules": [
+    {
+      "name": "attack_weaker_army",
+      "priority": 90,
+      "match": {
+        "entity": {"kind": "lord"},
+        "offer": {"action_type": "attack_army", "params": {"units_advantage": {">": 0}}}
+      },
+      "action": {"action_type": "attack_army"}
+    },
+    {
+      "name": "attack_offered_settlement",
+      "priority": 85,
+      "match": {
+        "entity": {"kind": "lord"},
+        "offer": {"action_type": "attack_settlement"}
+      },
+      "action": {"action_type": "attack_settlement"}
+    },
+    {
+      "name": "close_on_weaker_enemy",
+      "priority": 80,
+      "match": {
+        "entity": {"kind": "lord"},
+        "offer": {"action_type": "move", "params": {"move_dist_to_smaller_enemy": {"!=": null}}}
+      },
+      "action": {"action_type": "move"},
+      "prefer": {"field": "move_dist_to_smaller_enemy", "order": "min"}
+    },
+    {
+      "name": "idle_army_recruits",
+      "priority": 70,
+      "match": {
+        "entity": {"kind": "lord", "state": {"ap_pct": {"<": 10}, "pending_recruits": 0}},
+        "offer": {"action_type": "recruit_unit", "params": {"in_own_territory": true}}
+      },
+      "action": {"action_type": "recruit_unit"}
+    },
+    {
+      "name": "trade_goods_buildings",
+      "priority": 60,
+      "match": {
+        "offer": {"action_type": "building", "params": {"chain_key": "*resource*"}}
+      },
+      "action": {"action_type": "building"}
+    },
+    {
+      "name": "ambush_in_enemy_territory",
+      "priority": 50,
+      "match": {
+        "entity": {"kind": "lord"},
+        "offer": {"action_type": "stance",
+                  "key": "MILITARY_FORCE_ACTIVE_STANCE_TYPE_AMBUSH",
+                  "params": {"in_enemy_territory": true}}
+      },
+      "action": {"action_type": "stance"}
+    },
+    {
+      "name": "march_to_default",
+      "priority": 40,
+      "match": {
+        "entity": {"kind": "lord",
+                   "state": {"stance": "MILITARY_FORCE_ACTIVE_STANCE_TYPE_MARCH"}},
+        "offer": {"action_type": "stance",
+                  "key": "MILITARY_FORCE_ACTIVE_STANCE_TYPE_DEFAULT"}
+      },
+      "action": {"action_type": "stance"}
+    },
+    {
+      "name": "random_move",
+      "priority": 10,
+      "match": {
+        "offer": {"action_type": "move"}
+      },
+      "action": {"action_type": "move"},
+      "prefer": {"order": "random"}
+    }
+  ],
+  "screens": [
+    {
+      "name": "autoresolve_battles",
+      "priority": 100,
+      "match": {"screen": "pre_battle"},
+      "action": {"options": ["button_autoresolve"]}
+    },
+    {
+      "name": "vassalize_when_offered",
+      "priority": 90,
+      "match": {"screen": "occupation"},
+      "action": {"options": ["occupy and vassalise", "resettle and vassalise", "subjugate"]}
+    },
+    {
+      "name": "occupy_when_offered",
+      "priority": 80,
+      "match": {"screen": "occupation"},
+      "action": {"options": ["occupy"]}
+    }
+  ]
+}
