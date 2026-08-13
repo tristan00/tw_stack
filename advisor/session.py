@@ -621,7 +621,10 @@ def _resolve_uuid(con, c):
     return hits[0] if len(hits) == 1 else None
 
 
-GROWTH_BASELINE = "first_decision_snapshot"
+# Names BOTH endpoints, not just the baseline. Rows measured to the last point and rows
+# measured to the peak are different numbers over the same campaigns, and a reader cannot
+# tell which by looking at them -- which is the whole reason this field exists.
+GROWTH_BASELINE = "first_decision_snapshot->peak"
 
 
 def _campaign_growth(con, uuid):
@@ -817,9 +820,14 @@ def _checkpoint_trial(stretch, backend, backend_cfg, gen_n, report, trained, log
     return row
 
 
-def backfill_trials(runs_root=RUNS_ROOT, log=print):
-    """Rebuild ledger rows for sessions that ended before they could write one."""
-    have = metrics_db.trial_ids()
+def backfill_trials(runs_root=RUNS_ROOT, log=print, recompute=False):
+    """Rebuild ledger rows for sessions that ended before they could write one.
+
+    recompute=True also rewrites rows that are already there, which is how the ledger is
+    moved onto a changed growth definition: every row is rebuilt from the corpus by the
+    same code path, so the ledger cannot end up half on one definition and half on another.
+    """
+    have = set() if recompute else metrics_db.trial_ids()
     written = 0
     for path, rep in _session_reports(runs_root):
         for gen, stretch in _stretches(rep["campaigns"]):
@@ -1193,7 +1201,7 @@ def _parse_turns(arg):
 def main():
     sys.path.insert(0, _HERE)
     if "--backfill-trials" in sys.argv:
-        return backfill_trials()
+        return backfill_trials(recompute="--recompute" in sys.argv)
     n = int(sys.argv[1]) if len(sys.argv) > 1 else 3
     turns = _parse_turns(sys.argv[2]) if len(sys.argv) > 2 else 20
     import backends as B
