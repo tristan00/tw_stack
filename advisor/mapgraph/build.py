@@ -96,13 +96,13 @@ class Graph:
 
 _CAT_SCALE = {
     "building": {
-        "create_cost": (S.BUILD_COST_SCALE, 0.0, 2.0),
+        "create_cost": (S.BUILD_COST_SCALE, None, None),
         "level": (S.LEVEL_SCALE, 0.0, 2.0),
         "create_time": (S.BUILD_TIME_SCALE, 0.0, 2.0),
     },
     "unit": {
-        "recruitment_cost": (S.RECRUIT_COST_SCALE, 0.0, 3.0),
-        "upkeep_cost": (S.UPKEEP_SCALE, 0.0, 2.0),
+        "recruitment_cost": (S.RECRUIT_COST_SCALE, None, None),
+        "upkeep_cost": (S.UPKEEP_SCALE, None, None),
         "num_men": (S.MEN_SCALE, 0.0, 2.0),
         "unit_tier": (S.TIER_SCALE, 0.0, 1.0),
         "create_time": (S.UNIT_TIME_SCALE, 0.0, 1.0),
@@ -128,7 +128,8 @@ def _cat_values(kind, key, nid):
     for name in S.TYPE_FIELDS[kind]:
         if name in row:
             scale, lo, hi = scales[name]
-            out[name] = (rd.num(name) / scale).clip(lo, hi)
+            v = rd.num(name) / scale
+            out[name] = v.slog() if lo is None else v.clip(lo, hi)
     return out or None
 
 
@@ -175,11 +176,11 @@ def build_graph(record):
                       "faction:" + fk, "faction")
         vals = {"is_player": rd.flag("is_player")}
         if rel.get("standing") is not None:
-            vals["standing"] = (rd.num("standing") / 100.0).clip(-1.0, 1.0)
+            vals["standing"] = (rd.num("standing") / 100.0).slog()
         if fk == me:
             cd = G.Reader(campaign, "campaign", "campaign")
-            vals["treasury"] = (cd.num("treasury") / S.TREASURY_SCALE).clip(-5.0, 5.0)
-            vals["income"] = (cd.num("income") / S.TREASURY_SCALE).clip(-5.0, 5.0)
+            vals["treasury"] = (cd.num("treasury") / S.TREASURY_SCALE).slog()
+            vals["income"] = (cd.num("income") / S.TREASURY_SCALE).slog()
             vals["turn"] = cd.num("turn") / 20.0
             _m = str(campaign.get("campaign_map") or "")
             if _m in ("wh3_main_combi", "wh3_main_chaos"):
@@ -228,7 +229,7 @@ def build_graph(record):
         if st is not None:
             pd = G.Reader(st, "region:" + key, "entities.province.state")
             vals["public_order"] = (pd.num("public_order") / S.ORDER_SCALE).clip(-1.0, 1.0)
-            vals["income"] = (pd.num("income") / S.INCOME_SCALE).clip(-1.0, 2.0)
+            vals["income"] = (pd.num("income") / S.INCOME_SCALE).slog()
         ri = g.add("r:" + key, "region", vals, own=(str(r.get("owner") or "") == me))
         if _pos_ok(r.get("x"), r.get("y")):
             region_xy.append((float(r["x"]), float(r["y"]), ri))
@@ -245,7 +246,7 @@ def build_graph(record):
                 pd = G.Reader(st, "region:" + key, "entities.province.state")
                 vals["public_order"] = (pd.num("public_order") /
                                         S.ORDER_SCALE).clip(-1.0, 1.0)
-                vals["income"] = (pd.num("income") / S.INCOME_SCALE).clip(-1.0, 2.0)
+                vals["income"] = (pd.num("income") / S.INCOME_SCALE).slog()
             g.add("r:" + key, "region", vals)
             prov_of_region.setdefault(key, str((st or {}).get("province") or ""))
 
@@ -270,7 +271,7 @@ def build_graph(record):
             sd = G.Reader(st, "province:" + prov, "entities.province.state")
             if st.get("growth_per_turn") is not None:
                 vals["growth_per_turn"] = (sd.num("growth_per_turn")
-                                           / S.GROWTH_SCALE).clip(-1.0, 3.0)
+                                           / S.GROWTH_SCALE).slog()
             if st.get("free_slots") is not None:
                 vals["free_slots"] = sd.num("free_slots") / S.SLOTS_SCALE
             if st.get("max_slots") is not None:
@@ -455,8 +456,8 @@ def build_graph(record):
     cd = G.Reader(campaign, "campaign", "campaign")
     g.g_ctx = [
         float(cd.num("turn") / 20.0),
-        float((cd.num("treasury") / S.TREASURY_SCALE).clip(-5.0, 5.0)),
-        float((cd.num("income") / S.TREASURY_SCALE).clip(-5.0, 5.0)),
+        float((cd.num("treasury") / S.TREASURY_SCALE).slog()),
+        float((cd.num("income") / S.TREASURY_SCALE).slog()),
         float(cd.num("settlements") / 10.0),
         float(cd.num("armies") / 5.0),
         float(cd.num("allies") / 3.0),
@@ -572,7 +573,7 @@ def _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me,
         if ck_key:
             g.edge(ai, g.cat_node(kind, ck_key), "act_on")
 
-    tgt = _target_of(g, at, key, params, region_xy)
+    tgt = _target_of(g, at, key, params, region_xy, cid)
 
     if at == "hero_action":
         akey = str(params.get("action_key") or "")
@@ -617,9 +618,12 @@ def _nearest_region(region_xy, x, y):
     return best
 
 
-def _target_of(g, at, key, params, region_xy=()):
+def _target_of(g, at, key, params, region_xy=(), cid=""):
     if at in ("move", "leave_garrison"):
         return _nearest_region(region_xy, params.get("x"), params.get("y"))
+    if at in ("building", "building_repair", "building_dismantle"):
+        rkey = str(params.get("region") or cid or "")
+        return g.id2idx.get("s:" + rkey) or g.id2idx.get("r:" + rkey)
     if params.get("target_cqi") is not None:
         return g.id2idx.get("c:" + str(params["target_cqi"]))
     if at in ("attack_settlement", "colonize", "garrison"):
