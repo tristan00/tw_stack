@@ -23,7 +23,7 @@ from advisor_api.models import (
     DecisionRow, DiploEvent, EntityState, ForcingBar, ForcingTile, Ident, InterruptOption,
     InterruptRow, Metric, ModelCard, OfferRow, OutcomeTally, PhaseSpan, PolicyRow, Rate,
     RewardPoint, Scope, Service, StartRow, TimelineAction, TimelineLane,
-    TimingRow, TrainingEvent, TrialRow,
+    TimingRow, TrainingEvent, TrialCorr, TrialRow,
 )
 
 DECISIONS_PAGE = 50
@@ -45,8 +45,6 @@ _OUTCOME_STATE = {
 }
 
 LIVE_WINDOW_S = 600.0
-
-TRIAL_LIVE_WINDOW_S = 1200.0
 
 
 def _ended_because(pm: dict) -> str | None:
@@ -1237,6 +1235,14 @@ def agreement_page():
 ALIGNMENT_CAVEAT = None
 
 
+_GENERATION_CAVEAT = (
+    "Which generation ranked a decision is matched by TIMESTAMP, not recorded: nothing in "
+    "the corpus joins a stored ranking to the weights that produced it. Windows come from "
+    "the training ledger's own start and flush times, clipped so a decision lands in "
+    "exactly one. A generation is numbered within its own session, so a session that "
+    "starts on an already-retrained model begins again at g0.")
+
+
 @adb.cached
 def agreement_series(axis: str = "window"):
     """Agreement over time, or by model generation."""
@@ -1286,7 +1292,7 @@ def agreement_series(axis: str = "window"):
     drawable = [p for p in pts if p["rho_median"] is not None]
     return AgreementSeriesPage(
         scope=scope, freshness=fresh, axis=axis, is_alignment=(axis == "generation"),
-        caveat=(None),
+        caveat=(_GENERATION_CAVEAT if axis == "generation" else None),
         bucket_decisions=(_i(pts[0]["bucket_decisions"]) if pts else None),
         ambiguous=Count(value=_i(s.get("ambiguous"), 0) or 0, noun="decisions",
                         population="whose timestamp falls inside more than one training "
@@ -1535,16 +1541,85 @@ def _clean(d: dict) -> dict:
     return {k: v for k, v in d.items() if v is not None}
 
 
-def trials():
-    return _trials()
+# A trial plays ~10 campaigns, so the per-turn threshold would gate every trial out. Five
+# points is still few; the campaign count rides on every coefficient so it can be judged.
+TRIAL_CORR_MIN_N = 5
+
+
+@db.cached
+def _campaign_arm_shares(con) -> dict:
+    """{campaign_id: {arm: its share of that campaign's picks}}."""
+    per: dict = {}
+    totals: dict = {}
+    for r in con.execute(
+            "SELECT COALESCE(at.policy,'(unrecorded)') arm, dp.campaign_id ckey,"
+            "       COUNT(*) n"
+            " FROM action_taken at JOIN decision_points dp"
+            "      ON dp.decision_id = at.decision_id"
+            " GROUP BY arm, ckey"):
+        arm = arms.arm_of(r["arm"]) or arms.UNRECORDED
+        # A loop decision is not a strategy draw; counting it understates every real arm.
+        if arm in arms.NOT_A_DRAW:
+            continue
+        n = _i(r["n"], 0) or 0
+        per.setdefault(r["ckey"], {})[arm] = per.get(r["ckey"], {}).get(arm, 0) + n
+        totals[r["ckey"]] = totals.get(r["ckey"], 0) + n
+    return {c: {a: n / totals[c] for a, n in cells.items()}
+            for c, cells in per.items() if totals.get(c)}
+
+
+@db.cached
+def _campaign_settlement_growth(con) -> dict:
+    """{campaign_id: settlements gained, first snapshot -> peak}."""
+    out = {}
+    for ckey, row in CG.trajectories(con).items():
+        g = CG.enrich(row).get("settlements_growth")
+        if g is not None:
+            out[ckey] = float(g)
+    return out
+
+
+def _growth_corr(uuids, shares, growth) -> dict:
+    """Per arm: does its share of a campaign's picks track that campaign's growth?"""
+    pairs = [(shares[u], growth[u]) for u in (uuids or [])
+             if u in shares and u in growth]
+    ys = [g for _, g in pairs]
+    over = Count(value=len(pairs), noun="campaigns",
+                 population="in this trial with both a recorded pick share and a "
+                            "measured growth span")
+    out = {}
+    for arm in arms.NAMES:
+        xs = [s.get(arm, 0.0) for s, _ in pairs]
+        r, gate = _pearson_gated(xs, ys, min_n=TRIAL_CORR_MIN_N)
+        out[arm] = TrialCorr(r=r, gate=gate, over=over)
+    return out
+
+
+def trials(con=None):
+    """The ledger, newest first, with `live` and the growth correlations decided per read.
+
+    Liveness cannot be memoized on the ledger's file stamp: a session that dies stops
+    touching the very file whose change would expire its own claim to be running. The
+    correlations come from the corpus, which moves on its own stamp, not the ledger's.
+    """
+    out, meta = _trials()
+    live = metrics_db.live_trials(meta)
+    shares = _campaign_arm_shares(con) if con is not None else {}
+    growth = _campaign_settlement_growth(con) if con is not None else {}
+    by_trial = {m.get("trial"): m for m in meta}
+    for row in out:
+        row.live = row.trial in live
+        row.growth_corr = _growth_corr(
+            (by_trial.get(row.trial) or {}).get("campaign_uuids"), shares, growth)
+    return out
 
 
 @db.cached_files(metrics_db.DB_PATH, metrics_db.DB_PATH + "-wal")
-def _trials() -> list:
+def _trials() -> tuple:
     out = []
     rows = list(metrics_db.trials())
-    newest_live = max((float(d.get("ts") or 0) for d in rows if d.get("running")),
-                      default=None)
+    meta = [{"trial": d.get("trial"), "ts": d.get("ts"), "running": d.get("running"),
+             "campaign_uuids": d.get("campaign_uuids")} for d in rows]
     for d in rows:
         corpus = d.get("corpus_at_train") or {}
         setts = d.get("settlements") or {}
@@ -1576,15 +1651,12 @@ def _trials() -> list:
             turns_per_campaign=_f(d.get("turns_per_campaign")),
             seconds_per_campaign=_f(timing.get("s_per_campaign")),
             seconds_per_turn=_f(timing.get("s_per_turn")),
-            live=(bool(d.get("running"))
-                  and float(d.get("ts") or 0) == newest_live
-                  and time.time() - float(d.get("ts") or 0) <= TRIAL_LIVE_WINDOW_S),
             notes=(", ".join("%s %s" % (k, v)
                              for k, v in (d.get("outcomes") or {}).items()) or None))
         row.snapshots = _i(d.get("_snapshots"), 1)
         out.append(row)
     out.reverse()                                          # newest first
-    return out[:200]
+    return out[:200], meta
 
 
 # campaign detail

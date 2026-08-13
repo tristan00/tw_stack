@@ -68,8 +68,11 @@ def _mine(row, run_dir) -> bool:
 
 def _windows(run_dir):
     """[(trial, started, ended, ...)] for this run dir, sorted, clipped to a partition."""
+    ledger = metrics_db.trials() or []
+    now = time.time()
+    live = metrics_db.live_trials(ledger, now)
     rows = []
-    for r in metrics_db.trials() or []:
+    for r in ledger:
         if not _mine(r, run_dir):
             continue
         started, ended = r.get("started"), r.get("ts")
@@ -78,6 +81,11 @@ def _windows(run_dir):
         started, ended = float(started), float(ended)
         if ended < started:
             started, ended = ended, started
+        # The generation playing now is still producing decisions. Ending its window at its
+        # last ledger write would leave every decision made since outside every window, and
+        # a join over them would answer for the previous model.
+        if str(r.get("trial") or "") in live:
+            ended = max(ended, now)
         rows.append({
             "trial": str(r.get("trial") or ""), "generation": r.get("generation"),
             "session": r.get("session"), "started_ts": started, "ended_ts": ended,

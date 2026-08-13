@@ -298,7 +298,7 @@ def get_training() -> TrainingPage:
         scope=_scope("every trial and every retrain, newest first",
                      "trials come from the experiment ledger; retrains from the session "
                      "reports"),
-        trials=q.trials(), history=history, group_order=seen)
+        trials=q.trials(_con()), history=history, group_order=seen)
 
 
 @app.get("/api/models", response_model=ModelsPage, tags=["models"])

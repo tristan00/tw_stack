@@ -88,6 +88,28 @@ def trials():
         con.close()
 
 
+# A running trial rewrites its row when a campaign starts and again when it ends, so a live
+# one is never quiet for longer than a campaign. Deliberately looser than one campaign.
+TRIAL_LIVE_WINDOW_S = 1200.0
+
+
+def live_trials(rows, now=None):
+    """The ids in `rows` that a session is writing right now, as a set.
+
+    `running` is written per campaign and cannot be cleared by a session that was killed, so
+    it is a claim rather than a fact: every killed session leaves a row asserting it forever.
+    The claim holds only for the newest such row, and only while it is still being rewritten.
+    """
+    now = time.time() if now is None else now
+    claimed = [r for r in rows if r.get("running")]
+    if not claimed:
+        return set()
+    newest = max(claimed, key=lambda r: float(r.get("ts") or 0))
+    if now - float(newest.get("ts") or 0) > TRIAL_LIVE_WINDOW_S:
+        return set()
+    return {str(newest.get("trial") or "")}
+
+
 def trial_ids():
     """The ids already banked, for a backfill that must not write one twice."""
     con = connect(readonly=True)
