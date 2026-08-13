@@ -183,9 +183,6 @@ class Recording:
         self._events({"t": round(time.time() - self.t0, 3), "kind": "stop"})
         for th in self._threads:
             th.join(timeout=join_timeout)
-        # Read the dict at stop time, not the snapshot taken in __init__. Every stream's
-        # writer is created AFTER Recording is constructed, so the snapshot held only
-        # events.jsonl and every other file was left open and unflushed on shutdown.
         for w in list(self._writers.values()):
             w.close()
 
@@ -203,9 +200,6 @@ def start(out_root, streams, *, recorder_version, meta_overrides=None,
 
     writers = {}
 
-    # Keyed by (directory, name), not name alone: the --dev diagnostic streams write into
-    # the log tree rather than the run directory, and two streams may share a file name
-    # across the two roots without meaning the same file.
     def get_writer(dirpath, name):
         key = (os.path.abspath(dirpath), name)
         if key not in writers:
@@ -315,7 +309,6 @@ def main():
     was = reset_bus_files()
     print("reset bus files (was %.1f MB)" % (was / (1024 * 1024)), flush=True)
 
-    # --dev IS the diagnostic switch, and it turns the diagnostic streams on together.
     if dev_on:
         ui_on = True
         actions_on = True

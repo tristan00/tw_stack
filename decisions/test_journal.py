@@ -75,9 +75,6 @@ def main():
 
         from decisions.store import DecisionStore
 
-        # The recorder owns the schema, and the channel is a table in it. Asking before
-        # the store exists must fail loudly rather than conjure a database -- the old
-        # jsonl channel silently created its own file and dropped every early request.
         try:
             J._ask(run, "turn", req_id="early")
             check(False, "asking before the store exists raises")
@@ -93,8 +90,6 @@ def main():
         check(rows[0].get("hello") == 1, "the payload is unpacked onto the row")
         check(rows[0].get("req_id") == "turn-1", "the row carries its req_id")
 
-        # The cursor is the whole point: the recorder must read what it has not seen, not
-        # rescan the history to find it.
         rows2, after2 = J.read_requests(run, after)
         check(not rows2 and after2 == after, "the cursor does not re-read history")
 
@@ -109,7 +104,6 @@ def main():
         except RuntimeError as e:
             check("boom" in str(e), "an error reply raises")
 
-        # A fire-and-forget kind carries no req_id and must still queue.
         J.log_verification(run, 1, {"ok": True})
         rows3, _ = J.read_requests(run, after)
         check(any(r["kind"] == "verification" for r in rows3),

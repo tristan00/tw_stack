@@ -23,7 +23,6 @@ DISMISS_BUTTON_IDS = frozenset((
     "button_continue",
 ))
 
-# MATCHED ON TEXT, BECAUSE THE ID IS NOT ALWAYS THE BUTTON.
 DISMISS_BUTTON_TEXTS = frozenset((
     "continue", "ok", "okay", "close", "accept", "acknowledge", "dismiss",
 ))
@@ -33,7 +32,6 @@ def _is_dismiss_text(text):
     return str(text or "").strip().lower() in DISMISS_BUTTON_TEXTS
 
 
-# A MATCHED LABEL IS NOT THE CONTROL, AND CLICKING IT DOES NOTHING.
 LABEL_IDS = frozenset(("button_txt", "dy_text", "text", "label", "dy_description"))
 
 
@@ -201,8 +199,6 @@ def find_dismiss_buttons(bus, root, max_depth=24, max_nodes=4000):
             target = _clickable_owner(path, n, by_path)
         else:
             continue
-        # A label and its button both resolving to the same control is the normal case, not
-        # an error -- dedupe so the panel is not clicked twice and re-opened.
         if target and target not in seen:
             seen.add(target)
             hits.append(target)

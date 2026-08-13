@@ -81,9 +81,6 @@ def snapshot() -> tuple:
 _MATCH = (
     ("advisor session", "session.py"),
     ("recorder", "manager.py"),
-    # The analytics builder. Unlike the dashboard it is a separate process, so it is
-    # findable from here -- and it needs to be: every precomputed number the models pages
-    # show is as current as this process last managed to run.
     ("analytics", "analytics.runner"),
 )
 

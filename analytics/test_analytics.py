@@ -32,7 +32,6 @@ from analytics import metrics as M
 from analytics import store as S
 
 
-# ---------------------------------------------------------------- the oracle
 
 def reference_spearman(xs, ys):
     """Verbatim from `git show 7a2d3d0^:advisor_ui/ui.py`, lines 152-176."""
@@ -62,7 +61,6 @@ def reference_spearman(xs, ys):
     return (num / (dx * dy)) if dx and dy else None
 
 
-# ---------------------------------------------------------------- metric gates
 
 def test_spearman_matches_the_reference(fail):
     """500 vectors, deliberately tie-heavy, against the deleted implementation."""
@@ -70,8 +68,6 @@ def test_spearman_matches_the_reference(fail):
     worst = 0.0
     for case in range(500):
         n = rng.randint(3, 60)
-        # A small value pool forces ties; the graph model really does tie, and ties are
-        # the only place the two implementations could plausibly diverge.
         pool = rng.choice((3, 5, n))
         xs = [rng.randint(1, pool) for _ in range(n)]
         ys = [rng.randint(1, pool) for _ in range(n)]
@@ -93,15 +89,10 @@ def test_reference_case_is_exact(fail):
     cat = [1, 2, 3, 4, 5]
     gnn = [2, 1, 4, 3, 5]
     checks = (
-        # sum d^2 = 4, rho = 1 - 6*4/(5*24)
         ("rho", M.spearman(cat, gnn), 0.8),
-        # 8 concordant, 2 discordant, no ties: (8-2)/10
         ("tau_b", M.kendall_tau_b(cat, gnn), 0.6),
-        # (1-p)*2.8251 + (5/5)*0.9^5 = 0.28251 + 0.59049
         ("rbo", M.rbo(cat, gnn), 0.873),
-        # {0,1,2} & {1,0,3} = 2, over min(3, 5)
         ("top3_overlap", M.topk_overlap(cat, gnn, 3), 2.0 / 3.0),
-        # {0,1,2,3} & {1,0,3,2} = 4, over min(4, 5)
         ("top5_overlap", M.topk_overlap(cat, gnn, 5), 1.0),
     )
     for name, got, want in checks:
@@ -134,10 +125,8 @@ def test_ties_are_averaged(fail):
     r = M.tie_averaged_ranks([1, 1, 3])
     if list(r) != [1.5, 1.5, 3.0]:
         fail("tie_averaged_ranks([1,1,3]) is %r, must be [1.5, 1.5, 3.0]" % (list(r),))
-    # tau-b's denominator must shrink on the tied side, so a tied vector cannot reach 1.0
     tied = M.kendall_tau_b([1, 1, 3], [1, 2, 3])
     if tied is None or not (0.99 < tied <= 1.0000000001):
-        # one tied pair on x, none on y: C=2, D=0, n0=3, Tx=1 -> 2/sqrt(2*3) = 0.8165
         pass
     want = 2.0 / (2.0 * 3.0) ** 0.5
     if tied is None or abs(tied - want) > 1e-12:
@@ -155,7 +144,6 @@ def test_top_measures_are_tie_safe(fail):
     return "tied tops compare as sets"
 
 
-# ---------------------------------------------------------------- store gates
 
 class _Tenant:
     """A minimal tenant, used to exercise the contract without a corpus."""
@@ -239,7 +227,6 @@ def test_formula_version_bump_wipes_and_rebuilds(fail):
         an = box.analytics()
         t = _Tenant(version=1)
         S.run_tenant(t, src, an)
-        # Poison a row with a value the formula could never produce.
         an.execute("UPDATE probe SET doubled = -999 WHERE decision_id = 95")
         an.commit()
         t.FORMULA_VERSION = 2
@@ -260,7 +247,6 @@ def test_source_drift_forces_rebuild(fail):
         an = box.analytics()
         t = _Tenant()
         S.run_tenant(t, src, an)
-        # The corpus is replaced by a different one that happens to reach the same max id.
         src.execute("DELETE FROM decisions WHERE decision_id < 101")
         src.commit()
         S.run_tenant(t, src, an)
@@ -274,7 +260,6 @@ def test_source_drift_forces_rebuild(fail):
 def test_no_source_row_below_the_watermark_is_uncomputed(fail):
     """The completeness invariant, and the reason it is counted rather than assumed."""
     with _Sandbox() as box:
-        # A source with a real gap: folding must still reach the end.
         src = box.corpus("src.sqlite", [91, 92, 93, 97, 98])
         an = box.analytics()
         S.run_tenant(_Tenant(), src, an)
@@ -283,7 +268,6 @@ def test_no_source_row_below_the_watermark_is_uncomputed(fail):
             fail("a permanent gap stalled the fold at watermark=%r rows=%r; ids 94-96 do "
                  "not exist and never will" % (st["watermark"], st["rows"]))
 
-        # And a tenant that loses one must be caught, not tolerated.
         src2 = box.corpus("src2.sqlite", range(91, 101))
         an2 = box.analytics("a2.sqlite")
         try:

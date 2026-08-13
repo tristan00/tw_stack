@@ -44,18 +44,8 @@ _OUTCOME_STATE = {
     "no_ending_recorded": "warn",
 }
 
-# A campaign with no postmortem is only RUNNING if it is still deciding. `campaigns.outcome`
-# is written when a session records an ending, so a session killed mid-campaign -- runctl
-# down, a babysitter relaunch, a crash -- leaves that campaign with no outcome forever and
-# nothing reconciles it. Measured: 29 campaigns with no outcome, 28 of them with no decision
-# for over ten minutes and the oldest 12.2 hours, all rendering as "running".
-#
-# Silence is not an outcome, so this does not invent one. It reports that no ending was
-# recorded, which is the true statement, and leaves the genuinely live campaign alone.
 LIVE_WINDOW_S = 600.0
 
-# A trial's row is rewritten once per campaign, and a campaign runs a few minutes, so this
-# is deliberately looser than the per-campaign window above.
 TRIAL_LIVE_WINDOW_S = 1200.0
 
 
@@ -173,9 +163,7 @@ def _age_words(seconds):
     return "%dd ago" % (s // 86400)
 
 
-# ----------------------------------------------------------------------------------------
 # file-backed sources
-# ----------------------------------------------------------------------------------------
 
 @db.cached
 def postmortems(con) -> list:
@@ -209,9 +197,7 @@ def unjoined_endings(con) -> int:
                if not pm.get("campaign_key") or pm["campaign_key"] not in keys)
 
 
-# ----------------------------------------------------------------------------------------
 # run
-# ----------------------------------------------------------------------------------------
 
 @db.cached
 def current(con) -> Current:
@@ -370,9 +356,7 @@ def cycle_timing(con) -> list:
     return out
 
 
-# ----------------------------------------------------------------------------------------
 # campaigns
-# ----------------------------------------------------------------------------------------
 
 @db.cached
 def campaign_rows(con) -> list:
@@ -553,9 +537,7 @@ def matrix(con, kind: str = "action"):
     return grid, totals_
 
 
-# ----------------------------------------------------------------------------------------
 # decisions
-# ----------------------------------------------------------------------------------------
 
 def _options_of(options_json) -> list:
     """The options on a blocking screen, as (label, payload) pairs."""
@@ -817,9 +799,7 @@ def actions_summary(con):
     return tiles, rows, policies, denominators
 
 
-# ----------------------------------------------------------------------------------------
 # blocking screens
-# ----------------------------------------------------------------------------------------
 
 @db.cached
 def menus(con):
@@ -889,9 +869,7 @@ def menus(con):
             by_screen, policies, coverage, rows)
 
 
-# ----------------------------------------------------------------------------------------
 # timeline
-# ----------------------------------------------------------------------------------------
 
 @db.cached
 def timeline(con) -> list:
@@ -940,9 +918,7 @@ def timeline(con) -> list:
     return out
 
 
-# ----------------------------------------------------------------------------------------
 # models
-# ----------------------------------------------------------------------------------------
 
 _MODEL_DIRS = (
     ("greedy_catboost global", common.MODEL_GLOBAL, "catboost",
@@ -1110,9 +1086,6 @@ def _wilson(k, n, z=1.96):
     return max(0.0, (c - s) / d), min(1.0, (c + s) / d)
 
 
-# ----------------------------------------------------------------------------------------
-# model comparison -- served from the precomputed analytics tables, never computed here
-# ----------------------------------------------------------------------------------------
 
 def _freshness(tenant: str):
     """How current the precomputed numbers are, as a required field on every page."""
@@ -1297,9 +1270,6 @@ def agreement_series(axis: str = "window"):
                           population="comparable, in this bucket"),
             gate=r["gate"])
 
-    # Always populated, on BOTH axes. On the generation axis these are the rows of the
-    # table; on the run axis they are the retrain boundaries drawn over the trend, which is
-    # the comparison the view exists to make -- did agreement move when the weights did.
     gens = []
     for r in adb.rows("SELECT * FROM agreement_series WHERE axis='generation' ORDER BY seq"):
         n = _i(r["decisions"], 0) or 0
@@ -1428,9 +1398,6 @@ def correlations(con) -> list:
         turn_totals: dict = {}
         for r in con.execute(sql):
             k = (r["ckey"], _i(r["turn"], 0) or 0)
-            # Folded onto the strategy, like every other arm tally. Grouping on the raw
-            # policy correlated each ruleset RULE against campaign outcome separately, so
-            # the ruleset arm never had enough turns in one row to clear the gate.
             arm = arms.arm_of(r["arm"]) or arms.UNRECORDED
             n = _i(r["n"], 0) or 0
             cells = per.setdefault(arm, {})
@@ -1575,13 +1542,6 @@ def trials():
 @db.cached_files(metrics_db.DB_PATH, metrics_db.DB_PATH + "-wal")
 def _trials() -> list:
     out = []
-    # `running` is written by _checkpoint_trial and never cleared, so every session that
-    # was killed rather than finished leaves its last row claiming to be live forever.
-    # Measured: 3 rows marked running, of which 1 was the live session.
-    #
-    # A running trial rewrites its row after every campaign, so a live one always has a
-    # fresh ts -- and only the newest such row can be live, because a session superseded
-    # by a later one has certainly stopped.
     rows = list(metrics_db.trials())
     newest_live = max((float(d.get("ts") or 0) for d in rows if d.get("running")),
                       default=None)
@@ -1596,7 +1556,6 @@ def _trials() -> list:
             cfg=(json.dumps(d["backend_cfg"], sort_keys=True)
                  if d.get("backend_cfg") else None),
             mix={arms.canonical(k): v for k, v in (d.get("strategies") or {}).items()},
-            # ruleset is {name, sha256}; the name is what identifies the run.
             ruleset=_text(d.get("ruleset")),
             campaigns=_i(d.get("campaigns")),
             corpus=_i(corpus.get("rows")),
@@ -1628,9 +1587,7 @@ def _trials() -> list:
     return out[:200]
 
 
-# ----------------------------------------------------------------------------------------
 # campaign detail
-# ----------------------------------------------------------------------------------------
 
 def reward_series(con, campaign_key: str):
     """The turn series for one campaign, plus the columns that carry no signal."""
@@ -1681,18 +1638,11 @@ def diplomacy_tail(con, campaign_key: str | None = None) -> list:
             faction=(_fac(_who) if (_who := (d.get("target") or d.get("faction"))) else None),
             outcome=_phrase(outcome), deal_score=score, standing=_f(d.get("standing")),
             terms=_text(d.get("terms") or d.get("speech")), state=state))
-    # Already newest-first: the query orders by event_id DESC. The old version read the
-    # file forwards and had to reverse.
     return out[:200]
 
 
-# ----------------------------------------------------------------------------------------
 # infra
-# ----------------------------------------------------------------------------------------
 
-# The advisor/recorder channel is not here any more: it is a table, not a file, so there
-# is no mtime to watch. Its liveness shows up as decisions arriving, which is what the run
-# view already reports.
 _ACTIVITY = (
     ("session log", None),
     ("trace.jsonl", "trace.jsonl"),

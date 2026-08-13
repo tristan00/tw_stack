@@ -1564,8 +1564,6 @@ def resolve(bus, max_rounds=6):
             _stuck_sig[0] = None
             steps.append("popups_cleared:%d" % n)
             continue
-        # Unfiltered first-sighting census, then the filtered per-change dump. The filter
-        # below is what kept base and benign roots out of the evidence entirely.
         nav.census_roots(bus)
         for r in before:
             if r not in nav.BASE_ROOTS and r not in BENIGN_PANELS:

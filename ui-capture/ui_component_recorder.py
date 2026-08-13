@@ -1046,9 +1046,6 @@ def watch(bus: Bus, emit, panels: dict | None = None, is_running=lambda: True) -
             for c in _opened_components(chunk_text):
                 mapped = COMPONENT_PANELS.get(c)
                 if not mapped:
-                    # An unknown panel is RECORDED, not skipped. It used to be dropped
-                    # after one stderr line, so the panels that stop campaigns were the
-                    # only ones guaranteed to leave no trace.
                     if c not in seen_unmapped:
                         seen_unmapped.add(c)
                         sys.stderr.write("ui-capture: capturing unmapped panel %r generically\n" % c)

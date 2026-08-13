@@ -40,7 +40,6 @@ def _h(**turns):
     return {int(t.lstrip("t")): v for t, v in turns.items()}
 
 
-# name, hist, turn, expected done, expected reason
 CASES = [
     ("before the first check, nothing is judged",
      _h(t1={"settlements": 1, "lord_level": 1}), 3, False, "before_first_check"),

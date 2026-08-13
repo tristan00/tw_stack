@@ -119,9 +119,6 @@ def get_matrix(kind: str = Query("action", pattern="^(action|interrupt)$")) -> M
                 per_try_ms=round(ms / tried, 0) if tried else None))
         rows.append(MatrixRow(faction=q._fac(faction), cells=out_cells))
     return MatrixPage(
-        # No detail line. It used to say "totals lead, worst confirm rate first", which
-        # described a banner that no longer exists -- and the table is sorted worst-first
-        # in plain sight, so saying so in prose was clutter.
         scope=_scope("every %s attempt in this run dir, by faction and type" % noun),
         kind=kind, totals=tot_rows, columns=columns, rows=rows)
 
@@ -138,9 +135,6 @@ def get_campaigns() -> CampaignsPage:
                          population="whose ending looks like a harness fault, not a defeat"),
         unjoined=Count(value=q.unjoined_endings(con), noun="endings",
                        population="recorded in the log but belonging to earlier run dirs"),
-        # How many campaigns a growth number could be computed for at all. The column this
-        # replaces rendered a dash for 117 of 265 rows and said nothing about why; the
-        # three reasons are separable now, and this is the headline of that.
         growth_coverage=Rate(
             n=sum(1 for r in rows if r.growth_state == "measured"), of=len(rows),
             noun="campaigns",

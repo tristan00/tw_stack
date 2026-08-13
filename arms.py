@@ -29,12 +29,9 @@ NAMES = ("random", "greedy_catboost", "ruleset", "marwil_gnn")
 ALIASES = {
     "exploit_tree": "greedy_catboost",
     "gnn_marwil": "marwil_gnn",
-    # The graph arm's first name, before the algorithm was added to it. It survives inside
-    # `gnn_delegated_exploit_tree`, and in older run configs.
     "gnn": "marwil_gnn",
 }
 
-# Written by the loop, not drawn from the strategy mix.
 NOT_A_DRAW = ("forced_end_turn",)
 
 UNRECORDED = "(unrecorded)"

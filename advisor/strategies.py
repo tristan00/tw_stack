@@ -7,7 +7,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import arms
 
-# Strategy names are <ALGORITHM>_<BACKEND>. Both halves are required.
 NAMES = ("random", "greedy_catboost", "ruleset", "marwil_gnn")
 
 
@@ -104,9 +103,6 @@ class MarwilGnn:
 
 
 def build(name, rng=None, ranker=None, ruleset=None, gnn=None):
-    # Historical spellings resolve here so that a saved command line, a babysitter config
-    # or a launcher script naming `exploit_tree` still starts. Reading an old name is not
-    # the same as keeping an old implementation: there is one of each strategy below.
     name = arms.canonical(name)
     if name == "random":
         return Random(rng)

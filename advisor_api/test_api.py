@@ -256,13 +256,9 @@ def test_no_signed_column_is_one_signed():
     """A signed column that can only ever read one way is unreachable by construction."""
     SIGNED = [("/api/campaigns", "$.rows", "settlements_growth"),
               ("/api/campaigns", "$.rows", "lord_growth")]
-    # A field that genuinely cannot go both ways, with the reason and the measurement.
     ONE_SIGNED_OK = {
         ("$.rows", "lord_growth"):
             "a legendary lord's level cannot decrease in WH3",
-        # Growth is first -> PEAK, and the peak is never below the first point, so this is
-        # non-negative by construction. A campaign that lost ground shows it in
-        # final_settlements beside this, not here.
         ("$.rows", "settlements_growth"):
             "measured to the peak, which cannot be below the starting point",
     }
@@ -315,7 +311,6 @@ def test_growth_delta_equals_its_endpoints():
     for r in _client.get("/api/campaigns").json()["rows"]:
         if r.get("growth_state") != "measured":
             continue
-        # Growth is measured to the PEAK, so these are the endpoints it claims.
         for d, a, b in (("settlements_growth", "first_settlements", "peak_settlements"),
                         ("lord_growth", "first_lord_level", "peak_lord_level")):
             if r.get(a) is None or r.get(b) is None:
@@ -343,7 +338,6 @@ def test_analytics_cannot_go_stale_silently():
         "served behind=%r, re-derived %r" % (f["behind"]["value"], max(0, hi - 1 - watermark))
     if f["behind"]["value"] > 0:
         assert f["state"] != "ok", "analytics is behind but reports ok"
-    # No holes: every corpus row at or below the watermark has a fact row.
     n_src = con.execute("SELECT COUNT(*) FROM decisions WHERE decision_id <= ?",
                         (watermark,)).fetchone()[0]
     n_fact = acon.execute("SELECT COUNT(*) FROM model_agreement").fetchone()[0]
@@ -477,7 +471,6 @@ def test_arm_with_decisions_is_not_zero():
     """An arm that played decisions may not render as zero campaigns and zero turns."""
     con = db.connect()
     page = _client.get("/api/models/correlations").json()
-    # Folded onto strategies before comparing, because that is what the page now groups by.
     def _played(table):
         out = {}
         for raw, n in con.execute(

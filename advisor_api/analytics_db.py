@@ -33,9 +33,6 @@ _local = threading.local()
 _STAMP_SQL = (
     "SELECT COALESCE(SUM(watermark), 0) FROM analytics_state",
     "SELECT COALESCE(SUM(rows), 0) FROM analytics_state",
-    # Formula versions are in the stamp so that bumping one invalidates every memoized
-    # answer immediately. Without it a rebuilt table would be served through caches keyed
-    # on a watermark that happens to land on the same number.
     "SELECT COALESCE(SUM(formula_version), 0) FROM analytics_state",
 )
 

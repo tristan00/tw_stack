@@ -5,13 +5,9 @@ import re
 import sys
 import time
 
-# `decisions` is a package at the repo root, and this module is imported both from the
-# advisor and from launcher/, which do not agree about what is on sys.path.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 TURN = [None]
-# The campaign these events belong to. The advisor sets it each turn from the same reply
-# that carries the turn number.
 CAMPAIGN = [None]
 _STATE = {"run_dir": None, "tracked": set(), "warned": False}
 
@@ -60,9 +56,6 @@ def emit(kind, **fields):
             sys.stderr.write("diplo_stream: no run dir set -- rows are being DROPPED\n")
         return None
     row = dict(fields, kind=kind, turn=TURN[0], campaign_key=CAMPAIGN[0], ts=time.time())
-    # Through the recorder, not into a file beside it. This used to append to
-    # run/diplomacy.jsonl, which the dashboard then re-read and tailed; the events are
-    # application data and belong in the store with everything else.
     try:
         from decisions import journal
         journal.log_diplomacy(rd, row)

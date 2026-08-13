@@ -26,9 +26,6 @@ from analytics import store as _store
 
 FORMULA_VERSION = 2
 
-# Roughly this many points on a trend line. More is unreadable at dashboard width; fewer
-# hides movement. The BUCKET SIZE follows from the corpus, so the gate scales with the data
-# instead of being pinned to a constant fitted to whatever had been collected on the day.
 TARGET_POINTS = 40
 MIN_BUCKET = 50
 
@@ -75,7 +72,6 @@ class _Rollup:
         return None
 
 
-# ------------------------------------------------------------------ summary + histogram
 
 _SUMMARY_DDL = """
 CREATE TABLE IF NOT EXISTS agreement_summary(
@@ -151,7 +147,6 @@ def _ambiguous(an) -> int:
         return 0
 
 
-# ------------------------------------------------------------------ the series
 
 _SERIES_DDL = """
 CREATE TABLE IF NOT EXISTS agreement_series(
@@ -225,7 +220,6 @@ def _point(axis, seq, label, chunk, gate) -> dict:
     return p
 
 
-# ------------------------------------------------------------------ breakdowns
 
 _BREAKDOWN_DDL = """
 CREATE TABLE IF NOT EXISTS agreement_breakdown(

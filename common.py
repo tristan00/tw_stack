@@ -104,7 +104,6 @@ UI_CAPTURE = os.path.join(ROOT, "ui-capture")
 # (b) DATA -- external, shared by every checkout.
 # --------------------------------------------------------------------------------------
 
-# Everything a run produces. Defaults beside the checkout so a fresh clone works.
 TWDATA = _setting("TWDATA", "twdata",
                   default=os.path.join(os.path.dirname(ROOT), "twdata"))
 _TD = posix(TWDATA)
@@ -179,9 +178,6 @@ CCO_TSV = os.path.join(REFERENCE_DIR, "ui3_extraction", "CCO.tsv")
 WIKI_ROOT = _TD + "/wiki"
 
 # scratch, metrics, archive
-# Rule sets are SOURCE, not run output: a run is not reproducible on another machine if
-# the rules it played by live outside the checkout. RULES_DIR stays as the local override
-# so an operator can try a variant without editing the repo; the repo copy is the default.
 RULES_DIR_REPO = os.path.join(ROOT, "rules")
 RULES_DIR = os.path.join(TWDATA, "rules")
 METRICS_DIR = os.path.join(TWDATA, "metrics")
@@ -196,7 +192,6 @@ ARCHIVE_BUS = os.path.join(ARCHIVE_DIR, "bus")
 # (c) THIRD PARTY -- the runner venv that owns the bus files, and the game install.
 # --------------------------------------------------------------------------------------
 
-# Owns the bus files the lua mod reads and writes.
 RUNNER = _setting("TW_RUNNER", "runner", _find_runner, default=ROOT)
 _RN = posix(RUNNER)
 

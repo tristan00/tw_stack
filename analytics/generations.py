@@ -32,9 +32,6 @@ NAME = "model_generations"
 FORMULA_VERSION = 1
 SOURCE = "metrics"
 DEPENDS_ON = ()
-# The ledger is a file that is rewritten in place -- a trial row is upserted and its
-# snapshot count bumped while a generation is still running -- so there is no append-only
-# id to fold forward along.
 REBUILD_EVERY_PASS = True
 
 DDL = """
@@ -97,8 +94,6 @@ def _windows(run_dir):
         if i + 1 < len(rows):
             nxt = rows[i + 1]
             if nxt["started_ts"] < w["seg_to_ts"]:
-                # The raw ledger genuinely overlaps here. Clip, and say which trial did it,
-                # so the ambiguity is reported rather than resolved out of sight.
                 w["seg_to_ts"] = nxt["started_ts"]
                 w["overlapped_by"] = nxt["trial"]
         if w["seg_to_ts"] < w["seg_from_ts"]:
