@@ -94,9 +94,6 @@ class Graph:
                         cat=S.cat_global(kind, key))
 
 
-_CAT_LOG = {"create_cost", "recruitment_cost", "upkeep_cost"}
-
-
 def _cat_values(kind, key, nid):
     row = C.attrs().get(kind, {}).get(key)
     if not row:
@@ -105,8 +102,7 @@ def _cat_values(kind, key, nid):
     out = {}
     for name in S.TYPE_FIELDS[kind]:
         if name in row:
-            v = rd.num(name)
-            out[name] = v.slog() if name in _CAT_LOG else v
+            out[name] = rd.num(name)
     return out or None
 
 
@@ -153,11 +149,11 @@ def build_graph(record):
                       "faction:" + fk, "faction")
         vals = {"is_player": rd.flag("is_player")}
         if rel.get("standing") is not None:
-            vals["standing"] = rd.num("standing").slog()
+            vals["standing"] = rd.num("standing")
         if fk == me:
             cd = G.Reader(campaign, "campaign", "campaign")
-            vals["treasury"] = cd.num("treasury").slog()
-            vals["income"] = cd.num("income").slog()
+            vals["treasury"] = cd.num("treasury")
+            vals["income"] = cd.num("income")
             vals["turn"] = cd.num("turn")
             _m = str(campaign.get("campaign_map") or "")
             if _m in ("wh3_main_combi", "wh3_main_chaos"):
@@ -206,7 +202,7 @@ def build_graph(record):
         if st is not None:
             pd = G.Reader(st, "region:" + key, "entities.province.state")
             vals["public_order"] = pd.num("public_order")
-            vals["income"] = pd.num("income").slog()
+            vals["income"] = pd.num("income")
         ri = g.add("r:" + key, "region", vals, own=(str(r.get("owner") or "") == me))
         if _pos_ok(r.get("x"), r.get("y")):
             region_xy.append((float(r["x"]), float(r["y"]), ri))
@@ -222,7 +218,7 @@ def build_graph(record):
             if st is not None:
                 pd = G.Reader(st, "region:" + key, "entities.province.state")
                 vals["public_order"] = pd.num("public_order")
-                vals["income"] = pd.num("income").slog()
+                vals["income"] = pd.num("income")
             g.add("r:" + key, "region", vals)
             prov_of_region.setdefault(key, str((st or {}).get("province") or ""))
 
@@ -246,7 +242,7 @@ def build_graph(record):
             vals["corruption"] = pd.num("corruption")
             sd = G.Reader(st, "province:" + prov, "entities.province.state")
             if st.get("growth_per_turn") is not None:
-                vals["growth_per_turn"] = sd.num("growth_per_turn").slog()
+                vals["growth_per_turn"] = sd.num("growth_per_turn")
             if st.get("free_slots") is not None:
                 vals["free_slots"] = sd.num("free_slots")
             if st.get("max_slots") is not None:
@@ -431,8 +427,8 @@ def build_graph(record):
     cd = G.Reader(campaign, "campaign", "campaign")
     g.g_ctx = [
         float(cd.num("turn")),
-        float(cd.num("treasury").slog()),
-        float(cd.num("income").slog()),
+        float(cd.num("treasury")),
+        float(cd.num("income")),
         float(cd.num("settlements") / 10.0),
         float(cd.num("armies") / 5.0),
         float(cd.num("allies") / 3.0),

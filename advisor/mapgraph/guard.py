@@ -61,9 +61,6 @@ class Raw:
     def clip(self, lo, hi):
         return Raw(max(lo, min(hi, self.v)), self.eid, self.path)
 
-    def slog(self):
-        return Raw(math.copysign(math.log1p(abs(self.v)), self.v), self.eid, self.path)
-
     def __float__(self):
         return self.v
 
