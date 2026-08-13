@@ -259,8 +259,12 @@ def test_no_signed_column_is_one_signed():
     # A field that genuinely cannot go both ways, with the reason and the measurement.
     ONE_SIGNED_OK = {
         ("$.rows", "lord_growth"):
-            "a legendary lord's level cannot decrease in WH3; measured 0 of 244 campaigns "
-            "ever lost a level while 102 gained one",
+            "a legendary lord's level cannot decrease in WH3",
+        # Growth is first -> PEAK, and the peak is never below the first point, so this is
+        # non-negative by construction. A campaign that lost ground shows it in
+        # final_settlements beside this, not here.
+        ("$.rows", "settlements_growth"):
+            "measured to the peak, which cannot be below the starting point",
     }
     MIN_N = 30
     bad = []
@@ -311,8 +315,9 @@ def test_growth_delta_equals_its_endpoints():
     for r in _client.get("/api/campaigns").json()["rows"]:
         if r.get("growth_state") != "measured":
             continue
-        for d, a, b in (("settlements_growth", "first_settlements", "final_settlements"),
-                        ("lord_growth", "first_lord_level", "final_lord_level")):
+        # Growth is measured to the PEAK, so these are the endpoints it claims.
+        for d, a, b in (("settlements_growth", "first_settlements", "peak_settlements"),
+                        ("lord_growth", "first_lord_level", "peak_lord_level")):
             if r.get(a) is None or r.get(b) is None:
                 continue
             want = r[b] - r[a]

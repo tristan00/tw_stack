@@ -21,13 +21,15 @@ import sys
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.dirname(_HERE))
+import common
 
-DUMP_GLOBS = (
-    r"D:\twdata\archive\**\screens\*battle_results*.json",
-    r"D:\twdata\agent_demo_*\tree_change_popup_battle_results_*.json",
-    r"D:\twdata\panel_capture\*_panel_popup_battle_results.json",
-    r"D:\twdata\runs\human\screens\*battle_results*.json",
-)
+_TD = common.native(common.TWDATA)
+DUMP_GLOBS = tuple(os.path.join(_TD, p) for p in (
+    os.path.join("archive", "**", "screens", "*battle_results*.json"),
+    os.path.join("agent_demo_*", "tree_change_popup_battle_results_*.json"),
+    os.path.join("panel_capture", "*_panel_popup_battle_results.json"),
+    os.path.join("runs", "human", "screens", "*battle_results*.json"),
+))
 
 
 def _nodes_of(path):

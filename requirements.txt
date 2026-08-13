@@ -1,0 +1,28 @@
+# Direct dependencies only -- pip resolves the rest.
+# Versions are the ones this project is known to run on; >= rather than == so a fresh
+# machine is not fighting a lockfile for a project that has no reproducibility claim.
+
+# ranking models
+catboost>=1.2.10
+numpy>=2.1
+
+# the graph model. torch is NOT pinned to a CUDA build here: install the wheel that
+# matches your machine first (https://pytorch.org/get-started/locally/), then this file.
+# A CPU-only torch works -- mapgraph trains slower and reports device=cpu.
+torch>=2.4
+torch-geometric>=2.6
+
+# the typed JSON API the dashboard reads
+fastapi>=0.115
+uvicorn>=0.30
+pydantic>=2.9
+
+# lua fragment syntax checking, so a broken mod fragment fails before the game sees it
+lupa>=2.2
+
+# screenshots, and the corpus's compressed blobs
+pillow>=10.4
+zstandard>=0.23
+
+# hyperparameter search for the catboost arm (advisor/tune_catboost.py only)
+optuna>=4.0

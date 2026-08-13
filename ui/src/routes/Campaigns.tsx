@@ -125,7 +125,7 @@ const campaignCols: Col<CampaignRow>[] = [
   {
     key: 'settlements_growth',
     label: 'settlements',
-    group: 'growth (first → last recorded turn)',
+    group: 'growth (first → best)',
     // undefined, NOT 0 and NOT null: TanStack tests `=== undefined` strictly. The old key
     // was `(to ?? 0) - (from ?? 0)`, which sorted every blank row into the middle of the
     // genuinely-flat ones and ranked a row with one endpoint as the biggest grower.
@@ -145,7 +145,7 @@ const campaignCols: Col<CampaignRow>[] = [
     label: 'settlements',
     unit: 'per turn',
     align: 'right',
-    group: 'growth (first → last recorded turn)',
+    group: 'growth (first → best)',
     // Its own column rather than a parenthetical inside the delta, so the table can be
     // sorted on the RATE as well as on the total. A campaign that gained one settlement
     // over three turns and one that gained it over twelve are not the same result, and
@@ -165,7 +165,7 @@ const campaignCols: Col<CampaignRow>[] = [
   {
     key: 'lord_growth',
     label: 'lord level',
-    group: 'growth (first → last recorded turn)',
+    group: 'growth (first → best)',
     value: (r) => r.lord_growth ?? undefined,
     sortUndefined: 'last',
     render: (r) => (
@@ -182,7 +182,7 @@ const campaignCols: Col<CampaignRow>[] = [
     label: 'lord level',
     unit: 'per turn',
     align: 'right',
-    group: 'growth (first → last recorded turn)',
+    group: 'growth (first → best)',
     // Its own column rather than a parenthetical inside the delta, so the table can be
     // sorted on the RATE as well as on the total. A campaign that gained one settlement
     // over three turns and one that gained it over twelve are not the same result, and
@@ -204,7 +204,7 @@ const campaignCols: Col<CampaignRow>[] = [
     label: 'last measured turn',
     align: 'right',
     optional: true,
-    group: 'growth (first → last recorded turn)',
+    group: 'growth (first → best)',
     value: (r) => r.last_measured_turn ?? undefined,
     sortUndefined: 'last',
     render: (r) => n(r.last_measured_turn),

@@ -21,7 +21,7 @@ single node type: every node carries a row that wide, so one greedy type taxes a
     hero_action ability / target_kind   ->  the edge type itself
     rite_index / slot_index / pool_index->  deleted (list positions, no semantics)
 
-Catalogue nodes come from D:\\twdata\\reference\\reference.sqlite and every key joins:
+Catalogue nodes come from <TWDATA>/reference\\reference.sqlite and every key joins:
 357/357 buildings, 3214/3214 skills, 1766/1766 tech, 184/184 units, 97/97 edicts.
 CatBoost uses two columns of that database. This is the part of the game the peer model
 cannot see.
