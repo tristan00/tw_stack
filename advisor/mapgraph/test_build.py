@@ -51,11 +51,6 @@ def _records(target, n):
 def main(argv):
     target = common.cli_path(argv, ("--n",))
     if not target:
-        # `import common` used to sit here. A name imported anywhere inside a function is
-        # local to the WHOLE function, so the line above raised UnboundLocalError before
-        # this branch could run -- with or without an argument. common is imported at
-        # module level (line 28); this check has not been runnable. It is gated behind
-        # --with-game in check.py, which is why nothing reported it.
         target = os.path.join(common.RUNS_ROOT.replace("/", os.sep), "run")
     n = int(argv[argv.index("--n") + 1]) if "--n" in argv else 40
 

@@ -10,12 +10,6 @@ import common
 
 NO_MODEL_DIR = common.MODEL_COLD_START
 
-# One entry. `nn_model` -- an MLP over the same flat CatBoost feature columns -- was
-# deleted: nothing selected it, and it consumed exactly the engineered feature block the
-# graph model exists to replace. This registry is now an indirection over a single value
-# and should be collapsed into a direct `import model` at its three call sites
-# (session.py, advisor_api/app.py, runctl.py) once the launch form that reads it is
-# reworked.
 BACKENDS = {
     "catboost": {"module": "model", "label": "CatBoost E1/E2 impact"},
 }
@@ -39,10 +33,5 @@ def label(name):
 
 
 def parse_cfg(argv):
-    """No backend takes hyperparameters from the command line any more.
-
-    This parsed `--nn-KEY VALUE` for the deleted MLP backend. It stays as an empty dict
-    so `backend_cfg` keeps its shape in the trial ledger, where historical rows carry
-    real values and a KeyError would break the metrics tab.
-    """
+    """No backend takes hyperparameters from the command line any more."""
     return {}

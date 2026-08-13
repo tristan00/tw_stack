@@ -23,13 +23,7 @@ ZRAW, ZDEFLATE = 0, 1
 
 
 def pack(text, level=6):
-    """Store whichever is smaller, tagged so the reader never has to guess.
-
-    zlib costs ~11 bytes of header, and most entity states are shorter than that saves --
-    at the toy end compressing a 65-byte state made it 75. Blob rows are dominated by
-    small payloads by count and by big `world` blobs by bytes, so the store wants both
-    behaviours and a one-byte tag buys them.
-    """
+    """Store whichever is smaller, tagged so the reader never has to guess."""
     raw = text.encode("utf-8")
     z = zlib.compress(raw, level)
     if len(z) < len(raw):
@@ -53,8 +47,7 @@ def _unz(z):
 
 
 def _f32(packed, i):
-    """One float out of a packed float32 array. Out of range reads as NULL rather than
-    raising, so a decision whose scores were pruned still selects."""
+    """One float out of a packed float32 array. Out of range reads as NULL rather than"""
     if packed is None or i is None:
         return None
     import struct

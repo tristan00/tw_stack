@@ -159,24 +159,63 @@ CREATE TABLE IF NOT EXISTS diplo_state(
   war_blob INTEGER NOT NULL REFERENCES blobs(blob_id),    -- [{faction,at_war_with:[]}], ALL factions
   PRIMARY KEY(campaign_id, turn)) WITHOUT ROWID;
 
+-- ------------------------------------------------------------------ the request channel
+--
+-- The advisor and the recorder are separate processes, and this is how they talk. It was
+-- two append-only jsonl files, and the reader scanned its file FROM BYTE 0 on every single
+-- call: journal._await read and JSON-parsed the entire responses log to find one req_id.
+-- That is O(everything written so far) against a file that only grows. Measured on the run
+-- that exposed it: 11.85 ms per MB, a 234 MB responses log, ~3000 ms per request by the end
+-- of the day, and 3.37 hours of a 24.19-hour run -- 13.9% of wall clock -- spent scanning
+-- text. The same record read out of this database measures 0.30 ms.
+--
+-- Here the reply lookup is a primary-key probe. It costs the same on hour 24 as on minute
+-- one, which is the property the file never had.
+CREATE TABLE IF NOT EXISTS rpc_requests(
+  rpc_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  req_id TEXT UNIQUE, kind TEXT NOT NULL, ts REAL NOT NULL, payload TEXT);
+
+-- A reply carries NO record. The recorder has already written the decision by the time it
+-- answers, so the advisor reads it back by decision_id instead of being handed a 52 KB
+-- copy through the channel. That copy is what inflated the responses log in the first
+-- place, and it was introduced to avoid a database read that costs a third of a
+-- millisecond.
+CREATE TABLE IF NOT EXISTS rpc_responses(
+  req_id TEXT PRIMARY KEY, ts REAL NOT NULL,
+  decision_id INTEGER, payload TEXT, error TEXT) WITHOUT ROWID;
+
+-- ------------------------------------------------------------- application data, not logs
+--
+-- These three were jsonl files that the dashboard re-parsed on request. They are corpus
+-- data -- a campaign's outcome is the label every training run needs -- and §3.5 of the
+-- pre-wipe spec already recorded "campaign outcome was never in the DB at all" as one of
+-- the three reasons the v1 corpus could not migrate. It is in the DB now.
+-- campaign_key is nullable and NOT the primary key on purpose. The postmortem log carried
+-- only a faction and a wall clock, so the dashboard had to guess which campaign each
+-- ending belonged to -- a time-window match that resolved 119 of 136 and silently dropped
+-- the rest. The key is recorded at write time now, but an ending we genuinely cannot key
+-- must still be storable and countable rather than discarded to make a join work.
+CREATE TABLE IF NOT EXISTS postmortems(
+  postmortem_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  campaign_key TEXT, ts REAL, run_dir TEXT,
+  faction TEXT, turn INTEGER, outcome TEXT, defeated INTEGER,
+  reason TEXT, payload TEXT);
+
+-- The training trial ledger is NOT here. It spans every run directory, and this database
+-- is one run directory's corpus -- filing a global ledger inside it would scope it wrong.
+-- It lives in metrics_db.py, which is a database at the level the data actually belongs to.
+
+-- The diplomacy event tail. Was run/diplomacy.jsonl. This is the per-event stream the
+-- campaign view shows; diplo_state above is the per-turn world graph and stays separate.
+CREATE TABLE IF NOT EXISTS diplomacy_events(
+  event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts REAL, campaign_key TEXT, turn INTEGER, kind TEXT, payload TEXT);
+
 CREATE INDEX IF NOT EXISTS ix_dec_campaign ON decisions(campaign_id, decision_id);
 CREATE INDEX IF NOT EXISTS ix_dec_turn ON decisions(turn);
+CREATE INDEX IF NOT EXISTS ix_diplo_ev ON diplomacy_events(campaign_key, event_id);
 """
 
-# ------------------------------------------------------------------ compatibility views
-#
-# Every reader outside this package speaks v1 SQL -- 88 references across 13 files, all of
-# them SELECTs (nothing but DecisionStore writes). These reconstruct the v1 columns, so
-# the layout change stays inside the store. They need unz()/f32(), which is why callers
-# must come through decisions.dbopen.
-#
-# EVERY JOIN HERE IS A LEFT JOIN, AND THAT IS LOAD-BEARING. Each one is on the target's
-# primary key, so it matches exactly one row and LEFT and INNER return the same rows --
-# but only a LEFT JOIN on a unique key can be dropped by SQLite when the query selects no
-# column from it. As an inner join, `SELECT count(*) FROM action_offers` had to visit
-# `actions` for all 1.66M rows, and since offers carries no index on action_id the planner
-# drove it from the wrong side: 163 seconds, against 0.02 on the base table. As a LEFT
-# JOIN the whole join disappears from the plan.
 
 VIEWS = """
 DROP VIEW IF EXISTS decision_points;

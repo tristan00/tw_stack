@@ -22,14 +22,7 @@ except Exception as e:
 
 
 def _append_tail(ctx, base, data: bytes) -> str:
-    """Append to <run dir>/logs/<name>.tail.
-
-    This took `ctx` and ignored it, writing to a global STREAM_ROOT instead -- so log
-    tails were pooled across every run that ever executed rather than landing in the run
-    they belong to. It also broke a consumer silently: actions_stream._current_turn globs
-    `<out_dir>/logs/script_log_*.tail` to work out which turn a UI action happened on, and
-    could never find one.
-    """
+    """Append to <run dir>/logs/<name>.tail."""
     d = os.path.join(ctx.out_dir, "logs")
     os.makedirs(d, exist_ok=True)
     dst = os.path.join(d, base + ".tail")

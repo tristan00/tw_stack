@@ -1,28 +1,4 @@
-r"""Assert two things about the game's own settings file, preferences.script.txt.
-
-1. Line endings are CRLF. Every copy the game has written is 213/213 CRLF (the July
-   backup, the 2026-08-11 03:30 backup). On 2026-08-11 the file was found 213/213 bare
-   LF, with no value changed -- it diffs clean against its own backup once line endings
-   are normalised. A tool had read it in text mode (universal newlines) and written it
-   back with newline="".
-
-2. gfx_resolution_scale and gfx_fullscreen still hold the collection profile's values.
-
-Observed on 2026-08-11, campaign-script start to "environment is Campaign UI", off the
-game's script_log; the LF rewrite landed between 03:25 and 03:46:
-
-    03:18   12.2s
-    03:25   12.1s
-    03:46   no campaign UI
-    03:49  102.1s
-    03:53   log ends at 4.1s
-
-bus_launcher.start_campaign allows 120s for the mod to log "started"; the three launches
-after 03:45 failed on that timeout. Whether the line endings caused the slow loads is not
-established here -- the two are recorded together because they coincided.
-
-Does not repair the file: the values are a tuning decision.
-"""
+"""Assert two things about the game's own settings file, preferences.script.txt."""
 
 from __future__ import annotations
 

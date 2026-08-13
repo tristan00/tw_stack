@@ -1,26 +1,4 @@
-"""Every query the dashboard can ask, with its cost bounded and its population named.
-
-Three rules hold throughout.
-
-**Aggregate in SQL, not in Python.** The corpus is 230k offer rows and grows toward a
-500-campaign target. Pulling rows into Python to count them is what made the old
-crosstab materialise the entire corpus per request.
-
-**Bound everything that can be unbounded.** A log is paged, a timeline is windowed, an
-agreement comparison walks a fixed number of recent decisions. An unbounded scan is fine
-at 127 campaigns and is not fine at 500, and the difference does not announce itself.
-
-**Name the population at the point the number is produced.** `Count` and `Rate` require
-it, so a count's meaning is decided here, next to the SQL that defines it, rather than by
-whoever renders it later.
-
-THE JOIN TRAP, which is load-bearing. `target_rows.campaign_id` holds the campaign KEY
-string while `campaigns.campaign_id` holds an integer surrogate; the natural-looking join
-`ON t.campaign_id = c.campaign_id` returns ZERO rows and raises nothing. Measured on the
-live corpus: 0 rows the wrong way, 567 the right way. Every join to target_rows or to the
-v1 views goes through `campaigns.campaign_key`, and a test asserts the wrong form stays
-empty so nobody "fixes" it back.
-"""
+"""Every query the dashboard can ask, with its cost bounded and its population named."""
 
 from __future__ import annotations
 
@@ -33,20 +11,23 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import arms
+import campaign_growth as CG
 import common
+import metrics_db
+from advisor_api import analytics_db as adb
 from advisor_api import db, ident
 from advisor_api.models import (
     ActionTypeRow, ActivityRow, AgreementPage, AgreementRankRow, AgreementSummary,
     ArmCoverage, CampaignRow, Count, CorrelationRow, CorrelationTile, Current,
     DecisionRow, DiploEvent, EntityState, ForcingBar, ForcingTile, Ident, InterruptOption,
     InterruptRow, Metric, ModelCard, OfferRow, OutcomeTally, PhaseSpan, PolicyRow, Rate,
-    RewardPoint, Scope, Service, Signal, StartRow, TimelineAction, TimelineLane,
+    RewardPoint, Scope, Service, StartRow, TimelineAction, TimelineLane,
     TimingRow, TrainingEvent, TrialRow,
 )
 
 DECISIONS_PAGE = 50
 TIMELINE_DECISIONS = 200
-AGREE_LOOKBACK = 600
 MENUS_ROWS = 60
 DIPLO_TAIL = 600
 REWARD_CAMPAIGNS = 10
@@ -60,7 +41,42 @@ _OUTCOME_STATE = {
     "unhandled_screen": "bad",
     "stagnant": "warn",
     "defeated": "neutral",
+    "no_ending_recorded": "warn",
 }
+
+# A campaign with no postmortem is only RUNNING if it is still deciding. `campaigns.outcome`
+# is written when a session records an ending, so a session killed mid-campaign -- runctl
+# down, a babysitter relaunch, a crash -- leaves that campaign with no outcome forever and
+# nothing reconciles it. Measured: 29 campaigns with no outcome, 28 of them with no decision
+# for over ten minutes and the oldest 12.2 hours, all rendering as "running".
+#
+# Silence is not an outcome, so this does not invent one. It reports that no ending was
+# recorded, which is the true statement, and leaves the genuinely live campaign alone.
+LIVE_WINDOW_S = 600.0
+
+
+def _ended_because(pm: dict) -> str | None:
+    """Why the RUN stopped this campaign. NOT a growth measurement."""
+    g = pm.get("growth") or {}
+    outcome = str(pm.get("outcome") or "")
+    if g.get("reason") == "legendary_lord_wounded":
+        return ("growth gate: legendary lord wounded at turn %s -- an automatic stop that "
+                "measures no growth at all" % g.get("turn"))
+    mets = g.get("metrics") or {}
+    if mets:
+        parts = "; ".join(
+            "%s %g -> %g over %s turns"
+            % (m.get("label"), _f(m.get("then"), 0.0), _f(m.get("now"), 0.0),
+               m.get("window"))
+            for m in mets.values() if m.get("then") is not None)
+        if parts:
+            return ("growth gate at turn %s: %s -- needed +%s on either"
+                    % (g.get("turn"), parts, g.get("min_gain")))
+    if outcome == "defeated":
+        return "the faction was destroyed"
+    if outcome in ("stuck", "error", "unhandled_screen"):
+        return str(pm.get("error") or outcome)[:200]
+    return None
 
 
 def _i(v, default=None):
@@ -79,13 +95,7 @@ def _f(v, default=None):
 
 
 def _jload(v):
-    """Parse a stored JSON column into a container, never into None.
-
-    A column holding the literal text `null` parses to None, and every caller here goes
-    straight on to .get() -- so the timing panel died on one row whose timing was `null`
-    rather than absent. Coercing non-containers to {} keeps a malformed row from taking
-    down the panel that merely mentions it.
-    """
+    """Parse a stored JSON column into a container, never into None."""
     if not v:
         return {}
     if isinstance(v, (dict, list)):
@@ -98,12 +108,7 @@ def _jload(v):
 
 
 def _text(v):
-    """Whatever a stream wrote, as a string a cell can hold.
-
-    These payloads are hand-written by several producers and the same field arrives as a
-    string from one and a list from another (`terms` is `['declare_war']` on the deal
-    stream). Coercing here beats a validation error that blanks the whole panel.
-    """
+    """Whatever a stream wrote, as a string a cell can hold."""
     if v is None or v == "":
         return None
     if isinstance(v, str):
@@ -131,10 +136,24 @@ def _fac(v) -> Ident:
     return _id(ident.faction(v))
 
 
-def _rate_state(pct, ok=70.0, warn=40.0):
-    if pct is None:
-        return "neutral"
-    return "ok" if pct >= ok else ("warn" if pct >= warn else "bad")
+def _by_arm(rows) -> list:
+    """Fold a (policy, count) tally onto strategies. [(arm, picks, fell_back)], biggest first."""
+    agg: dict = {}
+    for r in rows:
+        raw = r["p"]
+        arm = arms.arm_of(raw) or arms.UNRECORDED
+        n = _i(r["n"], 0) or 0
+        slot = agg.setdefault(arm, [0, 0])
+        slot[0] += n
+        if arms.fell_back(raw):
+            slot[1] += n
+    return sorted(((a, v[0], v[1]) for a, v in agg.items()), key=lambda t: -t[1])
+
+
+def _clock(ts):
+    """An epoch stamp as a local wall-clock string, or None."""
+    t = _f(ts)
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(t)) if t else None
 
 
 def _age_words(seconds):
@@ -154,107 +173,36 @@ def _age_words(seconds):
 # file-backed sources
 # ----------------------------------------------------------------------------------------
 
-def _postmortem_path():
-    return os.path.join(common.native(common.RUNS_ROOT), "postmortems.jsonl")
-
-
-def _experiments_path():
-    return os.path.join(common.native(common.METRICS_DIR), "experiments.jsonl")
-
-
-def postmortems() -> list:
-    """Every recorded campaign ending, newest last.
-
-    The file spans earlier run directories, so it holds MORE endings than the current
-    corpus holds campaigns. That is not a discrepancy to reconcile -- it is why every
-    count drawn from here names its population explicitly.
-    """
-    return _postmortems_cached()
-
-
-@db.cached_files(os.path.join(common.native(common.RUNS_ROOT), "postmortems.jsonl"))
-def _postmortems_cached() -> list:
+@db.cached
+def postmortems(con) -> list:
+    """Every recorded campaign ending, newest last."""
     out = []
-    try:
-        with open(_postmortem_path(), encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    out.append(json.loads(line))
-                except ValueError:
-                    # A torn last line is normal while the session is mid-write. Skipping
-                    # it loses one ending for a few seconds; failing the page loses all.
-                    continue
-    except OSError:
-        return []
+    for payload, key in con.execute(
+            "SELECT payload,campaign_key FROM postmortems ORDER BY postmortem_id"):
+        d = _jload(payload) or {}
+        if key and not d.get("campaign_key"):
+            d["campaign_key"] = key
+        out.append(d)
     return out
 
 
-def _campaign_spans(con) -> dict:
-    """campaign_key -> (first ts, last ts, faction). One grouped query."""
-    rows = con.execute(
-        "SELECT c.campaign_key, c.faction, MIN(dp.ts) t0, MAX(dp.ts) t1"
-        " FROM campaigns c JOIN decision_points dp ON dp.campaign_id = c.campaign_key"
-        " GROUP BY c.campaign_key").fetchall()
-    return {r["campaign_key"]: (r["t0"], r["t1"], r["faction"]) for r in rows}
-
-
-# How far after a campaign's last decision its postmortem may be written. A postmortem is
-# produced during teardown -- screenshots, log flush, growth evaluation -- which is
-# seconds to minutes, never a quarter of an hour.
-_POSTMORTEM_LAG_S = 900
-
-
-def join_outcomes(con) -> dict:
-    """campaign_key -> the postmortem that ended it.
-
-    The postmortem log carries no campaign key -- only a faction and a wall-clock time --
-    which is precisely why the old dashboard showed endings and per-campaign metrics as
-    two tables that could not be joined, and so could not answer the question the page
-    existed to ask.
-
-    They do share an identity: a campaign is the last one of its faction to record a
-    decision before its own postmortem is written. Matching on (faction, most recent
-    preceding campaign, within the teardown window) resolves 119 of 136 endings on the
-    live corpus and claims no campaign twice. The 17 that do not resolve belong to earlier
-    run directories, and are reported as a named count rather than dropped.
-
-    A collision would mean two endings claiming one campaign, i.e. the key is not a key.
-    test_api asserts that stays at zero.
-    """
-    return _join_outcomes(con)
-
-
 @db.cached
-def _join_outcomes(con) -> dict:
-    spans = _campaign_spans(con)
-    by_faction = {}
-    for key, (_t0, t1, faction) in spans.items():
-        by_faction.setdefault(faction, []).append((t1 or 0.0, key))
-    for lst in by_faction.values():
-        lst.sort()
+def join_outcomes(con) -> dict:
+    """campaign_key -> the postmortem that ended it."""
     claimed = {}
-    for pm in postmortems():
-        faction, ts = pm.get("faction"), _f(pm.get("ts"), 0.0) or 0.0
-        best = None
-        for t1, key in by_faction.get(faction, ()):
-            # +5s: the postmortem clock and the decision clock are sampled separately.
-            if t1 <= ts + 5:
-                best = (t1, key)
-            else:
-                break
-        if not best or ts - best[0] > _POSTMORTEM_LAG_S:
-            continue
-        # Later postmortem wins: a campaign key is unique per run, so a second match on
-        # the same key means the first was the wrong one.
-        claimed[best[1]] = pm
+    for pm in postmortems(con):
+        key = pm.get("campaign_key")
+        if key:
+            claimed[key] = pm
     return claimed
 
 
+@db.cached
 def unjoined_endings(con) -> int:
-    return max(0, len(postmortems()) - len(join_outcomes(con)))
+    """Endings naming no campaign this corpus holds."""
+    keys = {r[0] for r in con.execute("SELECT campaign_key FROM campaigns")}
+    return sum(1 for pm in postmortems(con)
+               if not pm.get("campaign_key") or pm["campaign_key"] not in keys)
 
 
 # ----------------------------------------------------------------------------------------
@@ -263,17 +211,7 @@ def unjoined_endings(con) -> int:
 
 @db.cached
 def current(con) -> Current:
-    """The campaign being played right now, resolved once.
-
-    Newest by clock, not by turn number: the run directory is reused across hundreds of
-    campaigns, so the highest turn ever reached usually belongs to a campaign that ended
-    days ago.
-
-    This is the ONLY source for these values. The old dashboard resolved them twice --
-    once from the corpus for its header, once from a session-log parse for its live tab --
-    and rendered both at once, disagreeing about which faction was playing and what turn
-    it was. One accessor makes that class of contradiction unrepresentable.
-    """
+    """The campaign being played right now, resolved once."""
     row = con.execute(
         "SELECT campaign_id, turn, settlements, power_rank, lord_level, ts"
         " FROM target_rows ORDER BY ts DESC LIMIT 1").fetchone()
@@ -287,11 +225,7 @@ def current(con) -> Current:
 
 @db.cached
 def totals(con) -> list:
-    """The corpus totals, each naming the population it counted.
-
-    These four numbers count four different things and are not expected to agree. Saying
-    so on the number is the whole point.
-    """
+    """The corpus totals, each naming the population it counted."""
     q = lambda s: con.execute(s).fetchone()[0] or 0
     return [
         Count(value=q("SELECT COUNT(DISTINCT campaign_id) FROM decision_points"),
@@ -323,10 +257,6 @@ def throughput(con) -> list:
         " FROM action_taken WHERE refusal IS NOT 'awaiting_execution'").fetchone()
     attempted, confirmed = _i(taken["a"], 0) or 0, _i(taken["c"], 0) or 0
     pct = (100.0 * confirmed / attempted) if attempted else None
-    # Sparklines over the same window, so a rate that is FALLING looks different from one
-    # that is merely low -- the single number cannot distinguish those and it is the
-    # distinction you want at a glance. Bucketed by wall clock rather than by row count,
-    # so a stall shows as a dip instead of being compressed away.
     camp_spark, turn_spark = _rate_sparks(rows)
     out.append(Metric(label="campaigns/hr", value=round(camps / span_h, 1),
                       sub="over the last %d decisions" % len(rows), spark=camp_spark))
@@ -334,7 +264,7 @@ def throughput(con) -> list:
                       sub="over the last %d decisions" % len(rows), spark=turn_spark))
     out.append(Metric(label="confirm rate", value=(round(pct, 1) if pct is not None else None),
                       unit="%", sub="%d of %d attempted actions" % (confirmed, attempted),
-                      state=_rate_state(pct), spark=_confirm_spark(con)))
+                      spark=_confirm_spark(con)))
     return out
 
 
@@ -412,13 +342,7 @@ def collect_timing(con) -> list:
 
 @db.cached
 def cycle_timing(con) -> list:
-    """Median ms per execution stage over the recent window.
-
-    Reported with its maximum beside it. A stage whose median is 100 ms and whose worst
-    case is 6 s is a different problem from one that is uniformly slow, and a median
-    alone cannot tell them apart -- the old panel buried its single largest number
-    (a 6.3 s outlier) inside a dim run-on sentence under a table reading 103.
-    """
+    """Median ms per execution stage over the recent window."""
     rows = con.execute("SELECT timing FROM action_taken"
                        " ORDER BY decision_id DESC LIMIT 400").fetchall()
     buckets = {}
@@ -442,51 +366,15 @@ def cycle_timing(con) -> list:
     return out
 
 
-@db.cached
-def signals(con) -> list:
-    """Things worth noticing, with severity decided here rather than in the client."""
-    out = []
-    pm = postmortems()[-12:]
-    bad = [p for p in pm if (p.get("outcome") or "") in ("error", "stuck", "unhandled_screen")]
-    if bad:
-        out.append(Signal(
-            text="%d of the last %d recorded endings were harness faults" % (len(bad), len(pm)),
-            state="bad",
-            detail=", ".join(sorted({str(p.get("outcome")) for p in bad}))))
-    run = _i(con.execute("SELECT COUNT(*) FROM action_taken"
-                         " WHERE refusal='awaiting_execution'").fetchone()[0], 0)
-    if run:
-        out.append(Signal(text="%d actions awaiting execution" % run, state="warn",
-                          detail="attempted but not yet resolved by the game"))
-    silent = _i(con.execute("SELECT COUNT(*) FROM action_taken"
-                            " WHERE refusal='command_silently_refused'").fetchone()[0], 0)
-    att = _i(con.execute("SELECT COUNT(*) FROM action_taken"
-                         " WHERE refusal IS NOT 'awaiting_execution'").fetchone()[0], 0)
-    if silent and att:
-        out.append(Signal(
-            text="%d of %d attempted actions were silently refused by the game"
-                 % (silent, att),
-            state="warn" if silent * 5 < att else "bad",
-            detail="the command was accepted and had no effect"))
-    if not out:
-        out.append(Signal(text="nothing notable", state="ok"))
-    return out
-
-
 # ----------------------------------------------------------------------------------------
 # campaigns
 # ----------------------------------------------------------------------------------------
 
 @db.cached
 def campaign_rows(con) -> list:
-    """One row per campaign: its decisions, its trajectory, and its outcome.
-
-    Four grouped queries and one window function, then a dict merge -- not a query per
-    campaign. The final-state values come from ROW_NUMBER() OVER (PARTITION BY campaign)
-    rather than a correlated subquery evaluated once per row of target_rows.
-    """
+    """One row per campaign: its decisions, its trajectory, and its outcome."""
     decs = {r["ckey"]: r for r in con.execute(
-        "SELECT campaign_id ckey, COUNT(*) n, MIN(ts) t0, MAX(ts) t1"
+        "SELECT campaign_id ckey, COUNT(*) n, MIN(ts) t0, MAX(ts) t1, MAX(turn) last_turn"
         " FROM decision_points GROUP BY campaign_id")}
     acts = {r["ckey"]: r for r in con.execute(
         "SELECT dp.campaign_id ckey,"
@@ -495,25 +383,17 @@ def campaign_rows(con) -> list:
         "       SUM(CASE WHEN at.counted=1 THEN 1 ELSE 0 END) confirmed"
         " FROM action_taken at JOIN decision_points dp ON dp.decision_id = at.decision_id"
         " GROUP BY dp.campaign_id")}
-    peaks = {r["ckey"]: r for r in con.execute(
-        "SELECT campaign_id ckey, MAX(turn) turns, MAX(settlements) pset,"
-        "       MIN(power_rank) prank, MAX(lord_level) plord"
-        " FROM target_rows GROUP BY campaign_id")}
-    finals = {r["ckey"]: r for r in con.execute(
-        "SELECT ckey, settlements, power_rank, income FROM ("
-        "  SELECT campaign_id ckey, settlements, power_rank, income,"
-        "         ROW_NUMBER() OVER (PARTITION BY campaign_id ORDER BY turn DESC) rn"
-        "  FROM target_rows) WHERE rn=1")}
+    growth = {g["campaign_key"]: CG.enrich(g)
+              for g in adb.rows("SELECT * FROM campaign_growth")}
     meta = {r["campaign_key"]: r for r in con.execute(
-        "SELECT campaign_id, campaign_key, faction, turns FROM campaigns")}
+        "SELECT campaign_id, campaign_key, faction, turns, campaign_map FROM campaigns")}
 
     outcomes = join_outcomes(con)
     out = []
     for ckey, d in decs.items():
         m = meta.get(ckey)
         a = acts.get(ckey)
-        pk = peaks.get(ckey)
-        fn = finals.get(ckey)
+        g = growth.get(ckey) or {}
         attempted = _i(a["attempted"], 0) if a else 0
         confirmed = _i(a["confirmed"], 0) if a else 0
         rows_ = _i(a["rows_"], 0) if a else 0
@@ -521,7 +401,8 @@ def campaign_rows(con) -> list:
         row = CampaignRow(
             campaign_id=_i(m["campaign_id"], 0) if m else 0,
             campaign=_camp(ckey),
-            turns=_i(pk["turns"]) if pk else (_i(m["turns"]) if m else None),
+            campaign_map=_id(ident.campaign_map(m["campaign_map"] if m else None)),
+            turns=_i(d["last_turn"], _i(m["turns"]) if m else None),
             decisions=n_dec,
             # A decision point that produced no action row at all is not a failed action;
             # it is a decision where nothing was offered or nothing was chosen.
@@ -531,12 +412,24 @@ def campaign_rows(con) -> list:
             confirm_rate=Rate(n=confirmed, of=attempted, noun="actions",
                               population="attempted in this campaign"),
             span_min=round(((_f(d["t1"]) or 0) - (_f(d["t0"]) or 0)) / 60.0, 1),
-            peak_settlements=_f(pk["pset"]) if pk else None,
-            peak_power_rank=_f(pk["prank"]) if pk else None,
-            peak_lord_level=_f(pk["plord"]) if pk else None,
-            final_settlements=_f(fn["settlements"]) if fn else None,
-            final_power_rank=_f(fn["power_rank"]) if fn else None,
-            final_income=_f(fn["income"]) if fn else None,
+            peak_settlements=_f(g.get("peak_settlements")),
+            peak_power_rank=_f(g.get("peak_power_rank")),
+            peak_lord_level=_f(g.get("peak_lord_level")),
+            final_settlements=_f(g.get("final_settlements")),
+            final_power_rank=_f(g.get("final_power_rank")),
+            final_income=_f(g.get("final_income")),
+            turn_rows=_i(g.get("turn_rows"), 0) or 0,
+            first_turn=_i(g.get("first_turn")),
+            last_measured_turn=_i(g.get("last_measured_turn")),
+            growth_span_turns=_i(g.get("growth_span_turns")),
+            first_settlements=_f(g.get("first_settlements")),
+            first_lord_level=_f(g.get("first_lord_level")),
+            final_lord_level=_f(g.get("final_lord_level")),
+            settlements_growth=_f(g.get("settlements_growth")),
+            lord_growth=_f(g.get("lord_growth")),
+            settlements_per_turn=_f(g.get("settlements_per_turn")),
+            lord_per_turn=_f(g.get("lord_per_turn")),
+            growth_state=g.get("growth_state") or CG.NO_TURN_ROWS,
         )
         pm = outcomes.get(ckey)
         if pm:
@@ -544,19 +437,16 @@ def campaign_rows(con) -> list:
             row.outcome = _phrase(outcome)
             row.outcome_state = _OUTCOME_STATE.get(outcome, "neutral")
             row.ended_when = pm.get("when")
-            growth = pm.get("growth") or {}
-            row.ended_at_turn = _i(growth.get("turn"), _i(pm.get("turn_at_death")))
-            mets = (growth.get("metrics") or {})
-            s, l = mets.get("settlements") or {}, mets.get("lord_level") or {}
-            # Decomposed from the structured growth record, not parsed out of the verdict
-            # sentence. The same fact rendered as prose repeated near-verbatim on fifteen
-            # consecutive rows; as four numbers it is sortable and it is one glance.
-            row.settlements_from, row.settlements_to = _f(s.get("then")), _f(s.get("now"))
-            row.lord_from, row.lord_to = _f(l.get("then")), _f(l.get("now"))
+            row.ended_because = _ended_because(pm)
             verdict = str((pm.get("plausibility") or {}).get("verdict") or "")
             row.suspicious = ("harness_failure_likely" in verdict) or ("ambiguous" in verdict)
             if row.suspicious:
                 row.outcome_state = "bad"
+        elif time.time() - (_f(d["t1"]) or 0.0) > LIVE_WINDOW_S:
+            row.outcome = _phrase("no_ending_recorded")
+            row.outcome_state = _OUTCOME_STATE["no_ending_recorded"]
+            row.ended_because = ("the session stopped before this campaign ended, so no "
+                                 "outcome was recorded for it")
     # newest first
         out.append(row)
     out.sort(key=lambda r: -(decs[r.campaign.raw]["t1"] or 0))
@@ -580,13 +470,7 @@ def outcome_headline(con) -> list:
 
 @db.cached
 def starts_rows(con) -> list:
-    """Per-faction start quality. One grouped query per fact, never one per campaign.
-
-    `n` leads every row because most starts have n=1: on the live corpus 38 of 61 starts
-    have a single campaign and 53 have two or fewer, so "avg turns" and "best power rank"
-    are usually one observation wearing an average's name. Marking that is more honest
-    than a paragraph apologising for it underneath.
-    """
+    """Per-faction start quality. One grouped query per fact, never one per campaign."""
     per = {}
     for row in campaign_rows(con):
         fkey, _ = ident.split_campaign_key(row.campaign.raw)
@@ -633,15 +517,7 @@ def starts_rows(con) -> list:
 
 @db.cached
 def matrix(con, kind: str = "action"):
-    """faction x action-type crosstab, and the totals row that makes it readable.
-
-    Aggregated with one GROUP BY rather than by materialising every joined row in Python.
-
-    The totals row is the point. Across every faction, `diplomacy` confirms 73 of 425
-    attempts while every other action type sits between 75% and 100%; spread over 61
-    alphabetical rows and 22 columns that is 1342 cells and the finding is invisible.
-    Sorted worst-first, it is the first line on the page.
-    """
+    """faction x action-type crosstab, and the totals row that makes it readable."""
     if kind == "interrupt":
         sql = ("SELECT c.faction faction, i.kind atype,"
                "       COUNT(*) tried,"
@@ -678,14 +554,7 @@ def matrix(con, kind: str = "action"):
 # ----------------------------------------------------------------------------------------
 
 def _options_of(options_json) -> list:
-    """The options on a blocking screen, as (label, payload) pairs.
-
-    Stored as an OBJECT KEYED BY LABEL -- {"button_retreat": {"exploit":…, "gnn":…}} --
-    not as a list of option records. Reading it as a list yields nothing and raises
-    nothing, so every per-option model score silently disappeared from the panel while
-    the row count stayed right. The list form is still accepted in case an older run dir
-    carries it.
-    """
+    """The options on a blocking screen, as (label, payload) pairs."""
     opts = _jload(options_json)
     if isinstance(opts, dict):
         return [(k, v) for k, v in opts.items() if isinstance(v, dict)]
@@ -713,20 +582,19 @@ def _result_of(row) -> tuple:
 
 def decisions_page(con, offset=0, limit=DECISIONS_PAGE, action_type=None, policy=None,
                    result=None, campaign=None, q=None):
-    """The decision log, one page at a time.
-
-    Deliberately two bounded queries plus a keyed lookup, never a join to the offer view:
-    the offer columns used to arrive via a correlated MIN(offer_id) subquery against a
-    view, measured at 0.01 s for the base rows and 20 s for the same rows with that join.
-    The page's offers are fetched by decision id, for the fifty ids on the page only.
-    """
+    """The decision log, one page at a time."""
     where, args = [], []
     if action_type:
         where.append("at.action_type = ?")
         args.append(action_type)
     if policy:
-        where.append("COALESCE(at.policy, dp.policy) = ?")
-        args.append(policy)
+        raw = [r[0] for r in con.execute(
+            "SELECT DISTINCT policy FROM action_taken WHERE policy IS NOT NULL")
+            if arms.arm_of(r[0]) == policy]
+        if not raw:
+            raw = [policy]
+        where.append("COALESCE(at.policy, dp.policy) IN (%s)" % ",".join("?" * len(raw)))
+        args += raw
     if campaign:
         where.append("dp.campaign_id = ?")
         args.append(campaign)
@@ -764,10 +632,13 @@ def decisions_page(con, offset=0, limit=DECISIONS_PAGE, action_type=None, policy
                 " FROM action_offers WHERE offer_id IN (%s)" % marks, ids):
             offer_by_id[o["offer_id"]] = o
 
+    rho_by_id = rho_for([r["decision_id"] for r in rows])
+
     out = []
     for r in rows:
         res, state = _result_of(r)
         o = offer_by_id.get(r["offer_id"])
+        rho, rho_n = rho_by_id.get(_i(r["decision_id"]), (None, None))
         gnn_rank = _i(o["gnn_rank"]) if o else None
         cat_rank = _i(o["rank"]) if o else None
         n_off = _i(r["n_offers"])
@@ -788,7 +659,8 @@ def decisions_page(con, offset=0, limit=DECISIONS_PAGE, action_type=None, policy
             pct_global=_f(o["pct_global"]) if o else None,
             pct_local=_f(o["pct_local"]) if o else None,
             cat_rank=cat_rank, gnn_impact=_f(o["gnn_impact"]) if o else None,
-            gnn_rank=gnn_rank, delta_pct=delta, latency_ms=_f(r["latency_ms"])))
+            gnn_rank=gnn_rank, delta_pct=delta, rho=rho, rho_n=rho_n,
+            latency_ms=_f(r["latency_ms"])))
     return out, total
 
 
@@ -798,8 +670,8 @@ def decision_facets(con) -> dict:
     at = [r[0] for r in con.execute(
         "SELECT DISTINCT action_type FROM action_taken WHERE action_type IS NOT NULL"
         " ORDER BY action_type")]
-    po = [r[0] for r in con.execute(
-        "SELECT DISTINCT policy FROM action_taken WHERE policy IS NOT NULL ORDER BY policy")]
+    po = sorted({arms.arm_of(r[0]) for r in con.execute(
+        "SELECT DISTINCT policy FROM action_taken WHERE policy IS NOT NULL")} - {None})
     return {"action_types": [_phrase(a) for a in at],
             "policies": [_phrase(p) for p in po],
             "results": [_phrase(x) for x in ("confirmed", "refused", "awaiting")]}
@@ -858,16 +730,7 @@ def decision_detail(con, decision_id: int):
 
 
 def _phases(row) -> list:
-    """The four phases of one action, in ms.
-
-    collect  -- the recorder reading the game
-    queue    -- the request round trip minus the work inside it
-    score    -- featurize and rank (graph build and forward, when the gnn is drawn)
-    verify   -- execute and confirm
-
-    They are a decomposition of one wall clock, so `queue` is derived by subtraction and
-    clamped at zero: the two timers are sampled by different processes and can cross.
-    """
+    """The four phases of one action, in ms."""
     t = _jload(row["timings"] if "timings" in row.keys() else None)
     a = _jload(row["timing"] if "timing" in row.keys() else None)
     collect = _f(t.get("collect_ms"), 0.0) or 0.0
@@ -885,13 +748,7 @@ def _phases(row) -> list:
 
 @db.cached
 def actions_summary(con):
-    """Confirm rate per action type, plus the policy tally, plus every denominator named.
-
-    Three different decision denominators legitimately coexist here -- all rows, rows that
-    were actually attempted, and rows drawn by a strategy -- and the old panel printed all
-    three as "decisions" without saying which was which. They are returned as named counts
-    so the difference is on the page instead of in the reader's head.
-    """
+    """Confirm rate per action type, plus the policy tally, plus every denominator named."""
     rows = []
     for r in con.execute(
             "SELECT action_type,"
@@ -902,8 +759,7 @@ def actions_summary(con):
         tried, ok = _i(r["tried"], 0) or 0, _i(r["ok"], 0) or 0
         rate = Rate(n=ok, of=tried, noun="actions",
                     population="attempted of type %s" % r["action_type"])
-        rows.append(ActionTypeRow(action_type=_phrase(r["action_type"]), rate=rate,
-                                  state=_rate_state(rate.pct)))
+        rows.append(ActionTypeRow(action_type=_phrase(r["action_type"]), rate=rate))
     rows.sort(key=lambda r: (r.rate.pct if r.rate.pct is not None else 999, -r.rate.of))
 
     refus = {}
@@ -916,21 +772,23 @@ def actions_summary(con):
         got = sorted(refus.get(row.action_type.raw, []), reverse=True)[:3]
         row.refusals = [_phrase(x[1]) for x in got]
 
-    pol_rows = con.execute(
+    pol_rows = _by_arm(con.execute(
         "SELECT COALESCE(policy,'(unrecorded)') p, COUNT(*) n FROM action_taken"
-        " GROUP BY p ORDER BY n DESC").fetchall()
-    drawn = sum(_i(r["n"], 0) or 0 for r in pol_rows
-                if r["p"] not in ("forced_end_turn", "(unrecorded)"))
+        " GROUP BY p ORDER BY n DESC").fetchall())
+    drawn = sum(n for p, n, _fb in pol_rows
+                if p not in ("forced_end_turn", "(unrecorded)"))
     policies = []
-    for r in pol_rows:
-        n = _i(r["n"], 0) or 0
+    for p, n, fell in pol_rows:
         note = None
-        if r["p"] == "forced_end_turn":
+        if p == "forced_end_turn":
             # Not a strategy draw: the loop ends the turn when nothing is eligible, so
             # counting it inside the mix would understate every real arm's share.
             note = "not a strategy draw -- the loop ended the turn"
+        elif fell:
+            note = ("%d of these were drawn but could not score, so random picked instead"
+                    % fell)
         policies.append(PolicyRow(
-            policy=_phrase(r["p"]), picks=n,
+            policy=_phrase(p), picks=n,
             share=Rate(n=n, of=drawn or 1, noun="picks",
                        population="drawn from the strategy mix"),
             note=note))
@@ -948,8 +806,7 @@ def actions_summary(con):
               population="drawn from the strategy mix (excludes the forced end turn)"),
     ]
     tiles = [
-        Metric(label="confirmed", value=confirmed, sub="of %d attempted" % attempted,
-               state=_rate_state((100.0 * confirmed / attempted) if attempted else None)),
+        Metric(label="confirmed", value=confirmed, sub="of %d attempted" % attempted),
         Metric(label="attempted", value=attempted, sub="of %d recorded" % all_rows),
         Metric(label="action types", value=len(rows), sub="seen in this run dir"),
     ]
@@ -962,12 +819,7 @@ def actions_summary(con):
 
 @db.cached
 def menus(con):
-    """Blocking-screen decisions, with every per-option model score as data.
-
-    The scores previously existed only inside hover text -- the heading said as much --
-    which makes them unselectable, unsearchable and absent on touch. They are fields here,
-    so the client can put them in cells and sort by them.
-    """
+    """Blocking-screen decisions, with every per-option model score as data."""
     total = _i(con.execute("SELECT COUNT(*) FROM interrupt_decisions").fetchone()[0], 0) or 0
     by_screen = [Count(value=_i(r["n"], 0) or 0, noun=str(r["kind"] or "screens"),
                        population="blocking-menu decisions of this kind")
@@ -975,14 +827,16 @@ def menus(con):
                      "SELECT kind, COUNT(*) n FROM interrupt_decisions"
                      " GROUP BY kind ORDER BY n DESC")]
 
-    pol_rows = con.execute(
+    pol_rows = _by_arm(con.execute(
         "SELECT COALESCE(policy,'(unrecorded)') p, COUNT(*) n FROM interrupt_decisions"
-        " GROUP BY p ORDER BY n DESC").fetchall()
-    tot_pol = sum(_i(r["n"], 0) or 0 for r in pol_rows) or 1
-    policies = [PolicyRow(policy=_phrase(r["p"]), picks=_i(r["n"], 0) or 0,
-                          share=Rate(n=_i(r["n"], 0) or 0, of=tot_pol, noun="picks",
-                                     population="on blocking-menu decisions"))
-                for r in pol_rows]
+        " GROUP BY p ORDER BY n DESC").fetchall())
+    tot_pol = sum(n for _p, n, _fb in pol_rows) or 1
+    policies = [PolicyRow(policy=_phrase(p), picks=n,
+                          share=Rate(n=n, of=tot_pol, noun="picks",
+                                     population="on blocking-menu decisions"),
+                          note=("%d of these were drawn but could not score, so random "
+                                "picked instead" % fell) if fell else None)
+                for p, n, fell in pol_rows]
 
     rows = []
     cover = {}
@@ -1037,13 +891,7 @@ def menus(con):
 
 @db.cached
 def timeline(con) -> list:
-    """The most recent actions, grouped into (campaign, turn) lanes.
-
-    Turn numbers restart with every campaign, so the lane key is the pair. One bounded
-    query; the phase strings are a fixed legend on the page rather than an attribute
-    repeated on every bar -- the old fragment carried 846 copies of six strings, which was
-    most of its 147 KB.
-    """
+    """The most recent actions, grouped into (campaign, turn) lanes."""
     rows = con.execute(
         "SELECT at.decision_id, at.ts, at.action_type, at.action_key, at.executed,"
         "       at.confirmed, at.counted, at.refusal, at.timing,"
@@ -1093,19 +941,22 @@ def timeline(con) -> list:
 # ----------------------------------------------------------------------------------------
 
 _MODEL_DIRS = (
-    ("global", common.MODEL_GLOBAL, "catboost",
-     "Ranks every offered action across the whole faction. The main action ranker."),
-    ("local", common.MODEL_LOCAL, "catboost",
-     "Ranks actions within one entity's own option set, so a lord's choices compete "
-     "against each other rather than against the whole map."),
-    ("interrupt", common.MODEL_INTERRUPT, "catboost",
-     "Answers blocking screens -- battles, dilemmas, occupation choices."),
-    ("gnn", common.MODEL_MAPGRAPH, "mapgraph",
-     "The graph model for actions: the map and its entities as a graph, the action as a "
-     "node in it."),
-    ("gnn interrupt", common.MODEL_MAPGRAPH_INTERRUPT, "mapgraph",
-     "The graph model for blocking screens. Same architecture as the action graph model, "
-     "different decision family, its own weights."),
+    ("greedy_catboost global", common.MODEL_GLOBAL, "catboost",
+     "The advantage model the greedy arm ranks on: e1 predicts the return with the action, "
+     "e2 the same state without it, and e1 - e2 is the advantage. Ranks every offered "
+     "action across the whole faction."),
+    ("greedy_catboost local", common.MODEL_LOCAL, "catboost",
+     "The same advantage within one entity's own option set, so a lord's choices compete "
+     "against each other rather than against the whole map. Blended into the global rank."),
+    ("greedy_catboost interrupt", common.MODEL_INTERRUPT, "catboost",
+     "The advantage model for blocking screens -- battles, dilemmas, occupation choices."),
+    ("marwil_gnn", common.MODEL_MAPGRAPH, "mapgraph",
+     "MARWIL/AWR over the graph encoder: the map and its entities as a graph, the action a "
+     "node in it, trained by exponentially advantage-weighted imitation of the logged "
+     "action rather than by maximising the advantage."),
+    ("marwil_gnn interrupt", common.MODEL_MAPGRAPH_INTERRUPT, "mapgraph",
+     "The same algorithm and encoder on blocking screens -- a different decision family, "
+     "its own weights."),
 )
 
 
@@ -1214,19 +1065,17 @@ def _fit_config() -> list:
 
 @db.cached
 def forcing(con):
-    """What each model wants to do: the action-type mix each arm actually picked.
-
-    Bounded to the decisions each arm drew, with a Wilson interval per bar so a 2-of-3
-    share is visibly not the same evidence as a 200-of-300 share.
-    """
+    """What each model wants to do: the action-type mix each arm actually picked."""
     rows = con.execute(
         "SELECT COALESCE(policy,'(unrecorded)') p, action_type, COUNT(*) n"
         " FROM action_taken WHERE action_type IS NOT NULL GROUP BY p, action_type").fetchall()
     by_arm: dict = {}
     for r in rows:
-        by_arm.setdefault(r["p"], {})[r["action_type"]] = _i(r["n"], 0) or 0
+        arm = arms.arm_of(r["p"]) or arms.UNRECORDED
+        mix = by_arm.setdefault(arm, {})
+        mix[r["action_type"]] = mix.get(r["action_type"], 0) + (_i(r["n"], 0) or 0)
     tiles = []
-    for arm in ("exploit_tree", "gnn_marwil"):
+    for arm in ("greedy_catboost", "marwil_gnn"):
         mix = by_arm.get(arm) or {}
         tot = sum(mix.values())
         if not tot:
@@ -1241,7 +1090,7 @@ def forcing(con):
                 ci_lo=round(100 * lo, 1), ci_hi=round(100 * hi, 1)))
         tiles.append(ForcingTile(model=arm,
                                  favours=bars[0].action_type if bars else None, bars=bars))
-    n_dec = sum(sum((by_arm.get(a) or {}).values()) for a in ("exploit_tree", "gnn_marwil"))
+    n_dec = sum(sum((by_arm.get(a) or {}).values()) for a in ("greedy_catboost", "marwil_gnn"))
     return tiles, Count(value=n_dec, noun="decisions",
                         population="drawn by a model arm in this run dir")
 
@@ -1257,108 +1106,307 @@ def _wilson(k, n, z=1.96):
     return max(0.0, (c - s) / d), min(1.0, (c + s) / d)
 
 
-@db.cached
-def agreement(con):
-    """Where each model ranked the action that was actually taken.
+# ----------------------------------------------------------------------------------------
+# model comparison -- served from the precomputed analytics tables, never computed here
+# ----------------------------------------------------------------------------------------
 
-    Bounded to the most recent AGREE_LOOKBACK decision ids: an unbounded
-    `WHERE gnn_rank IS NOT NULL` walks every offer row in the corpus on every request,
-    and the bound keeps the query on the offer index.
-    """
-    hi = _i(con.execute("SELECT MAX(decision_id) FROM action_taken").fetchone()[0], 0) or 0
-    lo = max(0, hi - AGREE_LOOKBACK)
-    # Two bounded queries and a dict, never a range join against the offer view.
-    #
-    # action_offers decompresses a blob per row, so its cost is per row TOUCHED, not per
-    # row returned. Joining `... JOIN action_offers o ON o.offer_id = at.offer_id` with
-    # only `at` bounded decompressed the whole corpus: 7.6 s. Bounding the view by its own
-    # decision_id as well brought that to 631 ms -- still ~33k rows decompressed, because
-    # 600 decisions carry ~55 offers each and we want exactly one of them.
-    #
-    # Fetching the taken rows first and then looking their offers up BY offer_id
-    # decompresses ~600 rows instead of ~33k. Same answer, and it is the access pattern
-    # rather than the bound that decides the cost.
-    base = con.execute(
-        "SELECT at.decision_id, at.offer_id, COALESCE(at.policy, dp.policy) policy,"
-        "       dp.n_offers"
-        " FROM action_taken at"
-        " JOIN decision_points dp ON dp.decision_id = at.decision_id"
-        " WHERE at.decision_id > ? AND at.offer_id IS NOT NULL", (lo,)).fetchall()
-    ranks = {}
-    ids = [r["offer_id"] for r in base]
-    for i in range(0, len(ids), 400):                     # under SQLite's variable limit
+def _freshness(tenant: str):
+    """How current the precomputed numbers are, as a required field on every page."""
+    from advisor_api.models import AnalyticsFreshness
+    st = adb.tenant_state(tenant)
+    rows = _i(st.get("rows"), 0) or 0
+    watermark = _i(st.get("watermark"), 0) or 0
+    behind = 0
+    if tenant == "model_agreement":
+        try:
+            corpus_hi = _i(db.connect().execute(
+                "SELECT MAX(decision_id) FROM decisions").fetchone()[0], 0) or 0
+        except Exception:
+            corpus_hi = 0
+        behind = max(0, corpus_hi - 1 - watermark)
+    age = (time.time() - _f(st.get("last_run_ts"), 0.0)) if st.get("last_run_ts") else None
+    state, detail = "ok", None
+    if not st:
+        state = "bad"
+        detail = ("nothing has been built for this run dir yet -- start the analytics "
+                  "service with `python -m analytics.runner`")
+    elif st.get("last_error"):
+        state, detail = "bad", "the last pass failed: %s" % st["last_error"]
+    elif age is not None and age > 120:
+        state = "bad"
+        detail = ("the analytics service has not run for %s -- it may have stopped"
+                  % _age_words(age))
+    elif behind:
+        state = "warn"
+        detail = ("%d decisions are not folded in yet; the service picks them up within a "
+                  "few seconds" % behind)
+    return AnalyticsFreshness(
+        tenant=tenant,
+        behind=Count(value=behind, noun="decisions",
+                     population="recorded in this run dir but not yet folded into the "
+                                "precomputed table"),
+        rows=Count(value=rows, noun="rows",
+                   population="in the precomputed table for this run dir"),
+        computed_through=watermark or None, age_seconds=(round(age, 1) if age else None),
+        formula_version=_i(st.get("formula_version"), 0) or 0,
+        state=state, detail=detail)
+
+
+def _excluded_counts(s: dict) -> list:
+    return [
+        Count(value=_i(s.get("no_gnn"), 0) or 0, noun="decisions",
+              population="recorded before the graph model had weights, so only one model "
+                         "ranked them"),
+        Count(value=_i(s.get("too_few"), 0) or 0, noun="decisions",
+              population="where both models ranked fewer than three of the same offers"),
+        Count(value=_i(s.get("no_scores"), 0) or 0, noun="decisions",
+              population="carrying no stored scores at all"),
+    ]
+
+
+_SECONDARY_NOTE = "a supplement to the rank correlation above, not a substitute for it"
+
+
+def _secondary(s: dict) -> list:
+    """RBO and top-k overlap. Reported, and reported as secondary."""
+    from advisor_api.models import SecondaryMeasure
+    comparable = _i(s.get("comparable"), 0) or 0
+    out = []
+    if s.get("rbo_mean") is not None:
+        out.append(SecondaryMeasure(
+            measure="rank-biased overlap (p=0.9)",
+            value="%.3f" % _f(s["rbo_mean"], 0.0)))
+    for k, key in ((3, "top3_mean"), (5, "top5_mean"), (10, "top10_mean")):
+        if s.get(key) is None:
+            continue
+        out.append(SecondaryMeasure(
+            measure="top-%d overlap" % k,
+            value="%.1f%%" % (100.0 * _f(s[key], 0.0)),
+            rate=Rate(n=int(round(_f(s[key], 0.0) * comparable)), of=comparable,
+                      noun="of each model's best %d" % k,
+                      population="comparable decisions, averaged")))
+    return out
+
+
+@adb.cached
+def agreement_page():
+    """Everything the agreement view shows. Keyed reads of a flat table, no aggregation."""
+    from advisor_api.models import (AgreementPage, AgreementRankRow, AgreementSummary,
+                                    CorrelationSummary, RhoBin)
+    fresh = _freshness("model_agreement")
+    scope = Scope(text="rank correlation between the two models, over the offers both "
+                       "ranked",
+                  detail="every decision in this run dir, precomputed")
+    s = adb.one("SELECT * FROM agreement_summary WHERE scope='all'")
+    if not s:
+        return AgreementPage(
+            scope=scope, freshness=fresh, summary=[], rows=[],
+            empty_reason=("nothing has been folded in for this run dir yet -- the analytics "
+                          "service builds it within a few seconds of starting"))
+    comparable = _i(s.get("comparable"), 0) or 0
+    decisions = _i(s.get("decisions"), 0) or 0
+    if not comparable:
+        return AgreementPage(
+            scope=scope, freshness=fresh, summary=[], rows=[],
+            empty_reason=("no decision in this run dir carries both a tree rank and a graph "
+                          "rank, so there is nothing to correlate"))
+    same = _i(s.get("top1_same"), 0) or 0
+    corr = CorrelationSummary(
+        compared=Count(value=comparable, noun="decisions",
+                       population="where both models ranked at least three of the same "
+                                  "offers"),
+        coverage=Rate(n=comparable, of=decisions, noun="decisions",
+                      population="recorded in this run dir"),
+        rho_median=_f(s.get("rho_median")), rho_mean=_f(s.get("rho_mean")),
+        rho_q1=_f(s.get("rho_q1")), rho_q3=_f(s.get("rho_q3")),
+        tau_median=_f(s.get("tau_median")), tau_mean=_f(s.get("tau_mean")),
+        same_best=Rate(n=same, of=comparable, noun="decisions", population="comparable"),
+        overlap_median=_f(s.get("overlap_median")),
+        from_decision=_i(s.get("from_decision")), to_decision=_i(s.get("to_decision")),
+        excluded=_excluded_counts(s))
+    summary = [
+        AgreementSummary(measure="decisions compared", value="{:,}".format(comparable),
+                         help=None),
+        AgreementSummary(measure="offers both models ranked (median)",
+                         value="{:,.0f}".format(_f(s.get("overlap_median"), 0.0))),
+        AgreementSummary(measure="Spearman rho, median",
+                         value="%+0.3f" % _f(s.get("rho_median"), 0.0),
+                         help=None),
+        AgreementSummary(measure="Spearman rho, mean",
+                         value="%+0.3f" % _f(s.get("rho_mean"), 0.0),
+                         help=None),
+        AgreementSummary(measure="Kendall tau-b, median",
+                         value="%+0.3f" % _f(s.get("tau_median"), 0.0),
+                         help=None),
+        AgreementSummary(measure="both picked the same best action",
+                         value="%.0f%% (%d of %d)"
+                               % (100.0 * same / comparable, same, comparable)),
+    ]
+    rows = [AgreementRankRow(
+        picked_by=_phrase(r["key"]), decisions=_i(r["decisions"], 0) or 0,
+        cat_rank=_f(r["cat_rank"]), cat_pct=_f(r["cat_pct"]),
+        gnn_rank=_f(r["gnn_rank"]), gnn_pct=_f(r["gnn_pct"]),
+        delta_pct=_f(r["delta_pct"]), rho_median=_f(r["rho_median"]),
+        fell_back=_i(r["fell_back"], 0) or 0)
+        for r in adb.rows("SELECT * FROM agreement_breakdown WHERE dim='arm'"
+                          " ORDER BY decisions DESC")]
+    bins = [RhoBin(lo=_f(b["lo"], 0.0), hi=_f(b["hi"], 0.0),
+                   decisions=_i(b["decisions"], 0) or 0)
+            for b in adb.rows("SELECT * FROM agreement_hist ORDER BY bucket")]
+    return AgreementPage(scope=scope, freshness=fresh, correlation=corr, rho_bins=bins,
+                         summary=summary, rows=rows, secondary=_secondary(s))
+
+
+ALIGNMENT_CAVEAT = None
+
+
+@adb.cached
+def agreement_series(axis: str = "window"):
+    """Agreement over time, or by model generation."""
+    from advisor_api.models import (AgreementSeriesPage, AgreementSeriesPoint,
+                                    GenerationRow)
+    axis = "generation" if axis == "generation" else "window"
+    fresh = _freshness("model_agreement")
+    pts = adb.rows("SELECT * FROM agreement_series WHERE axis=? ORDER BY seq", (axis,))
+    s = adb.one("SELECT * FROM agreement_summary WHERE scope='all'") or {}
+    scope = Scope(
+        text=("median rank correlation per model generation" if axis == "generation"
+              else "median rank correlation over the run, newest last"),
+        detail=("windows come from the training ledger's own start and flush times"
+                if axis == "generation"
+                else "equal-count buckets of decision id -- wall-clock buckets would put "
+                     "three decisions beside three hundred, because a retrain takes the "
+                     "game down for tens of minutes"))
+
+    def point(r):
+        n = _i(r["decisions"], 0) or 0
+        return AgreementSeriesPoint(
+            label=(r["label"] or ("#%s" % r["from_decision"])), seq=_i(r["seq"], 0) or 0,
+            decisions=Count(value=n, noun="decisions",
+                            population="comparable, in this bucket"),
+            from_decision=_i(r["from_decision"]), to_decision=_i(r["to_decision"]),
+            from_ts=_f(r["from_ts"]), to_ts=_f(r["to_ts"]),
+            rho_median=_f(r["rho_median"]), rho_mean=_f(r["rho_mean"]),
+            rho_q1=_f(r["rho_q1"]), rho_q3=_f(r["rho_q3"]),
+            tau_mean=_f(r["tau_mean"]), rbo_mean=_f(r["rbo_mean"]),
+            same_top=Rate(n=_i(r["same_top"], 0) or 0, of=n, noun="decisions",
+                          population="comparable, in this bucket"),
+            gate=r["gate"])
+
+    # Always populated, on BOTH axes. On the generation axis these are the rows of the
+    # table; on the run axis they are the retrain boundaries drawn over the trend, which is
+    # the comparison the view exists to make -- did agreement move when the weights did.
+    gens = []
+    for r in adb.rows("SELECT * FROM agreement_series WHERE axis='generation' ORDER BY seq"):
+        n = _i(r["decisions"], 0) or 0
+        gens.append(GenerationRow(
+            trial=_phrase(r["trial"] or "unstamped"), generation=_i(r["generation"]),
+            retrained=bool(r["retrained"]), from_ts=_f(r["from_ts"]),
+            to_ts=_f(r["to_ts"]), overlapped_by=r["overlapped_by"],
+            decisions=Count(value=n, noun="decisions",
+                            population="comparable, inside this generation's window"),
+            rho_median=_f(r["rho_median"]), rho_mean=_f(r["rho_mean"]),
+            tau_mean=_f(r["tau_mean"]), rbo_mean=_f(r["rbo_mean"]),
+            same_top=Rate(n=_i(r["same_top"], 0) or 0, of=n, noun="decisions",
+                          population="comparable, inside this generation's window")))
+    drawable = [p for p in pts if p["rho_median"] is not None]
+    return AgreementSeriesPage(
+        scope=scope, freshness=fresh, axis=axis, is_alignment=(axis == "generation"),
+        caveat=(None),
+        bucket_decisions=(_i(pts[0]["bucket_decisions"]) if pts else None),
+        ambiguous=Count(value=_i(s.get("ambiguous"), 0) or 0, noun="decisions",
+                        population="whose timestamp falls inside more than one training "
+                                   "window, so which generation ranked them is ambiguous"),
+        points=[point(r) for r in pts], generations=gens,
+        empty_reason=(None if drawable else
+                      ("no bucket has enough comparable decisions for a median to mean "
+                       "anything yet")))
+
+
+@adb.cached
+def agreement_breakdown(dim: str = "action_type"):
+    from advisor_api.models import AgreementBreakdownPage, AgreementBreakdownRow
+    if dim not in ("arm", "action_type", "context_kind"):
+        dim = "action_type"
+    rows = adb.rows("SELECT * FROM agreement_breakdown WHERE dim=? ORDER BY decisions DESC",
+                    (dim,))
+    out = []
+    for r in rows:
+        n = _i(r["decisions"], 0) or 0
+        out.append(AgreementBreakdownRow(
+            key=_phrase(r["key"]),
+            decisions=Count(value=n, noun="decisions",
+                            population="comparable, in this group"),
+            rho_median=_f(r["rho_median"]), rho_mean=_f(r["rho_mean"]),
+            tau_mean=_f(r["tau_mean"]), rbo_mean=_f(r["rbo_mean"]),
+            same_top=Rate(n=_i(r["same_top"], 0) or 0, of=n, noun="decisions",
+                          population="comparable, in this group")))
+    return AgreementBreakdownPage(
+        scope=Scope(text="rank correlation grouped by %s" % dim.replace("_", " "),
+                    detail="every comparable decision in this run dir"),
+        freshness=_freshness("model_agreement"), dim=dim, rows=out,
+        empty_reason=(None if out else "nothing comparable has been folded in yet"))
+
+
+@adb.cached
+def analytics_status():
+    from advisor_api.models import AnalyticsPage, TenantStatus
+    out = []
+    for st in adb.all_state():
+        f = _freshness(st["tenant"])
+        out.append(TenantStatus(
+            tenant=st["tenant"], formula_version=_i(st.get("formula_version"), 0) or 0,
+            rows=f.rows, behind=f.behind, watermark=_i(st.get("watermark")),
+            built=_clock(st.get("built_ts")), last_run=_clock(st.get("last_run_ts")),
+            last_run_seconds=_f(st.get("last_run_seconds")),
+            last_error=st.get("last_error"), state=f.state))
+    return AnalyticsPage(
+        scope=Scope(text="what the analytics service has precomputed for this run dir",
+                    detail="every model-comparison and growth number is read from these "
+                           "tables rather than computed per request"),
+        tenants=out, db_path=adb.path(), runner_hint="python -m analytics.runner")
+
+
+def decision_agreement(decision_id: int):
+    """One decision's agreement -- a primary-key read, not a recompute."""
+    from advisor_api.models import DecisionAgreement
+    r = adb.one("SELECT * FROM model_agreement WHERE decision_id=?", (int(decision_id),))
+    if not r:
+        return None
+    status = r["status"] or ""
+    note = {
+        "no_gnn": "the graph model had no weights when this decision was recorded, so only "
+                  "the tree model ranked it",
+        "too_few": "both models ranked fewer than three of the same offers -- over two, a "
+                   "rank correlation can only be +1 or -1",
+        "no_scores": "no scores were stored for this decision",
+    }.get(status)
+    return DecisionAgreement(
+        n=Count(value=_i(r["n"], 0) or 0, noun="offers",
+                population="on this decision that both models ranked"),
+        status=status, rho=_f(r["rho"]), tau_b=_f(r["tau_b"]), rbo=_f(r["rbo"]),
+        top1_same=(bool(r["top1_same"]) if r["top1_same"] is not None else None),
+        top3_overlap=_f(r["top3_overlap"]),
+        cat_top_in_gnn=_i(r["cat_top_in_gnn"]), gnn_top_in_cat=_i(r["gnn_top_in_cat"]),
+        note=note)
+
+
+def rho_for(decision_ids) -> dict:
+    """{decision_id: (rho, n)} for the ids on one page of the log."""
+    ids = [int(i) for i in decision_ids if i is not None]
+    out = {}
+    for i in range(0, len(ids), 400):                      # under SQLite's variable limit
         chunk = ids[i:i + 400]
         marks = ",".join("?" * len(chunk))
-        for o in con.execute(
-                "SELECT offer_id, rank, gnn_rank FROM action_offers"
-                " WHERE offer_id IN (%s)" % marks, chunk):
-            ranks[o["offer_id"]] = (o["rank"], o["gnn_rank"])
-    rows = []
-    for r in base:
-        cat, gnn = ranks.get(r["offer_id"], (None, None))
-        if cat is None or gnn is None:
-            continue
-        rows.append({"decision_id": r["decision_id"], "policy": r["policy"],
-                     "n_offers": r["n_offers"], "cat_rank": cat, "gnn_rank": gnn})
-    if not rows:
-        return [], [], None, ("no decision in the recent window carries both a catboost "
-                              "rank and a graph rank, so there is nothing to compare")
-    by_pol: dict = {}
-    deltas = []
-    same = 0
-    for r in rows:
-        n = _i(r["n_offers"], 0) or 0
-        cr, gr = _i(r["cat_rank"]), _i(r["gnn_rank"])
-        if not cr or not gr:
-            continue
-        cpct = 100.0 * (cr - 1) / max(1, n - 1)
-        gpct = 100.0 * (gr - 1) / max(1, n - 1)
-        b = by_pol.setdefault(r["policy"] or "(unrecorded)",
-                              {"n": 0, "cr": [], "gr": [], "cp": [], "gp": []})
-        b["n"] += 1
-        b["cr"].append(cr)
-        b["gr"].append(gr)
-        b["cp"].append(cpct)
-        b["gp"].append(gpct)
-        deltas.append(gpct - cpct)
-        same += 1 if (cr == 1 and gr == 1) else 0
-    summary = [
-        AgreementSummary(measure="decisions compared", value="{:,}".format(len(deltas)),
-                         help="decisions in the recent window where both models ranked the "
-                              "action that was taken"),
-        AgreementSummary(measure="both picked the same best action",
-                         value="%d of %d" % (same, len(deltas))),
-    ]
-    if deltas:
-        summary.append(AgreementSummary(
-            measure="median rank gap (percentile)",
-            value="%+.1f" % statistics.median(deltas),
-            help="graph minus tree. Positive means the graph model rated the taken action "
-                 "higher than the tree did."))
-    out = []
-    for pol, b in sorted(by_pol.items(), key=lambda kv: -kv[1]["n"]):
-        out.append(AgreementRankRow(
-            picked_by=_phrase(pol), decisions=b["n"],
-            cat_rank=round(statistics.median(b["cr"]), 1),
-            cat_pct=round(statistics.median(b["cp"]), 1),
-            gnn_rank=round(statistics.median(b["gr"]), 1),
-            gnn_pct=round(statistics.median(b["gp"]), 1),
-            delta_pct=round(statistics.median(b["gp"]) - statistics.median(b["cp"]), 1)))
-    return summary, out, None, None
+        for r in adb.rows("SELECT decision_id, rho, n FROM model_agreement"
+                          " WHERE decision_id IN (%s)" % marks, chunk):
+            out[_i(r["decision_id"])] = (_f(r["rho"]), _i(r["n"]))
+    return out
 
 
 @db.cached
 def correlations(con) -> list:
-    """Does an arm's share of a campaign track how that campaign went?
-
-    Correlated per TURN inside a campaign, not per campaign: a campaign is one sample and
-    there are too few of them, while turns inside a campaign are the unit at which an
-    arm's share actually varies.
-
-    Two tiles, labelled "action ranker" and "interrupt model". They share arm names, so a
-    single search over a merged page finds the action row every time and never inspects
-    the interrupt one -- which is the table that was wrong.
-    """
+    """Does an arm's share of a campaign track how that campaign went?"""
     tiles = []
     for label, table, idcol in (("action ranker", "action_taken", "decision_id"),
                                 ("interrupt model", "interrupt_decisions", "interrupt_id")):
@@ -1376,8 +1424,14 @@ def correlations(con) -> list:
         turn_totals: dict = {}
         for r in con.execute(sql):
             k = (r["ckey"], _i(r["turn"], 0) or 0)
-            per.setdefault(r["arm"], {})[k] = _i(r["n"], 0) or 0
-            turn_totals[k] = turn_totals.get(k, 0) + (_i(r["n"], 0) or 0)
+            # Folded onto the strategy, like every other arm tally. Grouping on the raw
+            # policy correlated each ruleset RULE against campaign outcome separately, so
+            # the ruleset arm never had enough turns in one row to clear the gate.
+            arm = arms.arm_of(r["arm"]) or arms.UNRECORDED
+            n = _i(r["n"], 0) or 0
+            cells = per.setdefault(arm, {})
+            cells[k] = cells.get(k, 0) + n
+            turn_totals[k] = turn_totals.get(k, 0) + n
 
         target = {(r["campaign_id"], _i(r["turn"], 0) or 0):
                   (_f(r["settlements"]), _f(r["lord_level"]))
@@ -1410,11 +1464,7 @@ def correlations(con) -> list:
 
 
 def _pearson_gated(xs, ys, min_n=12):
-    """Pearson r, or None with the reason it was not computed.
-
-    Reporting a correlation over eight points as though it were a finding is worse than
-    reporting nothing, so the gate is part of the return value rather than a footnote.
-    """
+    """Pearson r, or None with the reason it was not computed."""
     pairs = [(x, y) for x, y in zip(xs, ys) if x is not None and y is not None]
     if len(pairs) < min_n:
         return None, "n=%d, below %d" % (len(pairs), min_n)
@@ -1432,18 +1482,7 @@ SESSION_REPORTS = 12
 
 
 def training_history() -> list:
-    """One row per retrain, newest first: what the corpus was and what the fit produced.
-
-    Read straight from the session reports rather than by importing advisor.session,
-    which pulls in catboost and torch at module scope -- a dashboard that cannot start
-    because a training dependency failed to import is a dashboard that is down exactly
-    when you want to see why training failed.
-
-    Metrics are grouped rather than flattened into one very wide row. The old view was 27
-    columns across two header rows, which forced a horizontal scrollbar and put half the
-    numbers off screen; grouping lets the client show a group and let the reader open the
-    rest.
-    """
+    """One row per retrain, newest first: what the corpus was and what the fit produced."""
     return _training_history()
 
 
@@ -1529,69 +1568,48 @@ def trials():
     return _trials()
 
 
-@db.cached_files(os.path.join(common.native(common.METRICS_DIR), "experiments.jsonl"))
+@db.cached_files(metrics_db.DB_PATH, metrics_db.DB_PATH + "-wal")
 def _trials() -> list:
     out = []
-    try:
-        with open(_experiments_path(), encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    d = json.loads(line)
-                except ValueError:
-                    continue
-                # Field names read off the ledger the session actually writes, not
-                # guessed. The first version of this guessed `sett_per_camp`, `corpus`
-                # and `turns_per_camp`; every one of those keys is absent, so four
-                # columns rendered as a dash on all 85 rows -- perfectly, silently, and
-                # exactly the failure this rebuild exists to remove. There is now a gate
-                # for it: test_no_column_is_empty_in_every_row.
-                corpus = d.get("corpus_at_train") or {}
-                setts = d.get("settlements") or {}
-                lord = d.get("lord_level") or {}
-                timing = d.get("timing") or {}
-                out.append(TrialRow(
-                    trial=str(d.get("trial") or ""),
-                    backend=d.get("backend"),
-                    cfg=(json.dumps(d["backend_cfg"], sort_keys=True)
-                         if d.get("backend_cfg") else None),
-                    mix=d.get("strategies") or {},
-                    # ruleset is {name, sha256}; the name is what identifies the run.
-                    ruleset=_text(d.get("ruleset")),
-                    campaigns=_i(d.get("campaigns")),
-                    corpus=_i(corpus.get("rows")),
-                    settlements_per_campaign=_f(setts.get("mean")),
-                    settlements_total=_f(setts.get("total")),
-                    grew=("%s of %s" % (setts.get("campaigns_that_gained"),
-                                        setts.get("campaigns_measured"))
-                          if setts.get("campaigns_measured") is not None else None),
-                    lord_per_campaign=_f(lord.get("mean")),
-                    turns_per_campaign=_f(d.get("turns_per_campaign")),
-                    seconds_per_campaign=_f(timing.get("s_per_campaign")),
-                    seconds_per_turn=_f(timing.get("s_per_turn")),
-                    live=bool(d.get("running")),
-                    notes=(", ".join("%s %s" % (k, v)
-                                     for k, v in (d.get("outcomes") or {}).items()) or None)))
-    except OSError:
-        return []
-    # Newest first, then one row per TRIAL rather than one per ledger line. The ledger is
-    # append-only and writes a snapshot per campaign as a trial progresses -- 86 lines for
-    # 25 trials on the current file -- so listing lines makes one experiment look like ten
-    # near-identical rows. The first row seen after reversing is that trial's newest state
-    # (its close-out line is written last), and `snapshots` records how many were folded
-    # in so the collapse is visible rather than silent.
-    out.reverse()
-    seen: dict = {}
-    for row in out:
-        first = seen.get(row.trial)
-        if first is None:
-            seen[row.trial] = row
-            row.snapshots = 1
-        else:
-            first.snapshots += 1
-    return list(seen.values())[:200]
+    for d in metrics_db.trials():
+        corpus = d.get("corpus_at_train") or {}
+        setts = d.get("settlements") or {}
+        lord = d.get("lord_level") or {}
+        timing = d.get("timing") or {}
+        row = TrialRow(
+            trial=str(d.get("trial") or ""),
+            backend=d.get("backend"),
+            cfg=(json.dumps(d["backend_cfg"], sort_keys=True)
+                 if d.get("backend_cfg") else None),
+            mix={arms.canonical(k): v for k, v in (d.get("strategies") or {}).items()},
+            # ruleset is {name, sha256}; the name is what identifies the run.
+            ruleset=_text(d.get("ruleset")),
+            campaigns=_i(d.get("campaigns")),
+            corpus=_i(corpus.get("rows")),
+            settlements_per_campaign=_f(setts.get("mean")),
+            settlements_total=_f(setts.get("total")),
+            grew=(Rate(n=_i(setts.get("campaigns_that_gained"), 0) or 0,
+                       of=_i(setts.get("campaigns_measured"), 0) or 0,
+                       noun="campaigns",
+                       population="in this trial with a measurable growth span")
+                  if setts.get("campaigns_measured") is not None else None),
+            shrank=(Rate(n=_i(setts.get("campaigns_that_lost"), 0) or 0,
+                         of=_i(setts.get("campaigns_measured"), 0) or 0,
+                         noun="campaigns",
+                         population="in this trial with a measurable growth span")
+                    if setts.get("campaigns_measured") is not None else None),
+            growth_baseline=_text(d.get("baseline")),
+            lord_per_campaign=_f(lord.get("mean")),
+            turns_per_campaign=_f(d.get("turns_per_campaign")),
+            seconds_per_campaign=_f(timing.get("s_per_campaign")),
+            seconds_per_turn=_f(timing.get("s_per_turn")),
+            live=bool(d.get("running")),
+            notes=(", ".join("%s %s" % (k, v)
+                             for k, v in (d.get("outcomes") or {}).items()) or None))
+        row.snapshots = _i(d.get("_snapshots"), 1)
+        out.append(row)
+    out.reverse()                                          # newest first
+    return out[:200]
 
 
 # ----------------------------------------------------------------------------------------
@@ -1599,13 +1617,7 @@ def _trials() -> list:
 # ----------------------------------------------------------------------------------------
 
 def reward_series(con, campaign_key: str):
-    """The turn series for one campaign, plus the columns that carry no signal.
-
-    A column holding one distinct value across the whole series is reported so the client
-    can hide it by default. `allies` and `vassals` are constant zero across every recorded
-    turn today, and a linter that only looks for blank cells never noticed, because a
-    column full of real zeroes is full.
-    """
+    """The turn series for one campaign, plus the columns that carry no signal."""
     rows = con.execute(
         "SELECT turn, income, settlements, allies, vassals, power_rank"
         " FROM target_rows WHERE campaign_id = ? ORDER BY turn", (campaign_key,)).fetchall()
@@ -1621,19 +1633,23 @@ def reward_series(con, campaign_key: str):
     return pts, constant
 
 
-def diplomacy_tail(campaign_key: str | None = None) -> list:
-    """Recent deal events, read from the tail of the stream.
-
-    `deal score` is the game's own success_chance readout and is NOT a percentage -- it
-    runs past -1000. Its sign is what carries: negative and the AI refuses. The client is
-    told the sign as state and shows the raw number as a number.
-    """
-    path = os.path.join(common.native(common.RUN_DIR), "diplomacy.jsonl")
+@db.cached
+def diplomacy_tail(con, campaign_key: str | None = None) -> list:
+    """Recent deal events, newest first."""
+    if campaign_key:
+        rows = con.execute(
+            "SELECT ts,campaign_key,turn,kind,payload FROM diplomacy_events"
+            " WHERE campaign_key=? ORDER BY event_id DESC LIMIT ?",
+            (campaign_key, DIPLO_TAIL)).fetchall()
+    else:
+        rows = con.execute(
+            "SELECT ts,campaign_key,turn,kind,payload FROM diplomacy_events"
+            " ORDER BY event_id DESC LIMIT ?", (DIPLO_TAIL,)).fetchall()
     out = []
-    for d in _tail_jsonl(path, DIPLO_TAIL):
-        ckey = d.get("campaign_id") or d.get("campaign")
-        if campaign_key and ckey != campaign_key:
-            continue
+    for r in rows:
+        d = _jload(r["payload"]) or {}
+        d.setdefault("kind", r["kind"])
+        d.setdefault("turn", r["turn"])
         score = _f(d.get("deal_score"), _f(d.get("success_chance")))
         outcome = d.get("outcome") or d.get("result")
         state = "neutral"
@@ -1646,61 +1662,25 @@ def diplomacy_tail(campaign_key: str | None = None) -> list:
             state = "bad"
         out.append(DiploEvent(
             turn=_i(d.get("turn")), channel=_phrase(d.get("channel") or d.get("kind")),
-            faction=_fac(d.get("target") or d.get("faction") or ""),
+            faction=(_fac(_who) if (_who := (d.get("target") or d.get("faction"))) else None),
             outcome=_phrase(outcome), deal_score=score, standing=_f(d.get("standing")),
             terms=_text(d.get("terms") or d.get("speech")), state=state))
-    out.reverse()
+    # Already newest-first: the query orders by event_id DESC. The old version read the
+    # file forwards and had to reverse.
     return out[:200]
-
-
-def _tail_jsonl(path: str, n: int) -> list:
-    """The last n json lines, read backwards.
-
-    These streams reach hundreds of megabytes -- the request log is ~300 MB -- so reading
-    forward to reach the end is not an option. Seek back in growing steps until n newlines
-    are in hand, capped so a pathological file cannot pull the whole thing into memory.
-    """
-    out: list = []
-    try:
-        size = os.path.getsize(path)
-    except OSError:
-        return out
-    step, cap = 1 << 22, 1 << 26
-    have = min(size, step)
-    while True:
-        try:
-            with open(path, "rb") as fh:
-                fh.seek(max(0, size - have))
-                chunk = fh.read(have)
-        except OSError:
-            return out
-        lines = chunk.split(b"\n")
-        if have >= size or len(lines) > n + 1 or have >= cap:
-            break
-        have = min(size, have * 4)
-    parsed = []
-    for raw in lines[-(n + 1):]:
-        raw = raw.strip()
-        if not raw:
-            continue
-        try:
-            parsed.append(json.loads(raw.decode("utf-8", "replace")))
-        except ValueError:
-            continue
-    return parsed
 
 
 # ----------------------------------------------------------------------------------------
 # infra
 # ----------------------------------------------------------------------------------------
 
+# The advisor/recorder channel is not here any more: it is a table, not a file, so there
+# is no mtime to watch. Its liveness shows up as decisions arriving, which is what the run
+# view already reports.
 _ACTIVITY = (
     ("session log", None),
-    ("decisions_requests.jsonl", "decisions_requests.jsonl"),
-    ("decisions_responses.jsonl", "decisions_responses.jsonl"),
     ("trace.jsonl", "trace.jsonl"),
     ("decisions_stream.jsonl", "decisions_stream.jsonl"),
-    ("diplomacy.jsonl", "diplomacy.jsonl"),
 )
 
 

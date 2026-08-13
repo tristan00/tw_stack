@@ -210,10 +210,6 @@ def main():
     bad = _io_names(os.path.join(_HERE, "options.py"))
     check(not bad, "options.py touches no bus, db or file", ", ".join(bad) or "clean")
 
-    # The recorder handles a SNAPSHOT, which carries state and no offers. It indexed
-    # e["offers"] to log a count and every decision died at the recorder with
-    # KeyError('offers') -- past write_decision, so the state landed and the options
-    # never did. Only the store round-trip was covered; the stream was not.
     stream = io.open(os.path.join(common.DECISIONS, "decisions_stream.py"),
                      encoding="utf-8").read()
     check('["offers"]' not in stream and "['offers']" not in stream,

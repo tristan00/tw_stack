@@ -104,16 +104,7 @@ def _run(log_bytes: bytes, reset_bus):
 
 
 def two_campaign():
-    """Two campaigns in one game log land in ONE run dir, byte for byte.
-
-    This used to require a SECOND run directory per campaign and assert the log was split
-    across them. That behaviour is gone: it was reachable only through a --swap-dirs flag
-    nothing passed, and a directory per campaign is exactly what forced every trainer to
-    glob the runs root back together. One run dir is the contract now, and the campaign
-    boundary is carried by campaign_uuid in the decision store instead.
-
-    What still matters, and is what this checks: no bytes are dropped at the boundary.
-    """
+    """Two campaigns in one game log land in ONE run dir, byte for byte."""
     fails = []
     reset_bus = FakeBusReset()
     log_bytes = _campaign_a() + _campaign_b()

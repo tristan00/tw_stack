@@ -1,35 +1,4 @@
-r"""Which starts open on a cutscene, measured from the launcher's own logs.
-
-WHY -- a cutscene start costs about a minute of wall clock per campaign and buys nothing.
-Reaching an interactive HUD takes ~19s on a start with no cutscene and 68-119s on one that
-has one, every campaign, forever. Restricting --factions to the clean starts is the
-cheapest throughput win available: no code changes the game, nothing is skipped that
-matters, the corpus just stops paying for intro movies.
-
-WHAT IS ACTUALLY MEASURED. The launcher logs two lines per campaign:
-
-    [launch] interactive HUD reached in <hud>s (<n> cinematic keys)
-    [launch] CAMPAIGN PLAYABLE: <map> / <faction> -- load Xs + hud <hud>s = Zs
-
-`cinematic keys` is the count of space/escape presses advance_to_hud had to send before
-the HUD appeared. That is the direct measure -- hud seconds is confounded by disk and
-load variance, the key count is not. Over 610 launches across 103 distinct starts the
-split is not a judgement call:
-
-    89 starts   7-9 keys      17-30s to HUD      no cutscene
-    14 starts   92-200 keys   68-119s to HUD     cutscene
-
-Nothing lands between 9 and 92 keys, so KEY_THRESHOLD is a gap, not a percentile. The 14
-are overwhelmingly the recent DLC legendary lords, which ship with an intro movie.
-
-The list is DERIVED, never hand-maintained: rerun this and it re-measures. A start with
-too few observations is reported as unknown rather than assumed clean, because assuming
-clean is the expensive direction.
-
-    python launcher/cutscene_starts.py            # report
-    python launcher/cutscene_starts.py --write    # also write the json
-    python launcher/cutscene_starts.py --factions # comma list for --factions
-"""
+"""Which starts open on a cutscene, measured from the launcher's own logs."""
 
 from __future__ import annotations
 
@@ -56,14 +25,7 @@ _PLAYABLE = re.compile(
 
 
 def log_files(root=None):
-    r"""Every .log under TWDATA, not just the live advisor directory.
-
-    Scanning only D:\twdata\logs\advisor missed 75 logs sitting in archive subtrees
-    (corpus wipes, scrapped runs, misplaced_session_logs_20260807) plus more under runs
-    and scratch -- and those are launches too. Every start has been played many times
-    across all of them, so the wider scan is what makes the per-start medians solid rather
-    than a read of the last few days.
-    """
+    """Every .log under TWDATA, not just the live advisor directory."""
     out = []
     for dirpath, _dirs, files in os.walk(root or common.TWDATA):
         for f in files:
@@ -97,15 +59,7 @@ def observations(log_glob=None):
 
 
 def classify(obs=None, campaign_map=None):
-    r"""Split the observed starts into cutscene / clean / unknown.
-
-    campaign_map matters and is not a convenience filter. A cutscene belongs to the
-    (map, faction) pair, not the faction: wh3_main_ksl_the_ice_court opens on an intro
-    movie on Realm of Chaos (149 cinematic keys, 80s to HUD) and on nothing at all on
-    Immortal Empires (8 keys, 22s). Classifying by faction alone put it in both lists at
-    once. Pass the map the session will actually play, or get every map pooled and a
-    faction that is clean on one of them wrongly marked dirty.
-    """
+    """Split the observed starts into cutscene / clean / unknown."""
     obs = observations() if obs is None else obs
     cutscene, clean, unknown = [], [], []
     for (cmap, faction), rows in sorted(obs.items()):

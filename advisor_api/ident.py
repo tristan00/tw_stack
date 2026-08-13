@@ -1,20 +1,4 @@
-"""Turning the game's raw identifiers into words, without inventing a name table.
-
-Every id the game emits is a snake_case key with a fixed shape:
-
-    wh2_main_def_cult_of_pleasure
-    ^^^ ^^^^ ^^^ ^^^^^^^^^^^^^^^^
-    game pack culture  the actual name
-
-so the display name is derivable, and the culture name is derivable too -- the culture
-keys in launcher/startable_factions.json have the SAME shape, so `wh2_main_def_dark_elves`
-yields the mapping def -> "Dark Elves" on its own. Nothing here is typed by hand, which
-matters because the faction list is regenerated from the game after every DLC and a
-hand-written table would silently go stale against it.
-
-The raw id is never discarded, only demoted: `Ident.raw` travels beside `Ident.label` in
-every response, because the raw id is what gets grepped, logged and pasted into a query.
-"""
+"""Turning the game's raw identifiers into words, without inventing a name table."""
 
 from __future__ import annotations
 
@@ -47,11 +31,7 @@ def strip_affixes(key: str) -> str:
 
 
 def titlecase(words: str) -> str:
-    """`cult_of_pleasure` -> `Cult of Pleasure`.
-
-    Small words stay lowercase unless they lead, so `cult_of_pleasure` does not become
-    the slightly wrong `Cult Of Pleasure`.
-    """
+    """`cult_of_pleasure` -> `Cult of Pleasure`."""
     parts = [p for p in str(words or "").replace("-", "_").split("_") if p]
     out = []
     for i, p in enumerate(parts):
@@ -61,13 +41,7 @@ def titlecase(words: str) -> str:
 
 @functools.lru_cache(maxsize=1)
 def culture_names() -> dict:
-    """code -> display name, derived from the harvested culture list.
-
-    A culture key has the same shape as a faction key, so `wh2_main_def_dark_elves`
-    decomposes into the code `def` and the name `Dark Elves`. If the file is missing or
-    unreadable the map is simply empty and callers fall back to showing no culture --
-    a missing culture is cosmetic, and guessing one would not be.
-    """
+    """code -> display name, derived from the harvested culture list."""
     path = os.path.join(common.LAUNCHER, "startable_factions.json")
     try:
         # utf-8-sig: the file is written by the game-side harvester and carries a BOM.
@@ -83,13 +57,28 @@ def culture_names() -> dict:
     return out
 
 
-def split_campaign_key(campaign_key: str) -> tuple:
-    """`wh2_main_def_naggarond_4f36...` -> (`wh2_main_def_naggarond`, `4f36...`).
+@functools.lru_cache(maxsize=1)
+def campaign_map_names() -> dict:
+    """map key -> display name, read from the roster the launcher harvests."""
+    path = os.path.join(common.LAUNCHER, "startable_factions.json")
+    try:
+        data = json.load(io.open(path, encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return {}
+    return {k: str((v or {}).get("label") or k)
+            for k, v in (data.get("maps") or {}).items()}
 
-    A campaign key is a faction key with a run-unique hex tail. Splitting them is what
-    lets one campaign be told from another campaign of the same faction without showing
-    the reader 16 hex digits.
-    """
+
+def campaign_map(key: str) -> dict:
+    """`wh3_main_chaos` -> Realm of Chaos."""
+    raw = str(key or "")
+    if not raw:
+        return {"raw": "", "label": "not recorded"}
+    return {"raw": raw, "label": campaign_map_names().get(raw) or titlecase(raw)}
+
+
+def split_campaign_key(campaign_key: str) -> tuple:
+    """`wh2_main_def_naggarond_4f36...` -> (`wh2_main_def_naggarond`, `4f36...`)."""
     s = str(campaign_key or "")
     m = _CAMP_TAIL.search(s)
     if not m:
@@ -98,11 +87,7 @@ def split_campaign_key(campaign_key: str) -> tuple:
 
 
 def faction(key: str) -> dict:
-    """The display form of a faction key.
-
-    Returns label/culture/raw rather than a pre-joined string so the client decides how
-    to lay it out -- and so the raw id stays a separate field that can be copied whole.
-    """
+    """The display form of a faction key."""
     raw = str(key or "")
     body = strip_affixes(raw)
     code, _, rest = body.partition("_")
@@ -130,13 +115,7 @@ def campaign(campaign_key: str) -> dict:
 
 
 def phrase(key: str) -> dict:
-    """The display form of any other snake_case identifier.
-
-    Outcome rules (`abandoned_on_the_growth_bar`), refusals (`command_silently_refused`),
-    screen kinds (`battle_results`) and action types (`hero_action`) are all read by a
-    person and all arrive as snake_case. They get sentence case, not title case: they are
-    statements, not names.
-    """
+    """The display form of any other snake_case identifier."""
     raw = str(key or "")
     words = raw.replace("-", " ").replace("_", " ").strip()
     return {"raw": raw, "label": (words[:1].upper() + words[1:]) if words else raw}

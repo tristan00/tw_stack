@@ -32,11 +32,6 @@ class Graph:
                  "player_faction", "counts", "provenance")
 
     def __init__(self):
-        # Nodes accumulate as one tuple each and edges as a flat run of 6 ints, then
-        # finalize() transposes them into the per-attribute lists everything downstream
-        # reads. Appending to eleven parallel lists per node and six per edge was 3.5M
-        # python-level append calls over a corpus walk, which is most of what building a
-        # graph costs -- the work itself is a few dict lookups.
         self._nodes = []
         self._edges = []
         self.x = []
@@ -100,11 +95,7 @@ class Graph:
         self._edges.extend((i, j, r, j, i, r + _NREL))
 
     def finalize(self):
-        """Transpose the buffers into the per-attribute lists the rest of the code reads.
-
-        One zip and three strided slices, all at C level, instead of 17k python appends
-        per graph. Idempotent, so calling it twice is harmless.
-        """
+        """Transpose the buffers into the per-attribute lists the rest of the code reads."""
         if self._nodes:
             cols = list(zip(*self._nodes))
             (self.node_ids, self.x, self.node_type, self.race_idx, self.agent_idx,
@@ -189,15 +180,6 @@ def build_graph(record):
             if rel.get(flag):
                 g.edge(mi, fj, name)
 
-    # Third-party wars. Every diplomacy edge above is incident on the player, because every
-    # diplomacy read in the recorder was `me:at_war_with(x)` -- measured, 989 of 989 edges
-    # touched the player node. So "the faction I am about to attack is already fighting
-    # someone else" was not representable, and neither was a war bloc. dip_war is already a
-    # pair-capable relation; it simply never had a source for A-vs-B.
-    #
-    # world.war_graph is met-clipped at collection, both axes, so nothing here can introduce
-    # a faction the player has not met. Edges land only between factions that ALREADY have
-    # nodes -- an unmet faction has no node, so id2idx misses and the edge is skipped.
     for row in (world.get("war_graph") or ()):
         ai = g.id2idx.get("f:" + str(row.get("faction") or ""))
         if ai is None:
@@ -270,13 +252,6 @@ def build_graph(record):
         if not key:
             continue
         # garrison_units comes off the citizenry stack, not world.settlements[].units.
-        # That field is the mod-side mislabel in DATA_GAPS -- it reports the occupying
-        # field army, so it is falsy on 2,933 of 3,405 own-settlement rows and this
-        # scalar, the only defensive number in the graph, was a constant 0 on most of
-        # them. Own citizenry are skipped in the character loop below, so nothing else
-        # carried the fact. Exactly one citizenry army holds each own settlement (3,401
-        # with one, 22 with none, never two), so this stays a single-entity Reader read
-        # and no cross-entity arithmetic is involved.
         gar = own_citizenry.get(key)
         sd = G.Reader(s, "settlement:" + key, "world.settlements[]")
         if gar is not None:
@@ -294,15 +269,6 @@ def build_graph(record):
         g.edge(ri, si, "sett_of")
         g.edge(g.id2idx.get("f:" + me), si, "owns_sett")
 
-    # ---------------- slots and buildings ---------------------------------
-    # `buildings`, `built`, `free_slots`, `max_slots`, `locked_slots`, `building_now`
-    # all become structure here: seven province columns replaced by nodes and edges.
-    # A slot belongs to a REGION. This loop runs per region but used to name the node
-    # "slot:<province>:<n>", so every region of a province wrote into the same slot
-    # nodes: of 558 shared (province, slot) pairs, 341 (61.1%) ended up holding two
-    # different built buildings. That is not a collapse, it is corruption -- the second
-    # region's building overwrote the first one's on a node the model reads as one place.
-    # The region node already exists and is one hop from the province via in_prov.
     slot_index = {}
     for key, st in sorted(prov_state.items()):
         ri = g.id2idx.get("r:" + key)
@@ -386,13 +352,6 @@ def build_graph(record):
         char_faction[cqi] = str(h.get("faction") or "")
         _wire_char(g, ci, cqi, h, char_faction[cqi], prov_of_region, None)
 
-    # ---------------- enemy settlements -----------------------------------
-    # MOBILE_KINDS dropped every hostile of kind "settlement", so an enemy settlement had
-    # no node at all. The target was never missing from the snapshot -- 0 of 2,571
-    # attack_settlement targets were, 44.6% of them arriving through hostiles rather than
-    # world.regions -- it simply had nowhere to point. One node type fixes three things at
-    # once: attack_settlement gets a target, `besieging` gets somewhere to attach (it had
-    # 0 edges in 653 graphs), and garrison targets resolve.
     for h in world.get("hostiles") or []:
         if str(h.get("kind") or "") != "settlement":
             continue
@@ -413,14 +372,6 @@ def build_graph(record):
         if fj is not None:
             g.edge(fj, si, "owns_sett")
 
-    # An enemy garrison is admitted by MOBILE_KINDS as an ordinary `lord` node -- the
-    # citizenry skip above filters only OUR own -- so the defenders were built floating
-    # free of the walls they hold, with coincident x,y the only thing relating them.
-    # The edge makes "this stack is the settlement's defence, not a manoeuvring threat"
-    # structural. It carries no scalar: the stack's units and hp are already on its node,
-    # so filling the settlement's garrison_units from the same rows would write the
-    # number twice. An enemy settlement tile carries at most one such row (2,962 with
-    # one, 8,316 with none, never two), so this is one edge per settlement at most.
     _enemy_setts = {(h.get("x"), h.get("y")): str(h.get("region") or "")
                     for h in (world.get("hostiles") or [])
                     if str(h.get("kind") or "") == "settlement" and h.get("region")}
@@ -491,11 +442,6 @@ def _wire_char(g, ci, cqi, row, faction, prov_of_region, st):
             g.edge(ci, si, "besieging")
     for uk in (st or {}).get("pending_recruit_keys") or ():
         g.edge(ci, g.cat_node("unit", str(uk)), "queued")
-    # What the army IS, one edge per unit held. Deduped by key: a stack of four spearmen is
-    # one edge, because the catalogue node is shared and re-adding it says nothing new.
-    # The per-unit strength/xp are deliberately NOT lifted onto the character as an average
-    # -- that is the hand-engineered summary this design exists to avoid, and `hp` already
-    # carries the aggregate.
     seen_units = set()
     for u in (st or {}).get("unit_cards") or ():
         uk = str((u or {}).get("key") or "")
@@ -556,10 +502,6 @@ def _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me):
         pd = G.Reader(params, "offer:%s:%s:%s" % (ck, cid, key), "offers[].params")
         avals["x"] = pd.num("x") / S.COORD_SCALE
         avals["y"] = pd.num("y") / S.COORD_SCALE
-    # A `stance` offer's whole identity is its key, and nothing carried it: every stance
-    # candidate in a decision was the same node to WL, so the model could not tell
-    # "march" from "ambush". stance_idx is embedded for every node type already, so this
-    # costs nothing and is the field that exists for exactly this.
     ai = g.add("a:%s:%s:%s:%d" % (ck, cid, key, len(g.action_nodes)), "action",
                avals, atype=S.atype_index(at), term=term,
                stance=S.stance_index(key) if at == "stance" else 0)
@@ -591,10 +533,6 @@ def _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me):
         if ck_key:
             g.edge(ai, g.cat_node(kind, ck_key), "act_on")
 
-    # Computed once. _target_of only reads id2idx entries under the c:/s:/r:/f: prefixes,
-    # and the only node the hero_action branch can add is an agent_action catalogue node,
-    # so hoisting it above that branch cannot change what it returns. Edge emission order
-    # is unchanged.
     tgt = _target_of(g, at, key, params)
 
     if at == "hero_action":
@@ -620,12 +558,6 @@ def _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me):
             idx = None
         if idx is not None:
             if params.get("slot_id"):
-                # A HORDE slot belongs to the lord's force, not to a region. This looked
-                # it up as (region, index) with the region defaulting to the context id --
-                # a lord CQI -- so it never resolved, no act_slot edge was ever built for
-                # horde_building, and two buildings queued into different horde slots were
-                # the same node to WL. Measured: 24 inseparable action nodes on a Beastmen
-                # campaign, every one of them horde_building.
                 si = g.id2idx.get("hslot:%s:%d" % (cid, idx))
                 if si is None:
                     si = g.add("hslot:%s:%d" % (cid, idx), "slot", {})
@@ -639,10 +571,6 @@ def _target_of(g, at, key, params):
     if params.get("target_cqi") is not None:
         return g.id2idx.get("c:" + str(params["target_cqi"]))
     if at in ("attack_settlement", "colonize", "garrison"):
-        # `garrison` is keyed "settlement:<region>" while the nodes are "s:<region>", so
-        # the lookup missed on all 1,973 garrison offers -- every one of them was an
-        # action with no target edge. Nothing else in the corpus carries the prefix, so
-        # stripping it is safe for the other two types.
         rkey = str(key)
         if rkey.startswith("settlement:"):
             rkey = rkey[len("settlement:"):]

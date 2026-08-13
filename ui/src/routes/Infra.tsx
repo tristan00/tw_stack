@@ -155,7 +155,7 @@ function LaunchForm({
         <Field label="strategies">
           <input
             className={input}
-            placeholder="exploit_tree=0.3,gnn_marwil=0.3,random=0.3,ruleset=0.1"
+            placeholder="greedy_catboost=0.3,marwil_gnn=0.3,random=0.3,ruleset=0.1"
             value={form.strategies ?? ''}
             onChange={(e) => set('strategies', e.target.value)}
           />

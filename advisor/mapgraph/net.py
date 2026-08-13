@@ -53,13 +53,7 @@ _IDX_FIELDS = ("node_type", "race_idx", "agent_idx", "stance_idx", "subtype_idx"
 
 
 def to_data(g, y=None, taken=None):
-    """Split the flat edge list into the three channels the encoder needs.
-
-    The split is three boolean masks over the edge arrays, not a python loop over every
-    edge. That loop ran ~61.6M iterations across a corpus walk. Boolean indexing keeps
-    order, so each channel is element-for-element what the loop emitted -- including the
-    [[0],[0]] rel-0 placeholder an empty channel gets.
-    """
+    """Split the flat edge list into the three channels the encoder needs."""
     act = S.ACTION_TYPE_INDEX
     ne, nn_ = len(g.src), len(g.x)
     src = np.fromiter(g.src, dtype=np.int64, count=ne)
@@ -113,29 +107,7 @@ def _mlp(dims, dropout=0.0):
 
 
 class RelConv(MessagePassing):
-    """Message conditioned on both endpoints and the relation.
-
-    GINE builds a message from the source node and the edge only, which cannot express
-    "is this attacker stronger than this defender" -- that needs x_i and x_j together.
-    Relation identity enters as an embedding rather than a weight matrix per relation:
-    76 relations would otherwise mean 76 weight matrices.
-
-    A cheaper form was tried and rejected: hoisting the source projection out of the edge
-    loop and running the MLP per node on cat([x_i, aggregated]), with the relation added
-    per edge. It is not worth it and it is not equivalent.
-      - The saving is 1.50x on conv MACs, not the 4.4x it claimed -- that number assumed
-        all 8 conv applications traverse all 8.5k edges, but each sees only its own
-        channel (21.8k edge-visits total, not 68k). Arithmetic is ~1% of this model's
-        wall clock, so 1.5x of it buys nothing.
-      - sum_j (W_s x_j + W_r r_ij) = W_s sum_j x_j + W_r sum_j r_ij. The two sums
-        decouple exactly, so which relation attached to which neighbour is unrecoverable
-        at any depth: "besieging settlement S while garrisoned in T" becomes
-        indistinguishable from the swap. With 46 relation types carrying the semantics
-        this schema was restructured around, that is most of what the model is for.
-      - Returning upd(cat([x, m])) rather than a pure message also breaks the zero-init
-        a2e gate below: a node with no incoming action edge would get a nonzero function
-        of its own state instead of 0.
-    """
+    """Message conditioned on both endpoints and the relation."""
 
     def __init__(self, hidden, rel_dim, aggr):
         super().__init__(aggr=aggr)
@@ -154,15 +126,7 @@ _NT = len(S.NODE_TYPES)
 
 
 class TypeEncoders(nn.Module):
-    """Per-node-type input projection, as ONE block-diagonal matmul.
-
-    Semantically identical to a Linear per node type: each node's own fields are
-    scattered into its type's slot of a [N, n_types * MAX_FIELDS] row and projected by a
-    single weight whose blocks are exactly those per-type weights. Written as a Python
-    loop over 19 types it cost more in kernel launches than the entire message passing --
-    most types hold single-digit node counts, so it was 19 tiny gather/scatter pairs per
-    call to do a few thousand FLOPs.
-    """
+    """Per-node-type input projection, as ONE block-diagonal matmul."""
 
     def __init__(self, hidden):
         super().__init__()
@@ -174,22 +138,11 @@ class TypeEncoders(nn.Module):
     def forward(self, x, node_type):
         cols = node_type.unsqueeze(1) * S.MAX_FIELDS + self._span
         big = x.new_zeros(x.size(0), _NT * S.MAX_FIELDS).scatter_(1, cols, x)
-        # F.embedding, not self.bias[node_type]: same lookup, but the backward of plain
-        # advanced indexing is an atomic scatter from every node row into only 19 rows,
-        # and that contention was 90% of total training time. F.embedding's dense backward
-        # sorts the indices and segment-reduces instead. Identical maths, ~50x cheaper.
         return self.lin(big) + F.embedding(node_type, self.bias)
 
 
 class TypeNorm(nn.Module):
-    """LayerNorm with per-node-type affine parameters, fused.
-
-    nn.LayerNorm takes its statistics over the feature dimension of each row
-    independently, so a separate LayerNorm per node type differs from a shared one ONLY
-    in the affine parameters -- the normalisation itself is per-row either way. So this
-    is mathematically the same thing the 19-way loop computed, in two kernels instead of
-    roughly seventy-six, and without the full-width h.clone() it did on every call.
-    """
+    """LayerNorm with per-node-type affine parameters, fused."""
 
     def __init__(self, hidden, eps=1e-5):
         super().__init__()
@@ -203,10 +156,6 @@ class TypeNorm(nn.Module):
         mu = h.mean(dim=-1, keepdim=True)
         var = h.var(dim=-1, unbiased=False, keepdim=True)
         x = (h - mu) * torch.rsqrt(var + self.eps)
-        # F.embedding rather than self.affine[node_type]. Plain advanced indexing
-        # backpropagates as an atomic scatter from every node row into only 19 rows;
-        # profiling showed those scatters were 90% of ALL training gpu time. F.embedding
-        # sorts indices and segment-reduces instead -- same values, ~50x cheaper.
         w, b = F.embedding(node_type, self.affine).split(self.hidden, dim=1)
         return x * w + b
 
@@ -219,10 +168,6 @@ class Encoder(nn.Module):
         self.entity_layers, self.action_rounds = entity_layers, action_rounds
         self.type_enc = TypeEncoders(hidden)
         self.rel_emb = nn.Embedding(S.N_RELATIONS, S.REL_DIM)
-        # max_norm caps identity magnitude. Without it the catalogue table ran away to a
-        # norm of ~1036 against ~20 for the conv weights, so node state was almost purely
-        # "which item is this" and message passing -- normalised, therefore O(1) --
-        # could not move the score. The map ablation caught it.
         self.race = nn.Embedding(S.RACE_VOCAB, S.RACE_DIM, max_norm=2.0)
         self.agent = nn.Embedding(S.AGENT_VOCAB, S.AGENT_DIM, max_norm=2.0)
         self.stance = nn.Embedding(S.STANCE_BUCKETS, S.STANCE_DIM, max_norm=2.0)

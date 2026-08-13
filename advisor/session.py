@@ -3,12 +3,15 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.dirname(_HERE))
 import common
+import campaign_growth as CG
+import metrics_db
 from decisions import dbopen
 
 sys.path.insert(0, common.BUS)
@@ -107,9 +110,14 @@ def _ending_evidence(rd, entry, ex):
     out = {}
     try:
         con = dbopen.connect(os.path.join(str(rd), "decisions.sqlite"), timeout=5.0)
-        camp = con.execute("SELECT campaign_id FROM decision_points"
-                           " ORDER BY decision_id DESC LIMIT 1").fetchone()
-        camp = camp[0] if camp else None
+        # The campaign being written up, not whichever one is newest in the database.
+        camp = entry.get("campaign_uuid")
+        if not camp:
+            row = con.execute("SELECT campaign_id FROM decision_points"
+                              " ORDER BY decision_id DESC LIMIT 1").fetchone()
+            camp = row[0] if row else None
+            if camp:
+                out["campaign_source"] = "newest_in_corpus"
         if camp:
             out["trajectory"] = [
                 {"turn": t, "settlements": s, "income": i, "power_rank": p}
@@ -148,11 +156,6 @@ def _ending_evidence(rd, entry, ex):
     outcome = entry.get("outcome")
     if outcome == "stagnant":
         g = entry.get("growth") or {}
-        # %g, not %s. These come off the campaign state as floats, so %s wrote
-        # "settlements 1.0->1.0" and "at turn 4.0" into a string that is then displayed
-        # verbatim -- a turn is not 4.0 and a settlement count is not 1.0. Line 143 above
-        # already used %g for exactly the same quantities, so the two halves of one
-        # function disagreed about how to print a number.
         verdict = ("abandoned_on_the_growth_bar at turn %g: %s"
                    % (float(g.get("turn") or 0),
                       "; ".join("%s %g->%g" % (m.get("label"), float(m.get("then") or 0),
@@ -177,6 +180,9 @@ def _ending_evidence(rd, entry, ex):
 
 def _postmortem(runs_root, entry, ex, log):
     rec = {"ts": time.time(), "when": time.strftime("%Y-%m-%d %H:%M:%S"),
+           # The key the corpus files this campaign under. Recorded here so nothing
+           # downstream has to match endings to campaigns by faction and wall clock.
+           "campaign_key": entry.get("campaign_uuid"),
            "campaign": entry.get("index"), "faction": entry.get("plan"),
            "policy": entry.get("policy"), "outcome": entry.get("outcome"),
            "error": entry.get("error"), "seconds": round(time.time() - entry.get("started", 0), 1),
@@ -227,13 +233,14 @@ def _postmortem(runs_root, entry, ex, log):
                                 for f in sorted(os.listdir(logs_dir))] if os.path.isdir(logs_dir) else []
         except Exception:
             rec["game_logs"] = None
-    path = os.path.join(runs_root, "postmortems.jsonl")
+    # Into the store, through the recorder that owns it -- not appended to a text file
+    # beside it that the dashboard then had to parse and guess its way through.
+    rd = entry.get("run_dir") or journal.RUN_DIR
     try:
-        os.makedirs(runs_root, exist_ok=True)
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(rec, default=str) + "\n")
-        log("   post-mortem -> %s (roots=%s, shot=%s)"
-            % (path, ",".join(str(r) for r in (rec.get("roots") or []))[:120],
+        journal.log_postmortem(rd, rec)
+        log("   post-mortem -> %s (campaign=%s, roots=%s, shot=%s)"
+            % (journal.DB_NAME, rec.get("campaign_key"),
+               ",".join(str(r) for r in (rec.get("roots") or []))[:120],
                rec.get("screenshot")))
     except Exception as e:
         log("   !! post-mortem NOT written: %s" % repr(e)[:160])
@@ -245,7 +252,7 @@ def _epsilon_mix(epsilon):
     e = float(epsilon)
     if not 0.0 <= e <= 1.0:
         raise SystemExit("--epsilon must be in [0, 1]")
-    return {"exploit_tree": 1.0 - e, "random": e}
+    return {"greedy_catboost": 1.0 - e, "random": e}
 
 
 def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
@@ -274,9 +281,17 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
     if ruleset and "ruleset" not in mix:
         raise SystemExit("--ruleset %r given but 'ruleset' is not in the strategy mix %s"
                          % (ruleset, json.dumps(mix)))
-    if cold and "gnn_marwil" in mix:
-        raise SystemExit("--cold forces cold_random but the mix includes 'gnn_marwil' -- a cold "
-                         "run must not load a trained model; drop 'gnn_marwil' or drop --cold")
+    if cold and "marwil_gnn" in mix:
+        raise SystemExit("--cold forces cold_random but the mix includes 'marwil_gnn' -- a cold "
+                         "run must not load a trained model; drop 'marwil_gnn' or drop --cold")
+    # --retrain used to mean "and also fit once before campaign 1". That start retrain is
+    # gone, so --retrain WITHOUT a cadence would now silently never fit -- which is the
+    # failure mode this codebase refuses to have. Say so instead of doing nothing.
+    if retrain and not retrain_every:
+        raise SystemExit("--retrain no longer fits before campaign 1: the start retrain was "
+                         "removed because it refits a model that is already on disk under "
+                         "%s and delays every relaunch and every babysitter restart. Pass "
+                         "--retrain-every N for the cadence, or drop --retrain." % common.MODELS)
     ruleset_meta = None
     if ruleset:
         import ruleset as RS
@@ -314,14 +329,25 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
         log("=" * 78)
         entry = {"index": i + 1, "started": time.time(), "plan": this_plan,
                  "max_turns": this_turns}
+        # Move the defeat marker to the end of the bus log NOW, before anything can fail.
+        try:
+            ex.mark_campaign_start()
+        except Exception as e:                                  # noqa: BLE001
+            log("   could not mark the bus offset for this campaign: %s" % repr(e)[:100])
         if hard_restart_next:
-            log("previous campaign ended %s -- killing the game now" % prev_outcome)
-            ex.kill_game()
+            if prev_outcome == "defeated" and ex.leave_campaign_via_click():
+                log("previous campaign ended defeated -- returned to the main menu by "
+                    "clicking the panel button; the game is kept")
+                hard_restart_next = False
+            else:
+                log("previous campaign ended %s -- killing the game now" % prev_outcome)
+                ex.kill_game()
         log("   log rotation: %s" % _rotate_logs(log))
         entry["bus_files"] = _bus_sizes()
         log("   bus: %s" % ", ".join("%s %.1fMB" % (k, v)
                                      for k, v in sorted(entry["bus_files"].items())))
-        if (retrain and i == 0) or (retrain_every and i and i % retrain_every == 0):
+        # NO RETRAIN ON START -- only on the interval.
+        if retrain_every and i and i % retrain_every == 0:
             _flush_generation(stretch, backend, backend_cfg, generation, report, trained, log)
             stretch = []
             generation += 1
@@ -349,7 +375,7 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                 irep = IM.train()
                 entry["retrain_interrupt"] = irep
                 log("   interrupt model: %s" % json.dumps(irep)[:200])
-                if "gnn_marwil" in mix:
+                if "marwil_gnn" in mix:
                     try:
                         # against this checkout, not a hardcoded one -- see policy.py
                         if common.ROOT not in sys.path:
@@ -383,16 +409,31 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
             except Exception as e:
                 entry["retrain"] = {"error": repr(e)[:250]}
                 trained = entry["retrain"]
-                if "gnn_marwil" in mix and "retrain_gnn" not in entry:
+                if "marwil_gnn" in mix and "retrain_gnn" not in entry:
                     entry["retrain_gnn"] = {"trained": False,
                                             "error": "skipped: upstream retrain raised"}
-                if "gnn_marwil" in mix and "retrain_gnn_interrupt" not in entry:
+                if "marwil_gnn" in mix and "retrain_gnn_interrupt" not in entry:
                     entry["retrain_gnn_interrupt"] = {
                         "trained": False, "error": "skipped: upstream retrain raised"}
                 log("!! retrain before run %d failed (continuing on the previous model): %s"
                     % (i + 1, repr(e)[:180]))
             entry.setdefault("outcome", "in_progress")
             _write(out_path, dict(report, campaigns=report["campaigns"] + [entry]))
+        # LOAD THE MODELS WHILE THE GAME LOADS, NOT AFTER IT.
+        _models = {}
+
+        def _preload_models():
+            try:
+                r = MB.Ranker(B.NO_MODEL_DIR) if cold else MB.Ranker()
+                _models["ranker"] = r
+                _models["policy"] = P.Policy(r, strategies=mix, ruleset=ruleset)
+            except BaseException as e:                              # noqa: BLE001
+                # Re-raised on the main thread at the join, so a broken model still fails
+                # the campaign loudly instead of being swallowed in a worker.
+                _models["error"] = e
+
+        _preload = threading.Thread(target=_preload_models, name="model-preload", daemon=True)
+        _preload.start()
         try:
             if hard_restart_next:
                 log("previous campaign ended %s -- killing the game rather than asking it to quit"
@@ -406,8 +447,15 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
             ex.shots_dir = os.path.join(run_dir, "shots")
             log("run dir: %s" % run_dir)
 
-            ranker = MB.Ranker(B.NO_MODEL_DIR) if cold else MB.Ranker()
-            pol = P.Policy(ranker, strategies=mix, ruleset=ruleset)
+            _t_join = time.time()
+            _preload.join()
+            if "error" in _models:
+                raise _models["error"]
+            ranker, pol = _models["ranker"], _models["policy"]
+            # How much of the preload did NOT fit inside the launch. 0.0 means it was fully
+            # hidden; a rising number means the models got slower than the game does.
+            log("model preload: %.1fs still to wait after the game was up" % (time.time() - _t_join))
+            entry["model_preload_wait_s"] = round(time.time() - _t_join, 1)
             entry["backend"] = backend
             entry["policy"] = ("cold_random(forced)" if cold else
                                "trained(%d rows)" % (ranker.meta or {}).get("rows", 0)
@@ -450,8 +498,21 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                 "recording another campaign of unusable data:\n%s" % (i + 1, str(e)[:600]))
             raise
         except BaseException as e:
-            entry.update(outcome="error", error=repr(e)[:300], **_played(e))
-            log("!! campaign %d failed: %s" % (i + 1, repr(e)[:200]))
+            dead = False
+            try:
+                dead = bool(ex.defeated_row_seen())
+            except Exception:                                   # noqa: BLE001
+                dead = False
+            if dead:
+                # Fall through to the shared post-campaign block below rather than
+                # duplicating it: it already writes the post-mortem, stamps seconds, and
+                # sets hard_restart_next (which "defeated" is in). Only the label changes.
+                entry.update(outcome="defeated", error=repr(e)[:300], **_played(e))
+                log("== campaign %d LOST (faction destroyed; surfaced as %s because the bus "
+                    "stops answering on the defeat screen)" % (i + 1, type(e).__name__))
+            else:
+                entry.update(outcome="error", error=repr(e)[:300], **_played(e))
+                log("!! campaign %d failed: %s" % (i + 1, repr(e)[:200]))
             if "did not load" in str(e) or "never logged" in str(e):
                 launch_failures += 1
                 if launch_failures >= MAX_LAUNCH_FAILURES:
@@ -495,7 +556,6 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
 
 
 METRICS_DIR = common.METRICS_DIR
-EXPERIMENTS = os.path.join(METRICS_DIR, "experiments.jsonl")
 
 
 TARGET_PARTS = ("settlements", "lord_level")
@@ -511,7 +571,9 @@ def _uuid_of(rows):
 
 def _db(run_dir):
     import sqlite3
-    return dbopen.connect(os.path.join(run_dir or journal.RUN_DIR, journal.DB_NAME))
+    con = dbopen.connect(os.path.join(run_dir or journal.RUN_DIR, journal.DB_NAME))
+    con.row_factory = sqlite3.Row
+    return con
 
 
 _TURNS_CACHE = {}
@@ -559,26 +621,27 @@ def _resolve_uuid(con, c):
     return hits[0] if len(hits) == 1 else None
 
 
+GROWTH_BASELINE = "first_decision_snapshot"
+
+
 def _campaign_growth(con, uuid):
-    row = con.execute("SELECT campaign FROM decision_points WHERE campaign_id=?"
-                      " ORDER BY decision_id LIMIT 1", (uuid,)).fetchone()
+    """One campaign's growth, from the definition the dashboard uses."""
+    row = con.execute(CG.TRAJECTORY_SQL_ONE, (uuid,)).fetchone()
     if not row:
         return None
-    try:
-        base = json.loads(row[0]) or {}
-    except (TypeError, ValueError):
-        return None
-    peak = con.execute("SELECT MAX(settlements), MAX(lord_level), COUNT(*)"
-                       " FROM target_rows WHERE campaign_id=?", (uuid,)).fetchone() or (None, None, 0)
-    out = {"campaign_uuid": uuid, "turns_recorded": peak[2] or 0}
-    for part, top in zip(TARGET_PARTS, peak[:2]):
-        start = base.get(part)
-        if start is None:
+    t = dict(row)
+    turn_rows = int(t.get("turn_rows") or 0)
+    out = {"campaign_uuid": uuid, "turns_recorded": turn_rows,
+           "growth_state": CG.state_of(turn_rows),
+           "baseline": GROWTH_BASELINE}
+    for part in TARGET_PARTS:
+        first, last = t.get("first_" + part), t.get("final_" + part)
+        if first is None:
             continue
-        best = max([float(start)] + ([float(top)] if top is not None else []))
-        out[part + "_start"] = float(start)
-        out[part + "_peak"] = best
-        out[part + "_gained"] = best - float(start)
+        out[part + "_start"] = float(first)
+        out[part + "_peak"] = float(t.get("peak_" + part) or first)
+        out[part + "_final"] = (float(last) if last is not None else None)
+        out[part + "_gained"] = CG.delta(first, last, turn_rows)
     return out
 
 
@@ -677,6 +740,10 @@ def _gain_stats(stretch, part):
             "per_turn": round(sum(vals) / turns, 4) if turns else None,
             "campaigns_measured": len(measured),
             "campaigns_that_gained": sum(1 for v in vals if v >= 1),
+            # Counted because it can now be non-zero. Under the old clamp every loss
+            # recorded as a gain of zero, so this would have been 0 by construction and the
+            # ledger reported a portfolio that never lost ground.
+            "campaigns_that_lost": sum(1 for v in vals if v <= -1),
             "hist": {str(int(v)): vals.count(v) for v in sorted(set(vals))}}
 
 
@@ -717,7 +784,10 @@ def _trial_row(stretch, backend, backend_cfg, gen_n, report, trained, log):
            "campaigns_per_hour": (round(len(stretch) / (secs / 3600.0), 2) if secs else None),
            "campaign_hours": round(secs / 3600.0, 2),
            "timing": _timing_stats(stretch),
-           "baseline": "pre_decision",
+           # Which definition this row's growth was measured on. Rows written before the
+           # clamp came out are not comparable with rows written after it, and a reader
+           # cannot tell by looking at the numbers.
+           "baseline": GROWTH_BASELINE,
            "campaign_uuids": [c["campaign_uuid"] for c in stretch if c.get("campaign_uuid")],
            "run_dirs": sorted({c["run_dir"] for c in stretch if c.get("run_dir")})}
     if report.get("stopped_short"):
@@ -737,23 +807,7 @@ def _flush_generation(stretch, backend, backend_cfg, gen_n, report, trained, log
 
 
 def _checkpoint_trial(stretch, backend, backend_cfg, gen_n, report, trained, log):
-    """Persist the generation in progress after every campaign.
-
-    _flush_generation runs in exactly two places: at a retrain boundary, and once after
-    the campaign loop. A collection run is --no-retrain with retrain_every=0, so the
-    first never fires and the ledger gets a single write at the very end -- which means
-    a session stopped by `runctl down` (every relaunch, and every babysitter restart)
-    recorded nothing at all, while its decisions were already in the corpus.
-
-    Measured when this was found: 15 session reports on disk, 76 campaigns with an
-    outcome, and 3 sessions had produced a ledger row. The ledger accounted for 9.
-
-    Appending a row per campaign is safe because every reader already keys by trial id
-    and keeps the last one -- ui._trials_table and train_events both build a dict keyed
-    on `trial` -- so these are superseded in place by the next checkpoint and finally by
-    the completed row from _flush_generation. Cost is one _measure() pass per campaign,
-    the same query live_trial() already runs on every UI render.
-    """
+    """Persist the generation in progress after every campaign."""
     row = _trial_row(stretch, backend, backend_cfg, gen_n,
                      dict(report, running=True), trained, log)
     if row is not None:
@@ -762,26 +816,8 @@ def _checkpoint_trial(stretch, backend, backend_cfg, gen_n, report, trained, log
 
 
 def backfill_trials(runs_root=RUNS_ROOT, log=print):
-    """Rebuild ledger rows for sessions that ended before they could write one.
-
-    Reads the session reports rather than the corpus, because the report is what carries
-    per-campaign outcome, timing and policy -- the same input _flush_generation uses, so
-    a backfilled row is built by the identical code path and is not a second opinion.
-
-    Trials already in the ledger are left alone. A session with no `totals` did not
-    finish, so its row is marked stopped_short, which is what the UI already renders as
-    "cut short"; the live session is refreshed by _checkpoint_trial as it goes.
-    """
-    have = set()
-    try:
-        with open(EXPERIMENTS, encoding="utf-8") as fh:
-            for line in fh:
-                try:
-                    have.add(json.loads(line).get("trial"))
-                except ValueError:
-                    continue
-    except OSError:
-        pass
+    """Rebuild ledger rows for sessions that ended before they could write one."""
+    have = metrics_db.trial_ids()
     written = 0
     for path, rep in _session_reports(runs_root):
         for gen, stretch in _stretches(rep["campaigns"]):
@@ -797,18 +833,20 @@ def backfill_trials(runs_root=RUNS_ROOT, log=print):
             have.add(row["trial"])
             written += 1
             log("   backfilled %s: %d campaigns" % (row["trial"], row["campaigns"]))
-    log("backfill: %d trial(s) written to %s" % (written, EXPERIMENTS))
+    log("backfill: %d trial(s) written to %s" % (written, metrics_db.DB_PATH))
     return 0
 
 
 def _write_trial(row, log, quiet=False):
+    # An upsert, which is what this always meant: a live trial is checkpointed repeatedly
+    # and the last row for an id wins. As an append to a text file that was a convention;
+    # here it is the primary key.
     try:
-        os.makedirs(METRICS_DIR, exist_ok=True)
-        with open(EXPERIMENTS, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(row, default=str) + "\n")
-    except OSError as e:
+        metrics_db.write_trial(row)
+    except Exception as e:                                      # noqa: BLE001
         raise RuntimeError("trial %s NOT written to %s -- refusing to run unrecorded "
-                           "experiments: %s" % (row.get("trial"), EXPERIMENTS, repr(e)[:120]))
+                           "experiments: %s"
+                           % (row.get("trial"), metrics_db.DB_PATH, repr(e)[:120]))
     if quiet:
         return
     s, l, t = row["settlements"], row["lord_level"], row.get("timing") or {}
@@ -819,7 +857,7 @@ def _write_trial(row, log, quiet=False):
            ", ".join(sorted(str(p) for p in row["policies"])) or "?",
            num(s["total"]), num(s["mean"], "%.3f"), num(s["campaigns_that_gained"], "%d"),
            num(l["total"]), row["turns_per_campaign"],
-           t.get("s_per_campaign", "?"), t.get("s_per_turn", "?"), EXPERIMENTS))
+           t.get("s_per_campaign", "?"), t.get("s_per_turn", "?"), metrics_db.DB_PATH))
 
 
 def _stretches(campaigns):
@@ -905,19 +943,6 @@ def _live_session(runs_root):
     report = os.path.join(runs_root, "session_%s.json" % stamp)
     rep = _read_report(report)
     if rep is None:
-        # The log and the report are stamped by two INDEPENDENT strftime calls --
-        # runctl.start_session names the log, session.run_campaigns names the report --
-        # so they agree only when both land in the same second. Today's run straddled one:
-        # log ...143116.log, report ...143117.json. Reconstructing the report path from the
-        # log stamp therefore misses, and the fallback below invents a `requested` holding
-        # nothing but a backend scraped out of the log FILENAME. That is what made the
-        # training tab show a blank mix, a blank ruleset, a backend that was never read
-        # from the run, and a phantom trial id one second off the real one -- four symptoms,
-        # one missing file.
-        #
-        # Match on the recorded start instead. A session writes `started` into its own
-        # report, and no two sessions start within a minute of each other because a
-        # relaunch tears the old one down first.
         best = None
         for p in glob.glob(os.path.join(runs_root, "session_*.json")):
             r = _read_report(p)
@@ -1000,17 +1025,7 @@ def _fit_pair(report, prefix=""):
 
 
 def train_events(runs_root=RUNS_ROOT):
-    ledger = {}
-    try:
-        with open(EXPERIMENTS, encoding="utf-8") as fh:
-            for line in fh:
-                try:
-                    r = json.loads(line)
-                except ValueError:
-                    continue
-                ledger[r.get("trial")] = r
-    except OSError:
-        pass
+    ledger = {r.get("trial"): r for r in metrics_db.trials()}
     live = live_trial()
     if live:
         ledger[live["trial"]] = live
@@ -1187,21 +1202,23 @@ def main():
                          "  --model     -- which ranker to play on (default %s):\n%s\n"
                          "  --nn-KEY V  -- backend hyperparameter, e.g. --nn-bottleneck 64\n"
                          "  --strategies -- per-decision sampling mix over %s\n"
-                         "                 (default exploit_tree=0.8,random=0.2; weights "
+                         "                 (default greedy_catboost=0.8,random=0.2; weights "
                          "normalized)\n"
                          "  --ruleset   -- rule file name under D:\\twdata\\rules\\<name>.json "
                          "(required when 'ruleset' is in the mix)\n"
-                         "  'gnn_marwil' -- MARWIL/AWR on the graph encoder "
+                         "  'marwil_gnn' -- MARWIL/AWR on the graph encoder "
                          "(D:\\twdata\\models\\mapgraph); untrained -> gnn_random_fallback\n"
-                         "  --epsilon E -- legacy sugar for exploit_tree=1-E,random=E\n"
+                         "  --epsilon E -- legacy sugar for greedy_catboost=1-E,random=E\n"
                          % ("|".join(B.names()), B.DEFAULT,
                             "\n".join("                 %-10s %s" % (k, B.label(k))
                                       for k in B.names()),
                             ",".join(ST.NAMES))
                          + "\n"
-                         "  all         -- sample from EVERY playable start in the installed game,\n"
-                         "                 read from launcher/startable_factions.json (harvested\n"
-                         "                 from the game's own frontend: 104 factions, 24 cultures)\n"
+                         "  all         -- sample from every playable start ON THE MAP --campaign\n"
+                         "                 selects, read from launcher/startable_factions.json\n"
+                         "                 (harvested from the game's own frontend, keyed by map:\n"
+                         "                 Immortal Empires 104 starts, Realm of Chaos 25). A map\n"
+                         "                 with no harvest raises rather than borrowing another's\n"
                          "  no-cutscene -- every start EXCEPT the 14 that open on an intro\n"
                          "                 movie (launcher/cutscene_starts.py, measured from\n"
                          "                 the launcher's own cinematic-key counts). Those 14\n"
@@ -1209,27 +1226,20 @@ def main():
                          "                 for the rest.\n"
                          "  <key,...>   -- game faction keys, e.g. wh2_main_hef_nagarythe")
     arg = sys.argv[sys.argv.index("--factions") + 1].strip()
+    _name = (sys.argv[sys.argv.index("--campaign") + 1].strip()
+             if "--campaign" in sys.argv else "Immortal Empires")
     if arg == "all":
         sys.path.insert(0, common.LAUNCHER)
         import bus_launcher
-        keys = bus_launcher.BusLauncher().startable_factions()
+        keys = bus_launcher.BusLauncher().startable_factions(_name)
+        print("--factions all on %s: %d startable starts" % (_name, len(keys)))
     elif arg == "no-cutscene":
-        # Every start that has never been seen opening on a cutscene, measured rather than
-        # listed: launcher/cutscene_starts.py reads the cinematic-key count the launcher
-        # already logs. 14 of 102 starts play an intro movie and take 68-119s to reach an
-        # interactive HUD against 17-30s for the rest, so dropping them buys ~9s per
-        # campaign on average -- about 77 minutes across a 500-campaign run.
-        #
-        # `unknown` is NOT included. A start with too few launches to classify is not
-        # assumed clean, because assuming clean is the direction that costs time.
         sys.path.insert(0, common.LAUNCHER)
         import bus_launcher
         import cutscene_starts
         # Resolved for the map this session will actually play. A cutscene belongs to the
         # (map, faction) pair: the Ice Court opens on an intro movie on Realm of Chaos and
         # on nothing on Immortal Empires, so pooling the maps put it in both lists.
-        _name = (sys.argv[sys.argv.index("--campaign") + 1].strip()
-                 if "--campaign" in sys.argv else "Immortal Empires")
         _map = bus_launcher.BusLauncher.CAMPAIGN_KEYS.get(_name, _name)
         r = cutscene_starts.classify(campaign_map=_map)
         keys = [x["faction"] for x in r["clean"]]
@@ -1271,16 +1281,6 @@ def main():
     if epsilon is not None and strategies is not None:
         raise SystemExit("--epsilon is legacy sugar for --strategies; give one, not both")
     ruleset = _parse_ruleset(sys.argv)
-    # WHICH MAP to play. run_campaigns has always taken this; main() never passed it, so the
-    # campaign was pinned to Immortal Empires by the default and the only way to play another
-    # was to edit the source. Accepts either a friendly name ("Realm of Chaos") or a raw
-    # campaign key -- bus_launcher.start_campaign does CAMPAIGN_KEYS.get(campaign, campaign),
-    # so a modded key like `cr_combi_expanded` passes straight through.
-    #
-    # Immortal Empires has ~534 faction records against Realm of Chaos's far smaller set, and
-    # the end-turn AI phase is about half of all campaign wall-clock, so which map is played
-    # is a throughput decision as much as a content one. The campaign KEY is recorded per
-    # campaign in the store, so a corpus spanning maps stays separable.
     campaign = "Immortal Empires"
     if "--campaign" in sys.argv:
         i = sys.argv.index("--campaign")

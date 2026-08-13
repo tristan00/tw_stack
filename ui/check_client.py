@@ -1,26 +1,4 @@
-"""Run the client's own gates from check.py.
-
-check.py invokes every harness as `<venv python> <argv>`, so the node-side checks need a
-Python entry point rather than a special case in the runner. This is that entry point.
-
-It runs three things, and each one exists because of a defect that shipped:
-
-  typecheck      the client's types are generated from the server's OpenAPI document, so
-                 a column wired to a field the server does not send is a compile error
-                 rather than a blank column nobody notices.
-
-  check:contrast every colour token is measured against WCAG in BOTH themes. The previous
-                 stylesheet overrode five of its eight tokens for light mode and left
-                 green, amber and red at their dark-tuned values -- 2.54:1, 2.52:1 and
-                 3.35:1 against a 4.5:1 requirement, on the theme actually in use.
-
-  build          a client that does not build is a dashboard that serves the last build
-                 silently. Failing here is how that gets noticed.
-
-If node or the dependencies are absent the check reports that plainly and fails, rather
-than passing by doing nothing -- a check that skips itself when its toolchain is missing
-is the failure mode common.require_venv exists to prevent on the Python side.
-"""
+"""Run the client's own gates from check.py."""
 
 from __future__ import annotations
 

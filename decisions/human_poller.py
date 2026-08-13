@@ -31,7 +31,7 @@ def main():
         try:
             if now - last["turn"] >= TURN_EVERY:
                 last["turn"] = now
-                t = journal.request_turn(run_dir)
+                t, _campaign = journal.request_turn(run_dir)
                 counts["turn"] += 1
                 if t != seen_turn[0]:
                     seen_turn[0] = t

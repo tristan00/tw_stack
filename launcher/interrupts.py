@@ -96,13 +96,7 @@ def set_chooser(fn):
 
 
 def set_snapshot(campaign, record=None):
-    """The last decision snapshot, kept whole.
-
-    It used to keep only `world`. The graph model needs the ENTITIES too -- province
-    state, built slots, unit rosters, innate skills -- which are half the graph and live
-    nowhere else. The record a blocking screen collects for itself is not a substitute:
-    with a panel up, world_state returns no relations, no citizenry and no war_graph.
-    """
+    """The last decision snapshot, kept whole."""
     _CAMPAIGN[0] = campaign
     _RECORD[0] = record
 
@@ -170,11 +164,6 @@ def _report_unhandled(bus, screen, unknown, offered, root=None, history=None):
     import json
     rec = {"ts": time.time(), "when": time.strftime("%Y-%m-%d %H:%M:%S"), "screen": screen,
            "unknown": list(unknown), "offered": list(offered), "root": root}
-    # What was up WHEN the condition was detected, everything that has been up at any
-    # poll since, and what is still up now. The record used to hold only the last of
-    # those, because the roots are re-read after each wait -- so a surface that appeared
-    # and closed inside the wait window left no trace at all, and the record named
-    # whatever happened to still be standing.
     if history:
         rec["roots_at_detection"] = sorted(history.get("at") or ())
         rec["roots_seen_since"] = sorted(history.get("seen") or ())
@@ -575,6 +564,13 @@ def _results_appeared(bus, offset, timeout=20.0):
     return False
 
 
+def _lone_acknowledge(bus, drivable):
+    """(id, path, root) when the whole screen offers exactly ONE clickable control."""
+    flat = [(cid, path, root) for root, ctrls in drivable.items()
+            for cid, path in (ctrls or {}).items() if path]
+    return flat[0] if len(flat) == 1 else None
+
+
 def _clickable_controls(bus, root="popup_battle_results"):
     out = {}
     for n in _tree(bus, root, 22, 4000):
@@ -627,10 +623,6 @@ def handle_results(bus):
             sys.stderr.write("interrupts: %s clicked twice with no effect -- not hammering it\n"
                              % target)
             _record_choice("battle_results", "popup_battle_results", opts_before, target,
-                           # MUST be under "panel": write_interrupt persists only
-                       # row["panel"] into panel_blob and silently drops every other key.
-                       # Filed under "battle" first, and both rows landed with panel_blob
-                       # NULL -- the same silent-drop class this whole audit is about.
                        extra={"panel": facts} if facts else None,
                            executed=True, confirmed=False, refusal="command_silently_refused")
             break
@@ -640,10 +632,6 @@ def handle_results(bus):
         clicked = _click(bus, ctrls[target], settle=2.5)
         moved = set(roots(bus)) != roots_before
         _record_choice("battle_results", "popup_battle_results", opts_before, target,
-                       # MUST be under "panel": write_interrupt persists only
-                       # row["panel"] into panel_blob and silently drops every other key.
-                       # Filed under "battle" first, and both rows landed with panel_blob
-                       # NULL -- the same silent-drop class this whole audit is about.
                        extra={"panel": facts} if facts else None,
                        executed=clicked, confirmed=bool(moved),
                        refusal=None if moved else ("command_silently_refused" if clicked
@@ -1072,6 +1060,38 @@ def _acknowledge_war_on_proposal(bus, tree, clickable):
             else ["war_declared_stuck:%s" % PROPOSAL_ROOT])
 
 
+def _cancel_declare_on_proposal(bus, tree, clickable):
+    """Cancel a declare-war confirmation. Always cancel; never confirm."""
+    target = clickable.get("button_cancel_declare")
+    if not target:
+        _report_unhandled(bus, "declare_war_confirm",
+                          ["declare-war confirm offers no cancel control"],
+                          sorted(clickable), root=PROPOSAL_ROOT)
+        raise UnhandledScreen(
+            "declare-war confirmation on %s offers no cancel control -- refusing to CONFIRM "
+            "a war the advisor never chose. The only sanctioned declaration is the "
+            "diplomacy declare_war action. clickable=%s" % (PROPOSAL_ROOT, sorted(clickable)))
+    panel = _diplo_panel(tree)
+    labels = _control_labels(tree, {"button_cancel_declare": target})
+    opts = {"button_cancel_declare": {
+        "context": None, "text": labels.get("button_cancel_declare") or "cancel",
+        "dilemma_id": PROPOSAL_ROOT, "option_id": "button_cancel_declare",
+        "payload": [], "subtree": []}}
+    t0 = time.time()
+    clicked = _click(bus, target, settle=2.0)
+    gone = _await_root_gone(bus, PROPOSAL_ROOT)
+    _record_choice("declare_war_cancel", PROPOSAL_ROOT, opts, "button_cancel_declare",
+                   extra={"tree": tree, "root_context": PROPOSAL_ROOT, "panel": panel},
+                   executed=clicked, confirmed=gone,
+                   refusal=_refusal(gone, clicked),
+                   latency_ms=int((time.time() - t0) * 1000))
+    sys.stderr.write("interrupts: declare-war confirmation CANCELLED on %s (clicked=%s "
+                     "gone=%s) -- war is declared through diplomacy or not at all\n"
+                     % (PROPOSAL_ROOT, clicked, gone))
+    return (["declare_war_cancelled:%s" % PROPOSAL_ROOT] if clicked
+            else ["declare_war_cancel_stuck:%s" % PROPOSAL_ROOT])
+
+
 def _proposal_buttons(tree):
     return sorted({str(n.get("id")) for n in tree
                    if n.get("visible") and str(n.get("state")) in _CLICKABLE
@@ -1097,15 +1117,7 @@ def answer_incoming_proposal(bus):
     if "button_ok_war_declared" in clickable:
         return steps + _acknowledge_war_on_proposal(bus, tree, clickable)
     if "button_ok_declare" in clickable or "button_cancel_declare" in clickable:
-        offered = sorted(clickable)
-        _report_unhandled(bus, "declare_war_confirm",
-                          ["declare-war confirm escaped the diplomacy driver"],
-                          offered, root=PROPOSAL_ROOT)
-        raise UnhandledScreen(
-            "declare-war confirmation on %s outside the declare flow -- the diplomacy driver "
-            "owns this screen end to end (declare_war_flow approves it one screen after the "
-            "term click); refusing to confirm or cancel a war here. clickable=%s"
-            % (PROPOSAL_ROOT, offered))
+        return steps + _cancel_declare_on_proposal(bus, tree, clickable)
     try:
         opts = proposal_options(tree)
     except UnhandledScreen:
@@ -1354,38 +1366,12 @@ def drain_interrupt_records():
 
 
 def battle_result_facts(bus):
-    """The battle-result screen as structured facts, not a 1284-node tree dump.
-
-    Every number on this screen is UI text only: all ten table cells and both faction-name
-    nodes carry `context: null` in all 32 archived dumps, and the CCO contexts that ARE
-    present resolve to the PLAYER's faction even on the enemy panel. So scraping is the only
-    route here -- unlike unit rosters, which come from CcoCampaignUnit and must not be
-    scraped off this screen.
-
-    Two things this deliberately does NOT do:
-
-    1. It does not claim which row is ours. `row_example` is the player in 24 of 32 archived
-       dumps and the OTHER row in 6 -- the determinant is attacker/defender, not player/enemy.
-       Guessing would mislabel ~19% of battles, and non-randomly: the flips correlate with
-       defeats, because defending is when you are the second row. Rows are recorded
-       positionally and resolved downstream from who initiated the battle.
-    2. It does not name race-specific resources. The resources bar differs per race -- slaves
-       for Dark Elves, scrap for Greenskins, grudge for Dwarfs, souls for Chaos, canopic jars
-       shared by Vampires AND Dwarfs -- and even the treasury path moves (Kislev and Warriors
-       of Chaos nest it under treasury_holder_standard). Holders present-but-invisible for a
-       race that does not use them are filtered on `visible`, and the whole bar is swept
-       generically rather than by name.
-    """
+    """The battle-result screen as structured facts, not a 1284-node tree dump."""
     return battle_facts_from(_tree(bus, "popup_battle_results", depth=40, nodes=16000))
 
 
 def battle_facts_from(nodes):
-    """Pure extraction, split out so it can be tested against archived dumps without a game.
-
-    Validated against 32 archived battle-result dumps spanning 10 races (Dark Elves, High
-    Elves, Vampire Counts, Lizardmen, Warriors of Chaos, Bretonnia, Dwarfs, Greenskins,
-    Kislev, Norsca) -- see test_battle_facts.
-    """
+    """Pure extraction, split out so it can be tested against archived dumps without a game."""
     if not nodes:
         return None
 
@@ -1540,10 +1526,6 @@ def _is_dilemma(bus, root):
 def resolve(bus, max_rounds=6):
     steps = []
     waited = 0
-    # Roots observed from the moment a blocking pending is first detected onward. `at` is
-    # the first observation, `seen` accumulates every poll, `now` is the latest. Facts
-    # only -- this records what was there and when, and draws no conclusion about which
-    # root is responsible.
     watch = {"at": None, "seen": set(), "now": (), "polls": 0, "waited_s": 0.0}
     for _ in range(max_rounds):
         before = tuple(roots(bus))
@@ -1582,6 +1564,9 @@ def resolve(bus, max_rounds=6):
             _stuck_sig[0] = None
             steps.append("popups_cleared:%d" % n)
             continue
+        # Unfiltered first-sighting census, then the filtered per-change dump. The filter
+        # below is what kept base and benign roots out of the evidence entirely.
+        nav.census_roots(bus)
         for r in before:
             if r not in nav.BASE_ROOTS and r not in BENIGN_PANELS:
                 nav.dump_screen(bus, r, "interrupt")
@@ -1665,6 +1650,16 @@ def resolve(bus, max_rounds=6):
             drivable = {k: v for k, v in drivable.items() if v}
             steps.append("%s:%s" % ("undismissable" if drivable else "transient", ",".join(odd)))
             if drivable:
+                ack = _lone_acknowledge(bus, drivable)
+                if ack:
+                    res = bus.send("click", ack[1], timeout=8.0) or {}
+                    steps.append("acknowledged:%s" % ack[0])
+                    sys.stderr.write("interrupts: ACK %s -> %s (sole control on %s)\n"
+                                     % (ack[0], res.get("clicked"), ack[2]))
+                    if res.get("clicked"):
+                        time.sleep(0.6)
+                        _stuck_sig[0] = None
+                        continue
                 if before != _stuck_sig[0]:
                     evidence(bus, "undismissable")
                     _stuck_sig[0] = before

@@ -72,6 +72,14 @@ CHECKS = [
     ("coverage_selftest", ["-m", "decisions.coverage", "--selftest"], False,
      "the acceptance gate can be seen failing -- a constant field is reported, a "
      "varying one is not"),
+    ("growth_gate", ["-m", "advisor.test_growth_gate"], False,
+     "the abandonment gate is unchanged -- the reporting layer measures growth from the "
+     "turn series, and may not alter which campaigns the run stops or when"),
+    ("analytics", ["-m", "analytics.test_analytics"], False,
+     "the analytics layer: the restored Spearman matches the deleted implementation bit "
+     "for bit, a formula-version bump wipes rather than mixing two definitions in one "
+     "table, a dropped source row fails the pass, and a crash mid-fold cannot leave the "
+     "watermark ahead of the rows it describes"),
     ("client", ["ui/check_client.py"], False,
      "the dashboard client typechecks against the types generated from the API's own "
      "OpenAPI document, every colour token clears WCAG in BOTH themes, and it builds"),

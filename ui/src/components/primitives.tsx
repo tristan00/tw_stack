@@ -250,12 +250,15 @@ export function Bar({ rate, width = 92 }: { rate: Rate | null; width?: number })
       </span>
     )
   }
-  const state: State = p >= 70 ? 'ok' : p >= 40 ? 'warn' : 'bad'
+  // The bar shows the proportion; it does not grade it. This used to colour itself
+  // ok/warn/bad on 70/40 cutoffs -- a second, duplicated copy of a rule the server also
+  // held -- which asserted that a low confirm rate is a fault for every action type. It
+  // is not: a diplomacy offer the AI declines is the game answering.
   return (
     <span className="flex items-center gap-2">
       <span className="bg-raised relative inline-block h-2 rounded" style={{ width }}>
         <span
-          className={cn('absolute inset-y-0 left-0 rounded', stateFill[state])}
+          className="bg-fg/45 absolute inset-y-0 left-0 rounded"
           style={{ width: `${Math.max(2, p)}%` }}
         />
       </span>
@@ -304,5 +307,87 @@ export function Skeleton({ rows = 6 }: { rows?: number }) {
         </div>
       ))}
     </Card>
+  )
+}
+
+/**
+ * A value on a fixed scale, with the spread it came from.
+ *
+ * The meter is a second encoding of the number, never a replacement -- the same rule Bar
+ * carries, for the same reason: a mark alone cannot be copied, sorted by eye, or read
+ * precisely.
+ *
+ * And like Bar it does not grade what it draws. There is no threshold at which a rank
+ * correlation becomes good: two models that agree perfectly are redundant, two that agree
+ * not at all may each be right about different things, and which of those is a fault is a
+ * question about the run rather than about the number. Severity is a server decision
+ * delivered as `state`, and the server makes no such claim about rho.
+ */
+export function RangeMeter({
+  value,
+  lo = -1,
+  hi = 1,
+  band = null,
+  zero = 0,
+  digits = 3,
+  width = 132,
+}: {
+  value: number | null | undefined
+  lo?: number
+  hi?: number
+  /** An interquartile range, drawn as a wash behind the value. */
+  band?: [number | null | undefined, number | null | undefined] | null
+  /** A reference tick, or null for none. */
+  zero?: number | null
+  digits?: number
+  width?: number
+}) {
+  if (value === null || value === undefined) return <span className="text-dim">—</span>
+  const at = (v: number) => (100 * (Math.min(hi, Math.max(lo, v)) - lo)) / (hi - lo)
+  const b0 = band?.[0]
+  const b1 = band?.[1]
+  const hasBand = b0 !== null && b0 !== undefined && b1 !== null && b1 !== undefined
+  return (
+    <span className="flex items-center gap-2">
+      <span className="bg-raised relative inline-block h-2.5 rounded" style={{ width }}>
+        {hasBand && (
+          <span
+            className="bg-accent/20 absolute inset-y-0 rounded-sm"
+            style={{ left: `${at(b0!)}%`, width: `${Math.max(1, at(b1!) - at(b0!))}%` }}
+          />
+        )}
+        {zero !== null && zero !== undefined && (
+          <span className="bg-dim/60 absolute inset-y-0 w-px" style={{ left: `${at(zero)}%` }} />
+        )}
+        <span
+          className="bg-accent absolute inset-y-0 w-0.5 rounded-full"
+          style={{ left: `calc(${at(value)}% - 1px)` }}
+        />
+      </span>
+      <span className="num text-2xs whitespace-nowrap">
+        {value >= 0 ? '+' : ''}
+        {value.toFixed(digits)}
+      </span>
+    </span>
+  )
+}
+
+/**
+ * A model's identity as a MARK beside a word, never as coloured text.
+ *
+ * Measured, not assumed: --cat and --gnn sit about 6 apart in OKLab under simulated
+ * protanopia, inside the band where colour alone is not enough to tell two marks apart. So
+ * the colour never carries identity on its own here -- it rides next to the name, and the
+ * name is what is read. This is also why no chart in this app plots the two models as two
+ * series on one axis.
+ */
+export function ModelKey({ model, children }: { model: 'cat' | 'gnn'; children: ReactNode }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+      <span
+        className={cn('inline-block h-0.5 w-3 rounded-full', model === 'cat' ? 'bg-cat' : 'bg-gnn')}
+      />
+      {children}
+    </span>
   )
 }

@@ -75,12 +75,7 @@ class Ranker:
                              "draws on interrupts fall back to random\n" % repr(e)[:160])
 
     def score(self, screen, options, record, panel=None, meta=None):
-        """{option: centred q}, or {} if this screen cannot be scored.
-
-        Returns {} rather than raising on a missing record or an unbuildable graph: the
-        caller turns that into gnn_marwil_random_fallback, which is a recorded outcome.
-        An exception here would take down a run over one panel.
-        """
+        """{option: centred q}, or {} if this screen cannot be scored."""
         opts = sorted(options)
         if not self.ready or not opts:
             return {}

@@ -38,17 +38,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 import common
 
-# 4: the blocking screens joined the ontology -- a `screen` node, screen_* action types,
-# and the option/dilemma/fact/term catalogues. Every embedding table that indexes those
-# changed WIDTH, so a v3 encoder.pt is not loadable against this and rank.py's hash gate
-# is what says so instead of a state_dict shape error at inference.
 SCHEMA_VERSION = 4
 
-# --------------------------------------------------------------------------
-# node types
-# --------------------------------------------------------------------------
-# instance nodes  -- one per thing in this decision
-# catalogue nodes -- one per stable game key, shared across all decisions
 INSTANCE_TYPES = ("faction", "region", "settlement", "province", "slot",
                   "lord", "hero", "action", "cgroup", "screen")
 CATALOGUE_TYPES = ("building", "chain", "unit", "tech", "skill", "ritual",
@@ -63,17 +54,7 @@ ACTION_TYPE_INDEX = NODE_TYPES.index("action")
 # public_order is read off the REGION interface (r:public_order()); corruption comes
 # from the PROVINCE pooled-resource manager. They are not the same owner.
 TYPE_FIELDS = {
-    # standing is a RECORDED per-faction fact (world.relations[].standing), and it is here
-    # because identity alone is not enough. Two met factions of the same race that own no
-    # visible settlement and share their treaty flags were the same node to WL, so every
-    # diplomacy action aimed at them was the same action -- measured at 6.9% of action
-    # nodes on fresh data, all diplomacy. A catalogue id separates them unless two keys
-    # hash together; standing means even then they differ.
     "faction":      ("is_player", "standing"),                         # 2
-    # income is the region's own earnings. The only economy signals on a region were
-    # public_order and, one hop away, a province-pooled corruption -- so a region
-    # embedding could not tell the rich capital from a frontier holding earning 40, while
-    # every action node hangs off a region through at_region / has_slot / sett_of.
     "region":       ("x", "y", "public_order", "income"),              # 4
     # x,y are free here too (MAX_FIELDS is 6) and both own and enemy settlement rows
     # carry them. Distance to a settlement is most of what an attack decision is about.
@@ -82,23 +63,8 @@ TYPE_FIELDS = {
     "slot":         (),
     "lord":         ("x", "y", "units", "hp", "rank", "ap_pct"),       # 6
     "hero":         ("x", "y", "rank", "ap_pct"),                      # 4
-    # x,y are free: MAX_FIELDS is 6, set by `lord`, so an action row already carried five
-    # unused zero columns and the encoder input width does not move. `move` recorded a
-    # destination that nothing downstream could see -- the only thing distinguishing one
-    # move candidate from another was its sample_index.
-    # `available` was here while the store held gated rows. Every stored action is a
-    # candidate now, so the field was a constant 1.0 -- an input column carrying no
-    # information, which the network still had to learn to ignore.
     "action":       ("x", "y"),                                        # 2
     "cgroup":       (),
-    # One per INTERRUPT decision -- the blocking screen itself. These six are the panel's
-    # own numbers, read off the open panel as a single entity, and they are the same six
-    # the CatBoost interrupt model already reads as isc_dip_* columns
-    # (interrupt_model.py:57-77). They are numbers, so they are scalars; the panel's
-    # STRING facts (attitude_label, result, casualties, outcome, reliability, race) are
-    # screen_fact catalogue nodes instead.
-    # Exactly 6, which is MAX_FIELDS as set by `lord` -- so this type is free: it widens
-    # nothing. A 7th would tax every node of every type in every graph.
     "screen":       ("attitude", "amount_demanded", "amount_offered",
                      "strength_them", "strength_us", "settlements"),   # 6
     # catalogue nodes are pure identity -- their content is their embedding
@@ -107,17 +73,6 @@ TYPE_FIELDS = {
     "agent_subtype": (),
     "screen_option": (), "dilemma": (), "screen_fact": (), "treaty_term": (),
 }
-# The file said 22 in its docstring, 19 in this comment, and computed 20 -- three numbers
-# for one quantity, none of them checked. So it is computed, and it is REPORTED (meta.json
-# and the models card), which is the part that was actually load-bearing.
-#
-# There was a SCALAR_BUDGET = 22 ceiling here that raised on the 23rd field. It is gone.
-# It had reached exactly 22 of 22 -- `region.income` spent the last slot -- so the next
-# honest field anywhere in the ontology was an ImportError, and the thing it was
-# protecting was never the count. Adding a 7th field to any ONE type is what costs:
-# `x` is [N, MAX_FIELDS] for every node and TypeEncoders projects _NT * MAX_FIELDS, so a
-# single wide type widens the input row of every node of every type in every graph.
-# MAX_FIELDS is the real budget, it is asserted in test_build.py, and it is unchanged.
 N_SCALARS = sum(len(v) for v in TYPE_FIELDS.values())
 MAX_FIELDS = max(max(len(v) for v in TYPE_FIELDS.values()), 1)
 # {node type: {field name: column}} -- the same information as TYPE_FIELDS, indexed the
@@ -140,10 +95,6 @@ WORLD_RELATIONS = (
     "at_sett",          # char <-> settlement   (was the `garrisoned` flag)
     "besieging",        # char <-> settlement   (was the `besieging` flag)
     "garrisons",        # char <-> settlement -- an enemy armed-citizenry stack and the
-                        # settlement it defends. MOBILE_KINDS admits it as an ordinary
-                        # `lord` node and the citizenry skip filters only OUR own, so the
-                        # defenders were built floating free of their walls; coincident
-                        # x,y was the only thing tying them together.
     "in_province",      # char <-> province     (province-wide lord modifiers)
     "near",             # char <-> char
 )
@@ -164,11 +115,6 @@ CATALOGUE_RELATIONS = (
     "researching",      # faction <-> tech
     "unlocks",          # skill <-> agent_action
     "queued",           # lord <-> unit  (pending_recruit_keys; was a count)
-    # An army's actual composition, not what it has ordered. `units` was a bare COUNT for
-    # the whole life of the corpus, so two 10-stacks were identical to the model whether one
-    # was ten spearmen and the other ten dragons. As an EDGE per unit the roster is
-    # structure the encoder can read, and it joins reference.sqlite for caste/tier/cost --
-    # no new scalar, so the budget is untouched.
     "in_army",          # lord|hero <-> unit
     # Background/innate skills, which live in HiddenSkillList and are what a character IS
     # rather than what it has spent points on. SkillList (the assignable tree) reaches the
@@ -264,12 +210,6 @@ STANCE_DIM = 8
 SUBTYPE_BUCKETS = 2048
 SUBTYPE_DIM = 16
 
-# Every blocking screen the launcher can answer, taken from the `_choose` / `_sticky_choice`
-# / `_drive_decision` call sites in launcher/interrupts.py. Closed set -- it is OUR code
-# that decides a screen is answerable at all, so an unknown one here means the two files
-# have drifted, which mapgraph.invariants cross-checks by AST rather than trusting this
-# comment. The builder RAISES on a screen it does not know: a screen silently landing on
-# atype 0 would be answered by a model that cannot tell which panel it is looking at.
 SCREEN_TYPES = ("ally_attacked", "battle_results", "declare_war_cancel", "dilemma",
                 "diplomacy", "diplomacy_notice", "diplomacy_proposal", "event_ack",
                 "occupation", "pre_battle", "war_declared")
@@ -307,14 +247,6 @@ DIPLO_TERMS = ("declare_war", "peace", "trade_agreement", "nonaggression_pact",
 TERM_VOCAB = len(DIPLO_TERMS) + 1
 TERM_DIM = 12
 
-# Catalogue nodes get real id-indexed embeddings, not a shared crc32. The predecessor hashed
-# 136,369 distinct action keys into 256 buckets -- and 118,802 of those keys are `move`
-# destinations, pure noise, which then collided with the ~17.5k semantic keys.
-# `move` gets no key at all: its destination is x,y.
-# Sized to hold every key in reference.sqlite as a DENSE id, plus room above it for keys
-# the reference does not know. Reference counts at time of writing: buildings 5,259,
-# skills 5,944, chains 1,943, units 2,609, tech 2,056, rituals 1,326, agent_actions 176.
-# `chain` was 2,048 against 1,943 keys -- 105 spare, which is not headroom.
 CAT_BUCKETS = {"building": 8192, "chain": 4096, "unit": 4096, "tech": 4096,
                "skill": 8192, "ritual": 2048, "agent_action": 256, "edict": 256,
                "item": 4096, "race": 32,
@@ -322,16 +254,7 @@ CAT_BUCKETS = {"building": 8192, "chain": 4096, "unit": 4096, "tech": 4096,
                # key is a character SUBTYPE, and `unit` is the wrong vocabulary for it.
                # 565 distinct in reference.agent_permitted_subtypes.
                "agent_subtype": 2048,
-               # A faction key is a stable game key, which by this file's own rule makes
-               # it a catalogue node -- and it was the one instance type with no identity
-               # at all. reference.sqlite has no faction table, so these hash instead of
-               # being dense: 16384 rows against roughly 600 factions in Immortal Empires.
                "faction": 16384,
-               # ---- interrupt screens ----
-               # An option's identity, "<screen>|<dilemma_id>|<option_id>". 48 distinct in
-               # the corpus at the time of writing (21 occupation, 15 dilemma, 6
-               # battle_results, 4 pre_battle, 2 diplomacy) and it grows with every new
-               # dilemma the game shows us, so it is sized for the tail, not for today.
                "screen_option": 4096,
                # The dilemma itself, shared by its own options and across occurrences --
                # the same dilemma recurs in campaign after campaign.
@@ -343,15 +266,6 @@ CAT_BUCKETS = {"building": 8192, "chain": 4096, "unit": 4096, "tech": 4096,
                "treaty_term": 64}
 CAT_DIM = 32
 
-# The VALUE head's context. These are raw recorded campaign facts, not derived ones, and
-# the value head predicts a campaign outcome -- so it is allowed to see campaign state.
-# They are counted separately from the node budget and REPORTED, because being uncounted
-# is how ten extra scalars went unnoticed.
-#
-# log_n_offers is gone. It was math.log1p(n_offers)/7.0 -- a derived composite, and worse,
-# a fact about OUR GENERATOR rather than about the game. A model that sees how many
-# options it was handed can learn the option generator instead of the world, which is the
-# specific failure this schema was rebuilt to end.
 G_CTX_FIELDS = ("turn", "treasury", "income", "settlements", "armies",
                 "allies", "vassals", "power_rank", "lord_level")
 G_CTX_DIM = len(G_CTX_FIELDS)
@@ -375,10 +289,6 @@ ATTITUDE_SCALE = 100.0
 # Gold on the table. Deals in the corpus run to a few thousand; 5000 puts the common
 # range inside [0,1] and the clip catches a ransom.
 DEAL_GOLD_SCALE = 5000.0
-# "Strength Rank: 12" -- a rank, not a strength, so smaller is stronger. Same scale for
-# both sides so the two are comparable AS NUMBERS on one node; the model is free to
-# subtract them, which it may do because they are two facts of one panel, not two
-# entities (guard.Raw is what would stop a cross-entity subtraction, and does not apply).
 STRENGTH_RANK_SCALE = 50.0
 # Their settlement count, off `opponent_settlement_number`.
 SCREEN_SETTLEMENTS_SCALE = 10.0
@@ -411,8 +321,7 @@ _STANCE_IX = {s: i + 1 for i, s in enumerate(STANCES)}
 
 
 def _above(s, lo, buckets):
-    """Hash a key the enumeration does not know, into the range ABOVE the dense ids so it
-    can never alias one that is known."""
+    """Hash a key the enumeration does not know, into the range ABOVE the dense ids so it"""
     span = buckets - lo
     if span <= 0:
         raise ValueError("no room above the dense ids (lo=%d, buckets=%d)" % (lo, buckets))
@@ -453,8 +362,7 @@ _DENSE_CACHE = {}
 
 
 def _dense(kind):
-    """Lazy, because catalogue imports this module. Empty dict if reference.sqlite is
-    absent, which degrades to the old hashing and says so."""
+    """Lazy, because catalogue imports this module. Empty dict if reference.sqlite is"""
     if not _DENSE_CACHE:
         try:
             from advisor.mapgraph import catalogue as _cat
@@ -466,18 +374,7 @@ def _dense(kind):
 
 
 def cat_index(kind, key):
-    """Catalogue id. Namespaced per kind so a unit key cannot collide with a skill.
-
-    Dense from reference.sqlite where the kind has a table there, because crc32 % buckets
-    is NOT injective and never was: 9,393 of 19,313 reference keys (48.6%) shared a row
-    with a different key -- 60.6% of chains, 51.1% of skills. Two different buildings
-    landing on one embedding is not a hash detail, it is the model being told they are the
-    same building.
-
-    A key the reference does not know still hashes, but into the range ABOVE the dense
-    ids, so an unknown key can never alias a known one. That range is small and shrinking;
-    it is reported by mapgraph.invariants rather than left to be discovered.
-    """
+    """Catalogue id. Namespaced per kind so a unit key cannot collide with a skill."""
     if not key:
         return 0
     n = CAT_BUCKETS[kind]

@@ -1,12 +1,4 @@
-"""Tests for the corpus access layer.
-
-The one that matters is test_every_stamp_probe_executes. A stamp probe naming a column
-that does not exist degrades silently -- the probe returns an error string instead of a
-number, the stamp stops tracking that table, and cached() keeps serving values from an
-older corpus while every endpoint still returns 200 and looks correct. That is the
-"confidently wrong" failure this whole rebuild exists to eliminate, so it gets a test
-rather than a comment.
-"""
+"""Tests for the corpus access layer."""
 
 from __future__ import annotations
 

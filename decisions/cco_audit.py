@@ -33,10 +33,6 @@ import common  # noqa: E402
 
 CCO_TSV = common.CCO_TSV
 
-# Receivers whose type does not follow from the source: a closure parameter, or an element
-# of a list that a helper is called with. Each entry is a claim about a variable and is
-# checked against the catalogue like any other route once applied -- it buys a name, not
-# an exemption.
 ROOTS = {
     # agg(list, canfn) is called twice, with FactionContext.MercenaryPoolContext... and
     # ProvinceContext.MercenaryPoolContext...; both are MercenaryPoolUnitList.
@@ -61,10 +57,6 @@ _LIST_CTX = "CcoContextList"
 # made `building_cancel` return 'REFUSED-nil' for the life of the corpus.
 MODULES = ("decisions.collect", "launcher.cco_actions")
 
-# The mod names context types as bare strings for GetContextObjectId. A name the game does
-# not have never matches, so the panel it identifies reports no context at all -- silent,
-# like every other failure in this family. CcoCampaignRegion and
-# CcoCampaignBuildingChainRecord were both invented and both sat in CCO_TYPES.
 LUA_FILES = (os.path.join(os.path.dirname(_HERE), "bus", "mod", "twcontrol.lua"),
              os.path.join(os.path.dirname(_HERE), "bus", "mod", "twstate.lua"))
 
@@ -122,13 +114,7 @@ _IDENT = re.compile(r"[A-Za-z_]\w*")
 
 
 def _concat_parts(expr):
-    """Parse a Lua `a..'b'..c` concatenation into [('lit',s) | ('var',name)].
-
-    Returns None if the expression is anything else -- a call, an index, arithmetic. The
-    collector builds routes this way (`local base=e..'['..i..']'`, then
-    `f:Call(base..'.CanRecruitCharacter')`), and a route assembled from variables is still
-    a route that has to exist.
-    """
+    """Parse a Lua `a..'b'..c` concatenation into [('lit',s) | ('var',name)]."""
     parts, i, n = [], 0, len(expr)
     while True:
         while i < n and expr[i] == " ":
@@ -163,8 +149,7 @@ def _concat_parts(expr):
 
 
 def _string_vars(src):
-    """Lua locals whose value is a literal string, or a concatenation of them. Unknown
-    pieces become '#', which is how an index or a subtype name reads in a route."""
+    """Lua locals whose value is a literal string, or a concatenation of them. Unknown"""
     seen = {}
     assigns = []
     for m in re.finditer(r"local\s+(\w+)\s*=\s*", src):
@@ -188,8 +173,7 @@ def _string_vars(src):
 
 
 def _template(expr, svars=None):
-    """A Lua string expression -> its literal text, every interpolated run replaced by
-    '#'. `'List['..i..'].Key'` -> `List[#].Key`. None if there is no literal at all."""
+    """A Lua string expression -> its literal text, every interpolated run replaced by"""
     exact = _concat_parts(expr)
     if exact is not None:
         # `g(c,p)` inside g()'s own body is a route made entirely of a parameter. There is
@@ -247,10 +231,7 @@ _ARG_GLOBALS = ("DatabaseRecordContext",)
 
 
 def _arg_routes(seg):
-    """Arguments to a CCO call are themselves routes, resolved against the *receiver* --
-    `CanRecruitUnitForFaction(FactionContext, ...)` off a character means
-    CcoCampaignCharacter.FactionContext. An argument naming a property that does not exist
-    fails exactly as silently as a bad route does."""
+    """Arguments to a CCO call are themselves routes, resolved against the *receiver* --"""
     if "(" not in seg:
         return []
     inner = seg[seg.index("(") + 1:seg.rindex(")")] if seg.rstrip().endswith(")") else ""
@@ -282,8 +263,7 @@ def _arg_routes(seg):
 
 
 def walk(ctx, route, cat, root=None):
-    """Follow a dotted route from context `ctx`. Returns the final declared return type,
-    or None the moment a segment is not a property of the context it is applied to."""
+    """Follow a dotted route from context `ctx`. Returns the final declared return type,"""
     cur, last = ctx, None
     root = root or ctx
     for seg in _split_route(route):
@@ -363,8 +343,7 @@ def _recv_before(src, i):
 
 
 def _calls(src):
-    """Yield (assigned_name_or_None, receiver_expr, route_template) for every
-    `g(recv,'route')` and every `recv:Call('route')`."""
+    """Yield (assigned_name_or_None, receiver_expr, route_template) for every"""
     svars = _string_vars(src)
     i = 0
     while True:
@@ -436,9 +415,7 @@ _PLACEHOLDER = re.compile(r"%\((\w+)\)s")
 
 
 def _subs_for(mod):
-    """The literal values a template's %(name)s placeholders take, read back off the call
-    sites rather than restated here -- a fourth slot action with a bad guard is then
-    caught by adding no code at all."""
+    """The literal values a template's %(name)s placeholders take, read back off the call"""
     import inspect
     out = {}
     try:
@@ -559,8 +536,7 @@ _CAT = {}
 
 
 def selftest(tsv=None):
-    """A checker nobody has seen fail is a checker nobody should trust. These are the
-    four shapes that actually occurred in the corpus."""
+    """A checker nobody has seen fail is a checker nobody should trust. These are the"""
     cat = load_catalogue(tsv)
     cases = [
         # (context, route, must_resolve)

@@ -23,6 +23,32 @@ DISMISS_BUTTON_IDS = frozenset((
     "button_continue",
 ))
 
+# MATCHED ON TEXT, BECAUSE THE ID IS NOT ALWAYS THE BUTTON.
+DISMISS_BUTTON_TEXTS = frozenset((
+    "continue", "ok", "okay", "close", "accept", "acknowledge", "dismiss",
+))
+
+
+def _is_dismiss_text(text):
+    return str(text or "").strip().lower() in DISMISS_BUTTON_TEXTS
+
+
+# A MATCHED LABEL IS NOT THE CONTROL, AND CLICKING IT DOES NOTHING.
+LABEL_IDS = frozenset(("button_txt", "dy_text", "text", "label", "dy_description"))
+
+
+def _clickable_owner(path, node, by_path):
+    if str(node.get("id") or "") not in LABEL_IDS:
+        return path
+    if "|" not in path:
+        return path
+    parent_path = path.rsplit("|", 1)[0]
+    parent = by_path.get(parent_path)
+    if parent and parent.get("visible") and str(parent.get("state")) in _CLICKABLE_STATES:
+        return parent_path
+    return path
+
+
 PERSISTENT_ROOTS = frozenset((
     "3d_ui_parent", "hud_campaign", "resources_bar", "menu_bar", "panel_manager",
     "under_advisor_docker", "ai_attack_targets_parent", "mission_indicator_parent",
@@ -33,36 +59,11 @@ PERSISTENT_ROOTS = frozenset((
 
 _CLICKABLE_STATES = frozenset(("active", "default", "NewState", "selected", "hover", "down"))
 
-# Adding a root here removes it from the failure surface, so it is added ONLY on Tristan's
-# explicit call -- never by an agent deciding for itself that a screen needs no handling.
-# Unhandled screens are meant to kill the run loudly; runs have had to be deleted wholesale
-# because that failure was quietly smoothed over. cp1_cth_relics_gained looks like the same
-# widget as the two below and is deliberately NOT listed: it has never actually failed, so
-# it gets to fail hard first and be fixed on purpose.
-#
-# The *_gained entries are particle-emitter reward toasts with NO controls at all, verified
-# from the game's own UI tree. They fade themselves out, so they can vanish between a
-# roots() snapshot and the read that follows -- choose_dilemma() then hands a 0-node root to
-# _read_tree_or_die, which reports a bus failure and ends the session.
-#   influence_gained               398x220  32 particle nodes  0 buttons  "Influence Gained!"
-#   dlc27_hef_sotwt_scrolls_gained 202x110  30 particle nodes  0 buttons  "Scrolls of Knowledge Gained!"
-# cinematic_bars and advice_interface are the Realm of Chaos turn-1 intro: the campaign
-# reaches an interactive HUD normally (14 cinematic keys cleared at load), then plays a
-# fullscreen media event on the first turn with the advisor tour over it. The engine reports
-# PENDING_FULLSCREEN_MEDIA while both roots are open, nothing claimed them, and the session
-# killed itself rather than record a campaign it could not read -- correct behaviour, wrong
-# verdict, because neither root is a decision surface. cinematic_bars is the letterbox
-# overlay and advice_interface is the advisor popup; both dismiss themselves or are cleared
-# by the existing cm:dismiss_advice() path.
-#
-# Added on Tristan's explicit instruction. BENIGN_PANELS is his call by standing rule: a
-# panel goes on this list because he decided it is not a decision, never because it was
-# convenient to make an error go away, and _read_tree_or_die is not softened to accommodate
-# it. Immortal Empires never hit this because its intro sequence completes before turn 1.
 BENIGN_PANELS = frozenset(("units_panel", "settlement_panel", "recruitment_options",
                            "influence_gained", "dlc27_hef_sotwt_scrolls_gained",
                            "province_publicorder_tooltip", "skaven_revealed_anim",
-                           "cinematic_bars", "advice_interface"))
+                           "cinematic_bars", "advice_interface",
+                           "movie_overlay_intro_movie"))
 
 DECISION_ROOTS = frozenset(("diplomacy_dropdown", "ally_attacked"))
 
@@ -139,6 +140,33 @@ def dump_screen(bus, root, why):
         return None
 
 
+_SEEN_ROOTS = set()
+_IN_CENSUS = [False]
+
+
+def census_roots(bus, roots=None):
+    """Dump the full tree of EVERY root the first time it is ever seen. No whitelist."""
+    if not dev_mode() or _IN_CENSUS[0]:
+        return []
+    _IN_CENSUS[0] = True
+    try:
+        first = []
+        for rid in (visible_roots(bus) if roots is None else roots):
+            if not rid or rid in _SEEN_ROOTS:
+                continue
+            _SEEN_ROOTS.add(rid)
+            if dump_screen(bus, rid, "census"):
+                first.append(rid)
+        if first:
+            sys.stderr.write("nav: census captured first sighting of %s\n" % ",".join(first))
+        return first
+    except Exception as e:
+        sys.stderr.write("nav: census failed -> %s\n" % repr(e)[:90])
+        return []
+    finally:
+        _IN_CENSUS[0] = False
+
+
 def _open_roots(bus):
     r = bus.send("roots", "", timeout=_FIND_T) or {}
     if not r.get("kids"):
@@ -160,12 +188,24 @@ def find_dismiss_buttons(bus, root, max_depth=24, max_nodes=4000):
     tr = bus.send("tree", "%s %d %d" % (root, max_depth, max_nodes), timeout=_TREE_T) or {}
     if not tr.get("nodes"):
         _warn("find_dismiss_buttons(%s)" % root, "empty/None tree reply (bus miss)")
-    hits = []
-    for n in (tr.get("nodes") or []):
-        if (_is_dismiss_id(n.get("id"))
-                and n.get("visible")
-                and str(n.get("state")) in _CLICKABLE_STATES):
-            hits.append(n.get("path"))
+    nodes = tr.get("nodes") or []
+    by_path = {str(n.get("path") or ""): n for n in nodes}
+    hits, seen = [], set()
+    for n in nodes:
+        if not n.get("visible") or str(n.get("state")) not in _CLICKABLE_STATES:
+            continue
+        path = str(n.get("path") or "")
+        if _is_dismiss_id(n.get("id")):
+            target = path
+        elif _is_dismiss_text(n.get("text")):
+            target = _clickable_owner(path, n, by_path)
+        else:
+            continue
+        # A label and its button both resolving to the same control is the normal case, not
+        # an error -- dedupe so the panel is not clicked twice and re-opened.
+        if target and target not in seen:
+            seen.add(target)
+            hits.append(target)
     return hits
 
 
@@ -219,6 +259,7 @@ def diplomacy_owned(root):
 def close_popups(bus, max_rounds=8, settle=0.7):
     clicked_paths = []
     protected = set()
+    census_roots(bus)
     for _ in range(max_rounds):
         clicked_this_round = False
         pend = engine_pending(bus)

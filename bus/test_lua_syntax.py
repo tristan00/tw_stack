@@ -36,8 +36,7 @@ def _runtime():
 
 
 def _compiles(lua, src, name):
-    """The mod files call cm:, core: and out() which do not exist here, so compile rather
-    than run: loading checks syntax and nothing else."""
+    """The mod files call cm:, core: and out() which do not exist here, so compile rather"""
     try:
         lua.execute("return function(s, n) return load(s, n) end")
         loader = lua.eval("function(s, n) local f, e = load(s, n) return f ~= nil, e end")

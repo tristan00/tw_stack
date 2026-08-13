@@ -61,9 +61,16 @@ class _SnapshotRead:
         return False
 
 
+def _int_or_none(v):
+    """A turn count that was never read must stay NULL, not become 0 -- the two mean"""
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return None
+
+
 def _dumps(o):
-    """Canonical JSON: interning and content-addressing both depend on two equal payloads
-    producing one identical string, so key order is not allowed to drift."""
+    """Canonical JSON: interning and content-addressing both depend on two equal payloads"""
     return json.dumps(o, default=str, sort_keys=True, separators=(",", ":"))
 
 
@@ -98,14 +105,6 @@ class DecisionStore:
                          (S.SCHEMA_VERSION,))
         self.con.commit()
 
-    # Columns added to an EXISTING database. `CREATE TABLE IF NOT EXISTS` is a no-op once
-    # the table exists, so a new column in store_schema reaches a fresh db and silently
-    # misses every db already on disk -- the reader then sees the column in the DDL, queries
-    # it, and gets an error or a null it misreads as data.
-    #
-    # Additive only, and only where NULL is a truthful answer for old rows: campaign_map is
-    # null for campaigns recorded before the map was collected, which is exactly right --
-    # we genuinely do not know which map those were played on.
     _ADD_COLUMNS = (("campaigns", "campaign_map", "TEXT"),)
 
     def _add_missing_columns(self):
@@ -146,8 +145,7 @@ class DecisionStore:
     # ------------------------------------------------------------------ interning
 
     def _blob(self, text):
-        """Content-address a JSON payload. `world` is 58.2% byte-identical to the previous
-        decision of the same campaign, so most calls here are a cache hit and no write."""
+        """Content-address a JSON payload. `world` is 58.2% byte-identical to the previous"""
         if text is None:
             return None
         sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -207,8 +205,7 @@ class DecisionStore:
         return cid
 
     def register_collector(self, collector_sha, git_sha=None, note=None):
-        """Which build produced the rows that follow. v1 could not say, and that alone
-        makes its corpus unmigratable."""
+        """Which build produced the rows that follow. v1 could not say, and that alone"""
         self._assert_writable("register_collector")
         self.con.execute(
             "INSERT OR IGNORE INTO collector_versions(collector_sha,git_sha,started_ts,note)"
@@ -263,12 +260,7 @@ class DecisionStore:
         return did
 
     def attach_options(self, decision_id, options):
-        """Store the options the advisor's gate let through. Only survivors reach here.
-
-        A gated candidate is not stored -- not as a row with a reason, not as anything.
-        An action the agent could not have taken is not part of the decision it faced, and
-        a corpus that carries them makes every count downstream mean something else.
-        """
+        """Store the options the advisor's gate let through. Only survivors reach here."""
         self._assert_writable("attach_options")
         ents = {(k, str(i)): seq for seq, (k, i) in enumerate(
             self.con.execute("SELECT context_kind,context_id FROM entities"
@@ -314,12 +306,7 @@ class DecisionStore:
         return out
 
     def attach_scores(self, decision_id, scores):
-        """Packed float32, one row per decision, indexed by offer_seq.
-
-        v1 wrote seven float columns on all 9M offer rows and updated them by identity
-        tuple -- which matched *every* colliding row, 0.705% of recent offers. Here a
-        score lands at a position, and the position is unique by construction.
-        """
+        """Packed float32, one row per decision, indexed by offer_seq."""
         if not scores:
             return 0
         self._assert_writable("attach_scores")
@@ -414,20 +401,82 @@ class DecisionStore:
         self.con.commit()
         return n
 
+    def write_postmortem(self, rec):
+        """How a campaign ended. Was an append to runs/postmortems.jsonl."""
+        self._assert_writable("write_postmortem")
+        rec = dict(rec or {})
+        key = rec.get("campaign_key") or rec.get("campaign_uuid") or None
+        outcome = rec.get("outcome")
+        defeated = 1 if outcome == "defeated" else (0 if outcome else None)
+        self.con.execute(
+            "INSERT INTO postmortems(campaign_key,ts,run_dir,faction,turn,outcome,"
+            "defeated,reason,payload) VALUES(?,?,?,?,?,?,?,?,?)",
+            (key, rec.get("ts") or time.time(), rec.get("run_dir"), rec.get("faction"),
+             _int_or_none(rec.get("turn_at_death") or rec.get("turns_played")),
+             outcome, defeated, rec.get("ended_by") if isinstance(rec.get("ended_by"), str)
+             else _dumps(rec.get("ended_by")) if rec.get("ended_by") else rec.get("error"),
+             _dumps(rec)))
+        if key:
+            self.con.execute(
+                "UPDATE campaigns SET outcome=?, defeated=? WHERE campaign_key=?",
+                (outcome, defeated, key))
+        self.con.commit()
+        return True
+
+    def postmortems(self, limit=2000):
+        """Every recorded ending, newest last. One read, no file parse."""
+        out = []
+        for payload, key in self.con.execute(
+                "SELECT payload,campaign_key FROM postmortems"
+                " ORDER BY postmortem_id DESC LIMIT ?", (int(limit),)):
+            try:
+                d = json.loads(payload or "{}")
+            except ValueError:
+                continue
+            if key and not d.get("campaign_key"):
+                d["campaign_key"] = key
+            out.append(d)
+        out.reverse()
+        return out
+
+    def write_diplomacy_event(self, row):
+        """One deal event. Was an append to run/diplomacy.jsonl that the dashboard re-read"""
+        self._assert_writable("write_diplomacy_event")
+        body = {k: v for k, v in (row or {}).items()
+                if k not in ("kind", "turn", "campaign_key", "campaign_id", "ts")}
+        self.con.execute(
+            "INSERT INTO diplomacy_events(ts,campaign_key,turn,kind,payload)"
+            " VALUES(?,?,?,?,?)",
+            (row.get("ts") or time.time(),
+             row.get("campaign_key") or row.get("campaign_id"),
+             _int_or_none(row.get("turn")), row.get("kind"), _dumps(body)))
+        self.con.commit()
+        return True
+
+    def diplomacy_events(self, limit=200, campaign_key=None):
+        """The most recent events, oldest first. One indexed read, no file tail."""
+        if campaign_key:
+            rows = self.con.execute(
+                "SELECT ts,campaign_key,turn,kind,payload FROM diplomacy_events"
+                " WHERE campaign_key=? ORDER BY event_id DESC LIMIT ?",
+                (campaign_key, int(limit))).fetchall()
+        else:
+            rows = self.con.execute(
+                "SELECT ts,campaign_key,turn,kind,payload FROM diplomacy_events"
+                " ORDER BY event_id DESC LIMIT ?", (int(limit),)).fetchall()
+        out = []
+        for ts, ckey, turn, kind, payload in rows:
+            try:
+                body = json.loads(payload or "{}")
+            except ValueError:
+                body = {}
+            body.update(ts=ts, campaign_id=ckey, turn=turn, kind=kind)
+            out.append(body)
+        out.reverse()
+        return out
+
     def write_diplo_state(self, campaign_id, turn, known_factions, war_graph):
-        """The whole world's war graph for one turn, met-set included in the row.
-
-        Deliberately outside the decision record. The record is what the model may see, and
-        this contains relationships between factions the player has never met; training on
-        those would teach the model to lean on information it does not have at play time.
-        `known_factions` travels WITH the data so clipping is a join rather than a rule
-        someone has to remember -- the met set changes every turn, so it cannot be
-        reconstructed afterwards.
-
-        INSERT OR IGNORE, so calling this on every action is harmless: only the first write
-        of a turn lands. Two factions that are not us cannot change their relationship while
-        we are mid-turn taking actions.
-        """
+        """The whole world's war graph for one turn, met-set included in the row."""
         self._assert_writable("write_diplo_state")
         if not campaign_id or war_graph is None:
             return False
@@ -445,14 +494,7 @@ class DecisionStore:
         return None if v is None else (1 if v else 0)
 
     def write_interrupt(self, row):
-        """`tree` is accepted and dropped. interrupt_decisions.tree_json was 886 MB, 18.5%
-        of the v1 database, and had no readers anywhere in the repo.
-
-        ONLY `panel` survives as a payload -- it is the single blob column here. Any other
-        key a caller invents is silently discarded, which has already cost once: battle
-        results were filed under `battle` and both rows landed with panel_blob NULL. Put
-        screen payloads under `panel`.
-        """
+        """`tree` is accepted and dropped. interrupt_decisions.tree_json was 886 MB, 18.5%"""
         self._assert_writable("write_interrupt")
         camp = row.get("campaign") or {}
         opts = row.get("options") or {}
@@ -496,9 +538,7 @@ class DecisionStore:
         return int(r[0]) if r and r[0] is not None else 0
 
     def _entities_and_offers(self, where="", args=()):
-        """Both clustered scans, merged on decision_id. Entities come back in entity_seq
-        order and each entity's offers in offer_seq order, so action-node order (and
-        therefore the taken mask) is a property of the layout rather than of an index."""
+        """Both clustered scans, merged on decision_id. Entities come back in entity_seq"""
         ents_by_dec = {}
         for did, ei, ck, cid, feats in self.con.execute(
                 "SELECT e.decision_id,e.entity_seq,e.context_kind,e.context_id,unz(b.z)"
@@ -539,19 +579,7 @@ class DecisionStore:
                 "entities": ents.get(decision_id, [])}
 
     def decision_index(self):
-        """[(decision_id, campaign_key, ts)] in decision_id order -- no blobs, no offers.
-
-        The cheap half of a join an interrupt has to make: a blocking screen records no
-        world of its own worth building a graph from (world_state on a popped panel yields
-        no relations, no citizenry and no war_graph -- 0 of 347 archived rows carry any of
-        the three), so it borrows the last real DECISION snapshot instead. This is over
-        `decisions`, which is exactly why an interrupt that follows another interrupt walks
-        past it to a real snapshot: interrupts are not in this table. 137 of 347 rows need
-        that, and the chain runs 5 deep behind a battle.
-
-        Pair with read_decision() for the few hundred that are actually wanted, rather than
-        labelled_decisions(), which drags every entity and offer in the corpus along.
-        """
+        """[(decision_id, campaign_key, ts)] in decision_id order -- no blobs, no offers."""
         return [(int(did), ck, ts or 0.0) for did, ck, ts in self.con.execute(
             "SELECT d.decision_id,c.campaign_key,d.ts FROM decisions d"
             " JOIN campaigns c ON c.campaign_id=d.campaign_id"
@@ -571,8 +599,7 @@ class DecisionStore:
         return out
 
     def labelled_decisions(self, confirmed_only=False, after=None, before=None):
-        """Rows in decision_id order. `after` (exclusive) and `before` (inclusive) bound
-        decision_id so a caller can read one shard instead of the whole corpus."""
+        """Rows in decision_id order. `after` (exclusive) and `before` (inclusive) bound"""
         rng, args = "", []
         if after is not None:
             rng += " AND decision_id>?"
@@ -697,6 +724,5 @@ class DecisionStore:
     # ------------------------------------------------------------------ checks
 
     def layout_violations(self):
-        """`offer_seq < n_available` must mean exactly `available`. If this is ever
-        non-zero the contiguous-prefix read is silently returning the wrong candidates."""
+        """`offer_seq < n_available` must mean exactly `available`. If this is ever"""
         return self.con.execute(S.LAYOUT_INVARIANT).fetchone()[0]

@@ -1,18 +1,14 @@
 from __future__ import annotations
 
+import os
 import sys
 
-# Strategy names are ALGORITHM names, not architecture names. "gnn" described the encoder
-# -- a relational graph net over the decision graph -- which is the part every future
-# attempt will share, so it could not distinguish one attempt from the next. The learning
-# algorithm is what actually differs: `gnn_marwil` is MARWIL/AWR (exponentially
-# advantage-weighted imitation of logged actions, with a value baseline), which is what
-# mapgraph/train.py implements. A later IQL or CQL attempt on the same encoder gets its own
-# name beside this one rather than silently replacing what "gnn" meant.
-#
-# This is not a version suffix: `gnn_marwil` says what the thing IS. There is still exactly
-# one implementation of it, and no older generation is kept alongside.
-NAMES = ("random", "exploit_tree", "ruleset", "gnn_marwil")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import arms
+
+# Strategy names are <ALGORITHM>_<BACKEND>. Both halves are required.
+NAMES = ("random", "greedy_catboost", "ruleset", "marwil_gnn")
 
 
 class Random:
@@ -28,7 +24,7 @@ class Random:
         return self.rng.choice(pools[self.rng.choice(sorted(pools))])
 
 
-class ExploitTree:
+class GreedyCatboost:
 
     def __init__(self, ranker):
         self.ranker = ranker
@@ -67,7 +63,7 @@ def offer_key(r):
             r.get("action_type"), str(r.get("key")))
 
 
-class GnnMarwil:
+class MarwilGnn:
 
     def __init__(self, gnn):
         self.gnn = gnn
@@ -108,12 +104,16 @@ class GnnMarwil:
 
 
 def build(name, rng=None, ranker=None, ruleset=None, gnn=None):
+    # Historical spellings resolve here so that a saved command line, a babysitter config
+    # or a launcher script naming `exploit_tree` still starts. Reading an old name is not
+    # the same as keeping an old implementation: there is one of each strategy below.
+    name = arms.canonical(name)
     if name == "random":
         return Random(rng)
-    if name == "exploit_tree":
-        return ExploitTree(ranker)
+    if name == "greedy_catboost":
+        return GreedyCatboost(ranker)
     if name == "ruleset":
         return Ruleset(ruleset)
-    if name == "gnn_marwil":
-        return GnnMarwil(gnn)
+    if name == "marwil_gnn":
+        return MarwilGnn(gnn)
     raise ValueError("unknown strategy %r -- known: %s" % (name, ", ".join(NAMES)))

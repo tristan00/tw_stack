@@ -44,19 +44,7 @@ SHARD = 2000
 
 
 def _graph_sources():
-    """Every module in this package that a graph's contents can depend on.
-
-    Found by walking imports STATICALLY from the two entry points -- build.build_graph
-    and net.to_data -- so the answer is a property of the code, not of the process.
-
-    An earlier version read sys.modules instead. That was wrong in a way that cost a
-    full cache: the set depended on what the CALLER had already imported, so invoking
-    this from train.py pulled train.py into the fingerprint, and editing the training
-    loop -- which cannot change a single node or edge -- discarded 2.7GB and forced a
-    134s cold walk. A hand-written list has the opposite failure (add an import, forget
-    to list it, and the cache silently serves graphs built by code that no longer
-    exists), so neither of those; walk the import graph.
-    """
+    """Every module in this package that a graph's contents can depend on."""
     import ast
     seen, stack = set(), ["build.py", "net.py"]
     while stack:
@@ -113,22 +101,12 @@ def root(run_key, fp=None):
 
 
 def _shard_name(did):
-    """Shards are keyed by decision_id RANGE, not by position in the sorted list.
-
-    That is what makes an append cheap: 700 new decisions land in one or two shards, so
-    a retrain rewrites those and leaves the other ~3GB untouched. Position-keyed shards
-    would renumber on every append and force a full rewrite.
-    """
+    """Shards are keyed by decision_id RANGE, not by position in the sorted list."""
     return "shard_%08d.pt" % (did // SHARD)
 
 
 def load(run_key, log=print):
-    """Return ({decision_id: slot}, cache_dir) for the current fingerprint.
-
-    A slot is (did, camp_id, campaign, turn, drop, data, counts, thash). An empty dict
-    means a cold walk -- a fingerprint mismatch has no directory, so a stale vintage can
-    never be partially reused.
-    """
+    """Return ({decision_id: slot}, cache_dir) for the current fingerprint."""
     d = root(run_key)
     man = os.path.join(d, "manifest.json")
     if not os.path.exists(man):
@@ -150,12 +128,7 @@ def load(run_key, log=print):
 
 
 def save(d, slots, dirty, log=print):
-    """Persist `slots`, rewriting only the shards containing `dirty` decision ids.
-
-    Each shard is written beside its target and moved into place, so a crash mid-write
-    leaves the previous shard intact rather than a truncated one that would read as
-    complete.
-    """
+    """Persist `slots`, rewriting only the shards containing `dirty` decision ids."""
     import torch
     os.makedirs(d, exist_ok=True)
     by_shard = {}
@@ -177,11 +150,7 @@ def save(d, slots, dirty, log=print):
 
 
 def ranges(ids, gap=64):
-    """Contiguous-ish (lo, hi) windows covering `ids`, for after=lo-1/before=hi reads.
-
-    Small gaps are bridged: reading a few extra rows is much cheaper than issuing another
-    indexed range query against a 9M-row table.
-    """
+    """Contiguous-ish (lo, hi) windows covering `ids`, for after=lo-1/before=hi reads."""
     out = []
     for i in sorted(ids):
         if out and i - out[-1][1] <= gap:

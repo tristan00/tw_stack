@@ -17,12 +17,17 @@ from store import DecisionStore
 
 POLL = 0.1
 
+# Every ~60s at POLL=0.1. Spent transport rows are worth clearing often enough that the
+# channel never becomes a second corpus, and rarely enough that it costs nothing.
+PRUNE_EVERY = 600
+
 
 def run(ctx):
     from bus import Bus
     bus = Bus()
-    store, cur_dir, offset = None, None, 0
+    store, cur_dir, after_id = None, None, 0
     seq = 0
+    ticks = 0
     last_uuid = [None]
 
     def campaign_changed(snap_camp):
@@ -42,11 +47,13 @@ def run(ctx):
             if out_dir != cur_dir:
                 if store is not None:
                     store.close()
+                # The store is opened FIRST: it owns the schema, and the request channel is
+                # a table in it. Only then is there a queue head to start from.
                 store = DecisionStore(out_dir)
-                cur_dir, offset, seq = out_dir, journal.requests_size(out_dir), 0
+                cur_dir, after_id, seq = out_dir, journal.last_request_id(out_dir), 0
                 ctx.emit({"kind": "decisions_status", "status": "store_open",
                           "db": os.path.join(out_dir, "decisions.sqlite")})
-            rows, offset = journal.read_requests(out_dir, offset)
+            rows, after_id = journal.read_requests(out_dir, after_id)
             for row in rows:
                 kind, rid = row.get("kind"), row.get("req_id")
                 try:
@@ -61,12 +68,7 @@ def run(ctx):
                         t2 = time.time()
                         seq += 1
                         counts["snapshot"] += 1
-                        # The RECORD travels back with the reply. The advisor used to
-                        # take the decision_id and open decisions.sqlite itself to read
-                        # what had just been written -- a second reader of the recorder's
-                        # own database, in the component that is supposed to touch no
-                        # database at all. The recorder already holds it in memory.
-                        journal.respond(out_dir, rid, decision_id=did, record=snap,
+                        journal.respond(out_dir, rid, decision_id=did,
                                         collect_ms=int((t1 - t0) * 1000),
                                         store_ms=int((t2 - t1) * 1000),
                                         pickup_lag_ms=pickup_lag_ms)
@@ -85,12 +87,6 @@ def run(ctx):
                         ckey = store.campaign_key(r.get("campaign_id"),
                                                   r.get("campaign_uuid"))
                         store.write_entity_target_rows(ckey, r.get("turn"), ents)
-                        # The world war graph rides the per-TURN request, never the
-                        # per-action snapshot: 534 factions against ~10 met, and third
-                        # parties cannot change their relations while we act. It goes
-                        # straight to its own table and never touches the decision record,
-                        # which is the boundary between what we keep and what the model
-                        # is allowed to see.
                         try:
                             known, wg = collect.diplo_world(bus)
                             store.write_diplo_state(ckey, r.get("turn"), known, wg)
@@ -123,6 +119,15 @@ def run(ctx):
                         ctx.emit({"kind": "decisions_interrupt", "screen": row.get("kind_screen")
                                   or row.get("screen"), "chosen": row.get("chosen"),
                                   "turn": cs.get("turn")})
+                    elif kind == "diplomacy":
+                        store.write_diplomacy_event(row)
+                        counts["diplomacy"] = counts.get("diplomacy", 0) + 1
+                    elif kind == "postmortem":
+                        store.write_postmortem(row)
+                        counts["postmortem"] = counts.get("postmortem", 0) + 1
+                        ctx.emit({"kind": "decisions_postmortem",
+                                  "campaign": row.get("campaign_key"),
+                                  "outcome": row.get("outcome")})
                     elif kind == "options":
                         did = row.get("decision_id")
                         n = store.attach_options(did, row.get("options"))
@@ -161,6 +166,15 @@ def run(ctx):
                     if rid:
                         journal.respond(out_dir, rid, error=(lambda _m: _m if len(_m) <= 700 else
                                                  _m[:200] + " ...<<cut>>... " + _m[-500:])(repr(e)))
+            # The channel is not the corpus: a spent request still holds the whole ranking
+            # it carried. Pruning here is what keeps the transport from growing into the
+            # database the way it grew into the jsonl files.
+            ticks += 1
+            if ticks % PRUNE_EVERY == 0 and after_id:
+                gone_a, gone_b = journal.prune(out_dir, after_id)
+                if gone_a or gone_b:
+                    ctx.emit({"kind": "decisions_status", "status": "pruned",
+                              "requests": gone_a, "responses": gone_b})
         except Exception as e:
             ctx.on_error("decisions-stream", e)
             time.sleep(5.0)

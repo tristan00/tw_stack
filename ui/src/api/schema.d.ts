@@ -208,6 +208,83 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/models/agreement/series": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Agreement Series
+         * @description How agreement has tracked over the run, or by model generation.
+         */
+        get: operations["get_agreement_series_api_models_agreement_series_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/models/agreement/breakdown": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Agreement Breakdown */
+        get: operations["get_agreement_breakdown_api_models_agreement_breakdown_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/analytics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Analytics
+         * @description What the analytics service has precomputed, and how far behind it is.
+         */
+        get: operations["get_analytics_api_analytics_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/analytics/rebuild": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Analytics Rebuild
+         * @description Ask the analytics service to rebuild from scratch.
+         */
+        post: operations["post_analytics_rebuild_api_analytics_rebuild_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/models/correlations": {
         parameters: {
             query?: never;
@@ -337,14 +414,6 @@ export interface paths {
         /**
          * Events
          * @description Server-sent events: one message whenever the corpus gains rows.
-         *
-         *     The client re-fetches on a change rather than on a timer, so a quiet run costs
-         *     nothing and a busy one updates immediately. EventSource reconnects on its own, so
-         *     there is no reconnect logic to get wrong.
-         *
-         *     The heartbeat exists because a proxy or a sleeping laptop will silently drop an idle
-         *     connection, and a stream that is dead but not closed looks exactly like a run with
-         *     nothing happening.
          */
         get: operations["events_api_events_get"];
         put?: never;
@@ -419,19 +488,56 @@ export interface components {
              */
             state: "ok" | "warn" | "bad" | "neutral";
         };
+        /** AgreementBreakdownPage */
+        AgreementBreakdownPage: {
+            scope: components["schemas"]["Scope"];
+            freshness: components["schemas"]["AnalyticsFreshness"];
+            /**
+             * Dim
+             * @enum {string}
+             */
+            dim: "arm" | "action_type" | "context_kind";
+            /** Rows */
+            rows?: components["schemas"]["AgreementBreakdownRow"][];
+            /** Empty Reason */
+            empty_reason?: string | null;
+        };
+        /** AgreementBreakdownRow */
+        AgreementBreakdownRow: {
+            key: components["schemas"]["Ident"];
+            decisions: components["schemas"]["Count"];
+            /** Rho Median */
+            rho_median?: number | null;
+            /** Rho Mean */
+            rho_mean?: number | null;
+            /** Tau Mean */
+            tau_mean?: number | null;
+            /** Rbo Mean */
+            rbo_mean?: number | null;
+            same_top: components["schemas"]["Rate"];
+        };
         /** AgreementPage */
         AgreementPage: {
             scope: components["schemas"]["Scope"];
+            freshness: components["schemas"]["AnalyticsFreshness"];
+            correlation?: components["schemas"]["CorrelationSummary"] | null;
+            /** Rho Bins */
+            rho_bins?: components["schemas"]["RhoBin"][];
             /** Summary */
             summary: components["schemas"]["AgreementSummary"][];
             /** Rows */
             rows: components["schemas"]["AgreementRankRow"][];
+            /** Secondary */
+            secondary?: components["schemas"]["SecondaryMeasure"][];
             /** Warning */
             warning?: string | null;
             /** Empty Reason */
             empty_reason?: string | null;
         };
-        /** AgreementRankRow */
+        /**
+         * AgreementRankRow
+         * @description Where each model ranked the action that was taken, per deciding strategy.
+         */
         AgreementRankRow: {
             picked_by: components["schemas"]["Ident"];
             /** Decisions */
@@ -446,6 +552,75 @@ export interface components {
             gnn_pct?: number | null;
             /** Delta Pct */
             delta_pct?: number | null;
+            /** Rho Median */
+            rho_median?: number | null;
+            /**
+             * Fell Back
+             * @default 0
+             */
+            fell_back: number;
+        };
+        /**
+         * AgreementSeriesPage
+         * @description Agreement over time, and by model generation.
+         */
+        AgreementSeriesPage: {
+            scope: components["schemas"]["Scope"];
+            freshness: components["schemas"]["AnalyticsFreshness"];
+            /**
+             * Axis
+             * @enum {string}
+             */
+            axis: "window" | "generation";
+            /**
+             * Is Alignment
+             * @default false
+             */
+            is_alignment: boolean;
+            /** Caveat */
+            caveat?: string | null;
+            /** Bucket Decisions */
+            bucket_decisions?: number | null;
+            /** Min Decisions */
+            min_decisions?: number | null;
+            ambiguous: components["schemas"]["Count"];
+            /** Points */
+            points?: components["schemas"]["AgreementSeriesPoint"][];
+            /** Generations */
+            generations?: components["schemas"]["GenerationRow"][];
+            /** Empty Reason */
+            empty_reason?: string | null;
+        };
+        /** AgreementSeriesPoint */
+        AgreementSeriesPoint: {
+            /** Label */
+            label: string;
+            /** Seq */
+            seq: number;
+            decisions: components["schemas"]["Count"];
+            /** From Decision */
+            from_decision?: number | null;
+            /** To Decision */
+            to_decision?: number | null;
+            /** From Ts */
+            from_ts?: number | null;
+            /** To Ts */
+            to_ts?: number | null;
+            /** Rho Median */
+            rho_median?: number | null;
+            /** Rho Mean */
+            rho_mean?: number | null;
+            /** Rho Q1 */
+            rho_q1?: number | null;
+            /** Rho Q3 */
+            rho_q3?: number | null;
+            /** Tau Mean */
+            tau_mean?: number | null;
+            /** Rbo Mean */
+            rbo_mean?: number | null;
+            same_top: components["schemas"]["Rate"];
+            /** Gate */
+            gate?: string | null;
         };
         /** AgreementSummary */
         AgreementSummary: {
@@ -455,6 +630,43 @@ export interface components {
             value: string;
             /** Help */
             help?: string | null;
+        };
+        /**
+         * AnalyticsFreshness
+         * @description How current the precomputed numbers on this page are.
+         */
+        AnalyticsFreshness: {
+            /** Tenant */
+            tenant: string;
+            behind: components["schemas"]["Count"];
+            rows: components["schemas"]["Count"];
+            /** Computed Through */
+            computed_through?: number | null;
+            /** Age Seconds */
+            age_seconds?: number | null;
+            /**
+             * Formula Version
+             * @default 0
+             */
+            formula_version: number;
+            /**
+             * State
+             * @default neutral
+             * @enum {string}
+             */
+            state: "ok" | "warn" | "bad" | "neutral";
+            /** Detail */
+            detail?: string | null;
+        };
+        /** AnalyticsPage */
+        AnalyticsPage: {
+            scope: components["schemas"]["Scope"];
+            /** Tenants */
+            tenants?: components["schemas"]["TenantStatus"][];
+            /** Db Path */
+            db_path: string;
+            /** Runner Hint */
+            runner_hint: string;
         };
         /** ArmCoverage */
         ArmCoverage: {
@@ -488,15 +700,12 @@ export interface components {
         /**
          * CampaignRow
          * @description One campaign, with its outcome joined on.
-         *
-         *     Outcome and per-campaign metrics were previously two tables sharing no key, so the
-         *     question the page exists to answer -- which campaign ended how -- could not be
-         *     answered from it. They are joined here, server-side, and the join is tested.
          */
         CampaignRow: {
             /** Campaign Id */
             campaign_id: number;
             campaign: components["schemas"]["Ident"];
+            campaign_map?: components["schemas"]["Ident"] | null;
             /** Turns */
             turns?: number | null;
             /**
@@ -534,6 +743,37 @@ export interface components {
             final_power_rank?: number | null;
             /** Final Income */
             final_income?: number | null;
+            /**
+             * Turn Rows
+             * @default 0
+             */
+            turn_rows: number;
+            /** First Turn */
+            first_turn?: number | null;
+            /** Last Measured Turn */
+            last_measured_turn?: number | null;
+            /** Growth Span Turns */
+            growth_span_turns?: number | null;
+            /** First Settlements */
+            first_settlements?: number | null;
+            /** First Lord Level */
+            first_lord_level?: number | null;
+            /** Final Lord Level */
+            final_lord_level?: number | null;
+            /** Settlements Growth */
+            settlements_growth?: number | null;
+            /** Lord Growth */
+            lord_growth?: number | null;
+            /** Settlements Per Turn */
+            settlements_per_turn?: number | null;
+            /** Lord Per Turn */
+            lord_per_turn?: number | null;
+            /**
+             * Growth State
+             * @default no_turn_rows
+             * @enum {string}
+             */
+            growth_state: "measured" | "single_turn" | "no_turn_rows";
             outcome?: components["schemas"]["Ident"] | null;
             /**
              * Outcome State
@@ -541,16 +781,8 @@ export interface components {
              * @enum {string}
              */
             outcome_state: "ok" | "warn" | "bad" | "neutral";
-            /** Ended At Turn */
-            ended_at_turn?: number | null;
-            /** Settlements From */
-            settlements_from?: number | null;
-            /** Settlements To */
-            settlements_to?: number | null;
-            /** Lord From */
-            lord_from?: number | null;
-            /** Lord To */
-            lord_to?: number | null;
+            /** Ended Because */
+            ended_because?: string | null;
             /**
              * Suspicious
              * @default false
@@ -566,6 +798,7 @@ export interface components {
             headline: components["schemas"]["OutcomeTally"][];
             suspicious: components["schemas"]["Count"];
             unjoined: components["schemas"]["Count"];
+            growth_coverage: components["schemas"]["Rate"];
             /** Rows */
             rows: components["schemas"]["CampaignRow"][];
         };
@@ -596,12 +829,37 @@ export interface components {
             lord_gate?: string | null;
         };
         /**
+         * CorrelationSummary
+         * @description The headline: how alike the two models' whole orderings are.
+         */
+        CorrelationSummary: {
+            compared: components["schemas"]["Count"];
+            coverage: components["schemas"]["Rate"];
+            /** Rho Median */
+            rho_median?: number | null;
+            /** Rho Mean */
+            rho_mean?: number | null;
+            /** Rho Q1 */
+            rho_q1?: number | null;
+            /** Rho Q3 */
+            rho_q3?: number | null;
+            /** Tau Median */
+            tau_median?: number | null;
+            /** Tau Mean */
+            tau_mean?: number | null;
+            same_best: components["schemas"]["Rate"];
+            /** Overlap Median */
+            overlap_median?: number | null;
+            /** From Decision */
+            from_decision?: number | null;
+            /** To Decision */
+            to_decision?: number | null;
+            /** Excluded */
+            excluded?: components["schemas"]["Count"][];
+        };
+        /**
          * CorrelationTile
          * @description `label` is the tile's identity: "action ranker" or "interrupt model".
-         *
-         *     They share arm names, so a check that searches the whole page for an arm row finds the
-         *     action table every time and never inspects the interrupt one. Splitting by tile is the
-         *     only way to verify each against its own corpus counts.
          */
         CorrelationTile: {
             /**
@@ -621,9 +879,6 @@ export interface components {
         /**
          * Count
          * @description A number of things, plus the population it counted.
-         *
-         *     `population` is required and non-empty by construction. Renderers show it beside the
-         *     number; there is no code path that produces a bare count.
          */
         Count: {
             /** Value */
@@ -642,11 +897,6 @@ export interface components {
         /**
          * Current
          * @description The campaign being played right now.
-         *
-         *     Resolved once, here, from the corpus. The old dashboard read this from two places --
-         *     a database summary and a parse of the session log -- and rendered both on one screen,
-         *     where they disagreed about which faction was playing and what turn it was. One
-         *     accessor means header and body cannot contradict each other.
          */
         Current: {
             campaign?: components["schemas"]["Ident"] | null;
@@ -661,10 +911,36 @@ export interface components {
             /** Age Seconds */
             age_seconds?: number | null;
         };
+        /**
+         * DecisionAgreement
+         * @description One decision's agreement, for the detail page.
+         */
+        DecisionAgreement: {
+            n: components["schemas"]["Count"];
+            /** Status */
+            status: string;
+            /** Rho */
+            rho?: number | null;
+            /** Tau B */
+            tau_b?: number | null;
+            /** Rbo */
+            rbo?: number | null;
+            /** Top1 Same */
+            top1_same?: boolean | null;
+            /** Top3 Overlap */
+            top3_overlap?: number | null;
+            /** Cat Top In Gnn */
+            cat_top_in_gnn?: number | null;
+            /** Gnn Top In Cat */
+            gnn_top_in_cat?: number | null;
+            /** Note */
+            note?: string | null;
+        };
         /** DecisionDetail */
         DecisionDetail: {
             scope: components["schemas"]["Scope"];
             row: components["schemas"]["DecisionRow"];
+            agreement?: components["schemas"]["DecisionAgreement"] | null;
             /** Offers */
             offers: components["schemas"]["OfferRow"][];
             /** Entities */
@@ -711,6 +987,10 @@ export interface components {
             gnn_rank?: number | null;
             /** Delta Pct */
             delta_pct?: number | null;
+            /** Rho */
+            rho?: number | null;
+            /** Rho N */
+            rho_n?: number | null;
             /** Latency Ms */
             latency_ms?: number | null;
         };
@@ -806,6 +1086,33 @@ export interface components {
             /** Bars */
             bars: components["schemas"]["ForcingBar"][];
         };
+        /** GenerationRow */
+        GenerationRow: {
+            trial: components["schemas"]["Ident"];
+            /** Generation */
+            generation?: number | null;
+            /**
+             * Retrained
+             * @default false
+             */
+            retrained: boolean;
+            /** From Ts */
+            from_ts?: number | null;
+            /** To Ts */
+            to_ts?: number | null;
+            /** Overlapped By */
+            overlapped_by?: string | null;
+            decisions: components["schemas"]["Count"];
+            /** Rho Median */
+            rho_median?: number | null;
+            /** Rho Mean */
+            rho_mean?: number | null;
+            /** Tau Mean */
+            tau_mean?: number | null;
+            /** Rbo Mean */
+            rbo_mean?: number | null;
+            same_top: components["schemas"]["Rate"];
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -847,10 +1154,6 @@ export interface components {
         /**
          * InterruptOption
          * @description One option on a blocking screen, with its per-model scores as data.
-         *
-         *     All 69 per-option scores previously existed only inside title attributes -- the
-         *     heading said so out loud: "hover chosen for all options and scores". Hover text is
-         *     unselectable, un-searchable and absent on touch, so the scores are fields now.
          */
         InterruptOption: {
             label: components["schemas"]["Ident"];
@@ -983,11 +1286,7 @@ export interface components {
         };
         /**
          * MatrixTotal
-         * @description The totals row. The reason this page exists.
-         *
-         *     Aggregated across every faction, `diplomacy` passes 73 of 425 attempts while every
-         *     other action type sits between 75% and 100%. In a 1342-cell alphabetical grid with no
-         *     totals row that finding is invisible. It leads the page now, worst first.
+         * @description One row per action type, aggregated across every faction.
          */
         MatrixTotal: {
             action_type: components["schemas"]["Ident"];
@@ -1110,9 +1409,6 @@ export interface components {
         /**
          * PhaseSpan
          * @description One phase of one action, in ms.
-         *
-         *     The four phases are the decomposition of a decision's wall clock: the recorder reading
-         *     the game, the request round trip, featurize+rank, and execute+confirm.
          */
         PhaseSpan: {
             /**
@@ -1161,6 +1457,15 @@ export interface components {
             /** Power Rank */
             power_rank?: number | null;
         };
+        /** RhoBin */
+        RhoBin: {
+            /** Lo */
+            lo: number;
+            /** Hi */
+            hi: number;
+            /** Decisions */
+            decisions: number;
+        };
         /** RunPage */
         RunPage: {
             scope: components["schemas"]["Scope"];
@@ -1171,8 +1476,6 @@ export interface components {
             throughput: components["schemas"]["Metric"][];
             /** Totals */
             totals: components["schemas"]["Count"][];
-            /** Signals */
-            signals: components["schemas"]["Signal"][];
             /** Collect Timing */
             collect_timing: components["schemas"]["TimingRow"][];
             /** Cycle Timing */
@@ -1192,6 +1495,17 @@ export interface components {
             /** Detail */
             detail?: string | null;
         };
+        /**
+         * SecondaryMeasure
+         * @description A supplement to the rank correlation, never a substitute for it.
+         */
+        SecondaryMeasure: {
+            /** Measure */
+            measure: string;
+            /** Value */
+            value: string;
+            rate?: components["schemas"]["Rate"] | null;
+        };
         /** Service */
         Service: {
             /** Name */
@@ -1206,29 +1520,8 @@ export interface components {
             detail?: string | null;
         };
         /**
-         * Signal
-         * @description Something worth noticing, with its severity already decided server-side.
-         */
-        Signal: {
-            /** Text */
-            text: string;
-            /**
-             * State
-             * @default neutral
-             * @enum {string}
-             */
-            state: "ok" | "warn" | "bad" | "neutral";
-            /** Detail */
-            detail?: string | null;
-        };
-        /**
          * StartRow
          * @description One playable start. `n` leads, because most starts have n=1.
-         *
-         *     Of 61 starts, 38 had a single campaign and 53 had two or fewer, while the columns were
-         *     labelled "avg turns" and "best power rank" -- aggregate vocabulary over one sample.
-         *     `n` is a first-class column and `single_sample` marks the rows where the aggregates
-         *     are one observation wearing an average's name.
          */
         StartRow: {
             faction: components["schemas"]["Ident"];
@@ -1267,6 +1560,34 @@ export interface components {
             low_sample: components["schemas"]["Count"];
             /** Rows */
             rows: components["schemas"]["StartRow"][];
+        };
+        /** TenantStatus */
+        TenantStatus: {
+            /** Tenant */
+            tenant: string;
+            /**
+             * Formula Version
+             * @default 0
+             */
+            formula_version: number;
+            rows: components["schemas"]["Count"];
+            behind: components["schemas"]["Count"];
+            /** Watermark */
+            watermark?: number | null;
+            /** Built */
+            built?: string | null;
+            /** Last Run */
+            last_run?: string | null;
+            /** Last Run Seconds */
+            last_run_seconds?: number | null;
+            /** Last Error */
+            last_error?: string | null;
+            /**
+             * State
+             * @default neutral
+             * @enum {string}
+             */
+            state: "ok" | "warn" | "bad" | "neutral";
         };
         /** TimelineAction */
         TimelineAction: {
@@ -1378,8 +1699,13 @@ export interface components {
             settlements_per_campaign?: number | null;
             /** Settlements Total */
             settlements_total?: number | null;
-            /** Grew */
-            grew?: string | null;
+            grew?: components["schemas"]["Rate"] | null;
+            shrank?: components["schemas"]["Rate"] | null;
+            /**
+             * Growth Baseline
+             * @description which definition this row was measured on. Rows written before the clamp was removed are not comparable with rows written after it.
+             */
+            growth_baseline?: string | null;
             /** Lord Per Campaign */
             lord_per_campaign?: number | null;
             /** Turns Per Campaign */
@@ -1704,6 +2030,108 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AgreementPage"];
+                };
+            };
+        };
+    };
+    get_agreement_series_api_models_agreement_series_get: {
+        parameters: {
+            query?: {
+                axis?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgreementSeriesPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_agreement_breakdown_api_models_agreement_breakdown_get: {
+        parameters: {
+            query?: {
+                dim?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgreementBreakdownPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_analytics_api_analytics_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnalyticsPage"];
+                };
+            };
+        };
+    };
+    post_analytics_rebuild_api_analytics_rebuild_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ControlResult"];
                 };
             };
         };

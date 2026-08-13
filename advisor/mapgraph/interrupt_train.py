@@ -55,19 +55,7 @@ CFG = dict(T.CFG, time_budget_s=60, batch=64, patience=15)
 
 
 def context_for(store, rows):
-    """{interrupt_id: {record, decision_id, age_s, interrupts_since}} for each interrupt.
-
-    The context is the last real DECISION snapshot before the screen appeared -- see
-    interrupt_build's docstring for why not the interrupt's own world blob. Because
-    `decision_index` is over the `decisions` table, an interrupt that follows another
-    interrupt walks straight past it to a real snapshot; 137 of 347 rows need that, and
-    behind a battle the chain runs 5 deep (pre_battle -> battle_results -> occupation).
-
-    `age_s` and `interrupts_since` come back with it: the deepest link in such a chain is
-    scored against a world from before the battle -- the settlement it just took is not in
-    the graph and the army it just destroyed still is -- and that is worth being able to
-    slice by rather than discover.
-    """
+    """{interrupt_id: {record, decision_id, age_s, interrupts_since}} for each interrupt."""
     by_camp = {}
     for did, ckey, ts in store.decision_index():
         by_camp.setdefault(ckey, []).append((ts, did))
@@ -185,12 +173,7 @@ def walk(runs_root=None, limit=None, log=print):
 
 
 def uniform_nll(examples, idx=None):
-    """Mean -log(1/k) over the candidate sets: what guessing scores.
-
-    The fit's val_listwise_nll is only meaningful against this. Same quantity train.py's
-    _overfit gate computes; here it is stored so the models card can show the two side by
-    side instead of a number nobody can size.
-    """
+    """Mean -log(1/k) over the candidate sets: what guessing scores."""
     picks = examples if idx is None else [examples[i] for i in idx]
     if not picks:
         return None

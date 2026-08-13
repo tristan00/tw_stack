@@ -21,7 +21,7 @@ MAX_ACTIONS_PER_ENTITY = 6
 EPSILON = 0.10
 BETA = 0.10
 
-DEFAULT_STRATEGIES = {"exploit_tree": 0.8, "random": 0.2}
+DEFAULT_STRATEGIES = {"greedy_catboost": 0.8, "random": 0.2}
 
 
 def normalize_strategies(strategies):
@@ -73,12 +73,7 @@ class Policy:
         if "ruleset" in self.strategies and self.ruleset is None:
             raise ValueError("strategy mix includes 'ruleset' but no ruleset name was given")
         self.gnn = None
-        if "gnn_marwil" in self.strategies:
-            # Resolve mapgraph against the checkout this file lives in -- common.ROOT
-            # is derived from common.py's own location. Hardcoding D:\tw_stack here meant
-            # a worktree loaded the MAIN checkout's mapgraph while training wrote a model
-            # from its own -- which surfaces as a state_dict key mismatch and silently
-            # drops the gnn arm to random.
+        if "marwil_gnn" in self.strategies:
             if common.ROOT not in sys.path:
                 sys.path.insert(0, common.ROOT)
             from advisor.mapgraph import rank as GNN
@@ -111,18 +106,13 @@ class Policy:
         self.gate.note_result(pick, counted)
 
     def choose(self, record, actions_taken=0):
-        # Both models score the same offers, on every decision, before anything is drawn
-        # and before eligibility is even considered. Neither is the pipeline and neither is
-        # a plugin: they are two estimates of the same quantity (an action's advantage over
-        # doing nothing), and a strategy that wants one reads a number that already exists.
-        # catboost is listed first only because its ordering is what defines `rank`.
         ranked = self.ranker.score(record)
         hot = self.ranker.ready
         for i, r in enumerate(ranked):
             r["rank"] = i + 1
         gnn_scores = self._score_with_gnn(ranked, record)
-        if "gnn_marwil" in self.members:
-            self.members["gnn_marwil"].scored = gnn_scores
+        if "marwil_gnn" in self.members:
+            self.members["marwil_gnn"].scored = gnn_scores
         # Everything on the record is already a survivor -- the loop generated and
         # gated before the recorder stored it -- so there is nothing left to filter.
         elig = ranked
@@ -156,21 +146,7 @@ class Policy:
         return pick, ranked
 
     def _score_with_gnn(self, ranked, record):
-        """The gnn's half of what `self.ranker.score()` does for catboost.
-
-        Scores the same set catboost scores -- every offer, every decision, before
-        eligibility or the draw -- so `gnn_rank` and `rank` are 1..N over the same N and
-        can be compared directly. Either model can then be asked what it made of an action
-        the other took, which is the only way to judge a model on decisions it did not
-        control.
-
-        Returns the scores so the gnn strategy picks straight from them: one forward pass
-        per decision serves both the record and the choice, rather than the choice
-        computing numbers the record scavenges afterwards.
-
-        Consumes no rng, so the draw sequence is unchanged, and swallows its own failures
-        -- an unscored decision costs a comparison; a raised one costs the run.
-        """
+        """The gnn's half of what `self.ranker.score()` does for catboost."""
         if self.gnn is None or not getattr(self.gnn, "ready", False) or not ranked:
             return None
         try:

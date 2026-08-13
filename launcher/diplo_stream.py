@@ -1,12 +1,18 @@
 from __future__ import annotations
 
-import json
 import os
 import re
 import sys
 import time
 
+# `decisions` is a package at the repo root, and this module is imported both from the
+# advisor and from launcher/, which do not agree about what is on sys.path.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 TURN = [None]
+# The campaign these events belong to. The advisor sets it each turn from the same reply
+# that carries the turn number.
+CAMPAIGN = [None]
 _STATE = {"run_dir": None, "tracked": set(), "warned": False}
 
 _FACTION_KEY_RE = re.compile(r"\b(wh\d?(?:_dlc\d+|_main|_pro\d+|_twa\d+|_cp\d+)_[a-z0-9_]+)\b")
@@ -23,6 +29,7 @@ def reset(run_dir):
     _STATE.update(run_dir=run_dir, warned=False, cap_warned=False)
     _STATE["tracked"] = set()
     TURN[0] = None
+    CAMPAIGN[0] = None
 
 
 TRACK_CAP = 128
@@ -52,13 +59,16 @@ def emit(kind, **fields):
             _STATE["warned"] = True
             sys.stderr.write("diplo_stream: no run dir set -- rows are being DROPPED\n")
         return None
-    row = dict(fields, kind=kind, turn=TURN[0], ts=time.time())
+    row = dict(fields, kind=kind, turn=TURN[0], campaign_key=CAMPAIGN[0], ts=time.time())
+    # Through the recorder, not into a file beside it. This used to append to
+    # run/diplomacy.jsonl, which the dashboard then re-read and tailed; the events are
+    # application data and belong in the store with everything else.
     try:
-        with open(os.path.join(rd, "diplomacy.jsonl"), "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(row, default=str) + "\n")
+        from decisions import journal
+        journal.log_diplomacy(rd, row)
         return row
-    except OSError as e:
-        sys.stderr.write("diplo_stream: append failed -> %s\n" % repr(e)[:90])
+    except Exception as e:                                      # noqa: BLE001
+        sys.stderr.write("diplo_stream: emit failed -> %s\n" % repr(e)[:90])
         return None
 
 

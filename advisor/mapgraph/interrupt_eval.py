@@ -46,12 +46,6 @@ import common
 sys.path.insert(0, common.ADVISOR)
 sys.path.insert(0, common.DECISIONS)
 
-# What a context record must carry to be a decision snapshot rather than a panel's own
-# world. These are build_graph reads that world_state does not collect at all: on 347
-# archived interrupt rows the KEYS are absent, on 3,456 decision snapshots all three are
-# present. Presence is the test, not truthiness -- `citizenry` is legitimately [] on the
-# 10% of snapshots where the faction holds no settlement, and 40 real screens were flagged
-# by a first version of this check that could not tell empty from missing.
 DECISION_WORLD_KEYS = ("relations", "citizenry", "war_graph")
 
 
@@ -192,12 +186,7 @@ def discrim():
 
 
 def _rewire(g, group, rng):
-    """Degree-preserving shuffle of the destinations within one edge group.
-
-    `map` deliberately excludes anything touching the screen or an action node, so it is
-    the world and only the world. `panel` is the screen node's own edges -- the facts and
-    the deal. That separation is the point of the gate.
-    """
+    """Degree-preserving shuffle of the destinations within one edge group."""
     act = S.ACTION_TYPE_INDEX
     scr = S.NODE_TYPES.index("screen")
     gg = copy.copy(g)

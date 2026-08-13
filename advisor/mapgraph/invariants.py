@@ -30,12 +30,7 @@ for _p in (common.DECISIONS, common.ADVISOR, common.ROOT):
 
 
 def _code_only(path):
-    """Source with docstrings removed.
-
-    train.py's own docstring says "no mse(q, y_z)" and names the CatBoost-stamping functions that are
-    NOT called. Grepping the prose that documents an absence is not evidence about the
-    code, so the checks below run against executable statements only.
-    """
+    """Source with docstrings removed."""
     tree = ast.parse(open(path, encoding="utf-8").read())
     for node in ast.walk(tree):
         if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef,
@@ -49,17 +44,7 @@ def _code_only(path):
 
 
 def _launcher_screens():
-    """Screen names launcher/interrupts.py actually answers, read out of its source.
-
-    Three call shapes carry one: `_choose(screen, ...)`, `_sticky_choice(screen, ...)` and
-    `_drive_decision(bus, root, kind, ...)`. Where the argument is a variable rather than a
-    literal it is resolved WITHIN THE ENCLOSING FUNCTION only, and a conditional
-    contributes its branches and not its test -- `kind = "diplomacy_proposal" if
-    "button_cancel" in opts else "diplomacy_notice"` names two screens, and "button_cancel"
-    is not one of them. Resolving loosely instead collected `accept`/`decline` from an
-    unrelated `kind` in answer_diplomacy, which is how a check like this quietly becomes
-    noise and then gets deleted.
-    """
+    """Screen names launcher/interrupts.py actually answers, read out of its source."""
     path = os.path.join(common.LAUNCHER, "interrupts.py")
     tree = ast.parse(open(path, encoding="utf-8").read())
 
@@ -110,13 +95,7 @@ def _launcher_screens():
 
 
 def check_catalogue(verbose=True):
-    """No two live game keys may share a catalogue embedding row.
-
-    Deliberately free of torch, so the one check that guards against the model being told
-    two different buildings are the same building can run anywhere. crc32 % buckets put
-    9,393 of 19,313 reference keys (48.6%) on a shared row -- 60.6% of building chains,
-    51.1% of skills -- and nothing anywhere would have noticed.
-    """
+    """No two live game keys may share a catalogue embedding row."""
     try:
         from advisor.mapgraph import schema as S
         from advisor.mapgraph import catalogue as C
@@ -197,13 +176,6 @@ def check(verbose=True):
     ok("advantage weight exp((y_z - v)/tau), clipped",
        "b.y_z - v.detach()" in code_trn and "adv_clip" in code_trn)
 
-    # 5. the ban: no mapgraph module may import advisor/features.py, and nothing may
-    #    call the CatBoost-stamping helpers.
-    #    Static, across the whole package. A runtime sys.modules check (guard.py used to
-    #    have one) cannot do this job: the LABEL legitimately goes through base_model,
-    #    which imports features, so after the first walk `features` is loaded no matter
-    #    how clean mapgraph is. Only the import graph distinguishes "we use the label"
-    #    from "we transcribed the feature set".
     banned_calls, importers = [], []
     for fn in sorted(os.listdir(_HERE)):
         # skip this file: it names the banned helpers in order to look for them
@@ -230,10 +202,6 @@ def check(verbose=True):
        and enc.index("for _ in range(self.entity_layers)")
        < enc.index("for r in range(self.action_rounds)"))
 
-    # 7. the a2e gate starts at zero AND the conv returns a pure message, so a node with
-    #    no incoming action edge is genuinely unperturbed. A conv that returns
-    #    f(own_state) instead of 0 makes the gate's gradient come mostly from nodes the
-    #    channel cannot reach, and the printed gate stops meaning anything.
     e = N.Encoder(64, 2, 2)
     conv = N.RelConv(8, S.REL_DIM, "mean")
     empty = conv(torch.randn(5, 8), torch.zeros((2, 0), dtype=torch.long),
@@ -254,11 +222,6 @@ def check(verbose=True):
     ok("per-node-type encoders and norms",
        "F.embedding(node_type, self.bias)" in src_net
        and "F.embedding(node_type, self.affine)" in src_net)
-    # The ceiling this used to assert (SCALAR_BUDGET = 22) is gone: it had reached exactly
-    # 22 of 22, so the next honest field anywhere was an ImportError, and the count was
-    # never the cost. MAX_FIELDS is -- `x` is [N, MAX_FIELDS] for EVERY node and
-    # TypeEncoders projects _NT * MAX_FIELDS, so one wide type taxes every node of every
-    # type in every graph. So: report the count, assert the width.
     widest = max(S.TYPE_FIELDS, key=lambda t: len(S.TYPE_FIELDS[t]))
     ok("scalar count is computed, not written down",
        S.N_SCALARS == sum(len(v) for v in S.TYPE_FIELDS.values()),
@@ -281,10 +244,6 @@ def check(verbose=True):
        "%d node types, %d relations" % (len(S.NODE_TYPES), S.N_RELATIONS))
 
     # 11. every blocking screen the launcher answers is a screen this schema knows.
-    #     SCREEN_TYPES is a copy of a fact that lives in launcher/interrupts.py, and a copy
-    #     drifts. The builder raises on an unknown screen at runtime, which is correct but
-    #     late -- it fires mid-campaign, on the screen, with the game blocked. This reads
-    #     the launcher's own source and fails the build instead.
     launcher_screens = _launcher_screens()
     missing = sorted(launcher_screens - set(S.SCREEN_TYPES))
     ok("every launcher interrupt screen is in schema.SCREEN_TYPES",
@@ -314,11 +273,6 @@ if __name__ == "__main__":
     print(" catalogue:")
     bad = check_catalogue()
     print(" network:")
-    # No try/except around this. It used to skip on ImportError and report that the
-    # network invariants "need torch", which read as an environment limitation and was
-    # written into a handoff as one. torch is in the project venv; the run was simply
-    # under the wrong python. common.require_venv() above makes that impossible, so an
-    # ImportError here is a real broken dependency and must fail the build.
     bad += check()
     print("\n%s" % ("all invariants hold" if not bad else
                     "%d INVARIANT(S) BROKEN" % len(bad)))

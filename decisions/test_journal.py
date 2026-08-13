@@ -36,8 +36,7 @@ def check(cond, what, detail=""):
 
 
 def _module_globals_defined(path):
-    """Names a module reads at module scope or inside its functions that are neither
-    defined there, imported, builtins, nor local. Catches the _io_lock shape."""
+    """Names a module reads at module scope or inside its functions that are neither"""
     tree = ast.parse(open(path, encoding="utf-8").read())
     defined = set(dir(builtins)) | {"__file__", "__name__", "__doc__", "__package__",
                                     "__spec__", "__loader__", "__builtins__"}
@@ -74,17 +73,50 @@ def main():
         run = os.path.join(d, "run")
         os.makedirs(run)
 
-        # the exact call that died: an append under the lock
-        J._append(run, "events.jsonl", {"kind": "smoke", "n": 1})
-        J._append(run, "events.jsonl", {"kind": "smoke", "n": 2})
-        p = os.path.join(run, "events.jsonl")
-        check(os.path.exists(p), "_append writes without raising")
-        check(len(open(p, encoding="utf-8").read().strip().splitlines()) == 2,
-              "_append wrote both rows")
+        from decisions.store import DecisionStore
 
-        rows, off = J._read_rows(p, 0)
-        check(len(rows) == 2 and rows[0]["kind"] == "smoke", "_read_rows reads them back")
-        check(off > 0, "_read_rows returns a usable offset")
+        # The recorder owns the schema, and the channel is a table in it. Asking before
+        # the store exists must fail loudly rather than conjure a database -- the old
+        # jsonl channel silently created its own file and dropped every early request.
+        try:
+            J._ask(run, "turn", req_id="early")
+            check(False, "asking before the store exists raises")
+        except RuntimeError:
+            check(True, "asking before the store exists raises")
+
+        st = DecisionStore(run)
+        check(J.last_request_id(run) == 0, "a fresh channel has an empty queue")
+
+        J._ask(run, "turn", {"hello": 1}, req_id="turn-1")
+        rows, after = J.read_requests(run, 0)
+        check(len(rows) == 1 and rows[0]["kind"] == "turn", "read_requests returns it")
+        check(rows[0].get("hello") == 1, "the payload is unpacked onto the row")
+        check(rows[0].get("req_id") == "turn-1", "the row carries its req_id")
+
+        # The cursor is the whole point: the recorder must read what it has not seen, not
+        # rescan the history to find it.
+        rows2, after2 = J.read_requests(run, after)
+        check(not rows2 and after2 == after, "the cursor does not re-read history")
+
+        J.respond(run, "turn-1", turn=7)
+        got = J._await(run, "turn-1", timeout=5.0)
+        check(got.get("turn") == 7, "_await finds the reply by key")
+
+        J.respond(run, "turn-2", error="boom")
+        try:
+            J._await(run, "turn-2", timeout=5.0)
+            check(False, "an error reply raises")
+        except RuntimeError as e:
+            check("boom" in str(e), "an error reply raises")
+
+        # A fire-and-forget kind carries no req_id and must still queue.
+        J.log_verification(run, 1, {"ok": True})
+        rows3, _ = J.read_requests(run, after)
+        check(any(r["kind"] == "verification" for r in rows3),
+              "fire-and-forget requests queue with a null req_id")
+
+        J.close(run)
+        st.close()
 
         # every public entry point the run loop touches must at least resolve its names
         for mod in ("decisions/journal.py", "decisions/collect.py",

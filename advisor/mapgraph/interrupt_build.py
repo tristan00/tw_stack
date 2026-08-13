@@ -59,12 +59,7 @@ def _num(v, default=0.0):
 
 
 def _panel_numbers(panel):
-    """The six numeric facts a panel can carry, flat, for one guard.Reader.
-
-    All six come off ONE entity -- the open panel -- so they may be read together and the
-    model may relate them. guard.Raw is what forbids combining two ENTITIES; a panel is
-    one entity, and its own two strength ranks are two facts about it.
-    """
+    """The six numeric facts a panel can carry, flat, for one guard.Reader."""
     p = panel or {}
     ranks = [_num(x) for x in (p.get("strength_ranks") or [])]
     return {"attitude": _num(p.get("attitude")),
@@ -83,11 +78,7 @@ def _state_of(v):
 
 
 def panel_facts(screen, panel, options=None, meta=None):
-    """String-valued panel facts, as `<screen>.<field>=<value>` catalogue keys.
-
-    Numbers are scalars on the screen node; these are the things that are NAMES -- a
-    forecast of 'decisive victory', an attitude of 'hostile'. Identity, not magnitude.
-    """
+    """String-valued panel facts, as `<screen>.<field>=<value>` catalogue keys."""
     p = panel or {}
     out = []
 
@@ -111,9 +102,6 @@ def panel_facts(screen, panel, options=None, meta=None):
     if rel:
         add("reliability", rel[0])
     # A captive's fate is named by the control itself: button_captive_option_enslave.
-    # reference.captive_options would additionally give the culture-specific RECORD behind
-    # that button (via captive_binding); that join is not done here -- the outcome family
-    # is what the choice is, and it is already in the id.
     for o in options or ():
         s = str(o)
         if s.startswith("button_captive_option_"):
@@ -122,13 +110,7 @@ def panel_facts(screen, panel, options=None, meta=None):
 
 
 def _option_key(screen, opt, meta):
-    """Stable identity for one option: the screen, the dilemma it belongs to, the choice.
-
-    A dilemma option's id already carries its dilemma
-    ('...Recordwh3_main_dilemma_cth_6FOURTH'), but an `occupation` option is the UI text
-    'raze' and a pre-battle option is 'button_autoresolve' -- neither means anything
-    without the screen, and 'button_accept' means three different things on three panels.
-    """
+    """Stable identity for one option: the screen, the dilemma it belongs to, the choice."""
     m = (meta or {}).get(opt) or {}
     did = str(m.get("dilemma_id") or "")
     oid = str(m.get("option_id") or opt)
@@ -142,11 +124,7 @@ def screen_offers(screen, options, meta=None):
 
 
 def build_screen_graph(record, screen, options, meta=None, panel=None):
-    """One interrupt decision -> a graph whose action nodes are exactly its options.
-
-    `record` is the borrowed decision snapshot (see module docstring). `options` must
-    already be in the order the caller will read scores back in.
-    """
+    """One interrupt decision -> a graph whose action nodes are exactly its options."""
     opts = [str(o) for o in options]
     if not opts:
         return None

@@ -88,7 +88,6 @@ export function CampaignDetail() {
       value: (r) => r.outcome?.label ?? '',
       // The taxonomy separates their refusal from our failure to build the deal. Reading
       // those as one number is how a refusal rate becomes meaningless.
-      help: 'accepted / declined are the AI answering a deal we sent. "ai would refuse" means the game told us up front, so nothing was sent. "not staged" is our own failure to build the deal — not a diplomatic outcome.',
       render: (r) =>
         r.outcome ? <Chip state={r.state ?? 'neutral'}>{r.outcome.label}</Chip> : '—',
     },
@@ -104,7 +103,6 @@ export function CampaignDetail() {
       align: 'right',
       // Named success_chance by the game and not a percentage: it runs past -1000. The
       // sign is what carries, so the sign is what gets the colour.
-      help: "The game's own success_chance readout. Despite the name it is not a percentage — it runs past −1000. Its sign is what carries: negative and the AI refuses.",
       value: (r) => r.deal_score ?? 0,
       render: (r) =>
         r.deal_score === null || r.deal_score === undefined ? (
@@ -162,11 +160,52 @@ export function CampaignDetail() {
           {row.suspicious && <Chip state="bad">suspicious</Chip>}
         </h1>
         <div className="text-dim mt-1 flex flex-wrap gap-4 text-2xs">
-          <span>turns <b className="num text-fg">{n(row.turns)}</b></span>
+          <span>reached turn <b className="num text-fg">{n(row.turns)}</b></span>
           <span>decisions <b className="num text-fg">{n(row.decisions)}</b></span>
-          <span>ended at turn <b className="num text-fg">{row.ended_at_turn ?? '—'}</b></span>
           {row.ended_when && <span>{row.ended_when}</span>}
         </div>
+        {/* Growth, from the turn series -- first to last over the turns this campaign
+            actually recorded. Separate from the gate's verdict below, which is a
+            run-control decision and can only ever read flat or down. */}
+        <div className="text-dim mt-1 flex flex-wrap gap-4 text-2xs">
+          {row.growth_state === 'measured' ? (
+            <>
+              <span>
+                settlements{' '}
+                <b className="num text-fg">
+                  {n(row.first_settlements)} → {n(row.final_settlements)}
+                </b>{' '}
+                (peak {n(row.peak_settlements)})
+              </span>
+              <span>
+                lord level{' '}
+                <b className="num text-fg">
+                  {n(row.first_lord_level)} → {n(row.final_lord_level)}
+                </b>
+              </span>
+              <span>
+                over turns <b className="num text-fg">{n(row.first_turn)}–{n(row.last_measured_turn)}</b>
+              </span>
+            </>
+          ) : (
+            <span>
+              growth not measurable —{' '}
+              {row.growth_state === 'single_turn'
+                ? 'only one turn was recorded, so there is no span'
+                : 'no turn was recorded for this campaign'}
+            </span>
+          )}
+        </div>
+        {row.ended_because && (
+          <Card className="mt-2 max-w-2xl px-3 py-2 text-2xs">
+            <div className="text-dim uppercase tracking-wide">why the run ended this campaign</div>
+            <div className="mt-0.5">{row.ended_because}</div>
+            <div className="text-dim mt-1">
+              This is the run's abandonment gate, not the campaign's growth: it looks at the
+              last 3–4 turns and is recorded only when it decided to stop.
+            </div>
+          </Card>
+        )}
         <div className="mt-2 max-w-md">
           <Bar rate={row.confirm_rate ?? null} width={160} />
         </div>

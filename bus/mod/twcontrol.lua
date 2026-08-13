@@ -70,12 +70,6 @@ local function now_clock()
   if ok and v then return v end
   return nil
 end
--- Every read in this mod goes through try(), and try() used to return nil on failure and
--- say nothing. A caller cannot tell "the game had nothing to report" from "that call
--- raised" -- which is how emitters produced zero rows for an entire corpus without one
--- complaint. Failures are counted here, deduplicated by message, and drained onto the
--- reply of the command they happened during, so a broken read is attributable to the
--- command that broke rather than discovered a corpus later.
 local TRY_FAILS, TRY_FAIL_N = {}, 0
 local TRY_FAIL_CAP = 24            -- a failing loop must not flood the log
 
@@ -230,11 +224,6 @@ end
 
 
 
--- Every name here is a context type asked of GetContextObjectId. A name the game does not
--- have can never match, so the panel it was meant to identify silently reports no context
--- at all. Two of these were invented: CcoCampaignRegion (the real one is
--- CcoCampaignModelRegion) and CcoCampaignBuildingChainRecord (CcoBuildingChainRecord).
--- Checked against reference/ui3_extraction/CCO.tsv; see decisions/cco_audit.py.
 local CCO_TYPES = {
   "CcoCampaignUnit", "CcoCampaignCharacter", "CcoMainUnitRecord",
   "CcoCampaignSettlement", "CcoCampaignModelRegion", "CcoCampaignAncillary",
@@ -882,14 +871,6 @@ end
 
 
 
--- Character rows are emitted only when is_visible_to_faction() is true, so the `visible =
--- true` this used to carry was a restatement of the filter that produced the row: True in
--- 97,874 of 97,874 rows that had it, absent from the 66,602 that did not. That is the
--- campaign.defeated shape -- a literal that reads as data -- so the field is gone.
--- Settlements are deliberately NOT visibility-filtered: attack_settlement offers are built
--- from these rows (0 of 2,571 targets were missing from the snapshot), and filtering them
--- would delete real actions. Whether the agent should see undiscovered settlements at all
--- is a modelling question, not a collector bug.
 function handlers.hostiles(seq)
   local f = human_faction()
   local out = {}
@@ -1173,6 +1154,11 @@ end
 
 
 
+-- Set once we have dispatched cm:quit() for our own death, so a second death event for the
+-- same faction (three event names are listened to) cannot dispatch it twice.
+local quit_on_defeat_sent = false
+
+
 local function arm_defeat_listener()
   if not (core and core.add_listener) then
     log({ cmd = "defeat_listener", armed = false, reason = "core:add_listener unavailable" })
@@ -1187,8 +1173,16 @@ local function arm_defeat_listener()
         function(context)
           local fn = try(function() return context:faction():name() end)
           local me = try(function() return human_faction():name() end)
+          local us = (fn ~= nil and fn == me)
           log({ cmd = "faction_destroyed", event = ev, faction = fn,
-                is_us = (fn ~= nil and fn == me), turn = turn() })
+                is_us = us, turn = turn() })
+
+          -- LEAVE THE CAMPAIGN FROM IN HERE WHEN IT WAS US.
+          if us and not quit_on_defeat_sent then
+            quit_on_defeat_sent = true
+            local ok = pcall(function() cm:quit() end)
+            log({ cmd = "defeat_quit", dispatched = ok })
+          end
         end, true)
     end)
     ok = ok or armed
@@ -1306,8 +1300,25 @@ local function arm_event_recorder()
 
     core:add_listener("twcontrol_panel_opened", "PanelOpenedCampaign", true,
       function(context)
-        log({ cmd = "panel", opened = true, turn = turn(),
-              name = or_null(try(function() return context.string end)) })
+        local pname = or_null(try(function() return context.string end))
+        log({ cmd = "panel", opened = true, turn = turn(), name = pname })
+
+        -- THE CAMPAIGN-END PANEL IS THE LAST THING WE CAN ACT ON.
+        if pname == "campaign_victory" then
+          -- CLICK "RETURN TO MAIN MENU" FROM IN HERE.
+          local seen = {}
+          local function walk(c, depth)
+            if not c or depth > 6 then return end
+            local id = try(function() return c:Id() end)
+            if id then seen[#seen + 1] = id end
+            local n = try(function() return c:ChildCount() end) or 0
+            for i = 0, n - 1 do
+              walk(try(function() return UIComponent(c:Find(i)) end), depth + 1)
+            end
+          end
+          pcall(function() walk(root(), 0) end)
+          log({ cmd = "campaign_end_panel", panel = pname, n_seen = #seen, seen = seen })
+        end
       end, true)
     core:add_listener("twcontrol_panel_closed", "PanelClosedCampaign", true,
       function(context)
@@ -1321,23 +1332,30 @@ end
 
 
 local started = false
-local function start()
+local function start(hook)
   local saved = try(function() return cm:get_saved_value("twcontrol_last_seq") end)
   if not started then
+    -- ORDER MATTERS, AND THE LATCH GOES LAST.
+    last_seq = saved or max_seq_in_file()
+    local armed = false
+    pcall(function() cm:callback(poll, POLL_SECONDS); armed = true end)
+    if not armed then
+      log({ cmd = "start_deferred", hook = hook,
+            reason = "cm:callback not available yet -- leaving it to a later hook" })
+      return
+    end
     started = true
     pcall(arm_defeat_listener)
     pcall(arm_event_recorder)
     log({ cmd = "event_feed_filter", armed = false, reason = "suppression_removed" })
-    last_seq = saved or max_seq_in_file()
-    pcall(function() cm:callback(poll, POLL_SECONDS) end)
     say("controller running, last_seq=" .. last_seq .. " -> polling " .. CMD_PATH)
   end
 
   pcall(function() cm:skip_all_campaign_cutscenes() end)
   pcall(function() if cm:is_intro_cutscene_playing() then cm:skip_all_campaign_cutscenes() end end)
 
-  log({ cmd = "started", turn = turn(), last_seq = last_seq, fresh = (saved == nil),
-        ui = (find_uicomponent ~= nil), cmd_path = CMD_PATH })
+  log({ cmd = "started", hook = hook, turn = turn(), last_seq = last_seq,
+        fresh = (saved == nil), ui = (find_uicomponent ~= nil), cmd_path = CMD_PATH })
 end
 
 
@@ -1371,9 +1389,13 @@ end
 
 log({ cmd = "intro_cutscene", result = tostring(try(suppress_intro_cutscene)) })
 
-function twcontrol() start() end
+-- ARM FROM THE EARLIEST HOOK THAT WILL TAKE US, AND LABEL WHICH ONE WON.
+function twcontrol() start("entry_point") end
+if cm and cm.add_ui_created_callback then
+  pcall(function() cm:add_ui_created_callback(function() start("ui_created") end) end)
+end
 if cm and cm.add_first_tick_callback then
-  pcall(function() cm:add_first_tick_callback(start) end)
+  pcall(function() cm:add_first_tick_callback(function() start("first_tick") end) end)
 else
 
   pcall(start_frontend)

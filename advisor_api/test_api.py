@@ -1,31 +1,4 @@
-"""The quality gates for the dashboard.
-
-The requirements here are the ones the previous dashboard's two linters existed to
-enforce. Their MECHANISM was regexes over server-rendered HTML, which could only ever
-check what happened to reach the markup; these check the same requirements one layer
-earlier, against the data, where a violation is unambiguous.
-
-  every view answers, none 404s, hangs or renders empty  -> test_every_endpoint_answers
-  a view never contradicts the corpus                    -> test_api_agrees_with_sql
-  every count says which population it counted           -> test_every_count_names_its_population
-  no empty or constant column ships silently             -> test_constant_columns_are_reported
-  the model tiles are told apart before being checked    -> test_correlation_tiles_are_separable
-  an arm with decisions never renders as zero            -> test_arm_with_decisions_is_not_zero
-
-Two more exist because they are corpus traps rather than UI rules, and both cost real
-debugging time:
-
-  test_campaign_id_join_trap -- `target_rows.campaign_id` is a key STRING while
-  `campaigns.campaign_id` is an integer surrogate. The obvious join returns zero rows and
-  raises nothing. The test asserts the wrong form stays empty, so the day someone
-  "simplifies" the join they get a failure instead of an empty dashboard.
-
-  test_outcome_join_is_a_key -- the endings log carries no campaign key, so campaigns are
-  matched to their ending by (faction, most recent preceding campaign). If that ever
-  stops being one-to-one it is not a key and the outcomes column is fiction.
-
-Run: D:\\totalwar_runner\\.venv\\Scripts\\python.exe advisor_api/test_api.py
-"""
+"""The quality gates for the dashboard."""
 
 from __future__ import annotations
 
@@ -36,16 +9,12 @@ import warnings
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Starlette warns that its test client will want httpx2. It is a library-version notice,
-# not a result, and check.py reports each harness by its LAST output line -- so left
-# alone it becomes the summary and hides whether the checks actually passed. Matched on
-# the message rather than the module: the warning is attributed to fastapi.testclient,
-# which re-exports it, not to the starlette module that raises it.
 warnings.filterwarnings("ignore", message=r".*httpx.*")
 
 from fastapi.testclient import TestClient
 
-from advisor_api import db, queries as q
+import arms
+from advisor_api import analytics_db as adb, db, queries as q
 from advisor_api.app import app
 
 # Every endpoint must answer within this, at the corpus size on disk. It is a ceiling on
@@ -66,28 +35,24 @@ GET_ENDPOINTS = [
     "/api/models",
     "/api/models/forcing",
     "/api/models/agreement",
+    "/api/models/agreement/series?axis=window",
+    "/api/models/agreement/series?axis=generation",
+    "/api/models/agreement/breakdown?dim=action_type",
     "/api/models/correlations",
+    "/api/analytics",
     "/api/models/training",
     "/api/infra",
 ]
 
 import atexit
 
-# Entered as a context manager so the app's LIFESPAN runs -- without it the process probe
-# never starts, every service reports down, and the tests quietly exercise a different
-# application than the one that ships. The empty-column gate is what surfaced that: the
-# `started` field was empty on every service row here and populated in the real server.
 _client_cm = TestClient(app)
 _client = _client_cm.__enter__()
 atexit.register(_client_cm.__exit__, None, None, None)
 
 
 def _await_first_probe(timeout=15.0):
-    """Block until the process probe has taken a sample, or give up.
-
-    The probe is asynchronous by design, so a test that reads services immediately races
-    it. Waiting is honest; asserting against a half-initialised probe is not.
-    """
+    """Block until the process probe has taken a sample, or give up."""
     from advisor_api import proc
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -102,13 +67,7 @@ _await_first_probe()
 
 
 def _walk(node, path="$"):
-    """Every dict AND every list in a response, with the path that reached it.
-
-    Yielding the list itself matters: the first version recursed into lists but only ever
-    yielded dicts, so a check written as `if isinstance(node, list)` matched nothing and
-    passed by inspecting zero rows. It was the empty-column check -- a check that silently
-    checked nothing, which is the exact defect it exists to catch.
-    """
+    """Every dict AND every list in a response, with the path that reached it."""
     if isinstance(node, dict):
         yield path, node
         for k, v in node.items():
@@ -176,11 +135,7 @@ def test_unknown_ids_404_rather_than_500():
 
 
 def test_every_count_names_its_population():
-    """A count without its population is the defect this rule exists to prevent.
-
-    The dashboard once showed campaigns as 117, 118, 124 and 126 on adjacent tabs, each
-    correct for a different population and every one labelled just "campaigns".
-    """
+    """A count without its population is the defect this rule exists to prevent."""
     bad = []
     for ep, r in _all_responses().items():
         if r.status_code != 200:
@@ -214,11 +169,7 @@ def test_every_rate_carries_its_denominator():
 
 
 def test_api_agrees_with_sql():
-    """Every headline number, re-derived straight from SQL.
-
-    This is the check the old dashboard could not make: a column wired to the wrong
-    variable renders perfectly, so comparing the page against itself proves nothing.
-    """
+    """Every headline number, re-derived straight from SQL."""
     con = db.connect()
     run = _client.get("/api/run").json()
     totals = {t["noun"]: t["value"] for t in run["totals"]}
@@ -245,11 +196,7 @@ def test_api_agrees_with_sql():
 
 
 def test_campaign_id_join_trap():
-    """target_rows.campaign_id is a KEY STRING; campaigns.campaign_id is an integer.
-
-    The natural-looking join silently returns nothing. Asserting that keeps anyone from
-    "tidying" the correct join into the broken one -- it fails loudly instead.
-    """
+    """target_rows.campaign_id is a KEY STRING; campaigns.campaign_id is an integer."""
     con = db.connect()
     wrong = con.execute("SELECT COUNT(*) FROM target_rows t"
                         " JOIN campaigns c ON t.campaign_id = c.campaign_id").fetchone()[0]
@@ -286,11 +233,7 @@ def test_outcome_coverage_is_reported_not_hidden():
 
 
 def test_constant_columns_are_reported():
-    """A column with one distinct value is named so the client can hide it.
-
-    `allies` and `vassals` are zero on every recorded turn. A check that looks for blank
-    cells never noticed, because a column full of real zeroes is full.
-    """
+    """A column with one distinct value is named so the client can hide it."""
     con = db.connect()
     rows = q.campaign_rows(con)
     checked = 0
@@ -308,29 +251,145 @@ def test_constant_columns_are_reported():
     assert checked, "no campaign had enough turns to check"
 
 
+
+def test_no_signed_column_is_one_signed():
+    """A signed column that can only ever read one way is unreachable by construction."""
+    SIGNED = [("/api/campaigns", "$.rows", "settlements_growth"),
+              ("/api/campaigns", "$.rows", "lord_growth")]
+    # A field that genuinely cannot go both ways, with the reason and the measurement.
+    ONE_SIGNED_OK = {
+        ("$.rows", "lord_growth"):
+            "a legendary lord's level cannot decrease in WH3; measured 0 of 244 campaigns "
+            "ever lost a level while 102 gained one",
+    }
+    MIN_N = 30
+    bad = []
+    for ep, jpath, field in SIGNED:
+        node = _client.get(ep).json()[jpath.split(".")[-1]]
+        vals = [r[field] for r in node if r.get(field) is not None]
+        if len(vals) < MIN_N:
+            continue
+        varies = any(v != 0 for v in vals)
+        if not varies or (jpath, field) in ONE_SIGNED_OK:
+            continue
+        if all(v <= 0 for v in vals):
+            bad.append("%s %s.%s: %d values, none positive -- growth is unreachable upward"
+                       % (ep, jpath, field, len(vals)))
+        if all(v >= 0 for v in vals):
+            bad.append("%s %s.%s: %d values, none negative -- loss is unrepresentable"
+                       % (ep, jpath, field, len(vals)))
+    assert not bad, ("columns that can only ever read one way:\n  " + "\n  ".join(bad)
+                     + "\n\nEither the producer clamps the value, or the record is only "
+                       "written in one case -- or it is genuinely one-signed, in which case "
+                       "add it to ONE_SIGNED_OK with the measurement.")
+
+
+def test_growth_state_partitions_every_row():
+    """Every campaign says whether growth was measurable, and the states are exhaustive."""
+    rows = _client.get("/api/campaigns").json()["rows"]
+    states = {}
+    for r in rows:
+        st = r.get("growth_state")
+        assert st in ("measured", "single_turn", "no_turn_rows"), \
+            "campaign %s has growth_state %r" % (r.get("campaign", {}).get("raw"), st)
+        states[st] = states.get(st, 0) + 1
+        has = r.get("settlements_growth") is not None
+        assert has == (st == "measured"), (
+            "campaign %s is %r but %s a settlements delta -- the state and the value "
+            "disagree, so a reader cannot tell 'flat' from 'no data'"
+            % (r.get("campaign", {}).get("raw"), st, "has" if has else "has no"))
+    assert sum(states.values()) == len(rows)
+    cov = _client.get("/api/campaigns").json()["growth_coverage"]
+    assert cov["n"] == states.get("measured", 0), \
+        "growth_coverage says %d measured, the rows say %d" % (cov["n"],
+                                                               states.get("measured", 0))
+    assert cov["of"] == len(rows)
+
+
+def test_growth_delta_equals_its_endpoints():
+    """A derived delta cannot drift from the numbers it claims to describe."""
+    for r in _client.get("/api/campaigns").json()["rows"]:
+        if r.get("growth_state") != "measured":
+            continue
+        for d, a, b in (("settlements_growth", "first_settlements", "final_settlements"),
+                        ("lord_growth", "first_lord_level", "final_lord_level")):
+            if r.get(a) is None or r.get(b) is None:
+                continue
+            want = r[b] - r[a]
+            assert abs(r[d] - want) < 1e-9, \
+                "%s on %s is %r but %s - %s is %r" % (d, r["campaign"]["raw"], r[d], b, a, want)
+
+
+def test_analytics_cannot_go_stale_silently():
+    """The staleness gate."""
+    page = _client.get("/api/models/agreement").json()
+    f = page["freshness"]
+    assert f["behind"]["population"] and f["rows"]["population"]
+    con = db.connect()
+    hi = con.execute("SELECT MAX(decision_id) FROM decisions").fetchone()[0] or 0
+    acon = adb.connect()
+    if acon is None:
+        assert f["state"] == "bad", "no analytics database, but freshness is not bad"
+        return
+    st = acon.execute("SELECT watermark, rows FROM analytics_state"
+                      " WHERE tenant='model_agreement'").fetchone()
+    watermark, rows = (st[0], st[1]) if st else (0, 0)
+    assert f["behind"]["value"] == max(0, hi - 1 - watermark), \
+        "served behind=%r, re-derived %r" % (f["behind"]["value"], max(0, hi - 1 - watermark))
+    if f["behind"]["value"] > 0:
+        assert f["state"] != "ok", "analytics is behind but reports ok"
+    # No holes: every corpus row at or below the watermark has a fact row.
+    n_src = con.execute("SELECT COUNT(*) FROM decisions WHERE decision_id <= ?",
+                        (watermark,)).fetchone()[0]
+    n_fact = acon.execute("SELECT COUNT(*) FROM model_agreement").fetchone()[0]
+    assert n_src == n_fact == rows, (
+        "the precomputed table covers %d of %d decisions at or below its own watermark -- "
+        "it is short, and every aggregate built on it is short with it" % (n_fact, n_src))
+
+
+def test_rho_is_the_headline_not_a_secondary():
+    """RBO and top-k are additions, never replacements."""
+    page = _client.get("/api/models/agreement").json()
+    if page.get("empty_reason"):
+        return
+    c = page["correlation"]
+    assert c is not None and c["compared"]["value"] > 0
+    assert c["rho_median"] is not None, "rho is the headline and it is missing"
+    keys = set(c)
+    for banned in ("rbo", "rbo_mean", "top3_overlap", "top5_overlap", "top10_overlap"):
+        assert banned not in keys, \
+            "%r is in the primary correlation block; secondary measures belong under " \
+            "`secondary`, where the layout can subordinate them" % banned
+
+
+def test_generation_view_is_labelled_an_alignment():
+    """The generation axis is inferred from timestamps, and must never imply otherwise."""
+    page = _client.get("/api/models/agreement/series?axis=generation").json()
+    assert page["is_alignment"] is True
+    assert page["ambiguous"]["population"]
+    win = _client.get("/api/models/agreement/series?axis=window").json()
+    assert win["is_alignment"] is False
+
+
+def test_strategies_aggregate_by_strategy():
+    """`ruleset(spread_out)` is the ruleset arm, not a strategy of its own."""
+    seen = []
+    for ep, jpath, key in (("/api/models/agreement", "$.rows", "picked_by"),
+                           ("/api/decisions/actions", "$.policies", "policy")):
+        for r in _client.get(ep).json()[jpath.split(".")[-1]]:
+            raw = (r.get(key) or {}).get("raw") or ""
+            seen.append((ep, raw))
+    bad = [x for x in seen if "(" in x[1] or x[1].endswith("_random_fallback")]
+    assert not bad, ("these rows are raw policy strings rather than strategies: %r -- "
+                     "arms.arm_of folds them" % bad[:5])
+    facets = _client.get("/api/decisions").json().get("facets") or {}
+    for p in facets.get("policies") or []:
+        raw = p.get("raw") if isinstance(p, dict) else p
+        assert "(" not in str(raw), "the log filter offers %r, which is a rule not a strategy" % raw
+
+
 def test_no_column_is_empty_in_every_row():
-    """No field may be null on every row of a list that has rows to judge.
-
-    A column wired to a field the producer never writes renders perfectly -- as a tidy
-    column of dashes -- and nothing complains. It shipped here: the trial ledger was read
-    with four guessed key names (`corpus`, `sett_per_camp`, `turns_per_camp`,
-    `lord_per_camp`), none of which the session writes, so four columns were empty on all
-    85 rows and looked exactly like "this run recorded no results".
-
-    This is the rule the previous dashboard's linter enforced over rendered HTML. Checking
-    it on the API instead makes it unambiguous: an empty column is a field that is null in
-    every row, not a cell that happens to look blank.
-
-    A field that is null in every row is only a defect when SOME row could have had it, so
-    lists shorter than 3 are skipped, and fields that are legitimately absent everywhere
-    right now are listed with the reason.
-    """
-    # The collections that back a TABLE, named explicitly. Scoped rather than universal
-    # because the interesting failure is "a table column reads a key nobody writes", and
-    # a blanket sweep instead flags every optional presentation field that happens to be
-    # unset -- Ident.culture on a list of action types, Metric.unit on a unitless metric,
-    # the conditional note on a policy row. A check that cries wolf gets exempted into
-    # uselessness, so this one states exactly what it covers.
+    """No field may be null on every row of a list that has rows to judge."""
     TABLES = [
         ("/api/run", "$.collect_timing"),
         ("/api/run", "$.cycle_timing"),
@@ -344,6 +403,10 @@ def test_no_column_is_empty_in_every_row():
         ("/api/decisions/actions", "$.denominators"),
         ("/api/decisions/menus", "$.rows"),
         ("/api/decisions/menus", "$.coverage"),
+        ("/api/models/agreement", "$.rows"),
+        ("/api/models/agreement", "$.secondary"),
+        ("/api/models/agreement/breakdown?dim=action_type", "$.rows"),
+        ("/api/analytics", "$.tenants"),
         ("/api/models/training", "$.trials"),
         ("/api/models/training", "$.history"),
         ("/api/infra", "$.activity"),
@@ -351,6 +414,9 @@ def test_no_column_is_empty_in_every_row():
     # Genuinely absent right now, each with the reason it is absent. A row here is a
     # statement about the data, not a licence to leave a column unwired.
     EXPECTED_EMPTY = {
+        ("$.tenants", "last_error"):
+            "no analytics tenant has failed a pass -- this is the field that would carry "
+            "the reason if one had, and it is the good case",
         ("$.rows", "gnn_impact"):
             "the log page's offers carry rank but impact is only stored for scored arms",
         ("$.trials", "cfg"):
@@ -394,11 +460,7 @@ def test_no_column_is_empty_in_every_row():
 
 
 def test_correlation_tiles_are_separable():
-    """The two tiles share arm names, so they must be addressable separately.
-
-    A check that searches a merged page for an arm finds the action table every time and
-    never inspects the interrupt one -- which is precisely the table that was wrong.
-    """
+    """The two tiles share arm names, so they must be addressable separately."""
     page = _client.get("/api/models/correlations").json()
     labels = [t["label"] for t in page["tiles"]]
     assert labels == ["action ranker", "interrupt model"], labels
@@ -410,14 +472,17 @@ def test_arm_with_decisions_is_not_zero():
     """An arm that played decisions may not render as zero campaigns and zero turns."""
     con = db.connect()
     page = _client.get("/api/models/correlations").json()
-    truth = {
-        "action ranker": {r[0]: r[1] for r in con.execute(
-            "SELECT COALESCE(policy,'(unrecorded)'), COUNT(*) FROM action_taken"
-            " GROUP BY 1")},
-        "interrupt model": {r[0]: r[1] for r in con.execute(
-            "SELECT COALESCE(policy,'(unrecorded)'), COUNT(*) FROM interrupt_decisions"
-            " GROUP BY 1")},
-    }
+    # Folded onto strategies before comparing, because that is what the page now groups by.
+    def _played(table):
+        out = {}
+        for raw, n in con.execute(
+                "SELECT COALESCE(policy,'(unrecorded)'), COUNT(*) FROM %s GROUP BY 1" % table):
+            arm = arms.arm_of(raw) or arms.UNRECORDED
+            out[arm] = out.get(arm, 0) + n
+        return out
+
+    truth = {"action ranker": _played("action_taken"),
+             "interrupt model": _played("interrupt_decisions")}
     bad = []
     for tile in page["tiles"]:
         played = truth[tile["label"]]

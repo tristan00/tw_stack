@@ -76,8 +76,7 @@ def _offer(atype, key, available, gate=None, **params):
 
 
 def _skill_offers(skills, has_pts):
-    """The skills block, shared by lords and heroes -- it was duplicated verbatim, so a
-    fix to one silently left the other behind. Returns (offers, active_skill_keys)."""
+    """The skills block, shared by lords and heroes -- it was duplicated verbatim, so a"""
     offers, active = [], []
     for s in skills or ():
         key, status = s.get("key"), s.get("status")
@@ -101,16 +100,7 @@ def _move_offers(tiles):
 
 
 def _leave_garrison_offer(state, moves):
-    """The inverse of `garrison`, and it was never emitted once in 9,013,360 offers.
-
-    `leave_garrison` is declared in advisor/features.py and mapgraph/schema.py and has a
-    working executor in launcher/cm_actions.py -- it was simply never offered, so an army
-    that walked into a settlement had no recorded way back out and the action type had 0
-    rows. cm:leave_garrison(lookup, x, y) needs a destination, and the only tiles known to
-    be legal are the move candidates the game itself validated this decision, so the exit
-    is the nearest of those. It is emitted even when unavailable: a gate reason is data,
-    and a type that only appears when it is legal cannot teach when it is not.
-    """
+    """The inverse of `garrison`, and it was never emitted once in 9,013,360 offers."""
     lx, ly = state.get("x"), state.get("y")
     tiles = [m["params"] for m in (moves or [])
              if (m.get("params") or {}).get("x") is not None]
@@ -125,22 +115,7 @@ def _leave_garrison_offer(state, moves):
 
 
 def _horde_building_offers(slots):
-    """ONE OFFER PER BUILDING, not per (slot, building).
-
-    A horde's slots are interchangeable: an empty force slot is an empty force slot, and
-    constructing X in slot 237 or in slot 240 has identical effect. Emitting one candidate
-    per slot produced the SAME decision four times -- measured on a Beastmen campaign as
-    24 action nodes a message-passing network cannot separate, every one of them
-    horde_building, four copies of one building across force_slot_237..240. That is not
-    graph blindness, it is the generator asking the same question four times and splitting
-    the listwise softmax between identical answers.
-
-    This is the province edict case again: an edict scopes to a province, so the capital
-    is the canonical emitter. Here the building is the decision and the slot is the
-    execution handle -- kept in params, because cco_actions constructs by slot_id.
-
-    A slot already holding something is NOT interchangeable, so those stay per-slot.
-    """
+    """ONE OFFER PER BUILDING, not per (slot, building)."""
     offers = []
     seen = set()
     for s in slots or []:
@@ -182,16 +157,6 @@ def _lord_options(cqi, state, world, campaign):
                                 "cannot_activate" if not can_act else "cannot_afford")
         offers.append(_offer("stance", key, ok, gate, active=active))
     for c in state.get("recruitable") or ():
-        # ONE OFFER PER UNIT. This used to cross-product every unit with
-        # RECRUIT_QUEUES = ("local","global") and mark both rows available=1 -- in all
-        # 221,504 offers. The queue was never read from anywhere: no CCO context and no
-        # script method distinguishes the local pool from the global one headlessly, and
-        # the executor only learns the real pools by reading the recruitment panel. The
-        # cost of inventing it is measurable: of 652 'global' picks the agent made, 371
-        # (56.9%) died in execute_failed because no global pool was there, against 225 of
-        # 1,128 for 'local'. The pool the click lands in is now an execution detail and is
-        # recorded as `queue_used` in the confirm diagnostics, where it is observed
-        # instead of asserted.
         offers.append(_offer("recruit_unit", c["key"],
                              c.get("state") == "active",
                              None if c.get("state") == "active" else c.get("state"),
@@ -261,12 +226,6 @@ ACTION_TARGETS = {
 
 INNATE_ACTIONS = frozenset(("scout_settlement",))
 
-# ONLY THESE ABILITIES ARE IMPLEMENTED IN THE LAUNCHER. cco_actions routes an
-# `assist_army` action through the assist path and everything else through a panel path
-# that was never finished, so a hinder_* candidate is an action the agent can be offered,
-# can pick, and can never perform. Generating it is not "collecting a refusal" -- the game
-# never gets asked, so the refusal says nothing about the game. It is gated here, at
-# generation, with a reason that names the truth.
 SUPPORTED_ABILITIES = frozenset(("assist_army",))
 
 
@@ -353,9 +312,7 @@ def _hero_action_matrix(action):
 
 
 def _anc_id(a):
-    """Identity of an ancillary. The record key when we have it, the display name only as
-    a fallback -- names are not unique ("Warhorse" is 42 distinct rows among 2,671), so
-    counting by name silently merged different items into one pool."""
+    """Identity of an ancillary. The record key when we have it, the display name only as"""
     return a["key"] or a["name"]
 
 
@@ -574,12 +531,6 @@ def _province_options(region, state, campaign):
     lord_pools = (campaign or {}).get("lord_pools") or {}
     slot_states = state.get("slot_states")
     edicts = state.get("edicts") or []
-    # ONE OFFER PER (slot, building). This loop used to hold `seen` on the building key
-    # alone, so a building constructible in two slots produced a single offer carrying
-    # whichever slot happened to come first -- and the other slot, a genuinely different
-    # action with a different cost and a different consequence, was dropped. The slot is
-    # already in params and the executor already builds from params.slot_index, so the
-    # only thing the dedupe ever did was delete work.
     seen = set()
     for b in state.get("buildable") or ():
         slot_i, key = b.get("slot_index"), b.get("key")
@@ -594,11 +545,6 @@ def _province_options(region, state, campaign):
                              can_upgrade=b.get("can_upgrade"), cost=b.get("cost"),
                              upkeep=b.get("upkeep"), level=b.get("level"),
                              can_afford_resources=b.get("can_afford_resources")))
-    # An edict applies to the whole PROVINCE, but this assemble runs per REGION, so a
-    # province with two owned regions offered every one of its edicts twice -- 748 of
-    # 3,310 (22.6%) were literal repeats, splitting the listwise softmax between two
-    # candidates that do the identical thing. The capital is the canonical emitter, and
-    # the province is now in params so the offer says what it actually scopes to.
     complete = bool(state.get("complete_owner"))
     sel = state.get("selected_edict")
     if state.get("is_capital"):
@@ -614,13 +560,6 @@ def _province_options(region, state, campaign):
         n = pool["n"]
         if not n:
             continue
-        # ONE OFFER PER CANDIDATE. This loop used to pick a single index --
-        # `i = oks.index(True) if any(oks) else 0` -- and emit one offer for the whole
-        # pool. Candidate 0 is almost always recruitable, which is why candidate_index
-        # was 0 in all 349,934 rows of the previous corpus while n_candidates ranged
-        # 1..6. The other candidates were fetched across the bus and dropped in python:
-        # 671,186 of them. They are different game actions with different traits, ranks
-        # and mounts, and the agent could never choose between them.
         agent_type = (_hero_subtype_types(campaign.get("faction")) or {}).get(sub)
         fielded = (campaign.get("hero_type_counts") or {}).get(agent_type or "", 0)
 
@@ -639,21 +578,6 @@ def _province_options(region, state, campaign):
             else:
                 ok = bool(_at("can", i))
                 gate = None if ok else "cannot_recruit_character"
-            # `is_agent` and `cand_rank` are RECORDED, not argued away. Both were
-            # dropped on the reasoning that is_agent restates action_type and Rank reads
-            # a constant 0.0 for a pool entry that is not yet a character. Both readings
-            # may well be right -- and neither is a reason to delete the field. The
-            # standing rule is that a field the game answered gets collected and coverage
-            # decides whether it carries information; a value argued away in a comment is
-            # a value nobody can check. If they are constant, coverage will say so, and
-            # that is a finding rather than an assumption.
-            # `region` matters and was never recorded: _lord_execute_inner opens the
-            # settlement panel for the entity it was offered on, so raising this candidate
-            # at region A and at region B put the character in different places. The pool
-            # is faction-wide, so the same candidate was offered once per owned region --
-            # 159,336 rows over 103,606 distinct (decision, key) pairs, a 1.54x split --
-            # and the two rows were byte-identical in action_key and params. They are
-            # different actions; now they say so.
             offers.append(_offer("recruit_hero" if is_agent else "recruit_lord",
                                  "%s@%d" % (sub, i), ok, gate,
                                  region=region, candidate_index=i, n_candidates=n,
@@ -713,11 +637,7 @@ DIPLO_GIFT_TIERS = ("small", "medium", "large")
 
 
 def _diplo_options(targets):
-    """Diplomacy candidates from the recorded relations.
-
-    `None` means the read FAILED and `[]` means the world really is empty -- the two are
-    different facts and the distinction survives the database as a JSON null.
-    """
+    """Diplomacy candidates from the recorded relations."""
     if targets is None:
         sys.stderr.write("collect: DIPLOMACY TARGET READ FAILED -- no diplomacy will be offered this "
                          "snapshot. This is a broken read, NOT an empty world.\n")
@@ -742,11 +662,6 @@ def _diplo_options(targets):
         offers.append(_offer("diplomacy", "%s:%s" % (f, DIPLO_PEACE), at_war,
                              None if at_war else "not_at_war",
                              faction=f, terms=[DIPLO_PEACE], **rel))
-        # A treaty you already hold cannot be proposed again. The launcher refused these
-        # at click time as already_allied / already_trading / already_in_vassalage, using
-        # world.relations -- which is in the snapshot, so the refusal belongs here.
-        # our_master is the direction that was missing: `their_vassal` says they serve
-        # us, and proposing vassalage while WE serve THEM is equally impossible.
         vassalage = t.get("their_vassal") or t.get("our_master")
         HELD = {"military_alliance": t.get("allied"), "trade_agreement": t.get("trade"),
                 "vassal": vassalage, "confederation": vassalage}
@@ -767,13 +682,7 @@ def _diplo_options(targets):
 # ---------------------------------------------------------------------------- generate
 
 def generate(record):
-    """The whole move universe for one recorded decision, ungated.
-
-    Pure: `record` is what the recorder stored, and nothing here reads the bus, the
-    database or a file. Emission order is entity order then within-entity order, so the
-    stored option sequence is a function of the snapshot rather than of whatever the
-    generator happened to do first.
-    """
+    """The whole move universe for one recorded decision, ungated."""
     world = record.get("world") or {}
     campaign = record.get("campaign") or {}
     for e in record.get("entities") or ():
@@ -806,35 +715,10 @@ END_TURN_AFTER = 5
 
 FACTION_WIDE_CAPS = frozenset(("recruit_lord", "recruit_hero", "research", "rites",
                                "building_dismantle"))
-# A cap of 0 is how a type is DELIBERATELY DISABLED: the gate refuses at `count >= cap`
-# and the count starts at 0, so the type is generated, gated every time, and never
-# stored. noop and building_dismantle are both switched off this way on purpose. It is
-# stated here rather than by deleting the type, so the generator still enumerates it and
-# turning it back on is one number.
-# diplomacy is capped at 1 for THROUGHPUT, not because a second deal is illegal.
-# Measured over 519 executed actions: diplomacy is the most expensive action in the game at
-# 7.9s median (p90 9.8s) and 26.3% of all execution time -- 480s of 1829s -- while failing
-# 81% of the time (25 of 31 silently refused). Roughly 21% of the executor's entire budget
-# went into diplomacy the game then declined.
-#
-# Dropping 3 -> 1 keeps diplomacy in the corpus and keeps it learnable: every turn still
-# offers the full slate of targets and terms, the agent still picks one, and the refusals
-# still get recorded. It only stops the SECOND and THIRD attempt in the same turn, which
-# historically were the ones most likely to be refused anyway.
-#
-# This is deliberately NOT a gate on which deals are legal. That would need a much larger
-# failure sample to separate "this term is never offerable" from "the AI declined this
-# particular offer at this standing", and getting it wrong silently removes legitimate
-# options -- gated candidates are never stored, so a bad gate cannot be audited afterwards.
 PER_TURN_CAPS = {"recruit_lord": 1, "recruit_hero": 1, "recruit_unit": 4, "edict": 1,
                  "research": 1, "rites": 1, "diplomacy": 1, "noop": 0, "stance": 1,
                  "hero_action": 3, "building_dismantle": 0, "raise_dead": 4,
                  "recruit_ror": 1, "recruit_blessed": 4, "recruit_imperial": 1}
-# Everything that moves the character across the map. The executor was refusing these
-# with `no_action_points` -- a gate the ADVISOR should have applied, because the snapshot
-# already carries ap_remaining, ap_per_turn and ap_pct on every lord and hero. Offering a
-# move to a lord with no movement left is not collecting a refusal, it is spending a
-# decision to be told something the state already said.
 COSTS_MOVEMENT = frozenset(("move", "attack_army", "attack_settlement", "colonize",
                             "garrison", "leave_garrison", "hero_action"))
 
@@ -868,13 +752,7 @@ def _cap_key(context_kind, context_id, action_type):
 
 
 class Gate:
-    """The only thing that decides whether a candidate survives.
-
-    It holds the intra-turn state -- what has been taken, what failed, which entities are
-    spent -- so it is reset every turn and updated after every result. That is why
-    generation runs per decision and not once per turn: the answer changes as the turn
-    goes on.
-    """
+    """The only thing that decides whether a candidate survives."""
 
     def __init__(self, max_actions_per_entity=MAX_ACTIONS_PER_ENTITY):
         self.max_actions_per_entity = max_actions_per_entity
@@ -931,12 +809,7 @@ class Gate:
             return False
 
     def reason(self, ck, cid, o, actions_taken):
-        """Why this candidate cannot be taken right now, or None if it can.
-
-        The first branch is the generator's own verdict -- cannot_reach, no_points,
-        already_equipped. The rest are the turn-level rules. They used to live in two
-        different components, and there was never a principled line between them.
-        """
+        """Why this candidate cannot be taken right now, or None if it can."""
         at, key = o.get("action_type"), str(o.get("key"))
         k = (ck, str(cid))
         if not o.get("available"):
@@ -977,12 +850,7 @@ class Gate:
         return None
 
     def apply(self, record, actions_taken=0):
-        """Generate and gate in one pass. Returns the survivors, in emission order.
-
-        A gated candidate is counted and then dropped. It is never returned, never
-        stored, never scored and never a graph node -- an option the agent could not have
-        taken is not part of the decision it faced.
-        """
+        """Generate and gate in one pass. Returns the survivors, in emission order."""
         self.last_drops = []
         out = []
         for ck, cid, o in generate(record):
@@ -998,8 +866,7 @@ class Gate:
 
 
 def attach(record, options):
-    """Put the surviving options back on the record, so everything downstream -- features,
-    the graph builder, the strategies -- reads the same list the store holds."""
+    """Put the surviving options back on the record, so everything downstream -- features,"""
     by_ent = {}
     for o in options:
         by_ent.setdefault((o["context_kind"], str(o["context_id"])), []).append(o)

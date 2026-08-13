@@ -79,6 +79,15 @@ export interface Col<T extends RowData> {
   width?: number
   /** The value used for sorting and searching. Defaults to the rendered text. */
   value?: (row: T) => string | number | null | undefined
+  /**
+   * Where rows with no value sort. Return `undefined` from `value` to mean "no value".
+   *
+   * This exists because the campaign growth column mapped missing data to 0 and sorted
+   * 117 blank rows into the middle of the genuinely-flat ones -- and, when only one
+   * endpoint was present, ranked a row with no delta at all as the biggest grower on the
+   * page. "No data" and "no change" are different facts and must not sort as one.
+   */
+  sortUndefined?: false | -1 | 1 | 'first' | 'last'
   render: (row: T) => ReactNode
 }
 
@@ -136,6 +145,7 @@ export function DataTable<T extends RowData>({
         cell: ({ row }) => c.render(row.original),
         enableSorting: true,
         enableGlobalFilter: true,
+        sortUndefined: c.sortUndefined,
       })),
     [cols],
   )

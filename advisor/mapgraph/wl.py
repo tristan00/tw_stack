@@ -39,14 +39,7 @@ MAX_ROUNDS = 40
 
 
 def colours(g, max_rounds=MAX_ROUNDS):
-    """WL refinement to convergence. Returns the final colour per node.
-
-    The initial colour is everything the encoder can see about a node on its own: its
-    type, its categorical indices and its scalars. Refinement then folds in the multiset
-    of (relation, neighbour colour), which is exactly what one message-passing layer can
-    condition on -- the invariants file checks the network really does condition on
-    (x_i, x_j, rel) jointly, so this is a faithful upper bound on its resolving power.
-    """
+    """WL refinement to convergence. Returns the final colour per node."""
     n = len(g.node_type)
     init = []
     for i in range(n):
@@ -82,8 +75,7 @@ def _offers_in_order(record):
 
 
 def violations(record, g=None):
-    """[(colour, [offer, ...])] for every class of action nodes that a message-passing
-    network cannot separate but that are not the same action."""
+    """[(colour, [offer, ...])] for every class of action nodes that a message-passing"""
     g = g or B.build_graph(record)
     if g is None:
         return [], 0
@@ -111,9 +103,7 @@ def violations(record, g=None):
 
 
 def _synthetic(item_keys, building_keys):
-    """One province with two slots and one lord, offering the action types that dominate
-    the remaining violations. Parameterised so the same record can be built the way the
-    old collector emitted it and the way the fixed one does."""
+    """One province with two slots and one lord, offering the action types that dominate"""
     world = {
         "regions": [{"region": "reg_a", "province": "prov_a", "owner": "me",
                      "x": 10, "y": 10, "adjacent": []}],
