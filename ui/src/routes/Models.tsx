@@ -40,6 +40,9 @@ const VIEWS = [
 ]
 
 /** The arms a trial drew from, in a fixed order so trials compare by eye. */
+/** Must match advisor/session.py GROWTH_BASELINE. */
+const CURRENT_GROWTH_BASELINE = 'first_decision_snapshot->peak'
+
 const MIX_ARMS: { key: string; short: string; cls: string }[] = [
   { key: 'greedy_catboost', short: 'GC', cls: 'bg-cat' },
   { key: 'marwil_gnn', short: 'MG', cls: 'bg-gnn' },
@@ -811,11 +814,13 @@ function Training() {
       group: 'result',
       optional: true,
       value: (r) => r.growth_baseline ?? '',
+      // The current definition reads plainly; anything else is flagged, because rows on
+      // different definitions are different numbers over the same campaigns.
       render: (r) =>
-        r.growth_baseline === 'first_target_row' ? (
-          <span className="text-dim text-2xs">first → last</span>
+        r.growth_baseline === CURRENT_GROWTH_BASELINE ? (
+          <span className="text-dim text-2xs">snapshots → peak</span>
         ) : r.growth_baseline ? (
-          <Chip state="warn" title="measured on the old clamped baseline">
+          <Chip state="warn" title="an older growth definition — not comparable with the rest">
             {r.growth_baseline}
           </Chip>
         ) : (
