@@ -86,6 +86,42 @@ class BusLauncher:
         raise TWError("bus rotation FAILED after 3 attempts (%s) -- refusing to boot the game "
                       "on a grown command file (the A/B-proven corruption state)" % last)
 
+    def rotate_out_log(self):
+        """Archive the mod's output log and start the next campaign on a fresh file.
+
+        Only the OUT and SEND logs, never commands.txt: the mod tracks last_seq against
+        the command file, so truncating that mid-life would silently drop commands.
+
+        Safe with the game up because the mod opens/appends/closes per record rather than
+        holding the file, and because readers take a fresh offset per send -- truncating
+        between commands is fine, truncating during a wait is what would hang.
+        """
+        import bus as _bus
+        dst = common.ARCHIVE_BUS
+        os.makedirs(dst, exist_ok=True)
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        moved, freed = [], 0
+        try:
+            with _bus._ProcLock(_bus.CMD_PATH + ".lock"):
+                for p in (_bus.OUT_PATH, _bus.SEND_LOG_PATH):
+                    try:
+                        if os.path.exists(p) and os.path.getsize(p) > 0:
+                            freed += os.path.getsize(p)
+                            shutil.move(p, os.path.join(
+                                dst, "%s_%s" % (stamp, os.path.basename(p))))
+                            moved.append(os.path.basename(p))
+                        open(p, "a", encoding="utf-8").close()
+                    except OSError as e:
+                        _log("out-log rotation skipped %s -> %s"
+                             % (os.path.basename(p), repr(e)[:60]))
+        except Exception as e:
+            _log("out-log rotation failed -> %s" % repr(e)[:80])
+            return None
+        if moved:
+            _log("out log rotated -> %s (%s, %.1fMB freed)"
+                 % (dst, ", ".join(moved), freed / 1e6))
+        return moved
+
     def spawn(self):
         if not os.path.isfile(EXE):
             raise TWError("WH3 exe not found: %s" % EXE)

@@ -252,6 +252,37 @@ def diplomacy_owned(root):
     return root in DECISION_ROOTS or "diplo" in str(root).lower()
 
 
+def _insist(bus, root, btn, settle, tries=3):
+    """A story panel with a movie or revealing text takes the click and stays open.
+
+    The component reports clicked=True because it exists; the panel ignores it until the
+    reveal finishes. Skip the reveal, then click again, and stop as soon as the root is
+    actually gone rather than trusting the click result.
+    """
+    out = []
+    for _ in range(tries):
+        for key in ("space", "escape"):
+            try:
+                bus.send("key", "@root %s" % key, timeout=_FIND_T)
+            except Exception:
+                pass
+        time.sleep(settle)
+        if root not in _open_roots(bus):
+            return out
+        try:
+            res = bus.send("click", btn, timeout=_FIND_T) or {}
+        except Exception as e:
+            _warn("close_popups", "insist click failed on %s -> %s" % (root, repr(e)[:60]))
+            return out
+        if res.get("clicked"):
+            out.append(btn)
+        time.sleep(settle)
+        if root not in _open_roots(bus):
+            return out
+    _warn("close_popups", "%s stayed open after %d insist rounds on %s" % (root, tries, btn))
+    return out
+
+
 def close_popups(bus, max_rounds=8, settle=0.7):
     clicked_paths = []
     protected = set()
@@ -273,6 +304,8 @@ def close_popups(bus, max_rounds=8, settle=0.7):
                     clicked_paths.append(btn)
                     clicked_this_round = True
                     time.sleep(settle)
+                    if root in _open_roots(bus):
+                        clicked_paths += _insist(bus, root, btn, settle)
                 else:
                     _warn("close_popups", "dismiss click did not register: %s (%s)" % (btn, res))
         if not clicked_this_round:
