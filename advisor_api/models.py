@@ -658,6 +658,16 @@ class CorrelationsPage(BaseModel):
     tiles: list[CorrelationTile]
 
 
+class TrialCorr(BaseModel):
+    """Whether a strategy's share of a campaign's picks tracks that campaign's growth."""
+    r: float | None = None
+    gate: str | None = Field(
+        default=None,
+        description="why r was not computed. Present exactly when r is null: too few "
+                    "campaigns, or one axis constant. Never rendered as a zero.")
+    over: Count
+
+
 class TrialRow(BaseModel):
     trial: str
     snapshots: int = Field(
@@ -685,6 +695,11 @@ class TrialRow(BaseModel):
     seconds_per_turn: float | None = None
     notes: str | None = None
     live: bool = False
+    growth_corr: dict[str, TrialCorr] = Field(
+        default_factory=dict,
+        description="per strategy: the correlation across this trial's campaigns between "
+                    "the strategy's share of a campaign's picks and that campaign's "
+                    "settlements gained, first snapshot -> peak.")
 
 
 class TrainingEvent(BaseModel):

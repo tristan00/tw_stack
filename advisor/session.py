@@ -458,6 +458,12 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                 entry["gnn_policy"] = ("trained(%d rows)" % (pol.gnn.meta or {}).get("rows", 0)
                                        if pol.gnn.ready else "unready->gnn_random_fallback")
                 log("gnn: %s" % entry["gnn_policy"])
+            # A generation owns a ledger row from the moment it starts playing, so a
+            # generation killed before its first campaign ends is still on the record and
+            # still names the model that was live.
+            _checkpoint_trial(stretch + [entry], backend, backend_cfg, generation, report,
+                              trained, log)
+
             def _flush_turn(so_far, _e=entry):
                 _e.update(outcome="in_progress", turns_played=len(so_far),
                           actions=sum(r["actions"] for r in so_far),
@@ -739,7 +745,12 @@ def _trial_row(stretch, backend, backend_cfg, gen_n, report, trained, log):
         return None
     stretch = _measure(stretch, log)
     first, last = stretch[0], stretch[-1]
-    secs = sum(float(c.get("seconds") or 0.0) for c in stretch)
+    # Every per-campaign figure counts campaigns that finished. A stretch can carry the
+    # campaign being played right now, and that one has no outcome to average over.
+    played = [c for c in stretch
+              if (c.get("outcome") or "in_progress") not in ("in_progress", "in_flight")]
+    secs = sum(float(c.get("seconds") or 0.0) for c in played)
+    turns = sum(_turns_of(c) for c in played)
     outcomes, policies = {}, {}
     for c in stretch:
         oc = c.get("outcome") or "in_progress"
@@ -753,7 +764,7 @@ def _trial_row(stretch, backend, backend_cfg, gen_n, report, trained, log):
            "generation": gen_n,
            "started": first.get("started"),
            "campaign_index": [first.get("index"), last.get("index")],
-           "campaigns": len(stretch),
+           "campaigns": len(played),
            "backend": backend, "backend_cfg": backend_cfg,
            "epsilon": (report.get("requested") or {}).get("epsilon"),
            "strategies": (report.get("requested") or {}).get("strategies"),
@@ -762,15 +773,14 @@ def _trial_row(stretch, backend, backend_cfg, gen_n, report, trained, log):
            "corpus_at_train": report.get("_corpus"),
            "fit": trained,
            "policies": policies,
-           "settlements": _gain_stats(stretch, "settlements"),
-           "lord_level": _gain_stats(stretch, "lord_level"),
+           "settlements": _gain_stats(played, "settlements"),
+           "lord_level": _gain_stats(played, "lord_level"),
            "outcomes": outcomes,
-           "turns_total": sum(_turns_of(c) for c in stretch),
-           "turns_per_campaign": round(float(sum(_turns_of(c) for c in stretch))
-                                       / len(stretch), 2),
-           "campaigns_per_hour": (round(len(stretch) / (secs / 3600.0), 2) if secs else None),
+           "turns_total": turns,
+           "turns_per_campaign": (round(float(turns) / len(played), 2) if played else None),
+           "campaigns_per_hour": (round(len(played) / (secs / 3600.0), 2) if secs else None),
            "campaign_hours": round(secs / 3600.0, 2),
-           "timing": _timing_stats(stretch),
+           "timing": _timing_stats(played),
            "baseline": GROWTH_BASELINE,
            "campaign_uuids": [c["campaign_uuid"] for c in stretch if c.get("campaign_uuid")],
            "run_dirs": sorted({c["run_dir"] for c in stretch if c.get("run_dir")})}

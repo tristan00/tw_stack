@@ -727,6 +727,7 @@ function Training() {
     {
       key: 'ruleset',
       label: 'ruleset',
+      optional: true,
       value: (r) => r.ruleset ?? '',
       render: (r) => r.ruleset ?? '—',
     },
@@ -821,6 +822,37 @@ function Training() {
           <span className="text-dim">—</span>
         ),
     },
+    // One column per arm: across this trial's campaigns, does the arm's share of the picks
+    // move with what the campaign grew? A coefficient over a handful of campaigns is weak
+    // evidence, so the campaign count it was computed over is on the cell.
+    ...MIX_ARMS.map(
+      (a): Col<TrialRow> => ({
+        key: `corr_${a.key}`,
+        label: a.short,
+        unit: 'r vs growth',
+        align: 'right',
+        group: 'share tracks growth',
+        value: (r) => r.growth_corr?.[a.key]?.r ?? undefined,
+        sortUndefined: 'last',
+        render: (r) => {
+          const c = r.growth_corr?.[a.key]
+          if (c?.r === null || c?.r === undefined)
+            return (
+              <span className="text-dim" title={c?.gate ?? 'not measured'}>
+                —
+              </span>
+            )
+          return (
+            <span
+              className={cn('num text-2xs', c.r > 0 ? 'text-ok' : c.r < 0 ? 'text-bad' : '')}
+              title={`over ${c.over.value} ${c.over.noun} ${c.over.population}`}
+            >
+              {c.r.toFixed(2)}
+            </span>
+          )
+        },
+      }),
+    ),
     {
       key: 'notes',
       label: 'outcomes',

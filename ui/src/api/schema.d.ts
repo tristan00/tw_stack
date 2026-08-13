@@ -1671,6 +1671,20 @@ export interface components {
             /** Group Order */
             group_order: string[];
         };
+        /**
+         * TrialCorr
+         * @description Whether a strategy's share of a campaign's picks tracks that campaign's growth.
+         */
+        TrialCorr: {
+            /** R */
+            r?: number | null;
+            /**
+             * Gate
+             * @description why r was not computed. Present exactly when r is null: too few campaigns, or one axis constant. Never rendered as a zero.
+             */
+            gate?: string | null;
+            over: components["schemas"]["Count"];
+        };
         /** TrialRow */
         TrialRow: {
             /** Trial */
@@ -1721,6 +1735,13 @@ export interface components {
              * @default false
              */
             live: boolean;
+            /**
+             * Growth Corr
+             * @description per strategy: the correlation across this trial's campaigns between the strategy's share of a campaign's picks and that campaign's settlements gained, first snapshot -> peak.
+             */
+            growth_corr?: {
+                [key: string]: components["schemas"]["TrialCorr"];
+            };
         };
         /** ValidationError */
         ValidationError: {
