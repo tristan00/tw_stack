@@ -90,7 +90,46 @@ class Graph:
         if not key:
             return None
         nid = "%s:%s" % (kind, key)
-        return self.add(nid, kind, cat=S.cat_global(kind, key))
+        return self.add(nid, kind, _cat_values(kind, key, nid),
+                        cat=S.cat_global(kind, key))
+
+
+_CAT_SCALE = {
+    "building": {
+        "create_cost": (S.BUILD_COST_SCALE, 0.0, 2.0),
+        "level": (S.LEVEL_SCALE, 0.0, 2.0),
+        "create_time": (S.BUILD_TIME_SCALE, 0.0, 2.0),
+    },
+    "unit": {
+        "recruitment_cost": (S.RECRUIT_COST_SCALE, 0.0, 3.0),
+        "upkeep_cost": (S.UPKEEP_SCALE, 0.0, 2.0),
+        "num_men": (S.MEN_SCALE, 0.0, 2.0),
+        "unit_tier": (S.TIER_SCALE, 0.0, 1.0),
+        "create_time": (S.UNIT_TIME_SCALE, 0.0, 1.0),
+    },
+    "skill": {
+        "unlocked_at_rank": (S.SKILL_RANK_SCALE, 0.0, 2.0),
+        "is_background_skill": (1.0, 0.0, 1.0),
+    },
+    "tech": {
+        "tech_tier": (S.TECH_TIER_SCALE, 0.0, 2.0),
+        "research_points_required": (S.RESEARCH_POINTS_SCALE, 0.0, 2.0),
+    },
+}
+
+
+def _cat_values(kind, key, nid):
+    row = C.attrs().get(kind, {}).get(key)
+    if not row:
+        return None
+    rd = G.Reader(row, nid, "reference.%s" % kind)
+    scales = _CAT_SCALE[kind]
+    out = {}
+    for name in S.TYPE_FIELDS[kind]:
+        if name in row:
+            scale, lo, hi = scales[name]
+            out[name] = (rd.num(name) / scale).clip(lo, hi)
+    return out or None
 
 
 def _pos_ok(x, y):
@@ -579,7 +618,7 @@ def _nearest_region(region_xy, x, y):
 
 
 def _target_of(g, at, key, params, region_xy=()):
-    if at == "move":
+    if at in ("move", "leave_garrison"):
         return _nearest_region(region_xy, params.get("x"), params.get("y"))
     if params.get("target_cqi") is not None:
         return g.id2idx.get("c:" + str(params["target_cqi"]))

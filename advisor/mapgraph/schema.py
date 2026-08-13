@@ -39,8 +39,12 @@ TYPE_FIELDS = {
     "cgroup":       (),
     "screen":       ("attitude", "amount_demanded", "amount_offered",
                      "strength_them", "strength_us", "settlements"),
-    "building": (), "chain": (), "unit": (), "tech": (), "skill": (),
-    "ritual": (), "agent_action": (), "edict": (), "item": (), "race": (),
+    "building": ("create_cost", "level", "create_time"),
+    "unit": ("recruitment_cost", "upkeep_cost", "num_men", "unit_tier", "create_time"),
+    "skill": ("unlocked_at_rank", "is_background_skill"),
+    "tech": ("tech_tier", "research_points_required"),
+    "ritual": (),
+    "chain": (), "agent_action": (), "edict": (), "item": (), "race": (),
     "agent_subtype": (),
     "screen_option": (), "dilemma": (), "screen_fact": (), "treaty_term": (),
 }
@@ -210,6 +214,19 @@ GROWTH_SCALE = 50.0
 SLOTS_SCALE = 10.0
 LEVEL_SCALE = 5.0
 SKILL_POINTS_SCALE = 5.0
+BUILD_COST_SCALE = 8000.0
+BUILD_TIME_SCALE = 8.0
+RECRUIT_COST_SCALE = 2000.0
+UPKEEP_SCALE = 500.0
+MEN_SCALE = 100.0
+TIER_SCALE = 5.0
+UNIT_TIME_SCALE = 3.0
+SKILL_RANK_SCALE = 20.0
+TECH_TIER_SCALE = 20.0
+RESEARCH_POINTS_SCALE = 800.0
+RESEARCH_ROUND_SCALE = 4000.0
+COOLDOWN_SCALE = 20.0
+INFLUENCE_SCALE = 50.0
 TREASURY_SCALE = 10000.0
 INCOME_SCALE = 500.0
 
