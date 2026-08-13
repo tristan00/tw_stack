@@ -1541,9 +1541,9 @@ def _clean(d: dict) -> dict:
     return {k: v for k, v in d.items() if v is not None}
 
 
-# A trial plays ~10 campaigns, so the per-turn threshold would gate every trial out. Five
-# points is still few; the campaign count rides on every coefficient so it can be judged.
-TRIAL_CORR_MIN_N = 5
+# No floor beyond what Pearson needs to exist. Two campaigns always give r = +/-1, so the
+# campaign count rides on every coefficient and is the thing to read it against.
+TRIAL_CORR_MIN_N = 2
 
 
 @db.cached
