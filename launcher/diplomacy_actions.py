@@ -76,14 +76,7 @@ def _snapshot(bus, ctx, pick):
 
 
 def _validate_pick(bus, ctx, pick, before):
-    """Validation of the PICK, not of the game.
-
-    Everything else this used to check -- already_allied, already_trading,
-    already_at_war, at_war_offers_only_peace, not_at_war, already_in_vassalage -- is
-    treaty state, and treaty state is in the snapshot as world.relations. The advisor
-    gates on it. What is left is whether the request is even well formed, which is a
-    property of the pick and knowable without asking the game anything.
-    """
+    """Validation of the PICK, not of the game."""
     if not _target(pick):
         return False, "no_target_faction"
     terms = _terms(pick)

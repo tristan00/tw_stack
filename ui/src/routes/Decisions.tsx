@@ -100,7 +100,6 @@ const logCols: Col<DecisionRow>[] = [
     label: 'rank',
     align: 'right',
     group: 'tree model',
-    help: 'Where the tree model placed the action that was taken, in its own ranking of the same offers.',
     value: (r) => r.cat_rank ?? 0,
     render: (r) => (r.cat_rank === null || r.cat_rank === undefined ? '—' : r.cat_rank),
   },
@@ -109,18 +108,35 @@ const logCols: Col<DecisionRow>[] = [
     label: 'rank',
     align: 'right',
     group: 'graph model',
-    help: 'Where the graph model placed the same action.',
     value: (r) => r.gnn_rank ?? 0,
     render: (r) => (r.gnn_rank === null || r.gnn_rank === undefined ? '—' : r.gnn_rank),
+  },
+  {
+    key: 'rho',
+    label: 'rho',
+    align: 'right',
+    group: 'agree',
+    // Nulls sort last on an ascending sort, so one click on this header puts the biggest
+    // disagreements at the top -- which is the whole reason it is sortable.
+    value: (r) => r.rho ?? undefined,
+    sortUndefined: 'last',
+    render: (r) =>
+      r.rho === null || r.rho === undefined ? (
+        <span className="text-dim">—</span>
+      ) : (
+        <span className="num" title={`over ${r.rho_n ?? 0} offers both models ranked`}>
+          {r.rho >= 0 ? '+' : ''}
+          {r.rho.toFixed(2)}
+        </span>
+      ),
   },
   {
     key: 'delta',
     label: 'gap',
     unit: 'pct',
     align: 'right',
-    group: 'graph model',
+    group: 'agree',
     // A percentile, so decisions with different offer counts compare. Sign is the point.
-    help: 'Both ranks put on a percentile so decisions with different offer counts compare, then graph minus tree. Positive means the graph model rated the taken action higher than the tree did; near zero means they agreed about it.',
     value: (r) => r.delta_pct ?? 0,
     render: (r) =>
       r.delta_pct === null || r.delta_pct === undefined ? (
@@ -383,7 +399,6 @@ function Menus() {
       label: 'options and their scores',
       // Every per-option score used to exist only in hover text, and the heading admitted
       // it. Cells make them selectable, searchable and present on touch.
-      help: 'Every option the screen offered, with what each model made of it. The chosen one is marked.',
       value: (r) => (r.options ?? []).length,
       render: (r) => (
         <div className="flex flex-wrap gap-1.5">

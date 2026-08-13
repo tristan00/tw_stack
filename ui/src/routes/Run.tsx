@@ -1,4 +1,4 @@
-import { Card, Chip, Dot, ErrorState, MetricTile, ScopeLine, Section, Skeleton } from '@/components/primitives'
+import { Card, Dot, ErrorState, MetricTile, Section, Skeleton } from '@/components/primitives'
 import { CountText } from '@/components/primitives'
 import { DataTable, type Col } from '@/components/DataTable'
 import { useApi, type RunPage, type Schemas } from '@/lib/api'
@@ -27,7 +27,6 @@ const timingCols: Col<TimingRow>[] = [
     // whose worst is 6s is a different problem from one that is uniformly slow, and a
     // median alone cannot tell them apart -- the old panel buried its single largest
     // number inside a dim run-on sentence beneath a table reading 103.
-    help: 'The slowest single observation in the window. A large gap between this and the median means an occasional stall, not a slow stage.',
     render: (r) => ms(r.max_ms),
   },
 ]
@@ -61,22 +60,9 @@ export function Run() {
         </div>
       </Section>
 
-      <Section title="signals" scope={{ text: 'anything worth noticing in this run dir' }}>
-        <div className="flex flex-wrap gap-2">
-          {data.signals.map((s, i) => (
-            <Chip key={i} state={s.state ?? 'neutral'} title={s.detail ?? undefined}>
-              {s.text}
-            </Chip>
-          ))}
-        </div>
-      </Section>
-
       <Section
         title="corpus"
-        scope={{
-          text: 'four counts of four different things',
-          detail: 'each says which population it counted, so they are not expected to match',
-        }}
+        scope={{ text: 'four counts of four different things' }}
       >
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
           {data.totals.map((c) => (
@@ -124,9 +110,6 @@ export function Run() {
             {data.log_tail.length ? data.log_tail.join('\n') : 'nothing written yet'}
           </pre>
         </Card>
-        <ScopeLine
-          scope={{ text: 'the log is the session process talking; the corpus is what it stored' }}
-        />
       </Section>
     </div>
   )

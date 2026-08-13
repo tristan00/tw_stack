@@ -65,10 +65,62 @@ class Executor:
         return interrupts.resolve(self.bus)
 
     def defeated_probe(self):
-        return interrupts.defeated_probe(self.bus)
+        """None when the bus will not answer -- not an exception."""
+        try:
+            return interrupts.defeated_probe(self.bus)
+        except Exception as e:                                  # noqa: BLE001
+            sys.stderr.write("executor: defeated_probe -> %s\n" % repr(e)[:90])
+            return None
 
     def mark_campaign_start(self):
         self._campaign_offset = self.bus.out_offset()
+
+    END_PANEL_BUTTON_XY = (0.5, 1345.0 / 1440.0)
+
+    def click_screen(self, fx, fy, settle=0.6):
+        """A real mouse click at a fraction of the screen. No bus involved."""
+        try:
+            import ctypes
+            u = ctypes.windll.user32
+            sw, sh = u.GetSystemMetrics(0), u.GetSystemMetrics(1)
+            x, y = int(fx * (sw - 1)), int(fy * (sh - 1))
+            ax, ay = int(x * 65535 / (sw - 1)), int(y * 65535 / (sh - 1))
+            u.mouse_event(0x8001, ax, ay, 0, 0)          # MOVE | ABSOLUTE
+            time.sleep(0.08)
+            u.mouse_event(0x0002, 0, 0, 0, 0)            # LEFTDOWN
+            time.sleep(0.05)
+            u.mouse_event(0x0004, 0, 0, 0, 0)            # LEFTUP
+            time.sleep(settle)
+            sys.stderr.write("executor: hardware click at (%d,%d) of %dx%d\n" % (x, y, sw, sh))
+            return True
+        except Exception as e:                                  # noqa: BLE001
+            sys.stderr.write("executor: hardware click failed -> %s\n" % repr(e)[:110])
+            return False
+
+    def leave_campaign_via_click(self, timeout=60.0, poll=1.0):
+        """Click "Return to main menu" and confirm the game actually left."""
+        try:
+            start = os.path.getsize(self.bus.out_path)
+        except OSError:
+            start = 0
+        fx, fy = self.END_PANEL_BUTTON_XY
+        if not self.click_screen(fx, fy):
+            return False
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                with open(self.bus.out_path, "rb") as f:
+                    f.seek(start)
+                    data = f.read()
+            except OSError:
+                data = b""
+            if b'"frontend_armed"' in data:
+                sys.stderr.write("executor: campaign left via the panel button -- frontend armed\n")
+                return True
+            time.sleep(poll)
+        sys.stderr.write("executor: clicked the end panel but the frontend never armed in %ss\n"
+                         % timeout)
+        return False
 
     def defeated_row_seen(self):
         import json
@@ -287,19 +339,12 @@ class Executor:
             sys.stderr.write("executor: kill_game -> %s\n" % repr(e)[:120])
 
     def game_is_up(self):
-        """tasklist, not our own bookkeeping. Fails OPEN (True) so an unreadable process
-        table never reads as 'the gpu is free'."""
+        """tasklist, not our own bookkeeping. Fails OPEN (True) so an unreadable process"""
         import bus as _bus
         return _bus._game_alive()
 
     def wait_game_down(self, timeout=45.0, poll=1.5, log=None):
-        """Block until no Warhammer3 process remains.
-
-        kill_game() only issues Stop-Process and returns; it does not wait, and it
-        swallows its own failures. A trainer that starts while the game is still up
-        contends with it for VRAM, which is the whole reason the retrain window takes
-        the game down. Kills once more if the first attempt did not take.
-        """
+        """Block until no Warhammer3 process remains."""
         for attempt in (1, 2):
             t0 = time.time()
             while time.time() - t0 < timeout:

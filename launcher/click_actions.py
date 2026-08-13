@@ -407,14 +407,7 @@ def _recruit_snapshot(bus, ctx, pick):
 
 
 def _recruit_precheck(bus, ctx, pick, before):
-    """Crash guard only -- NOT a judgement about whether the recruit is legal.
-
-    Clicking the recruitment buttons with the panel shut crashes the game, so this is a
-    precondition for the click being safe to make. The capacity checks that used to live
-    here decided game state and are gone: a full army is refused by the advisor, from
-    state.units. The queue branch went with them -- recruit_unit stopped carrying a queue
-    when the local/global split was found to be invented.
-    """
+    """Crash guard only -- NOT a judgement about whether the recruit is legal."""
     if not before.get("units_panel_open"):
         return False, "units_panel_not_open_CTD_guard"
     return True, None
@@ -455,13 +448,6 @@ def _recruit_execute_inner(bus, ctx, pick, before):
                              % (unit, [c.get("queue") for c in same_key], want_q))
             return False
     else:
-        # The collector no longer names a queue, because nothing it can read knows one:
-        # neither CCO nor the script API distinguishes the local pool from the global one,
-        # and asserting it anyway killed 56.9% of 'global' picks in execute_failed. The
-        # pools are visible here and nowhere else, so the choice is made here -- cheapest
-        # first, which is the local pool whenever it carries the unit -- and written into
-        # the confirm payload as `queue_used` so the corpus records what happened rather
-        # than what was assumed.
         card = _cheapest_pool(same_key)
     if card is None:
         sys.stderr.write("click_actions: unit %r not among recruitable cards\n" % pick["key"])
@@ -471,8 +457,7 @@ def _recruit_execute_inner(bus, ctx, pick, before):
 
 
 def _cheapest_pool(cards):
-    """Among the pools offering one unit, the one that costs the fewest turns, then the
-    least gold. Ties keep panel order, so the choice is deterministic."""
+    """Among the pools offering one unit, the one that costs the fewest turns, then the"""
     if not cards:
         return None
 

@@ -5,11 +5,6 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
-# Resolve decisions/ against the checkout this file lives in -- see common.py, which
-# derives it from its own location. Hardcoding D:\tw_stack here meant a worktree silently
-# imported the MAIN checkout's store.py underneath its own edits, and since this insert
-# lands at position 0 it overrode whatever the caller had already set up. Identical path
-# in the live checkout.
 sys.path.insert(0, os.path.dirname(_HERE))
 import common
 
@@ -75,36 +70,11 @@ def grouped_split(n, groups, frac=VAL_FRACTION, seed=SPLIT_SEED):
     return val, trn
 
 # A frozen salt, NOT a version reference -- do not "tidy" it to match a module name.
-# stable_split hashes campaign_id with this string to decide holdout membership, so
-# changing the value redraws the held-out set and makes val scores incomparable across
-# retrains, which is the exact failure stable_split exists to prevent. It survived the
-# mapgraph rename for that reason.
 HOLDOUT_SALT = "gnn3"
 
 
 def stable_split(n, groups, frac=VAL_FRACTION, salt=HOLDOUT_SALT):
-    """Hold out whole campaigns, chosen by hashing the campaign id.
-
-    grouped_split shuffles the campaign LIST with a fixed seed. The seed is stable but
-    the list is not: adding campaigns lengthens it, a longer list permutes differently,
-    and the held-out set is effectively redrawn on every retrain. Measured across one
-    real retrain (532 -> 550 campaigns): the holdout went 79 -> 82 campaigns with only
-    17 in common, so ~79% of what the metric was measured on changed. Two fits with
-    identical code, identical seed and corpora differing by 12 rows in 19,780 moved
-    val_listwise_nll by 0.0945 nats -- larger than most improvements anyone would claim,
-    which makes the metric unable to detect a regression between retrains.
-
-    Here membership is a property of the campaign itself, so a campaign never changes
-    sides and a new one joins whichever side its own hash names. Measured on the same
-    532 -> 550 growth: 2 campaigns of churn, both additions, zero removals.
-
-    grouped_split is left alone because CatBoost's val_rmse series runs through it and
-    changing it would put a discontinuity in that history for no reason.
-
-    Note the holdout still GROWS as campaigns are added, so the absolute level drifts
-    even though membership is stable. Comparing a fixed cohort is what is exactly
-    comparable; comparing all held-out campaigns is what is representative.
-    """
+    """Hold out whole campaigns, chosen by hashing the campaign id."""
     import hashlib
     import random
     if not groups or len(groups) != n:

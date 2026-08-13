@@ -12,7 +12,8 @@
    run dirs  D:\twdata\runs\human\<ts>\  + CURRENT_RUN          │ execute picked action
                  │                                              │
    advisor (BACKEND: session → loop → policy/model)  ───────────┘
-   strategy portfolio: exploit_tree (E1/E2 CatBoost) · gnn · ruleset · random
+   strategy portfolio: greedy_catboost (argmax of the E1-E2 advantage) · marwil_gnn (MARWIL/AWR
+   on the graph encoder) · ruleset · random
    interrupt model · watchdog
    features ← reference/features_db ← D:\twdata\reference\reference.sqlite
                  │

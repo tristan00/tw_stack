@@ -63,10 +63,6 @@ import time
 from advisor.mapgraph import schema as S
 from advisor.mapgraph import build as B
 
-# Resolve advisor/ and decisions/ against the checkout this file lives in -- common.py
-# derives ROOT from its own location -- not a hardcoded D:\tw_stack. In the live checkout
-# that is the same path; in a worktree it is the difference between testing your own edits
-# and silently importing the main checkout's copies alongside your own mapgraph.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 import common
@@ -77,18 +73,6 @@ sys.path.insert(0, common.DECISIONS)
 THREADS = max(1, os.cpu_count() or 8)
 
 CFG = {"hidden": 192, "entity_layers": 2, "action_rounds": 2,
-       # batch 16 left the 5090 idle: ~1200 launch-bound steps an epoch. Measured on
-       # 20.4k graphs, resident: b16 87s/epoch, b64 10.9s, b128 8.4s, b256 13.9s.
-       # NOTE lr is unchanged at 2e-3 -- 8x fewer optimizer steps per epoch is a real
-       # change to the optimisation and the right lr for b128 has NOT been measured yet.
-       # patience 25 was never reachable when an epoch cost 250s, so it had never been
-       # exercised. With a 5s epoch the full curve is now visible, and it says the fit
-       # peaks around epoch 14 and then OVERFITS steadily -- val_nll 3.994 at 14 rising
-       # to 4.28 by 39, which is 7x the epoch-to-epoch noise, so it is a trend and not
-       # jitter. 25 epochs of that is ~170s of a 300s budget spent getting worse.
-       # 10 still clears the noise band comfortably. Lowering it cannot cost accuracy --
-       # the fit restores best_state either way, so this only decides how long it keeps
-       # looking. Single seed, single split: worth re-checking across seeds.
        "lr": 2e-3, "weight_decay": 1e-4, "batch": 128, "epochs": 200, "patience": 10,
        "grad_clip": 5.0, "adv_tau": 1.0, "adv_clip": 20.0, "value_weight": 1.0, "bf16": True,
        # TOTAL budget for a retrain -- corpus walk AND fit, not the fit alone. session.py
@@ -100,20 +84,10 @@ MIN_FIT_S = 30
 
 
 def _shard(args):
-    """Worker: read one decision_id range, build and tensorize its graphs.
-
-    Runs in a separate process, so it re-derives sys.path rather than inheriting it.
-    Returns one slot per decision including the rejected ones -- the parent needs them
-    to reproduce the tally, and it applies the no_label check first, in the same order
-    the serial walk did.
-    """
+    """Worker: read one decision_id range, build and tensorize its graphs."""
     db_path, lo, hi = args
     import os as _os
     import sys as _sys
-    # One thread per worker. torch and numpy each default to a pool the width of the
-    # box, so N workers spin N*24 threads over 24 cores and burn far more CPU spinning
-    # in barriers than the work costs: measured 1195s of worker CPU for a walk that
-    # takes 141s single-threaded. This stage is python and sqlite, not BLAS.
     for _v in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
                "NUMEXPR_NUM_THREADS"):
         _os.environ[_v] = "1"
@@ -163,12 +137,7 @@ def _shard(args):
 
 
 def walk(runs_root=None, limit=None, log=print, workers=None):
-    """Corpus -> (graph, y, taken-mask) examples.
-
-    Note what is NOT here: the predecessor called features.stamp_prev_actions and
-    stamp_action_counts to write CatBoost history features into the record before
-    building the graph. This does not. The only advisor code touched is the label.
-    """
+    """Corpus -> (graph, y, taken-mask) examples."""
     import concurrent.futures as cf
     import torch
     from base_model import RUNS_ROOT, decision_deltas, target
@@ -199,20 +168,6 @@ def walk(runs_root=None, limit=None, log=print, workers=None):
         finally:
             st.close()
 
-    # pass 2: build the graphs. The corpus walk is the single largest cost in a retrain
-    # and it is embarrassingly parallel over decision_id ranges: the tables are
-    # append-only and the watermark is frozen above, so each shard is a stable slice.
-    # Shards are consumed in ascending decision_id, which is the order the serial walk
-    # produced, so the example sequence -- and therefore batch composition -- is
-    # unchanged.
-    # Sharded reads default OFF because they measured SLOWER, not faster. Serial walk:
-    # 141s wall, ~141s cpu. 12 workers over 400-decision shards: 256s wall and 381s cpu
-    # and still unfinished. Bounding decision_id turns one sequential scan of
-    # action_offers into ~9M index-then-rowid fetches, and 12 readers thrash the page
-    # cache on a 4.8GB file, so total cpu goes UP and parallelism does not pay for it.
-    # Left reachable via workers=N because the sharding itself is sound -- what is wrong
-    # is re-reading the whole database at all. The fix is not more workers, it is not
-    # re-reading rows that were already turned into graphs (see CORPUS CACHE below).
     n_workers = 1 if workers is None else workers
     t_walk = time.time()
     slots, built, reused = [], 0, 0
@@ -314,18 +269,7 @@ def _corpus_bytes(batches):
 
 
 def _collate(items, size, dev, log, tag):
-    """Collate ONCE, up front, and keep the batches on the training device.
-
-    The graphs are immutable after _tensorize, so re-running Batch.from_data_list every
-    epoch -- which is what this did, ~160 times an epoch -- recomputes a result that
-    cannot have changed, and re-crosses PCIe with it. The predecessor had learned this
-    and this one had
-    lost it again.
-
-    Residency is measured against free VRAM, never assumed: the corpus grows at every
-    retrain, so the streaming path is the one that has to survive. Half of free VRAM is
-    left for activations, which at batch 128 are larger than the corpus itself.
-    """
+    """Collate ONCE, up front, and keep the batches on the training device."""
     import torch
     from torch_geometric.data import Batch
     batches = [Batch.from_data_list(items[k:k + size])
@@ -350,15 +294,8 @@ def _collate(items, size, dev, log, tag):
 
 
 def fit_net(datas, ys, groups, cfg, log=print):
-    """Fit a Net on (graphs, labels, campaign groups). Public: interrupt_train calls it
-    with the blocking-screen corpus, and nothing in here knows which corpus it got --
-    the loss, the split and the budget handling are the same job either way. Not named
-    `fit` because train() below binds that name to the fit REPORT."""
+    """Fit a Net on (graphs, labels, campaign groups). Public: interrupt_train calls it"""
     import torch
-    # stable_split, not grouped_split: the latter reshuffles the whole campaign list as
-    # the corpus grows, so the held-out set is redrawn every retrain and the metric
-    # cannot detect a regression. Measured over one real growth step (532 -> 550
-    # campaigns), campaigns REMOVED from the holdout: grouped_split 71, stable_split 0.
     from base_model import stable_split
     try:
         from advisor.mapgraph import net as N
@@ -382,22 +319,12 @@ def fit_net(datas, ys, groups, cfg, log=print):
                             fused=(dev.type == "cuda"))
     gen = torch.Generator().manual_seed(cfg["seed"])
 
-    # One seeded shuffle fixes batch MEMBERSHIP for the run; each epoch then permutes
-    # batch ORDER. This is a real change to the optimisation and not a free win: the
-    # model now draws from a fixed set of minibatch gradients instead of resampling a
-    # fresh partition every epoch. It is what makes collate-once possible, and it is
-    # what the predecessor shipped. Validation is never shuffled -- the reported score is a
-    # graph-weighted mean, so it does not depend on batching or order.
     order0 = torch.randperm(len(trn_idx), generator=gen).tolist()
     trn = [datas[trn_idx[i]] for i in order0]
     loader, resident = _collate(trn, cfg["batch"], dev, log, "train")
     vloader, v_resident = (_collate([datas[i] for i in val_idx], cfg["batch"], dev, log,
                                     "val") if val_idx else ([], False))
 
-    # bf16 on the message passing. The 5090 has an order of magnitude more bf16 throughput
-    # than fp32, and bf16 keeps fp32's exponent range so no loss scaler is needed. The
-    # losses are computed in fp32: a softmax over up to ~1300 candidates and an MSE are
-    # exactly where reduced precision would bite.
     amp = (dev.type == "cuda") and bool(cfg.get("bf16", True))
 
     def step(b, train):
@@ -418,17 +345,6 @@ def fit_net(datas, ys, groups, cfg, log=print):
     best, best_state, bad, stopped = None, None, 0, "epochs"
     out_of_time = False
     best_v, curve = None, []
-    # The budget has to cover the validation pass that follows the last training step,
-    # otherwise a fit that stops exactly at the limit overruns it by a whole val pass.
-    #
-    # This was seeded at 6.0 and then only ever RAISED (`max(val_s, measured)`), so a val
-    # pass that actually costs 0.2s kept reserving 6s forever. The inner break therefore
-    # fired ~6s early while the outer check still wanted the FULL budget, and the fit spent
-    # the gap running epochs of exactly one gradient step plus a full validation --
-    # observed as epochs 1-3 at 7.5s followed by 4-15 at 0.5s, burning patience and then
-    # reporting stopped_by "patience" when it had actually run out of time.
-    #
-    # None until measured, and the running max is over MEASURED passes only.
     val_s = None
     VAL_S_GUESS = 6.0
     t0 = time.time()
@@ -548,11 +464,7 @@ def train(runs_root=None, cfg=None, log=None):
 
 
 def _overfit(limit=8):
-    """Can it drive the listwise loss down on a handful of graphs?
-
-    Spread is measured on q across the candidate set -- never on q-v, which is the
-    self-confirming artifact the predecessor's _overfit gate was reading.
-    """
+    """Can it drive the listwise loss down on a handful of graphs?"""
     import torch
     from torch_geometric.data import Batch
     try:

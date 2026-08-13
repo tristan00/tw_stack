@@ -251,16 +251,7 @@ class Bus:
         raise TWError("bus timeout: no result for seq %d cmd %s" % (seq, channel))
 
     def send_batch(self, requests, timeout: float = DEFAULT_TIMEOUT) -> list:
-        """Send many commands as one append and wait for all their replies.
-
-        INSTRUMENTED PER COMMAND, not per batch. This is the collector's entire hot path
-        -- a snapshot is three send_batch calls and dozens of evals -- and bus_stats only
-        ever saw `send`, so the expensive half of every decision was invisible and "which
-        read costs the time" was unanswerable. A batch shares one wall clock, so the
-        elapsed time is attributed to each command in it: that is not a per-command
-        measurement and does not pretend to be, but it makes the COMMAND the unit, so the
-        same key summed across a run says how much of the budget it accounts for.
-        """
+        """Send many commands as one append and wait for all their replies."""
         if not requests:
             return []
         _t0 = time.perf_counter()

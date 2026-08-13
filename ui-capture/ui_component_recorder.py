@@ -812,6 +812,34 @@ def panel_open(bus: Bus, cfg: dict) -> bool | None:
     return True
 
 
+UNMAPPED_DEPTH = 8
+UNMAPPED_NODES = 4000
+UNMAPPED_CAP = 400
+
+
+def capture_unmapped(bus: Bus, component: str) -> dict | None:
+    """Whatever this panel is, write it down."""
+    try:
+        r = bus.send("tree", "%s %d %d" % (component, UNMAPPED_DEPTH, UNMAPPED_NODES),
+                     timeout=20.0) or {}
+    except Exception as e:                                      # noqa: BLE001
+        sys.stderr.write("ui-capture: unmapped tree(%s) -> %s\n" % (component, repr(e)[:80]))
+        return None
+    if not r.get("found"):
+        return None
+    opts = []
+    for n in (r.get("nodes") or []):
+        if n.get("visible") is False:
+            continue
+        opts.append({"id": n.get("id"), "path": n.get("path"), "state": n.get("state"),
+                     "text": n.get("text"), "text_label": n.get("text_label"),
+                     "context": n.get("context")})
+        if len(opts) >= UNMAPPED_CAP:
+            break
+    return {"kind": "menu_open", "panel": component, "n": len(opts), "options": opts,
+            "unmapped": True, "truncated": bool(r.get("truncated"))}
+
+
 def capture_panel(bus: Bus, name: str) -> dict | None:
     cfg = PANELS[name]
     if cfg.get("positional"):
@@ -1014,13 +1042,24 @@ def watch(bus: Bus, emit, panels: dict | None = None, is_running=lambda: True) -
         ok = None
         chunk_text = chunk.decode("utf-8", "replace") if chunk else ""
         if chunk:
-            targets = []
+            targets, unmapped_rows = [], []
             for c in _opened_components(chunk_text):
                 mapped = COMPONENT_PANELS.get(c)
                 if not mapped:
+                    # An unknown panel is RECORDED, not skipped. It used to be dropped
+                    # after one stderr line, so the panels that stop campaigns were the
+                    # only ones guaranteed to leave no trace.
                     if c not in seen_unmapped:
                         seen_unmapped.add(c)
-                        sys.stderr.write("ui-capture: unmapped PanelOpenedCampaign component %r\n" % c)
+                        sys.stderr.write("ui-capture: capturing unmapped panel %r generically\n" % c)
+                    try:
+                        row = capture_unmapped(bus, c)
+                    except Exception as e:                      # noqa: BLE001
+                        sys.stderr.write("ui-capture: capture_unmapped(%s) skipped -> %s\n"
+                                         % (c, repr(e)[:80]))
+                        row = None
+                    if row is not None:
+                        unmapped_rows.append(row)
                     continue
                 for pname in mapped:
                     if pname in panels and pname not in targets:

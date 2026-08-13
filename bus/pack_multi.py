@@ -21,9 +21,77 @@ SCRIPTS = [
 ]
 PACK = HERE / "dist" / "tw.pack"
 
+# THE CAMPAIGN INTRO MOVIES ARE REPLACED WITH AN EMPTY ONE.
+SWAP_INTRO_MOVIES = True
+
+STANDIN_PACK = "movies_spell.pack"
+STANDIN_PATH = "movies\\spell_previews\\cataclysm\\wh3_main_cataclysm_thunderbolt.ca_vp8"
+STANDIN_MAX = 64
+INTRO_PREFIX = "movies\\warhammer3\\"
+INTRO_MARK = "_intro"
+INTRO_EXT = ".ca_vp8"
+
 
 def game_dir(explicit: str | None = None) -> Path:
     return Path(explicit or os.environ.get("GAME_DIR") or DEFAULT_GAME)
+
+
+def _pfh5_index(path: Path):
+    """[(internal_path, size)], and the offset the data blob starts at."""
+    with open(path, "rb") as fh:
+        head = fh.read(28)
+        if head[:4] != b"PFH5":
+            return None, None
+        _bm, _dc, dep_size, n_files, index_size, _ts = struct.unpack_from("<IIIIII", head, 4)
+        fh.seek(28 + dep_size)
+        index = fh.read(index_size)
+    ent, off = [], 0
+    for _ in range(n_files):
+        size = struct.unpack_from("<I", index, off)[0]
+        off += 5
+        end = index.index(b"\x00", off)
+        ent.append((index[off:end].decode("latin1"), size))
+        off = end + 1
+    return ent, 28 + dep_size + index_size
+
+
+def _movie_packs(game: Path):
+    return sorted((game / "data").glob("movies*.pack"))
+
+
+def _standin_bytes(game: Path) -> bytes:
+    src = game / "data" / STANDIN_PACK
+    ent, data0 = _pfh5_index(src) if src.exists() else (None, None)
+    if not ent:
+        sys.exit("cannot read %s -- the intro-movie stand-in comes out of the game's own "
+                 "packs and there is no fallback" % src)
+    off = data0
+    for name, size in ent:
+        if name == STANDIN_PATH:
+            if size > STANDIN_MAX:
+                sys.exit("%s is %d bytes, expected <=%d -- refusing to ship it as the "
+                         "empty-movie stand-in" % (STANDIN_PATH, size, STANDIN_MAX))
+            with open(src, "rb") as fh:
+                fh.seek(off)
+                blob = fh.read(size)
+            if blob[:4] != b"CAMV":
+                sys.exit("%s does not start with CAMV (got %r) -- not a movie" % (STANDIN_PATH, blob[:4]))
+            return blob
+        off += size
+    sys.exit("%s not found in %s" % (STANDIN_PATH, src))
+
+
+def intro_movies(game: Path):
+    """Every campaign intro in the installed game. Scanned, not hardcoded, so a new DLC's"""
+    out = set()
+    for p in _movie_packs(game):
+        ent, _ = _pfh5_index(p)
+        for name, _size in (ent or ()):
+            low = name.lower()
+            if (low.startswith(INTRO_PREFIX) and low.endswith(INTRO_EXT)
+                    and INTRO_MARK in low.rsplit("\\", 1)[-1]):
+                out.add(name)
+    return sorted(out)
 
 
 def build() -> Path:
@@ -34,6 +102,19 @@ def build() -> Path:
         data = path.read_bytes()
         internal = "script\\%s\\mod\\%s.lua" % (env, name)
         entries.append((internal, data))
+
+    game = game_dir()
+    if SWAP_INTRO_MOVIES and (game / "data" / STANDIN_PACK).exists():
+        standin = _standin_bytes(game)
+        intros = intro_movies(game)
+        if not intros:
+            # Silently shipping no overrides would look identical to the optimisation
+            # working, and the only symptom would be campaigns quietly costing 100s again.
+            sys.exit("found 0 campaign intro movies under %s in %s -- the scan is broken; "
+                     "refusing to build a pack that silently drops the override"
+                     % (INTRO_PREFIX, game / "data"))
+        for internal in intros:
+            entries.append((internal, standin))
 
     index = b"".join(
         struct.pack("<I", len(data)) + b"\x00" + internal.encode() + b"\x00"
@@ -60,6 +141,13 @@ def cmd_build(a: argparse.Namespace) -> None:
     print("built %s (%d bytes)" % (p, p.stat().st_size))
     for n, s, env in SCRIPTS:
         print("   + script\\%s\\mod\\%s.lua  (%d bytes)" % (env, n, s.stat().st_size))
+    game = game_dir(a.game)
+    if SWAP_INTRO_MOVIES and (game / "data" / STANDIN_PACK).exists():
+        intros = intro_movies(game)
+        print("   + %d campaign intro movies -> %d-byte empty CAMV"
+              % (len(intros), len(_standin_bytes(game))))
+        for i in intros:
+            print("       %s" % i)
 
 
 def cmd_install(a: argparse.Namespace) -> None:

@@ -20,19 +20,7 @@ MOVE_MIN_R = 3.0
 
 _G = ("local function g(c,p) local ok,v=pcall(function() return c:Call(p) end);"
       "if ok and v~=nil then return v end return nil end "
-      # ts(nil) must NOT be the string "nil". tostring(nil) is "nil", a non-empty and
-      # therefore TRUTHY string, so a mistyped CCO property name landed in the database
-      # looking exactly like data -- params.item_key was "nil" in 95,178 of 95,178 rows
-      # because CcoCampaignAncillary has no 'Key' property, and the `a["key"] or name`
-      # fallback never fired. 42 call sites use ts(g(...)); one wrong property name
-      # anywhere is silent. Empty is falsy, so a missing value now reads as missing.
       "local function ts(v) if v==nil then return '' end return tostring(v) end "
-      # tv(ok, v) exists because `tv(ok,v)` CANNOT EMIT false. In lua only nil
-      # and false are falsy, so for a boolean v==false the expression collapses to nil and
-      # ts() yields '' -- which the python side reads as "unread". campaign.defeated was
-      # null in 100% of a 22,136-decision corpus for exactly this reason while the harness
-      # independently recorded 18 defeated campaigns, and ll_wounded was null in 100% of
-      # rows. Numbers were never affected: 0 is truthy in lua.
       "local function tv(ok,v) if ok and v~=nil then return tostring(v) end return '' end ")
 
 
@@ -40,13 +28,6 @@ class CollectError(RuntimeError):
     pass
 
 
-# Every reply line the mod writes carries `try_fails` when a pcall inside it failed --
-# deduplicated by message with a count, capped at 24 so a failing loop cannot flood.
-# bus/mod/twcontrol.lua has shipped them since it was written and NOTHING read them: _ev
-# and _bres took `error` and `result` and dropped the rest. So a property that silently
-# returned nil on every call looked identical to a property that genuinely has no value,
-# which is the exact confusion that let campaign.defeated sit broken for a whole corpus.
-# They are drained into the campaign state, which IS stored, so coverage can see them.
 _TRY_FAILS = []
 
 
@@ -180,39 +161,13 @@ def campaign_uuid(bus):
     return None if v in (None, "NO-UUID", "nil", "") else str(v)
 
 
-# WHICH MAP this campaign is being played on. Immortal Empires (534 factions) and Realm of
-# Chaos are different games for our purposes -- different faction counts, different
-# topology, a different end-turn cost and a different diplomatic structure. Nothing recorded
-# it, so a corpus collected across more than one map would have been silently pooled and
-# indistinguishable afterwards, which is the same class of mistake as a mixed schema.
-#
-# Read from the GAME rather than passed down from session.py's --campaign argument: what we
-# asked the launcher to start is an intention, what the engine reports is the fact, and only
-# the second survives a launcher bug or a save being resumed.
-#
-# The exact accessor is unverified -- the game was down when this was written, and shipping
-# a guessed CCO/script name is how params.item_key became the string "nil" in 95,178 rows.
-# So it tries several and takes the first that answers, which degrades to empty rather than
-# to something wrong. Whichever one wins should be pinned here once observed live.
 _LUA_CAMPAIGN_MAP = (
     "local out='' "
     "local function try(fn) if out~='' then return end "
     "  local ok,v=pcall(fn) if ok and v~=nil and tostring(v)~='' then out=tostring(v) end end "
-    # campaign_name_key() FIRST, and the ordering is the whole point. Verified live:
-    #   cm:model():campaign_name_key()  ->  wh3_main_combi   (the KEY we launch with)
-    #   cm:get_campaign_name()          ->  main_warhammer   (the SCRIPT PATH)
-    # Both identify Immortal Empires, but only the first is the identifier StartCampaign
-    # takes, so only the first lets a recorded campaign be matched back to how it was
-    # launched -- or to a modded campaign, where ChaosRobie's Old World Campaign is the key
-    # `cr_combi_expanded` while its script path is something else entirely. The first
-    # version of this probe asked get_campaign_name() first and recorded main_warhammer.
     "try(function() return cm:model():campaign_name_key() end) "
     "try(function() return cm:get_campaign_name() end) "
     "try(function() return cm:model():campaign_name() end) "
-    # CcoCampaignRoot.CampaignKey is a real property (cco_audit confirms it against the
-    # extracted CCO table). A `Key` fallback was tried and rejected by that same audit --
-    # 'Key' exists on many record types but NOT on CcoCampaignRoot -- which is the check
-    # earning its keep, since a nil there would have read as "no map" forever.
     "try(function() return cco('CcoCampaignRoot',''):Call('CampaignKey') end) "
     "return out")
 
@@ -263,12 +218,6 @@ _LUA_CAMPAIGN = (_G + "local okc,t0=pcall(os.clock) "
                  "if not l or l:is_null_interface() then return 'nil' end "
                  "local ok,v=pcall(function() return l:is_wounded() end) "
                  "return tv(ok,v) end)()"
-                 # field 15: is this faction dead. Until now `defeated` was the hardcoded
-                 # literal False in _parse_campaign -- never queried, False in all 22,136
-                 # decisions of the previous corpus while the harness independently
-                 # recorded 18 defeated campaigns. It is the ground truth for the
-                 # `survival` term in the label. This is the harness's own probe
-                 # (launcher/interrupts.py DEFEAT_PROBE), so the expression is proven.
                  "..'|'..(function() local ok,v=pcall(function() return f:is_dead() end) "
                  "return tv(ok,v) end)()")
 
@@ -392,21 +341,6 @@ def regions(bus):
 
 
 # Third-party wars: who among the factions we KNOW is fighting whom.
-#
-# Everything else in the diplomacy record is a star centred on us -- world.relations rows
-# carry one faction key and 11 flags whose subject is implicitly the player, so 887 of 887
-# rows were player-incident and no (A,B) fact existed anywhere. That hides whether an attack
-# target is already tied down, who is dogpiling an ally, and which war blocs exist. It is
-# per-turn state with no static backfill, so it cannot be added to an old corpus later.
-#
-# O(n), not O(n^2): factions_at_war_with() returns a LIST per faction, so this is one call
-# per met faction rather than a pairwise sweep. At 60 met factions that is 60 calls, not the
-# ~5,300 a pairwise loop would need.
-#
-# BOTH axes are clipped to factions_met(). The tempting shortcut -- reusing the diplo block
-# in twstate.lua, which walks world():faction_list() -- would emit relationships for the 534
-# factions in the world including ones never met, which is a fog leak. `metset` includes our
-# own name so that "X is at war with US" survives the clip.
 _LUA_WAR_GRAPH = (
     "local me=cm:get_local_faction(true) local ml=me:factions_met() "
     "local metset={} metset[me:name()]=true "
@@ -422,12 +356,7 @@ _LUA_WAR_GRAPH = (
 
 
 def _parse_war_graph(raw):
-    """[{faction, at_war_with:[...]}] over KNOWN factions only.
-
-    Empty is a legitimate answer and an early-campaign one: measured on a turn-1 Empire
-    start, all six met factions had wars and none of them were against a faction we also
-    knew, so the met-clipped graph is genuinely empty until the met set grows.
-    """
+    """[{faction, at_war_with:[...]}] over KNOWN factions only."""
     out = []
     for row in str(raw or "").split(","):
         subj, _, rest = row.partition(">")
@@ -440,15 +369,6 @@ def _parse_war_graph(raw):
 
 
 # The same war graph over EVERY faction in the world, met or not, plus the met set itself.
-#
-# This is the leaky twin of _LUA_WAR_GRAPH and it must never reach the decision record. It
-# exists so the corpus is not lossy: the met set changes every turn, so a clip applied at
-# collection time can never be widened afterwards, and if our clip turns out wrong there is
-# no way back. Storing the full graph with the met-set beside it keeps that reversible.
-#
-# Run ONCE PER TURN, from the `target` request, not from the per-action snapshot: 534
-# factions is ~10x the met-clipped call count, and two factions that are not us cannot
-# change their relationship while we are mid-turn taking actions.
 _LUA_DIPLO_WORLD = (
     "local me=cm:get_local_faction(true) local ml=me:factions_met() local met={} "
     "for i=0,ml:num_items()-1 do met[#met+1]=ml:item_at(i):name() end "
@@ -721,11 +641,6 @@ _LUA_LORD = (_G +
     "    for i=1,n do pend[#pend+1]=ts(it[i]) end end end "
     "return ts(g(c,'Rank'))..'|'..ts(g(c,'SkillPointsAvailable'))..'|'..ts(mf and g(mf,'UnitCount'))"
     "..'|'..ts(#pend)..'|'..ts(g(c,'ActionPointPercent'))"
-    # IsGarrisoned off the MilitaryForceContext is structurally nil for a hero, which has
-    # no force -- state:hero.garrisoned was False in 11,096 of 11,096 snapshots for that
-    # reason alone. CcoCampaignCharacter carries the same property and answers for both.
-    # (besieging stays force-shaped on purpose: laying siege really is something only an
-    # army can do, so False for every hero is the game speaking, not the recorder.)
     "..'|'..ts(g(c,'IsGarrisoned'))..'|'..ts(ch and ch:is_besieging())"
     "..'|'..ts((function() local l=g(mf,'StanceList') if type(l)=='table' then for i=1,#l do "
     "if g(l[i],'IsActive')==true then return g(l[i],'Key') end end end return 'none' end)())"
@@ -736,17 +651,6 @@ _LUA_LORD = (_G +
     "..'|'..ts(ch and ch:is_faction_leader())"
     "..'|'..table.concat(pend,',')"
     "..'|'..ts(g(c,'ActionPointsRemaining'))..'|'..ts(g(c,'ActionPointsPerTurn'))"
-    # ONE walk of unit_list emits both fields: the aggregate `hp` this always returned, and
-    # the per-unit roster after it. The loop already ran and threw every unit away, so the
-    # roster costs payload, not traversal -- `units` was a bare COUNT in 100% of the corpus
-    # while the engine had the composition in hand. The two values are separated by '|' so
-    # they land as consecutive fields of the same split.
-    #
-    # Method names are smoke-tested against a live campaign, not guessed: unit_key,
-    # percentage_proportion_of_full_strength, unit_category and experience_level all answer;
-    # rank(), men_remaining() and max_men() do NOT exist on a unit and are absent for that
-    # reason. A wrong name here returns nil silently -- that is how params.item_key became
-    # the string "nil" in 95,178 of 95,178 rows.
     "..'|'..(function() if not (ch and ch:has_military_force()) then return 'nil|' end "
     "local ok,v=pcall(function() local ul=ch:military_force():unit_list() local t=0 local d={} "
     "for i=0,ul:num_items()-1 do local u=ul:item_at(i) "
@@ -755,10 +659,6 @@ _LUA_LORD = (_G +
     "..'~'..ts(u:experience_level()) end "
     "return (math.floor(t)/100)..'|'..table.concat(d,',') end) "
     "if ok and v~=nil then return v end return 'nil|' end)()"
-    # is_wounded is the only health signal an AGENT has: a hero outside an army carries no
-    # unit and therefore no strength, so hero `hp` is structurally nil rather than broken.
-    # loyalty answers on the character interface (0 on this Empire lord; the archived
-    # firehose carries non-zero values on Dark Elf characters, so the read is live, not dead).
     "..'|'..ts(ch and ch:is_wounded())"
     "..'|'..ts(ch and ch:loyalty())")
 
@@ -790,13 +690,7 @@ def _parse_lord(raw, cqi):
 
 
 def _parse_unit_cards(raw):
-    """key~pct_strength~category~xp per unit, comma separated.
-
-    Empty for a hero with no military force, which is the game answering rather than a
-    failed read -- an agent has no units. Returns [] rather than None so a consumer cannot
-    tell "no army" from "unread"; the caller distinguishes those by `hp`, which is 'nil'
-    only in the no-force case.
-    """
+    """key~pct_strength~category~xp per unit, comma separated."""
     out = []
     for chunk in str(raw or "").split(","):
         bits = chunk.split("~")
@@ -846,14 +740,6 @@ _LUA_PROVINCE = (_G +
     "if k~='' and string.find(k,'settlement') then n=n+(tonumber(g(lv,'Level')) or 0) end "
     "end end return n end)()"
     # Economics, each read at the level the GAME puts it on -- measured live, not assumed.
-    # Growth and development are PROVINCE-scoped and hang off FactionProvinceManagerContext
-    # (GrowthPerTurn=20/25 on live campaigns), NOT off the region: a region-level growth read
-    # is the one thing that was specifically wrong in the design review. Income exists at BOTH
-    # levels and they are different questions -- the settlement's own Income vs the province
-    # aggregate over the regions this faction owns -- so both are recorded rather than one
-    # being picked arbitrarily. They coincide only while a faction holds one region of a
-    # province, which is exactly the early-game case that would have hidden the difference.
-    # public_order stays where it already was, on the REGION interface.
     "..'|'..ts(m and g(m,'GrowthPerTurn'))..'|'..ts(m and g(m,'GrossIncome'))"
     "..'|'..ts(m and g(m,'DevelopmentPoints'))..'|'..ts(g(s,'Income'))"
     # Port and walls were both on the wanted list as "needs collection" and are one property
@@ -991,12 +877,7 @@ def _move_lua(cqi, state):
 
 
 def _parse_move_tiles(raw):
-    """Destinations the game itself validated, as tiles.
-
-    This used to return `move` OFFERS. A reachable tile is a fact about the world; whether
-    it is worth offering as a move is inference, so the tile is what gets recorded and the
-    advisor builds the candidate.
-    """
+    """Destinations the game itself validated, as tiles."""
     raw = str(raw or "")
     rays_part, _, tiles_part = raw.partition("||")
     rays = [int(float(r)) for r in rays_part.split(",") if r.strip().lstrip("-").isdigit()]
@@ -1022,16 +903,7 @@ def _reach_lua(cqi, target_cqis, regions):
 
 
 def _reach(bus, cqi, target_cqis, regions):
-    """Can this character reach these targets, asked live.
-
-    Used by launcher/cco_actions.py, which re-checks reach at CLICK time -- the advisor
-    gated on reach as it was when the snapshot was taken, and the world moves. It reaches
-    this through `_collect_mod()._reach`, an attribute on a function's return value, which
-    is invisible to a static import-graph scan: the dead-code sweep saw no reference and
-    removed it, and every hero action then failed. advisor/test_options.py now greps
-    cco_actions for those dynamic references and asserts each name still resolves, so a
-    scan cannot quietly delete one again.
-    """
+    """Can this character reach these targets, asked live."""
     if not target_cqis and not regions:
         return {}, {}
     return _parse_reach(_ev(bus, _reach_lua(cqi, target_cqis, regions), timeout=40.0,
@@ -1056,23 +928,8 @@ _LUA_LORD_OFFERS = (_G +
     "if type(l)=='table' then for i=1,#l do local v=l[i] st[#st+1]=ts(g(v,'Key'))"
     "..'~'..ts(g(v,'IsActive'))..'~'..ts(g(v,'CanBeActivated'))..'~'..ts(g(v,'CanAfford')) end end end "
     "local sk={} local s=g(c,'SkillList') "
-    # Key and Status alone left params={} on 100% of 2.13M skills rows, so nothing said
-    # how far up a skill already was or how deep it goes. All four are on the same context.
-    #
-    # IsBackgroundSkill is NOT read here, and its absence is a finding rather than an
-    # oversight: SkillList is the ASSIGNABLE skill tree, which structurally never contains a
-    # background skill. All 265 distinct keys the corpus ever saw in it join
-    # reference.sqlite and ZERO carry is_background_skill (953 of the game's 961 background
-    # skills are *_innate_*, none of which appear). It was False in 6,700 of 6,700 rows --
-    # one distinct value, no information, and no number of extra turns would change it.
-    # Anything wanting the flag joins reference.sqlite.skills on the key.
     "if type(s)=='table' then for i=1,#s do sk[#sk+1]=ts(g(s[i],'Key'))..'~'..ts(g(s[i],'Status'))"
     "..'~'..ts(g(s[i],'Level'))..'~'..ts(g(s[i],'TotalLevels'))..'~'..ts(g(s[i],'Tier')) end end "
-    # The background skills a lord actually HAS live here, not in SkillList. The hero probe
-    # has read this since it was written; the lord probe never did, so hidden_skills was
-    # absent on 78 of 78 lord entities while present on 90 of 90 heroes -- we knew the
-    # innate skills of lords we might HIRE (recruit pools carry bg_skills 2177/2177) and not
-    # of the lord being commanded. Same context, same call, one line.
     "local hk={} local h=g(c,'HiddenSkillList') "
     "if type(h)=='table' then for i=1,#h do hk[#hk+1]=ts(g(h[i],'Key')) end end "
     "return table.concat(st,',')..'||'..table.concat(sk,',')..'||'..table.concat(hk,',')")
@@ -1155,10 +1012,6 @@ def _parse_horde_slots(raw):
 _LUA_HERO_OFFERS = (_G +
     "local c=cco('CcoCampaignCharacter','%(cqi)s') "
     "local sk={} local s=g(c,'SkillList') "
-    # Key and Status alone left params={} on 100% of 2.13M skills rows, so nothing said
-    # how far up a skill already was or how deep it goes. All four are on the same context.
-    # IsBackgroundSkill dropped here for the same reason as the lord probe: SkillList
-    # structurally excludes background skills, so it was a constant False. See the note there.
     "if type(s)=='table' then for i=1,#s do sk[#sk+1]=ts(g(s[i],'Key'))..'~'..ts(g(s[i],'Status'))"
     "..'~'..ts(g(s[i],'Level'))..'~'..ts(g(s[i],'TotalLevels'))..'~'..ts(g(s[i],'Tier')) end end "
     "local tk='' local ch=cm:get_character_by_cqi(%(cqi)s) "
@@ -1308,12 +1161,6 @@ _LUA_SLOT_STATES = (_G +
     "if type(slots)=='table' then for i=1,#slots do local sl=slots[i] "
     "local ci=g(sl,'ConstructionItemContext') "
     "local cl=ci and g(ci,'BuildingLevelRecordContext') "
-    # IsDamaged and DismantleRefundAmount are properties of CcoCampaignBuilding, not of
-    # the slot that holds it, and CanBeCancelled is not a slot property at all -- it is
-    # CcoCampaignMission's. All three were read off CcoCampaignBuildingSlot, where g()
-    # returns nil forever: `damaged` was False and `refund` null in every row of the
-    # corpus, and building_repair/_cancel were therefore unavailable in 100% of 384,148
-    # offers. decisions/cco_audit.py now checks every route against CCO.tsv.
     "o[#o+1]=ts(g(sl,'Index'))"
     "..'~'..ts(g(sl,'BuildingContext.IsDamaged'))"
     "..'~'..ts(g(sl,'CanRepair'))..'~'..ts(g(sl,'IsRepairing'))"
@@ -1324,13 +1171,6 @@ _LUA_SLOT_STATES = (_G +
     "..'~'..ts(ci~=nil)"
     "..'~'..ts(cl and g(cl,'Key'))"
     "..'~'..ts(g(sl,'IsEmpty'))"
-    # Field 11: the building actually OCCUPYING the slot. Field 9 above is the QUEUED
-    # construction item, which is what building_repair/cancel/dismantle were labelled
-    # with -- and nothing is queued in most slots, so params.building_key was null in
-    # 181,026 of 192,074 rows (94.2%) for each of those three action types, and
-    # structurally null on dismantle, where you most want to know what you are
-    # demolishing. The two answer different questions; conflating them caused this.
-    # This expression already runs against the same context at collect.py:675.
     "..'~'..ts(g(sl,'BuildingContext.BuildingLevelRecordContext.Key'))"
     # Free on contexts already in hand: the state a repair or dismantle decision is
     # actually about. Health/MaxHealth/IsRuined say how bad it is, RepairCost what it
@@ -1422,10 +1262,6 @@ def _lord_subtypes(bus, faction):
     return _SUBTYPE_CACHE[key]
 
 
-# A read that failed and a list that is genuinely empty must not look alike. TRAITS_UNREAD
-# is what the Lua emits when it could not read TraitsList at all; an empty string is a
-# candidate the game says has no traits. Without the distinction, `traits: []` in 100% of
-# rows is unfalsifiable -- exactly the shape that let campaign.defeated survive a corpus.
 TRAITS_UNREAD = "!"
 
 # Hoisted to module scope so decisions/cco_audit.py can see it. While this was built
@@ -1447,29 +1283,6 @@ _LUA_LORD_POOLS = (_G +
     "if okk and k then tr[#tr+1]=ts(k) end end trs=table.concat(tr,'+') end "
     "local oka,ia=pcall(function() return f:Call(base..'.CharacterContext.IsAgent') end) "
     # The differentiators an actual recruitment card shows.
-    #
-    # MEASURED on 722 pools / 1673 entries of live play, which settles part of a long
-    # -standing "these fields are dead" claim and leaves part of it open:
-    #
-    #   bg_skills  1673/1673 carry a value
-    #   subtypes   1673/1673
-    #   cqis          0/1673
-    #   units         0/1673
-    #   traits        0/1673
-    #
-    # bg_skills and subtypes resolve through the SAME CharacterContext path as cqis, so
-    # the route mechanism works and CharacterContext exists on a pool entry. A null CQI
-    # is therefore the game answering honestly: a pool entry has not been instantiated, so
-    # it has no command queue index. That is a fact about the game, not a broken read.
-    #
-    # `units` is NOT settled. MainUnitRecordContext is a sibling of CharacterContext on
-    # the pool entry rather than a property of it, so nothing here corroborates it the way
-    # bg_skills corroborates cqi -- cco_audit says the route is valid and it returns
-    # nothing. It stays collected and stays flagged by coverage until a campaign shows
-    # otherwise; it is not justified away on a guess.
-    #
-    # traits at 0/1673 is a small sample against a historical 241 of 159,336 on lords, so
-    # it is consistent with "rare" rather than "dead".
     "local bg=ts(g(f,e..'['..i..'].CharacterContext.BackgroundSkillContext.Key')) "
     "local cq=ts(g(f,e..'['..i..'].CharacterContext.CQI')) "
     "local st=ts(g(f,e..'['..i..'].CharacterContext.AgentSubtypeRecordContext.Key')) "
@@ -1542,15 +1355,6 @@ _LUA_CAMPAIGN_OFFERS = (_G +
     "..'~'..ts(g(l[i],'IsResearched'))..'~'..ts(g(l[i],'CanResearch'))"
     "..'~'..ts(g(l[i],'Cost')) end end "
     "local rites={} local r=g(f,'AvailableRitualList') "
-    # The ritual KEY, not just whether it can be performed. Until now the only identity a
-    # rite offer carried was its position in this list ("rite_index_7"), which is a UI
-    # ordinal: 0 of 109 joined the 1,326-row rituals table, rite_index_1 was offered by 88
-    # factions across 23 races and shared one embedding row, and the list length changes
-    # mid-campaign in 68 of 497 campaigns so the index aliases across turns too.
-    # RitualContext -> CcoRitualRecord -> Key, verified against CCO.tsv. The index stays
-    # in params because cco_actions.py performs a rite by indexing this same list.
-    # InvalidRitualReason is the game's own localised explanation, which beats the
-    # hand-rolled gate string it replaces.
     "if type(r)=='table' then for i=1,#r do rites[#rites+1]="
     "ts(g(r[i],'CanPerformRitual'))..'~'..ts(g(r[i],'RitualContext.Key'))"
     "..'~'..ts(g(r[i],'InvalidRitualReason')) end end "
@@ -1658,11 +1462,7 @@ def diplo_unseen_check(targets, world):
 
 
 def _parse_stance_skills(raw):
-    """Split the one eval that fetches both a character's stances and its skills.
-
-    _lord_offers_assemble used to do this inline, which is why the stance and skill data
-    reached nothing but the offer rows and was gone the moment the offers were built.
-    """
+    """Split the one eval that fetches both a character's stances and its skills."""
     parts = str(raw or "").split("||")
     st_raw = parts[0] if parts else ""
     sk_raw = parts[1] if len(parts) > 1 else ""
@@ -1715,14 +1515,6 @@ def _parse_buildable(raw):
                     "key": p[1], "active": p[2] == "true", "empty": p[3] == "true",
                     "can_upgrade": p[4] == "true", "cost": _num(p[5]), "upkeep": _num(p[6]),
                     "level": _num(p[7]),
-                    # NOT treasury affordability. The Lua reads
-                    # CanAffordResourceCostForSlot, which answers the POOLED-RESOURCE
-                    # question (food, labour, dev points) and is True in 645 of 645 rows
-                    # because none of the buildings in that corpus cost a pooled resource.
-                    # It was named `can_afford`, which is the treasury question, and read as
-                    # such. Treasury affordability is derivable from what is already
-                    # stored -- `cost` here against campaign.treasury -- so nothing is lost
-                    # by naming this one honestly rather than inventing a second read.
                     "can_afford_resources": p[8] == "true"})
     return out, [k for k in cparts[2].split(",") if k and k != "nil"]
 
@@ -1834,11 +1626,6 @@ def snapshot(bus, active=None):
         heroes = [c for c in heroes if c in set(str(x) for x in (active.get("heroes") or []))]
         regions = [r for r in regions if r in set(active.get("regions") or [])]
         want_camp = bool(active.get("campaign", True))
-    # REACH IS FETCHED FOR A UNION TARGET SET. It used to be scoped per character by
-    # generator-side logic (_lord_targets for lords, _hero_action_reach_targets for
-    # heroes), which meant the recorder had to know what the generator intended to offer
-    # in order to know what to ask the game. It asks about everything reachable-relevant
-    # instead, and the advisor takes the subset it needs.
     reach_cqis = ([str(h["cqi"]) for h in world["hostiles"]
                    if h.get("kind") in ("army", "neutral_army") and h.get("cqi")]
                   + [str(a["cqi"]) for a in world["enemy_agents"] if a.get("cqi")]

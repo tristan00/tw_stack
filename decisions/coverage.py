@@ -90,27 +90,12 @@ def _blank():
 
 
 def _norm(scope):
-    """decision_points.campaign and entity_snapshots[campaign].features are the same
-    blob written twice -- byte for byte. Judge them once. (That duplication is itself
-    worth removing; the interned-blob schema does it for free.)"""
+    """decision_points.campaign and entity_snapshots[campaign].features are the same"""
     return "campaign" if scope == "state:campaign" else scope
 
 
 def _rows(con, col, table, where=(), args=(), sample=None):
-    """A sample spread over the whole corpus, not the first N.
-
-    `LIMIT N` with no ORDER BY returns the N lowest rowids -- the earliest decisions of
-    the earliest campaigns. Anything that only happens later in a campaign is then absent
-    from the sample by construction and gets reported as a dead field. That is not
-    hypothetical: `diplomacy.their_vassal` was flagged constant-False off the first 40,000
-    rows and is in fact true in 8,256 of 2,131,584 -- vassals do not exist on turn 1. A
-    checker that manufactures its own false positives cannot be an acceptance gate.
-
-    The stride is on `decision_id` rather than on rowid, for two reasons: it is uniform in
-    campaign time, which is the axis the bias was on, and the v2 store serves these table
-    names as views, which have no rowid at all. Rows are near-uniformly distributed across
-    decisions, so a step derived from the row count still lands near `sample` rows.
-    """
+    """A sample spread over the whole corpus, not the first N."""
     sql = "SELECT %s FROM %s" % (col, table)
     cond = list(where)
     if sample:
@@ -126,24 +111,12 @@ def _rows(con, col, table, where=(), args=(), sample=None):
 
 
 def declared_types():
-    """The action types this project claims to support, from the three places that
-    declare them -- and they have to agree.
-
-    coverage used to enumerate types with SELECT DISTINCT action_type, which can only
-    ever report the types that are PRESENT. A type that is declared, executable and never
-    generated is invisible to that query: four types were refused 100% of the time in the
-    last run and nothing said a word, because a type with zero rows has no rows to judge.
-    """
+    """The action types this project claims to support, from the three places that"""
     import importlib
     sys.path.insert(0, os.path.join(common.ADVISOR, "mapgraph"))
     sys.path.insert(0, common.ADVISOR)
     feats = importlib.import_module("features")
     gs = importlib.import_module("advisor.mapgraph.schema")
-    # MAP action types only. schema.ACTION_TYPES also carries the screen_* types, which
-    # are options on blocking panels -- they are never generated as offers, never reach
-    # features.py, and have no coverage to report. Comparing the full sets would demand
-    # that the CatBoost map feature builder declare a vocabulary for a decision family it
-    # does not see.
     a, b = set(feats.ACTION_TYPES), set(gs.ACTION_TYPES) - set(gs.SCREEN_ACTION_TYPES)
     if a != b:
         raise SystemExit(
@@ -158,12 +131,7 @@ def declared_types():
 
 
 def survivor_report(con):
-    """Declared types against what actually survived the gate.
-
-    A declared type with zero stored options is a real finding: either the generator
-    never emits it, or the gate refuses it every time. Both are bugs and neither is
-    visible from the rows, because there are none.
-    """
+    """Declared types against what actually survived the gate."""
     have = {r[0]: r[1] for r in con.execute(
         "SELECT action_type, COUNT(*) FROM action_offers GROUP BY action_type")}
     return [(at, have.get(at, 0)) for at in declared_types()]
@@ -245,13 +213,7 @@ def check(db=None, sample=None, min_rows=200, verbose=True):
 
 
 def selftest():
-    """The acceptance gate has to be seen failing before a green run means anything.
-
-    coverage decides whether a corpus is fit to train on and had no test of its own, so
-    "coverage OK" was a claim about the data that rested on an untested claim about the
-    checker. This builds one store whose fields vary and one where they do not, and
-    requires the checker to tell them apart.
-    """
+    """The acceptance gate has to be seen failing before a green run means anything."""
     import shutil
     import tempfile
     sys.path.insert(0, common.DECISIONS)

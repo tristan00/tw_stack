@@ -1,7 +1,19 @@
 import { ArrowLeft } from 'lucide-react'
 import { Link, useParams } from 'react-router-dom'
+import { RankScatter } from '@/components/charts'
 import { DataTable, type Col } from '@/components/DataTable'
-import { Card, Chip, ErrorState, IdentLabel, Section, Skeleton } from '@/components/primitives'
+import {
+  Card,
+  Chip,
+  CountText,
+  EmptyState,
+  ErrorState,
+  IdentLabel,
+  ModelKey,
+  RangeMeter,
+  Section,
+  Skeleton,
+} from '@/components/primitives'
 import { useApi, type DecisionDetail as Detail, type Schemas } from '@/lib/api'
 import { clock, ms, n } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -147,6 +159,65 @@ export function DecisionDetail() {
             {!data.phases.length && <span className="text-dim text-2xs">no timing recorded</span>}
           </div>
         </Card>
+      </Section>
+
+      <Section
+        title="how alike the two rankings were"
+        scope={{
+          text: "both models' orderings of this decision's offers, over the offers both scored",
+          detail: 'every dot is a row in the ranking below',
+        }}
+      >
+        {!data.agreement || data.agreement.rho === null || data.agreement.rho === undefined ? (
+          <EmptyState
+            what="this decision has no rank correlation"
+            why={
+              data.agreement?.note ??
+              'fewer than three offers carry both ranks, and a rho over two points can only be +1 or -1'
+            }
+          />
+        ) : (
+          <Card className="flex flex-wrap items-start gap-6 p-3.5">
+            <div className="min-w-0 flex-1 space-y-2">
+              <div>
+                <div className="text-dim text-2xs uppercase tracking-wide">spearman rho</div>
+                <div className="num text-xl leading-tight">
+                  {data.agreement.rho >= 0 ? '+' : ''}
+                  {data.agreement.rho.toFixed(3)}
+                </div>
+                <RangeMeter value={data.agreement.rho} width={180} />
+              </div>
+              <CountText count={data.agreement.n} />
+              <div className="text-2xs">
+                {data.agreement.top1_same
+                  ? 'both models put the same offer first'
+                  : 'the two models put different offers first'}
+              </div>
+              {(data.agreement.cat_top_in_gnn || data.agreement.gnn_top_in_cat) && (
+                <div className="text-dim text-2xs">
+                  the tree model's first choice was the graph model's{' '}
+                  <b className="num text-fg">#{data.agreement.cat_top_in_gnn}</b>; the graph
+                  model's was the tree model's{' '}
+                  <b className="num text-fg">#{data.agreement.gnn_top_in_cat}</b>
+                </div>
+              )}
+              <div className="text-dim flex flex-wrap gap-3 text-2xs">
+                <ModelKey model="cat">tree model rank →</ModelKey>
+                <ModelKey model="gnn">graph model rank ↓</ModelKey>
+              </div>
+            </div>
+            <RankScatter
+              pairs={data.offers
+                .filter((o) => o.rank !== null && o.rank !== undefined && o.gnn_rank !== null && o.gnn_rank !== undefined)
+                .map((o) => ({
+                  cat: o.rank as number,
+                  gnn: o.gnn_rank as number,
+                  taken: Boolean(o.taken),
+                  label: o.action_key ?? '',
+                }))}
+            />
+          </Card>
+        )}
       </Section>
 
       <Section

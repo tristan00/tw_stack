@@ -184,7 +184,7 @@ class InterruptRanker:
         # model's encoder, exactly as e1/e2 here are not model.py's e1/e2.
         self.gnn = None
         self.gnn_score_errors = 0
-        if "gnn_marwil" in self.strategies and model_dir != common.MODEL_COLD_START:
+        if "marwil_gnn" in self.strategies and model_dir != common.MODEL_COLD_START:
             try:
                 if common.ROOT not in sys.path:
                     sys.path.insert(0, common.ROOT)
@@ -254,8 +254,7 @@ class InterruptRanker:
         return names[-1]
 
     def _score_with_gnn(self, screen, opts, record, panel, meta):
-        """Graph scores for this screen, or {}. Swallows its own failures on purpose:
-        an unscored screen costs a comparison, a raised one costs the run."""
+        """Graph scores for this screen, or {}. Swallows its own failures on purpose:"""
         if self.gnn is None or not self.gnn.ready:
             return {}
         try:
@@ -276,14 +275,7 @@ class InterruptRanker:
         return seen >= MIN_ROWS, "screen not in the fitted set (meta predates screen_rows)"
 
     def choose(self, screen, options, campaign, panel=None, record=None, meta=None):
-        """Pick one option, and score the screen with EVERY arm that can score it.
-
-        Both models run on every screen regardless of which one the draw hands the
-        decision to -- which is what policy.py:113-135 already does on the action path,
-        and it is what makes the two arms comparable at all. Whatever they produce is
-        returned as the rich scores, lands in options_json, and is the evidence for
-        whether the graph arm is worth more than 10%.
-        """
+        """Pick one option, and score the screen with EVERY arm that can score it."""
         opts = sorted(options)
         if not opts:
             return None, "none", {}
@@ -311,26 +303,21 @@ class InterruptRanker:
             if hit:
                 return hit[0], "ruleset(%s)" % hit[1], rich
             return self.rng.choice(opts), "ruleset_random_fallback", rich
-        if drawn == "gnn_marwil":
-            # No delegation. This arm used to be handed to exploit_tree and recorded as
-            # gnn_delegated_exploit_tree, which meant the gnn share of the mix was decided
-            # by CatBoost on every blocking screen and the arm's measured share was
-            # fiction. It has its own model now; when that model cannot score, the arm
-            # falls back to RANDOM and says so, the same way policy.py:141-148 does.
+        if drawn == "marwil_gnn":
             if not gnn:
-                return self.rng.choice(opts), "gnn_marwil_random_fallback", rich
-            return max(gnn, key=gnn.get), "gnn_marwil", rich
-        if drawn != "exploit_tree":
+                return self.rng.choice(opts), "marwil_gnn_random_fallback", rich
+            return max(gnn, key=gnn.get), "marwil_gnn", rich
+        if drawn != "greedy_catboost":
             raise RuntimeError("interrupt_model: drawn strategy %r has no interrupt branch -- "
-                               "refusing to silently play exploit_tree" % (drawn,))
+                               "refusing to silently play greedy_catboost" % (drawn,))
         if not usable:
             pick = self.rng.choice(opts)
-            sys.stderr.write("interrupt_model: %s -> %r (exploit_tree_random_fallback, %s)\n"
+            sys.stderr.write("interrupt_model: %s -> %r (greedy_catboost_random_fallback, %s)\n"
                              % (screen, pick, why))
-            return pick, "exploit_tree_random_fallback", rich
+            return pick, "greedy_catboost_random_fallback", rich
         if not exploit:
-            return self.rng.choice(opts), "exploit_tree_random_fallback", rich
-        return max(exploit, key=exploit.get), "exploit_tree", rich
+            return self.rng.choice(opts), "greedy_catboost_random_fallback", rich
+        return max(exploit, key=exploit.get), "greedy_catboost", rich
 
 
 def main():

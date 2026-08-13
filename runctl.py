@@ -74,7 +74,7 @@ def kill_ui():
     return "killed uis=%d" % _ps_kill("advisor_api")
 
 
-def start_recorder(shots=DEFAULT_SHOTS, dev=False):
+def start_recorder(shots=DEFAULT_SHOTS, dev=True):
     log = os.path.join(SERVICES_LOG_DIR, "manager_%s.log" % _stamp())
     args = [VENV_PY, "-u", "manager/manager.py", "--shots", str(shots)] + (["--dev"] if dev else [])
     _spawn(args, log, merge_err=True)
@@ -82,18 +82,35 @@ def start_recorder(shots=DEFAULT_SHOTS, dev=False):
 
 
 def start_ui(port=DEFAULT_PORT):
-    """The dashboard: one process serving the JSON API and the built client.
-
-    Run as a module, not a script path, so `advisor_api` resolves as a package from the
-    repo root -- the same reason check.py invokes its harnesses the way it does.
-    """
+    """The dashboard: one process serving the JSON API and the built client."""
     log = os.path.join(SERVICES_LOG_DIR, "ui_%s.log" % _stamp())
     _spawn([VENV_PY, "-u", "-m", "advisor_api.app", str(port)], log)
     return "ui :%d -> %s" % (port, log)
 
 
+def kill_analytics():
+    return "killed analytics=%d" % _ps_kill("analytics.runner")
+
+
+def start_analytics():
+    """The analytics builder: precomputes what the dashboard reads."""
+    log = os.path.join(SERVICES_LOG_DIR, "analytics_%s.log" % _stamp())
+    _spawn([VENV_PY, "-u", "-m", "analytics.runner"], log, merge_err=True)
+    return "analytics -> %s" % log
+
+
+def rebuild_analytics():
+    """Wipe every precomputed table and rebuild, then keep serving."""
+    steps = [kill_analytics()]
+    time.sleep(0.5)
+    log = os.path.join(SERVICES_LOG_DIR, "analytics_rebuild_%s.log" % _stamp())
+    _spawn([VENV_PY, "-u", "-m", "analytics.runner", "--rebuild"], log, merge_err=True)
+    steps.append("analytics rebuilding -> %s" % log)
+    return steps
+
+
 def start_session(campaigns, turns, model=None, cfg=None, retrain=True, retrain_every=0,
-                  cold=False, dev=False, epsilon=None, factions="all", strategies=None,
+                  cold=False, dev=True, epsilon=None, factions="all", strategies=None,
                   ruleset=None, campaign=None):
     if not str(factions or "").strip():
         raise SystemExit("--factions must be 'all', 'no-cutscene', or a comma-separated "
@@ -124,16 +141,18 @@ def start_session(campaigns, turns, model=None, cfg=None, retrain=True, retrain_
 
 
 def up(campaigns, turns, model=None, cfg=None, retrain=True, retrain_every=0, cold=False,
-       dev=False, shots=DEFAULT_SHOTS, port=DEFAULT_PORT, with_ui=True, epsilon=None,
+       dev=True, shots=DEFAULT_SHOTS, port=DEFAULT_PORT, with_ui=True, epsilon=None,
        factions="all", strategies=None, ruleset=None, campaign=None):
     steps = [kill_session(), kill_recorder()]
     if with_ui:
         steps.append(kill_ui())
+        steps.append(kill_analytics())
     time.sleep(1.5)
     steps.append(start_recorder(shots=shots, dev=dev))
     time.sleep(3.0)
     if with_ui:
         steps.append(start_ui(port=port))
+        steps.append(start_analytics())
         time.sleep(2.0)
     steps.append("session -> %s" % start_session(campaigns, turns, model=model, cfg=cfg,
                                                  retrain=retrain, retrain_every=retrain_every,
@@ -144,13 +163,13 @@ def up(campaigns, turns, model=None, cfg=None, retrain=True, retrain_every=0, co
 
 
 def down():
-    return [kill_session(), kill_recorder(), kill_ui()]
+    return [kill_session(), kill_recorder(), kill_ui(), kill_analytics()]
 
 
 def status():
     cmd = ("Get-CimInstance Win32_Process -Filter \"Name like '%python%'\" | "
            "? { $_.CommandLine -like '*session.py*' -or $_.CommandLine -like '*manager.py*' "
-           "-or $_.CommandLine -like '*ui.py*' } | "
+           "-or $_.CommandLine -like '*advisor_api*' -or $_.CommandLine -like '*analytics.runner*' } | "
            "% { '{0}  {1}' -f $_.ProcessId, $_.CommandLine }")
     try:
         r = subprocess.run(["powershell", "-NoProfile", "-Command", cmd], capture_output=True,
@@ -198,7 +217,10 @@ def main():
         s.add_argument("--ruleset", default=None)
         s.add_argument("--campaign", default=None)
         s.add_argument("--cold", action="store_true")
-        s.add_argument("--dev", action="store_true")
+        s.add_argument("--dev", action="store_true",
+                       help="(default; accepted so the old spelling still works)")
+        s.add_argument("--no-dev", action="store_true",
+                       help="turn the diagnostic streams OFF -- they are on by default")
         if name == "up":
             s.add_argument("--shots", type=int, default=DEFAULT_SHOTS)
             s.add_argument("--port", type=int, default=DEFAULT_PORT)
@@ -213,7 +235,8 @@ def main():
         print("\n".join(down()))
         return
     common = dict(model=a.model, cfg=_cfg(a.cfg), retrain=not a.no_retrain,
-                  retrain_every=a.retrain_every, cold=a.cold, dev=a.dev, epsilon=a.epsilon,
+                  retrain_every=a.retrain_every, cold=a.cold, dev=not a.no_dev,
+                  epsilon=a.epsilon,
                   factions=a.factions, strategies=a.strategies, ruleset=a.ruleset,
                   campaign=a.campaign)
     if a.cmd == "session":

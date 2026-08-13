@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { DataTable, type Col } from '@/components/DataTable'
 import {
   Bar,
@@ -6,13 +7,20 @@ import {
   CountText,
   EmptyState,
   ErrorState,
+  Help,
+  ModelKey,
+  RangeMeter,
+  RateText,
   Section,
   Skeleton,
 } from '@/components/primitives'
+import { ChartFrame, RhoHistogram, RhoTrend } from '@/components/charts'
 import { SubNav, useSubView } from '@/components/SubNav'
 import {
   useApi,
   type AgreementPage,
+  type AgreementSeriesPage,
+  type AgreementSeriesPoint,
   type CorrelationsPage,
   type ForcingPage,
   type ModelsPage,
@@ -25,15 +33,16 @@ import { cn } from '@/lib/utils'
 const VIEWS = [
   { key: 'disk', label: 'on disk', asks: 'what is trained right now' },
   { key: 'forcing', label: 'what each wants', asks: 'what does each arm pick' },
-  { key: 'agreement', label: 'agreement', asks: 'do the two models agree' },
+  { key: 'agreement', label: 'agreement', asks: 'do the two models rank alike' },
+  { key: 'drift', label: 'over time', asks: 'has their agreement changed as they retrained' },
   { key: 'correlations', label: 'does it help', asks: 'does an arm track how it went' },
   { key: 'training', label: 'training', asks: 'what has been tried, and did the retrain help' },
 ]
 
 /** The arms a trial drew from, in a fixed order so trials compare by eye. */
 const MIX_ARMS: { key: string; short: string; cls: string }[] = [
-  { key: 'exploit_tree', short: 'ET', cls: 'bg-cat' },
-  { key: 'gnn_marwil', short: 'GN', cls: 'bg-gnn' },
+  { key: 'greedy_catboost', short: 'GC', cls: 'bg-cat' },
+  { key: 'marwil_gnn', short: 'MG', cls: 'bg-gnn' },
   { key: 'random', short: 'RD', cls: 'bg-dim' },
   { key: 'ruleset', short: 'RS', cls: 'bg-warn' },
 ]
@@ -243,11 +252,39 @@ function Agreement() {
       render: (r) => n(r.gnn_pct, 1),
     },
     {
+      key: 'rho',
+      label: 'rho',
+      align: 'right',
+      group: 'agree',
+      // Nulls sort last on an ascending sort, so one click puts the biggest disagreements
+      // on top -- which is the reason the column is sortable at all.
+      value: (r) => r.rho_median ?? undefined,
+      sortUndefined: 'last',
+      render: (r) =>
+        r.rho_median === null || r.rho_median === undefined ? (
+          <span className="text-dim">—</span>
+        ) : (
+          // Not colour-graded. There is no threshold at which a rank correlation becomes
+          // good, so grading it would assert a judgement the server does not make.
+          <span className="num">
+            {r.rho_median >= 0 ? '+' : ''}
+            {r.rho_median.toFixed(3)}
+          </span>
+        ),
+    },
+    {
+      key: 'fell_back',
+      label: 'fell back',
+      align: 'right',
+      optional: true,
+      value: (r) => r.fell_back,
+      render: (r) => (r.fell_back ? n(r.fell_back) : <span className="text-dim">—</span>),
+    },
+    {
       key: 'delta',
       label: 'gap',
       align: 'right',
-      group: 'graph model',
-      help: 'Graph minus tree, on the percentile. Positive means the graph model rated the taken action higher.',
+      group: 'agree',
       value: (r) => r.delta_pct ?? 0,
       render: (r) =>
         r.delta_pct === null || r.delta_pct === undefined ? (
@@ -261,34 +298,326 @@ function Agreement() {
     },
   ]
 
+  const c = data.correlation
+  // The generated types mark defaulted lists optional, so they are normalised once here
+  // rather than guarded at every use.
+  const bins = data.rho_bins ?? []
+  const secondary = data.secondary ?? []
+  const excluded = c?.excluded ?? []
   return (
-    <Section title="do the two models agree" scope={data.scope}>
-      {data.empty_reason ? (
-        <EmptyState what="nothing to compare yet" why={data.empty_reason} />
-      ) : (
-        <>
-          <div className="mb-3 grid gap-2 sm:grid-cols-3">
-            {data.summary.map((s) => (
-              <Card key={s.measure} className="px-3.5 py-3">
-                <div className="text-dim text-2xs uppercase tracking-wide">{s.measure}</div>
-                <div className="num mt-0.5 text-xl">{s.value}</div>
-                {s.help && <div className="text-dim mt-1 text-2xs">{s.help}</div>}
+    <div className="space-y-7">
+      <Section
+        title="do the two models rank alike"
+        scope={data.scope}
+        right={
+          <Help>
+            Spearman rho compares the two models' whole orderings of one decision, not just
+            the action that was taken. Near +1 they are ranking on the same thing and the
+            second model is close to redundant; near 0 they are ranking on effectively
+            unrelated criteria; near −1 one is the other reversed. None of the three is a
+            fault by itself — which one you want is a question about the run. A decision the
+            graph model never scored cannot appear here at all.
+          </Help>
+        }
+      >
+        <Freshness f={data.freshness} />
+        {data.empty_reason || !c ? (
+          <EmptyState what="nothing to compare yet" why={data.empty_reason} />
+        ) : (
+          <>
+            <div className="mb-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+              <Card className="px-3.5 py-3 sm:col-span-2">
+                <div className="text-dim text-2xs uppercase tracking-wide">
+                  spearman rho, median
+                </div>
+                <div className="num mt-0.5 text-xl leading-tight">
+                  {c.rho_median === null || c.rho_median === undefined
+                    ? '—'
+                    : `${c.rho_median >= 0 ? '+' : ''}${c.rho_median.toFixed(3)}`}
+                </div>
+                <div className="mt-1">
+                  <RangeMeter value={c.rho_median} band={[c.rho_q1, c.rho_q3]} width={180} />
+                </div>
+                <div className="text-dim mt-1 text-2xs">
+                  over <span className="num">{n(c.compared.value)}</span> decisions · the
+                  shaded part is the middle half of them
+                </div>
               </Card>
-            ))}
-          </div>
-          {data.warning && (
-            <Card className="border-warn mb-3 px-3 py-2 text-2xs">{data.warning}</Card>
-          )}
+              <Card className="px-3.5 py-3">
+                <div className="text-dim text-2xs uppercase tracking-wide">rho, mean</div>
+                <div className="num mt-0.5 text-xl leading-tight">
+                  {c.rho_mean === null || c.rho_mean === undefined
+                    ? '—'
+                    : `${c.rho_mean >= 0 ? '+' : ''}${c.rho_mean.toFixed(3)}`}
+                </div>
+                <div className="text-dim mt-1 text-2xs">
+                  pulled by the tails; the median beside it is not
+                </div>
+              </Card>
+              <Card className="px-3.5 py-3">
+                <div className="text-dim text-2xs uppercase tracking-wide">
+                  both picked the same best action
+                </div>
+                <div className="mt-1">
+                  <RateText rate={c.same_best} />
+                </div>
+                <div className="mt-1">
+                  <Bar rate={c.same_best} />
+                </div>
+              </Card>
+            </div>
+            <div className="mb-3 flex flex-wrap gap-2">
+              {excluded.map((e) => (
+                <Card key={e.population} className="px-3 py-2">
+                  <CountText count={e} />
+                </Card>
+              ))}
+            </div>
+          </>
+        )}
+      </Section>
+
+      {!data.empty_reason && (
+        <Section
+          title="where each model ranked the action that was taken"
+          scope={{
+            text: 'grouped by the strategy that actually chose',
+            detail:
+              "rank is the taken action's position in that model's ordering; percentile is the same as a share, so decisions of different sizes compare",
+          }}
+          right={
+            <div className="text-dim flex items-center gap-3 text-2xs">
+              <ModelKey model="cat">tree model</ModelKey>
+              <ModelKey model="gnn">graph model</ModelKey>
+            </div>
+          }
+        >
           <DataTable
             rows={data.rows}
             cols={cols}
             rowId={(r) => r.picked_by.raw}
             dense
-            emptyWhat="no decision in the window carries both ranks"
+            emptyWhat="no decision carries both ranks"
+            emptyWhy="a decision is only comparable once the graph model has weights and has scored the same offers"
           />
-        </>
+        </Section>
       )}
-    </Section>
+
+      {bins.length > 0 && (
+        <Section
+          title="how alike, decision by decision"
+          scope={{
+            text: `one bar per 0.1 of rho, over the ${n(c?.compared.value ?? 0)} decisions compared`,
+          }}
+        >
+          <ChartFrame
+            table={
+              <DataTable
+                rows={bins}
+                cols={binCols}
+                rowId={(b) => String(b.lo)}
+                dense
+                emptyWhat="no distribution yet"
+              />
+            }
+          >
+            <RhoHistogram bins={bins} median={c?.rho_median ?? null} />
+          </ChartFrame>
+        </Section>
+      )}
+
+      {secondary.length > 0 && (
+        <Section
+          title="other ways of measuring the same thing"
+          scope={{ text: 'secondary' }}
+        >
+          <DataTable
+            rows={secondary}
+            cols={secondaryCols}
+            rowId={(r) => r.measure}
+            dense
+            emptyWhat="no secondary measures"
+          />
+        </Section>
+      )}
+    </div>
+  )
+}
+
+/** Says how current the precomputed numbers are, and never silently serves stale ones. */
+function Freshness({ f }: { f: Schemas['AnalyticsFreshness'] }) {
+  if (f.state === 'ok') return null
+  return (
+    <Card className={cn('mb-3 px-3 py-2 text-2xs', f.state === 'bad' ? 'border-bad' : 'border-warn')}>
+      <Chip state={f.state ?? 'neutral'}>analytics {f.state}</Chip>{' '}
+      {f.detail ?? `${f.behind.value} decisions behind`}
+    </Card>
+  )
+}
+
+const binCols: Col<Schemas['RhoBin']>[] = [
+  { key: 'from', label: 'from', align: 'right', value: (b) => b.lo, render: (b) => b.lo.toFixed(1) },
+  { key: 'to', label: 'to', align: 'right', value: (b) => b.hi, render: (b) => b.hi.toFixed(1) },
+  {
+    key: 'decisions',
+    label: 'decisions',
+    align: 'right',
+    value: (b) => b.decisions,
+    render: (b) => n(b.decisions),
+  },
+]
+
+const secondaryCols: Col<Schemas['SecondaryMeasure']>[] = [
+  { key: 'measure', label: 'measure', value: (r) => r.measure, render: (r) => r.measure },
+  {
+    key: 'value',
+    label: 'value',
+    align: 'right',
+    value: (r) => r.value,
+    render: (r) => (r.rate ? <Bar rate={r.rate} width={90} /> : <span className="num">{r.value}</span>),
+  },
+]
+
+const trendCols: Col<AgreementSeriesPoint>[] = [
+  { key: 'label', label: 'bucket', value: (p) => p.seq, render: (p) => p.label },
+  {
+    key: 'decisions',
+    label: 'decisions',
+    align: 'right',
+    value: (p) => p.decisions.value,
+    render: (p) => n(p.decisions.value),
+  },
+  {
+    key: 'rho',
+    label: 'rho',
+    align: 'right',
+    value: (p) => p.rho_median ?? undefined,
+    sortUndefined: 'last',
+    render: (p) =>
+      p.rho_median === null || p.rho_median === undefined ? (
+        <span className="text-dim">—</span>
+      ) : (
+        <span className="num">
+          {p.rho_median >= 0 ? '+' : ''}
+          {p.rho_median.toFixed(3)}
+        </span>
+      ),
+  },
+  {
+    key: 'spread',
+    label: 'middle half',
+    align: 'right',
+    value: (p) => p.rho_q1 ?? undefined,
+    sortUndefined: 'last',
+    render: (p) =>
+      p.rho_q1 === null || p.rho_q1 === undefined ? (
+        <span className="text-dim">—</span>
+      ) : (
+        <span className="num text-2xs">
+          {p.rho_q1.toFixed(2)} … {(p.rho_q3 ?? 0).toFixed(2)}
+        </span>
+      ),
+  },
+  {
+    key: 'gate',
+    label: 'note',
+    value: (p) => p.gate ?? '',
+    render: (p) => (p.gate ? <span className="text-warn text-2xs">{p.gate}</span> : <span className="text-dim">—</span>),
+  },
+]
+
+/**
+ * Has the agreement changed as the models retrained.
+ *
+ * The generation axis is an ALIGNMENT, and the caveat that says so is a card on the page
+ * rather than a tooltip: it is the single most misreadable thing on this view, and a fact
+ * reachable only by hovering is invisible on a dashboard you glance at.
+ */
+function Drift() {
+  const [axis, setAxis] = useState<'window' | 'generation'>('window')
+  const { data, error, loading, reload } = useApi<AgreementSeriesPage>(
+    `/api/models/agreement/series?axis=${axis}`,
+  )
+  if (error) return <ErrorState error={error} onRetry={reload} />
+  if (loading || !data) return <Skeleton rows={6} />
+  const points = data.points ?? []
+  const generations = data.generations ?? []
+  const drawable = points.some((p) => p.rho_median !== null && p.rho_median !== undefined)
+  return (
+    <div className="space-y-7">
+      <Section
+        title="has their agreement changed"
+        scope={data.scope}
+        right={
+          <div className="flex items-center gap-1">
+            {(['window', 'generation'] as const).map((a) => (
+              <button
+                key={a}
+                onClick={() => setAxis(a)}
+                className={cn(
+                  'text-2xs rounded px-1.5 py-0.5',
+                  axis === a ? 'bg-raised text-fg font-semibold' : 'text-dim hover:text-fg',
+                )}
+              >
+                {a === 'window' ? 'over the run' : 'by generation'}
+              </button>
+            ))}
+          </div>
+        }
+      >
+        <Freshness f={data.freshness} />
+        {data.is_alignment && data.caveat && (
+          <Card className="border-warn mb-3 px-3 py-2 text-2xs">
+            {data.caveat}
+            {data.ambiguous.value > 0 && (
+              <div className="mt-1">
+                <CountText count={data.ambiguous} />
+              </div>
+            )}
+          </Card>
+        )}
+        {!drawable ? (
+          <EmptyState
+            what="no bucket has enough comparable decisions to draw"
+            why={data.empty_reason}
+          />
+        ) : (
+          <>
+            <ChartFrame
+              table={
+                <DataTable
+                  rows={points}
+                  cols={trendCols}
+                  rowId={(p) => String(p.seq)}
+                  dense
+                  emptyWhat="no bucket in this window"
+                />
+              }
+              note={
+                data.bucket_decisions
+                  ? `one point per ${data.bucket_decisions} comparable decisions`
+                  : undefined
+              }
+            >
+              <RhoTrend points={points} marks={generations} />
+            </ChartFrame>
+            <div className="text-dim mt-2 flex flex-wrap items-center gap-4 text-2xs">
+              <span className="flex items-center gap-1.5">
+                <span className="bg-accent inline-block h-0.5 w-4 rounded-full" /> median rho per
+                bucket
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="bg-accent/20 inline-block h-2.5 w-4 rounded-sm" /> the middle half
+                of that bucket
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="text-dim">▲</span> a retrain finished near here
+              </span>
+            </div>
+          </>
+        )}
+      </Section>
+    </div>
   )
 }
 
@@ -316,7 +645,6 @@ const corrCols: Col<CorrelationRow>[] = [
     align: 'right',
     // A correlation over too few points is refused and says why, rather than being
     // printed as though it were a finding.
-    help: 'Pearson r between this arm\'s share of a turn and the settlements at that turn. Withheld below 12 paired points — a correlation over eight points is noise wearing a number.',
     value: (r) => r.settlements_r ?? -2,
     render: (r) =>
       r.settlements_r === null || r.settlements_r === undefined ? (
@@ -390,7 +718,6 @@ function Training() {
       label: 'updates',
       align: 'right',
       optional: true,
-      help: 'The ledger appends a line per campaign as a trial runs. This row is the trial\'s newest state; this is how many lines it has written.',
       value: (r) => r.snapshots ?? 1,
       render: (r) => n(r.snapshots ?? 1),
     },
@@ -409,7 +736,6 @@ function Training() {
     {
       key: 'mix',
       label: 'strategy mix',
-      help: 'The share each arm was drawn with: exploit_tree / gnn_marwil / random / ruleset. This is the independent variable of the experiment — two trials are only comparable if it matches.',
       value: (r) => JSON.stringify(r.mix ?? {}),
       render: (r) => <MixBar mix={r.mix as Record<string, unknown> | undefined} />,
     },
@@ -460,16 +786,46 @@ function Training() {
     {
       key: 'grew',
       label: 'grew',
-      align: 'right',
       group: 'result',
-      value: (r) => r.grew ?? '',
-      render: (r) => r.grew ?? '—',
+      // A Rate now, not "38 of 240" as a string: the denominator is carried by the type
+      // rather than by convention, which is what makes two trials over different campaign
+      // counts visibly different instead of silently different.
+      value: (r) => r.grew?.n ?? undefined,
+      sortUndefined: 'last',
+      render: (r) => <Bar rate={r.grew ?? null} width={80} />,
+    },
+    {
+      key: 'shrank',
+      label: 'shrank',
+      group: 'result',
+      // Can now be non-zero. The ledger used to clamp each campaign's gain at zero, so a
+      // campaign that LOST settlements recorded 0 and this column would have been 0 by
+      // construction -- a growth number that could not report loss.
+      value: (r) => r.shrank?.n ?? undefined,
+      sortUndefined: 'last',
+      render: (r) => <Bar rate={r.shrank ?? null} width={80} />,
+    },
+    {
+      key: 'growth_baseline',
+      label: 'baseline',
+      group: 'result',
+      optional: true,
+      value: (r) => r.growth_baseline ?? '',
+      render: (r) =>
+        r.growth_baseline === 'first_target_row' ? (
+          <span className="text-dim text-2xs">first → last</span>
+        ) : r.growth_baseline ? (
+          <Chip state="warn" title="measured on the old clamped baseline">
+            {r.growth_baseline}
+          </Chip>
+        ) : (
+          <span className="text-dim">—</span>
+        ),
     },
     {
       key: 'notes',
       label: 'outcomes',
       group: 'result',
-      help: 'How the campaigns in this trial ended, tallied.',
       value: (r) => r.notes ?? '',
       render: (r) => <span className="text-dim text-2xs">{r.notes ?? '—'}</span>,
     },
@@ -577,6 +933,7 @@ export function Models() {
       {view === 'disk' && <OnDisk />}
       {view === 'forcing' && <Forcing />}
       {view === 'agreement' && <Agreement />}
+      {view === 'drift' && <Drift />}
       {view === 'correlations' && <Correlations />}
       {view === 'training' && <Training />}
     </div>

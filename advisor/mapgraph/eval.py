@@ -134,12 +134,7 @@ def discrim(limit=120):
 
 
 def ablate(limit=60, seed=0):
-    """Rewire one relation group at a time and measure how much the ranking moves.
-
-    If rewiring the MAP leaves the ranking untouched, the world structure is decoration
-    and the model is an action-feature ranker with a graph bolted on -- which is exactly
-    what the predecessor was, and exactly what this gate exists to detect.
-    """
+    """Rewire one relation group at a time and measure how much the ranking moves."""
     import random
     import torch
     net, meta, N = _net()

@@ -203,17 +203,17 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
             % (json.dumps(ranker.strategies), (ranker.meta or {}).get("rows", 0),
                ",".join((ranker.meta or {}).get("screens") or [])))
     else:
-        log("interrupt policy: mix %s, exploit_tree unready -> random fallback%s"
+        log("interrupt policy: mix %s, greedy_catboost unready -> random fallback%s"
             % (json.dumps(ranker.strategies),
                " (FORCED -- cold start)" if cold else ""))
-    if "gnn_marwil" in ranker.strategies:
+    if "marwil_gnn" in ranker.strategies:
         gm = (ranker.gnn.meta or {}) if ranker.gnn else {}
         gf = gm.get("fit") or {}
         log("interrupt graph arm: %s"
             % ("trained(%d screens, val_nll %s vs uniform %s)"
                % (gm.get("rows", 0), gf.get("val_listwise_nll"), gm.get("uniform_nll"))
                if ranker.gnn and ranker.gnn.ready
-               else "unready -> gnn_marwil_random_fallback"))
+               else "unready -> marwil_gnn_random_fallback"))
 
     def _stuck(reason, detail):
         stuck.update(fired=True, reason=reason, detail=detail)
@@ -297,6 +297,12 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
                 raise stop
     except (CampaignLost, CampaignStagnant, GameStuck) as e:
         raise _carry(e)
+    except Exception as e:                                      # noqa: BLE001
+        if executor.defeated_row_seen():
+            raise _carry(CampaignLost(
+                "faction destroyed -- the bus stopped answering, which is what a defeat "
+                "looks like from here: %s" % repr(e)[:140]))
+        raise
     finally:
         wd.stop()
         _drain_interrupts(run_dir, log)
@@ -369,8 +375,11 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
     act_hist = act_hist if act_hist is not None else []
     act_counts = act_counts if act_counts is not None else {}
     pol.new_turn()
-    turn = journal.request_turn(run_dir)
+    turn, campaign_uuid = journal.request_turn(run_dir)
     DS.TURN[0] = turn
+    # The campaign a diplomacy event belongs to. Without it every event was written with a
+    # null campaign and the campaign-detail panel filtered all of them out.
+    DS.CAMPAIGN[0] = campaign_uuid
     _last_done_ts = [None]
     _hk_parts = [{}]
     log("== TURN %s ==" % turn)

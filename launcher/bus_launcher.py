@@ -24,6 +24,8 @@ ROSTER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "startabl
 P_LIST_PARENT = ("campaign_select_new|right_holder|tab_campaign|campaign_holder|"
                  "campaign_button_holder|list_parent")
 P_CONTINUE = "custom_loading_screen|bottom_parent|button_continue"
+# Longest we wait for the intro tour's letterbox to retract after the HUD appears.
+HUD_GRACE = 25.0
 
 
 def _log(msg):
@@ -196,29 +198,60 @@ class BusLauncher:
         return None
 
     def advance_to_hud(self, timeout=200):
+        # A DEAD GAME IS NOT A SLOW ONE, AND WAITING OUT THE TIMEOUT COSTS THE WHOLE BUDGET.
+        import bus as _bus
         t0 = time.time()
         did_continue = False
         last_skip = 0.0
         last_continue_probe = 0.0
+        last_alive_probe = time.time()
         cinematic_keys = 0
+        hud_since = None
         while time.time() - t0 < timeout:
             roots = self._roots_safe()
-            for k in roots:
-                if k.get("id") == "hud_campaign" and k.get("visible"):
-                    _log("interactive HUD reached in %.1fs (%d cinematic keys)"
-                         % (time.time() - t0, cinematic_keys))
+            vis = {k.get("id") for k in roots if k.get("visible")}
+            # hud_campaign becomes visible while the intro TOUR is still running -- the
+            # camera is still flying and cinematic_bars is still drawn over it. Returning
+            # on the HUD alone hands the agent a screen it cannot really act on, and the
+            # first turn's actions get taken into a cutscene.
+            #
+            # So the HUD only counts once the cinematic overlay has gone with it. HUD_GRACE
+            # bounds that wait: if the bars never retract we go anyway rather than burning
+            # the whole timeout, which is what the abandoned cutscene gate did.
+            if "hud_campaign" in vis:
+                if hud_since is None:
+                    hud_since = time.time()
+                blocked = vis & {"cinematic_bars", "black_fade"}
+                waited = time.time() - hud_since
+                if not blocked or waited >= HUD_GRACE:
+                    _log("interactive HUD reached in %.1fs (%d cinematic keys%s)"
+                         % (time.time() - t0, cinematic_keys,
+                            "" if not blocked
+                            else ", gave up waiting on %s after %.0fs"
+                                 % (",".join(sorted(blocked)), waited)))
                     return True
+            else:
+                hud_since = None
+            if time.time() - last_alive_probe > 5.0:
+                last_alive_probe = time.time()
+                if not _bus._game_alive():
+                    raise TWError("the game PROCESS IS GONE %.1fs into the campaign load -- it "
+                                  "crashed rather than stalled (%d cinematic keys sent). Not "
+                                  "waiting out the remaining %.0fs of the HUD timeout."
+                                  % (time.time() - t0, cinematic_keys,
+                                     timeout - (time.time() - t0)))
             skip_roots = [k.get("id") for k in roots
                           if k.get("id") in ("campaign_space_bar_options", "black_fade")
                           and k.get("visible")]
             now = time.time()
+            # SKIP ON A CADENCE, NOT ONLY WHEN A SKIP PROMPT HAPPENS TO BE VISIBLE.
+            if now - last_skip > 2.0:
+                last_skip = now
+                try:
+                    self.bus.send("eval", "cm:skip_all_campaign_cutscenes()", timeout=10)
+                except TWError:
+                    pass
             if skip_roots:
-                if now - last_skip > 2.0:
-                    last_skip = now
-                    try:
-                        self.bus.send("eval", "cm:skip_all_campaign_cutscenes()", timeout=10)
-                    except TWError:
-                        pass
                 key = "space" if "campaign_space_bar_options" in skip_roots else "escape"
                 try:
                     self.bus.send("key", "@root %s" % key, timeout=10)
@@ -297,34 +330,96 @@ class BusLauncher:
         _log("bus ready.")
         return self.start_campaign(faction, campaign, load_timeout)
 
-    def startable_factions(self):
+    def startable_factions(self, campaign_map):
+        """Every start playable on ONE campaign map."""
         import json
+        key = self.CAMPAIGN_KEYS.get(campaign_map, campaign_map)
+        if not key:
+            raise TWError("startable_factions needs a campaign map: one of %s"
+                          % ", ".join(sorted(self.CAMPAIGN_KEYS.values())))
         if not os.path.exists(ROSTER_PATH):
             raise TWError("no startable-faction roster at %s -- regenerate it with "
                           "harvest_startable_factions() at campaign-select" % ROSTER_PATH)
         with open(ROSTER_PATH, encoding="utf-8-sig") as fh:
-            keys = (json.load(fh) or {}).get("factions") or []
+            data = json.load(fh) or {}
+        maps = data.get("maps") or {}
+        if key not in maps:
+            raise TWError(
+                "no harvested roster for campaign map %r in %s -- it holds %s. Harvest it "
+                "with harvest_startable_factions(%r) while that map's campaign-select "
+                "screen is showing. Refusing to substitute another map's list: most of it "
+                "would not be startable and the launches would fail one by one."
+                % (key, ROSTER_PATH, ", ".join(sorted(maps)) or "no maps", key))
+        keys = (maps[key] or {}).get("factions") or []
         if not keys:
-            raise TWError("startable-faction roster %s contains no factions" % ROSTER_PATH)
+            raise TWError("the roster for %s in %s lists no factions" % (key, ROSTER_PATH))
         return list(keys)
 
-    def harvest_startable_factions(self, timeout=30.0):
+    def harvest_startable_factions(self, campaign_map, timeout=30.0, poll_s=1.0,
+                                   run_s=300.0, log=None):
+        """Collect a map's whole roster while someone cycles the race at campaign-select."""
+        import json
         import re
+        import time
         import interrupts
         if self.bus is None:
             self.bus = Bus()
+        key = self.CAMPAIGN_KEYS.get(campaign_map, campaign_map)
+        say = log or _log
+        # The bus answers `roots` under `kids`, never under `roots` -- every other reader
+        # gets this right (line 143 here, dumps.py:68).
         reply = self.bus.send("roots", timeout=timeout)
-        if not reply or reply.get("error") or reply.get("roots") is None:
-            raise TWError("startable_factions: the bus did not return a root list (%r)" % (reply,))
-        keys, seen = [], set()
-        for root in reply["roots"]:
-            nodes = interrupts._tree(self.bus, root, 18, 20000)
-            for n in nodes:
-                m = re.match(r"CcoFrontendFactionLeader:(.+)$", str(n.get("context") or ""))
-                if m and m.group(1) not in seen:
-                    seen.add(m.group(1))
-                    keys.append(m.group(1))
-        return keys
+        if not reply or reply.get("error") or (reply.get("kids") is None):
+            raise TWError("harvest: the bus did not return a root list (%r)" % (reply,))
+
+        def sample():
+            race, campaign, keys = None, None, []
+            for n in interrupts._tree(self.bus, "campaign_select_new", 20, 20000):
+                i, path = str(n.get("id") or ""), str(n.get("path") or "")
+                text = str(n.get("text") or "").strip()
+                if i == "race_name" and text:
+                    race = text
+                elif i == "selected_campaign_text" and text:
+                    campaign = text
+                if i.startswith("CcoFrontendFactionLeader") and "lord_select_list" in path:
+                    k = re.sub(r"\d+$", "", i[len("CcoFrontendFactionLeader"):])
+                    if k and k not in keys:
+                        keys.append(k)
+            return race, campaign, keys
+
+        races, t0, quiet = {}, time.time(), 0
+        say("harvest %s: cycle the race at campaign-select; polling every %.1fs"
+            % (key, poll_s))
+        while time.time() - t0 < run_s:
+            try:
+                race, on_screen, keys = sample()
+            except Exception as e:
+                say("harvest: sample failed (%s) -- continuing" % repr(e)[:80])
+                time.sleep(poll_s)
+                continue
+            # A sample from the wrong map is dropped, not merged. Overshooting into another
+            # campaign while cycling must not silently contaminate the roster.
+            if on_screen and key and key != self.CAMPAIGN_KEYS.get(on_screen, None) \
+                    and on_screen.lower().replace("the ", "") not in \
+                    str(campaign_map).lower().replace("the ", ""):
+                time.sleep(poll_s)
+                continue
+            if race and keys and races.get(race) != keys:
+                races[race] = keys
+                quiet = 0
+                say("harvest: %-22s %2d lords" % (race, len(keys)))
+            else:
+                quiet += 1
+            time.sleep(poll_s)
+
+        out = sorted({k for v in races.values() for k in v})
+        if not out:
+            raise TWError("harvest saw no lord entries. Is the campaign-select lord list "
+                          "showing for %s?" % key)
+        say("harvest %s: %d races, %d factions" % (key, len(races), len(out)))
+        return {"campaign_map": key,
+                "races": {r.title(): v for r, v in sorted(races.items())},
+                "factions": out}
 
 
 def main():

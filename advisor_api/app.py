@@ -1,16 +1,4 @@
-"""The dashboard's HTTP surface: a typed JSON API, a change stream, and the built client.
-
-One process on one port serves all three, so the dashboard is still `runctl start_ui` and
-still works with the network cable out -- it runs beside a game that is mid-campaign, and
-a dashboard that needs the internet to render is a dashboard that goes blank at the worst
-moment. Nothing is fetched from a CDN.
-
-Live updates are pushed, not polled. `/api/events` holds a connection open and emits when
-the corpus stamp moves, so a client re-fetches because something CHANGED rather than
-because a timer fired. The old dashboard re-rendered every panel on a fixed interval,
-which is why it stole scroll position and focus, and why it recomputed six full-table
-aggregates every five seconds to produce an unchanged answer.
-"""
+"""The dashboard's HTTP surface: a typed JSON API, a change stream, and the built client."""
 
 from __future__ import annotations
 
@@ -28,7 +16,8 @@ from fastapi.responses import FileResponse, StreamingResponse
 import common
 from advisor_api import db, ident, proc, queries as q
 from advisor_api.models import (
-    ActionsPage, AgreementPage, CampaignDetail, CampaignsPage, ControlResult, Count,
+    ActionsPage, AgreementBreakdownPage, AgreementPage, AgreementSeriesPage, AnalyticsPage,
+    CampaignDetail, CampaignsPage, ControlResult, Count,
     DecisionDetail, DecisionsPage, ForcingPage, InfraPage, LaunchDefaults, MatrixCell,
     MatrixPage, MatrixRow, MatrixTotal, MenusPage, ModelsPage, Rate, RunPage, Scope,
     StartsPage, TimelinePage, TrainingPage, CorrelationsPage,
@@ -73,7 +62,6 @@ def get_run() -> RunPage:
         current=q.current(con),
         throughput=q.throughput(con),
         totals=q.totals(con),
-        signals=q.signals(con),
         collect_timing=q.collect_timing(con),
         cycle_timing=q.cycle_timing(con),
         log_tail=tail,
@@ -110,8 +98,7 @@ def get_matrix(kind: str = Query("action", pattern="^(action|interrupt)$")) -> M
         tot_rows.append(MatrixTotal(
             action_type=q._phrase(atype), rate=rate,
             total_ms=round(ms, 0) or None,
-            per_try_ms=round(ms / tried, 0) if tried else None,
-            state=q._rate_state(rate.pct)))
+            per_try_ms=round(ms / tried, 0) if tried else None))
     # Worst first. This ordering IS the finding: aggregated across every faction one
     # action type confirms far below the rest, and in an alphabetical grid of a thousand
     # cells that fact has nowhere to appear.
@@ -129,12 +116,13 @@ def get_matrix(kind: str = Query("action", pattern="^(action|interrupt)$")) -> M
                         population="attempted of this type by this faction")
             out_cells.append(MatrixCell(
                 action_type=q._phrase(atype), rate=rate, total_ms=round(ms, 0) or None,
-                per_try_ms=round(ms / tried, 0) if tried else None,
-                state=q._rate_state(rate.pct)))
+                per_try_ms=round(ms / tried, 0) if tried else None))
         rows.append(MatrixRow(faction=q._fac(faction), cells=out_cells))
     return MatrixPage(
-        scope=_scope("every %s attempt in this run dir, by faction and type" % noun,
-                     "totals lead, worst confirm rate first"),
+        # No detail line. It used to say "totals lead, worst confirm rate first", which
+        # described a banner that no longer exists -- and the table is sorted worst-first
+        # in plain sight, so saying so in prose was clutter.
+        scope=_scope("every %s attempt in this run dir, by faction and type" % noun),
         kind=kind, totals=tot_rows, columns=columns, rows=rows)
 
 
@@ -150,6 +138,14 @@ def get_campaigns() -> CampaignsPage:
                          population="whose ending looks like a harness fault, not a defeat"),
         unjoined=Count(value=q.unjoined_endings(con), noun="endings",
                        population="recorded in the log but belonging to earlier run dirs"),
+        # How many campaigns a growth number could be computed for at all. The column this
+        # replaces rendered a dash for 117 of 265 rows and said nothing about why; the
+        # three reasons are separable now, and this is the headline of that.
+        growth_coverage=Rate(
+            n=sum(1 for r in rows if r.growth_state == "measured"), of=len(rows),
+            noun="campaigns",
+            population="on this page with two or more recorded turns, so a first -> last "
+                       "growth span exists"),
         rows=rows)
 
 
@@ -164,7 +160,7 @@ def get_campaign(campaign_key: str) -> CampaignDetail:
     return CampaignDetail(
         scope=_scope("one campaign", ident.campaign(campaign_key)["label"]),
         row=row, reward=reward, constant_columns=constant,
-        diplomacy=q.diplomacy_tail(campaign_key), decisions=decisions)
+        diplomacy=q.diplomacy_tail(con, campaign_key), decisions=decisions)
 
 
 # ----------------------------------------------------------------------------------------
@@ -214,7 +210,8 @@ def get_decision(decision_id: int) -> DecisionDetail:
     return DecisionDetail(
         scope=_scope("one decision and the whole ranking it produced",
                      "the row the game accepted is marked"),
-        row=head, offers=offers, entities=ents, phases=phases)
+        row=head, agreement=q.decision_agreement(decision_id),
+        offers=offers, entities=ents, phases=phases)
 
 
 @app.get("/api/decisions", response_model=DecisionsPage, tags=["decisions"])
@@ -256,12 +253,32 @@ def get_forcing() -> ForcingPage:
 
 @app.get("/api/models/agreement", response_model=AgreementPage, tags=["models"])
 def get_agreement() -> AgreementPage:
-    con = _con()
-    summary, rows, warning, empty = q.agreement(con)
-    return AgreementPage(
-        scope=_scope("where each model ranked the action that was taken",
-                     "the last %d decisions" % q.AGREE_LOOKBACK),
-        summary=summary, rows=rows, warning=warning, empty_reason=empty)
+    return q.agreement_page()
+
+
+@app.get("/api/models/agreement/series", response_model=AgreementSeriesPage,
+         tags=["models"])
+def get_agreement_series(axis: str = "window") -> AgreementSeriesPage:
+    """How agreement has tracked over the run, or by model generation."""
+    return q.agreement_series(axis)
+
+
+@app.get("/api/models/agreement/breakdown", response_model=AgreementBreakdownPage,
+         tags=["models"])
+def get_agreement_breakdown(dim: str = "action_type") -> AgreementBreakdownPage:
+    return q.agreement_breakdown(dim)
+
+
+@app.get("/api/analytics", response_model=AnalyticsPage, tags=["infra"])
+def get_analytics() -> AnalyticsPage:
+    """What the analytics service has precomputed, and how far behind it is."""
+    return q.analytics_status()
+
+
+@app.post("/api/analytics/rebuild", response_model=ControlResult, tags=["infra"])
+def post_analytics_rebuild() -> ControlResult:
+    """Ask the analytics service to rebuild from scratch."""
+    return ControlResult(ok=True, steps=proc.rebuild_analytics())
 
 
 @app.get("/api/models/correlations", response_model=CorrelationsPage, tags=["models"])
@@ -336,16 +353,7 @@ def post_coldstart(params: LaunchDefaults) -> ControlResult:
 
 @app.get("/api/events", tags=["run"])
 async def events():
-    """Server-sent events: one message whenever the corpus gains rows.
-
-    The client re-fetches on a change rather than on a timer, so a quiet run costs
-    nothing and a busy one updates immediately. EventSource reconnects on its own, so
-    there is no reconnect logic to get wrong.
-
-    The heartbeat exists because a proxy or a sleeping laptop will silently drop an idle
-    connection, and a stream that is dead but not closed looks exactly like a run with
-    nothing happening.
-    """
+    """Server-sent events: one message whenever the corpus gains rows."""
     async def gen():
         last = None
         beat = 0
@@ -378,16 +386,7 @@ def health():
 
 @app.get("/{full_path:path}", include_in_schema=False)
 def spa(full_path: str):
-    """Serve the built client.
-
-    Declared last so it owns "/" without shadowing /api, and every unknown path returns
-    index.html because the client owns its routes -- a deep link like /campaigns/<key> is
-    a client route, not a file, and must not 404 when the page is refreshed.
-
-    Resolved per request rather than at import. The client is routinely rebuilt while the
-    server is running, and deciding once at startup that there was no build meant every
-    later request served that verdict until someone restarted the process.
-    """
+    """Serve the built client."""
     index = os.path.join(UI_DIST, "index.html")
     if not os.path.isfile(index):
         return {"error": "the client is not built",

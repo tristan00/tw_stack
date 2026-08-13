@@ -77,12 +77,6 @@ def _load():
     return _CACHE
 
 
-# Dense catalogue ids, one table per kind, so no two live game keys share an embedding
-# row. schema.cat_index used crc32 % buckets, and a hash over thousands of keys collides
-# whatever the bucket count: 9,393 of 19,313 reference keys (48.6%) shared a row with a
-# different key -- 60.6% of building chains, 51.1% of skills, 47.9% of buildings. The
-# docstring above already promised every key joins this database, so the ids were always
-# available and the hash was never needed.
 _KIND_TABLE = {"building": "buildings", "chain": "building_chains", "unit": "units",
                "tech": "tech", "skill": "skills", "ritual": "rituals",
                "agent_action": "agent_actions"}
@@ -92,8 +86,7 @@ _DENSE = {}
 
 
 def dense_ids():
-    """{kind: {key: 1..n}}. Sorted by key so an id is a property of the game data and not
-    of row order -- a rebuilt reference.sqlite must not silently renumber the embeddings."""
+    """{kind: {key: 1..n}}. Sorted by key so an id is a property of the game data and not"""
     if _DENSE:
         return _DENSE
     path = S.REFERENCE_DB

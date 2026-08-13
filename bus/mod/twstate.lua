@@ -36,10 +36,6 @@ local function q(s) return '"' .. tostring(s or ""):gsub('"', '\\"') .. '"' end
 
 
 
--- try() returned nil on failure and said nothing, so a read that raised was
--- indistinguishable from a game with nothing to say. Three emitters in this file produced
--- zero rows for an entire corpus and nothing ever complained. Failures are now counted,
--- deduplicated by message, and flushed as a try_fails line at the end of each dump.
 local TRY_FAILS, TRY_FAIL_N = {}, 0
 local TRY_FAIL_CAP = 24            -- a failing loop must not flood the stream
 

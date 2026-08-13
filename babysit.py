@@ -20,24 +20,19 @@ LOG = common.BABYSIT_LOG
 STALL_S = 1200
 RELAUNCH_COOLDOWN_S = 1800
 
-# What a relaunch must reproduce. This is the CORPUS-COLLECTION run, not a training run:
-# mostly random play, no learner in the loop, no retraining. The learner is deliberately
-# absent -- integrating it on too small a sample has historically produced an unstable model
-# that then poisoned further training, so nothing trains until the corpus is ~10k decisions
-# (roughly 350-400 campaigns at the observed 29 decisions/campaign).
-#
-# This block previously read exploit_tree=0.3, gnn=0.3, random=0.3, ruleset=0.1 with
-# retrain_every=20 and campaigns=100. Had the babysitter ever fired against the collection
-# run, a single crash would have silently switched play to 60% model-driven and started
-# retraining every 20 campaigns -- and the only way to notice would have been auditing
-# taken.policy long afterwards, by which point the corpus is mixed.
-#
-# retrain is False AND retrain_every is 0: runctl emits --retrain from `retrain` and
-# --retrain-every from `retrain_every` independently, so both must be off.
 RUN = {"campaigns": 500, "turns": 20, "model": "catboost",
-       "retrain": False, "retrain_every": 0,
-       "strategies": "random=0.96,ruleset=0.04", "ruleset": "probe_gaps",
-       "factions": "all"}
+       "retrain": True, "retrain_every": 10,
+       # Model-driven play raised to 60%: the two learned arms at 0.3 each, random at 0.3
+       # for continued coverage, ruleset at 0.1. Sums to 1.0.
+       "strategies": "marwil_gnn=0.3,greedy_catboost=0.3,random=0.3,ruleset=0.1",
+       "ruleset": "probe_gaps",
+       # Every start on the map, not the cutscene-filtered subset.
+       "factions": "all",
+       "campaign": "Realm of Chaos",
+       # dev is ON: the diagnostic streams, including the panel dump, are the reason this
+       # run exists in this shape. A relaunch that quietly drops them collects a campaign
+       # that cannot be debugged when it wedges -- which is the failure that started this.
+       "dev": True}
 
 
 def note(msg):
@@ -55,10 +50,15 @@ def newest_session_report():
 
 
 def session_complete():
+    """False when the report cannot be read, not an exception."""
     p = newest_session_report()
     if not p:
         return False
-    rep = json.load(open(p, encoding="utf-8"))
+    try:
+        rep = json.load(open(p, encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        note("session report unreadable (%s) -- assuming not complete" % repr(e)[:80])
+        return False
     want = (rep.get("requested") or {}).get("campaigns") or 0
     return bool(want) and len(rep.get("campaigns") or []) >= want
 
@@ -103,17 +103,43 @@ def main():
     note("DEAD/STALLED (alive=%s age=%s) -- relaunching" % (alive, age))
     with open(STAMP, "w", encoding="utf-8") as fh:
         fh.write(str(time.time()))
-    # with_ui=True and dev=False so a relaunch matches how the run was started by hand --
+    # Every field comes from RUN so a relaunch matches how the run was started by hand --
     # a babysitter that quietly brings the run back in a different shape is worse than one
-    # that does nothing, because the corpus keeps growing either way.
+    # that does nothing, because the corpus keeps growing either way. dev included.
     for step in runctl.up(RUN["campaigns"], RUN["turns"], model=RUN["model"],
                           retrain=RUN["retrain"], retrain_every=RUN["retrain_every"],
-                          dev=False, with_ui=True,
+                          dev=RUN.get("dev", False), with_ui=True,
                           strategies=RUN["strategies"], ruleset=RUN["ruleset"],
-                          factions=RUN["factions"]):
+                          factions=RUN["factions"], campaign=RUN["campaign"]):
         note(step)
     return 0
 
 
+def loop(every_s):
+    """Keep checking until the session finishes or BABYSIT_OFF appears."""
+    note("babysit loop starting: every %.0fs" % every_s)
+    while True:
+        try:
+            if os.path.exists(OFF_FLAG):
+                note("BABYSIT_OFF present -- loop exiting")
+                return 0
+            if session_complete():
+                note("session complete -- loop exiting")
+                return 0
+            main()
+        except Exception as e:                                  # noqa: BLE001
+            note("check failed (continuing): %r" % (e,))
+        time.sleep(every_s)
+
+
 if __name__ == "__main__":
+    if "--loop" in sys.argv:
+        i = sys.argv.index("--loop")
+        secs = 300.0
+        if i + 1 < len(sys.argv):
+            try:
+                secs = float(sys.argv[i + 1])
+            except ValueError:
+                pass
+        raise SystemExit(loop(secs))
     raise SystemExit(main())

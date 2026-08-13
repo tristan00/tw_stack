@@ -183,7 +183,10 @@ class Recording:
         self._events({"t": round(time.time() - self.t0, 3), "kind": "stop"})
         for th in self._threads:
             th.join(timeout=join_timeout)
-        for w in self._all_writers:
+        # Read the dict at stop time, not the snapshot taken in __init__. Every stream's
+        # writer is created AFTER Recording is constructed, so the snapshot held only
+        # events.jsonl and every other file was left open and unflushed on shutdown.
+        for w in list(self._writers.values()):
             w.close()
 
     def alive(self):
@@ -200,12 +203,17 @@ def start(out_root, streams, *, recorder_version, meta_overrides=None,
 
     writers = {}
 
-    def get_writer(name):
-        if name not in writers:
-            writers[name] = _writer(out, name)
-        return writers[name]
+    # Keyed by (directory, name), not name alone: the --dev diagnostic streams write into
+    # the log tree rather than the run directory, and two streams may share a file name
+    # across the two roots without meaning the same file.
+    def get_writer(dirpath, name):
+        key = (os.path.abspath(dirpath), name)
+        if key not in writers:
+            os.makedirs(dirpath, exist_ok=True)
+            writers[key] = _writer(dirpath, name)
+        return writers[key]
 
-    events = get_writer("events.jsonl")
+    events = get_writer(out, "events.jsonl")
     events({"t": 0, "kind": "start", "wall": time.strftime("%Y-%m-%d %H:%M:%S"), "out": out})
 
     base_meta = dict(meta_overrides or {})
@@ -219,11 +227,12 @@ def start(out_root, streams, *, recorder_version, meta_overrides=None,
 
     threads = []
     for s in streams:
-        w = get_writer(s.get("out_file", "events.jsonl"))
+        sdir = s.get("out_dir") or out
+        w = get_writer(sdir, s.get("out_file", "events.jsonl"))
         out_file = s.get("out_file", "events.jsonl")
         # No `swap` callable any more: a campaign boundary does not open a new run
         # directory. observe_state stays so the boundary is still observed and reported.
-        ctx = Ctx(out, t0, stop_event, shot_req, w, on_error,
+        ctx = Ctx(sdir, t0, stop_event, shot_req, w, on_error,
                   on_state=rec.observe_state)
         rec._ctxs.append((ctx, out_file))
         nm = s.get("name", getattr(s["run"], "__name__", "stream"))
@@ -306,9 +315,15 @@ def main():
     was = reset_bus_files()
     print("reset bus files (was %.1f MB)" % (was / (1024 * 1024)), flush=True)
 
+    # --dev IS the diagnostic switch, and it turns the diagnostic streams on together.
+    if dev_on:
+        ui_on = True
+        actions_on = True
+    dev_dir = common.native(common.LOGS_DEV)
     streams = []
     if dev_on:
-        streams.append({"run": logs_stream.run, "name": "logs", "kwargs": {"log_dirs": log_dirs}})
+        streams.append({"run": logs_stream.run, "name": "logs", "out_dir": dev_dir,
+                        "kwargs": {"log_dirs": log_dirs}})
     if decisions_on:
         streams.append({"run": decisions_stream.run, "name": "decisions",
                         "out_file": "decisions_stream.jsonl"})
@@ -318,10 +333,12 @@ def main():
         streams.append({"run": shots_stream.run, "name": "shots", "kwargs": {"shot_every": shot_every}})
     if ui_on:
         streams.append({"run": ui_capture_stream.run, "name": "ui-capture",
-                        "out_file": "ui_components.jsonl"})
+                        "out_file": "ui_components.jsonl",
+                        "out_dir": dev_dir if dev_on else None})
     if actions_on:
         streams.append({"run": actions_stream.run, "name": "actions",
-                        "out_file": "actions_stream.jsonl"})
+                        "out_file": "actions_stream.jsonl",
+                        "out_dir": dev_dir if dev_on else None})
 
     rec = start(out_root, streams, recorder_version=RECORDER_VERSION,
                 meta_overrides={"game_dir": game_dir, "appdata_logs": appdata,

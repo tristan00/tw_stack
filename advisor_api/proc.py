@@ -1,15 +1,4 @@
-"""Which processes are alive, sampled off the request path.
-
-Asking Windows what is running costs a PowerShell subprocess, about half a second. The
-old dashboard paid that inside the request, behind a cache whose lifetime was five
-seconds while the page refreshed every five seconds -- so the cache expired just as the
-next request arrived and essentially every refresh paid full price. Tuning the TTL is not
-the fix; a TTL equal to the poll interval is a cache that never hits by construction.
-
-So the probe runs on its own thread on a fixed interval and requests read the last
-sample, which is free. A sample carries the time it was taken, so a stalled poller
-reports as stale data rather than as confidently wrong "everything is down".
-"""
+"""Which processes are alive, sampled off the request path."""
 
 from __future__ import annotations
 
@@ -92,16 +81,15 @@ def snapshot() -> tuple:
 _MATCH = (
     ("advisor session", "session.py"),
     ("recorder", "manager.py"),
+    # The analytics builder. Unlike the dashboard it is a separate process, so it is
+    # findable from here -- and it needs to be: every precomputed number the models pages
+    # show is as current as this process last managed to run.
+    ("analytics", "analytics.runner"),
 )
 
 
 def services() -> list:
-    """One row per service, plus the game, plus this process.
-
-    A service whose sample is stale reports `detail` saying so instead of `up: false`.
-    "I could not look" and "it is not running" are different facts, and rendering the
-    first as the second is how a dashboard tells you to restart a healthy run.
-    """
+    """One row per service, plus the game, plus this process."""
     from advisor_api.models import Service
     procs, at = snapshot()
     age = time.time() - at if at else None
@@ -131,6 +119,12 @@ def services() -> list:
 def kill_session_and_game() -> list:
     import runctl
     return [runctl.kill_session(game=True)]
+
+
+def rebuild_analytics() -> list:
+    """Ask the analytics service to rebuild. Delegates to runctl, like every other control,"""
+    import runctl
+    return runctl.rebuild_analytics()
 
 
 def launch(kind: str, params: dict) -> list:

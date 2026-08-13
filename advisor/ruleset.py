@@ -175,14 +175,7 @@ def _target_army_rank(row, ctx):
 
 
 def _target_faction_standing(row, ctx):
-    """Standing of the faction a diplomacy offer is aimed at, from world.relations.
-
-    A diplomacy offer's key is "<faction>:<term>", so the target is the head of it --
-    the same split build.py and _target_of use. Standing is the recorded per-faction
-    attitude; higher is friendlier. None when we have no relations row for them, which
-    is every faction we have not met, and a None drops the offer out of the ranking
-    rather than sorting it as 0 (neutral) alongside factions we actually like.
-    """
+    """Standing of the faction a diplomacy offer is aimed at, from world.relations."""
     if row.get("action_type") != "diplomacy":
         return None
     target = str(row.get("key") or "").split(":", 1)[0]
@@ -192,13 +185,7 @@ def _target_faction_standing(row, ctx):
 
 
 def _diplomacy_term(row, ctx):
-    """The term half of a diplomacy offer key, as a scalar.
-
-    params.terms is a LIST, so a predicate against it compares a string to a list and is
-    always false. The key's tail is the same value in the shape a predicate can use --
-    which is what lets a rule say "anything except declare_war", and declaring war is
-    emphatically not a proposal to a faction we like.
-    """
+    """The term half of a diplomacy offer key, as a scalar."""
     if row.get("action_type") != "diplomacy":
         return None
     key = str(row.get("key") or "")
@@ -566,13 +553,6 @@ class RuleSet:
                 scored = [(v, r) for v, r in scored if v is not None]
                 if not scored:
                     continue
-                # Ties break RANDOMLY, not by offer order. min()/max() return the first
-                # extremal element, so a rule that ranks on a coarse field silently
-                # resolved to whatever the generator happened to emit first -- every
-                # diplomacy term aimed at one faction shares that faction's standing, so
-                # "propose to whoever likes us most" would otherwise always propose the
-                # same term. Offer order is arbitrary; this removes a bias rather than
-                # adding one.
                 best = (min if order == "min" else max)(v for v, _r in scored)
                 return _RULE_RNG.choice([r for v, r in scored if v == best]), rule.name
             return hits[0], rule.name

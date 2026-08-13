@@ -1,24 +1,4 @@
-"""The API contract.
-
-These models are the single source of truth for what the dashboard can say. TypeScript
-types are generated from the OpenAPI schema FastAPI derives from them, so a client column
-wired to a field that does not exist is a compile error rather than a blank column nobody
-notices.
-
-Two invariants are encoded as types rather than left to discipline:
-
-`Count` -- a number of things cannot be constructed without naming WHICH population it
-counted. The dashboard once rendered campaigns as 117, 118, 124 and 126 on tabs one click
-apart; each was correct for its own population (campaigns that recorded a decision,
-campaigns with a turn series, lines in the postmortem log) and every one was labelled just
-"campaigns", so the dashboard read as contradicting itself. `population` is a required
-field with a minimum length, so the wrong version does not serialise.
-
-`Rate` -- a proportion cannot be constructed without its denominator. Three different
-decision denominators once sat on one screen (3861 acted on, 3834 in the table, 3810 in
-the policy tally) and none of them was printed. Carrying `of` makes two rates over
-different populations visibly different instead of silently different.
-"""
+"""The API contract."""
 
 from __future__ import annotations
 
@@ -38,11 +18,7 @@ class Ident(BaseModel):
 
 
 class Count(BaseModel):
-    """A number of things, plus the population it counted.
-
-    `population` is required and non-empty by construction. Renderers show it beside the
-    number; there is no code path that produces a bare count.
-    """
+    """A number of things, plus the population it counted."""
     value: int
     noun: str = Field(min_length=1, description="what is being counted, e.g. 'campaigns'")
     population: str = Field(
@@ -97,21 +73,8 @@ class Metric(BaseModel):
     spark: list[float] = Field(default_factory=list)
 
 
-class Signal(BaseModel):
-    """Something worth noticing, with its severity already decided server-side."""
-    text: str
-    state: State = "neutral"
-    detail: str | None = None
-
-
 class Current(BaseModel):
-    """The campaign being played right now.
-
-    Resolved once, here, from the corpus. The old dashboard read this from two places --
-    a database summary and a parse of the session log -- and rendered both on one screen,
-    where they disagreed about which faction was playing and what turn it was. One
-    accessor means header and body cannot contradict each other.
-    """
+    """The campaign being played right now."""
     campaign: Ident | None = None
     turn: int | None = None
     settlements: float | None = None
@@ -133,7 +96,6 @@ class RunPage(BaseModel):
     current: Current
     throughput: list[Metric]
     totals: list[Count]
-    signals: list[Signal]
     collect_timing: list[TimingRow]
     cycle_timing: list[TimingRow]
     log_tail: list[str]
@@ -145,14 +107,10 @@ class RunPage(BaseModel):
 # ----------------------------------------------------------------------------------------
 
 class CampaignRow(BaseModel):
-    """One campaign, with its outcome joined on.
-
-    Outcome and per-campaign metrics were previously two tables sharing no key, so the
-    question the page exists to answer -- which campaign ended how -- could not be
-    answered from it. They are joined here, server-side, and the join is tested.
-    """
+    """One campaign, with its outcome joined on."""
     campaign_id: int
     campaign: Ident
+    campaign_map: Ident | None = None
     turns: int | None = None
     decisions: int = 0
     no_action: int = 0
@@ -166,14 +124,24 @@ class CampaignRow(BaseModel):
     final_settlements: float | None = None
     final_power_rank: float | None = None
     final_income: float | None = None
+
+    turn_rows: int = 0
+    first_turn: int | None = None
+    last_measured_turn: int | None = None
+    growth_span_turns: int | None = None
+    first_settlements: float | None = None
+    first_lord_level: float | None = None
+    final_lord_level: float | None = None
+    settlements_growth: float | None = None
+    lord_growth: float | None = None
+    settlements_per_turn: float | None = None
+    lord_per_turn: float | None = None
+    growth_state: Literal["measured", "single_turn", "no_turn_rows"] = "no_turn_rows"
+
     # joined from the postmortem log
     outcome: Ident | None = None
     outcome_state: State = "neutral"
-    ended_at_turn: int | None = None
-    settlements_from: float | None = None
-    settlements_to: float | None = None
-    lord_from: float | None = None
-    lord_to: float | None = None
+    ended_because: str | None = None
     suspicious: bool = False
     ended_when: str | None = None
 
@@ -189,17 +157,12 @@ class CampaignsPage(BaseModel):
     headline: list[OutcomeTally]
     suspicious: Count
     unjoined: Count
+    growth_coverage: Rate
     rows: list[CampaignRow]
 
 
 class StartRow(BaseModel):
-    """One playable start. `n` leads, because most starts have n=1.
-
-    Of 61 starts, 38 had a single campaign and 53 had two or fewer, while the columns were
-    labelled "avg turns" and "best power rank" -- aggregate vocabulary over one sample.
-    `n` is a first-class column and `single_sample` marks the rows where the aggregates
-    are one observation wearing an average's name.
-    """
+    """One playable start. `n` leads, because most starts have n=1."""
     faction: Ident
     n: int
     single_sample: bool = False
@@ -228,12 +191,7 @@ class MatrixCell(BaseModel):
 
 
 class MatrixTotal(BaseModel):
-    """The totals row. The reason this page exists.
-
-    Aggregated across every faction, `diplomacy` passes 73 of 425 attempts while every
-    other action type sits between 75% and 100%. In a 1342-cell alphabetical grid with no
-    totals row that finding is invisible. It leads the page now, worst first.
-    """
+    """One row per action type, aggregated across every faction."""
     action_type: Ident
     rate: Rate
     total_ms: float | None = None
@@ -310,6 +268,8 @@ class DecisionRow(BaseModel):
     gnn_impact: float | None = None
     gnn_rank: int | None = None
     delta_pct: float | None = None
+    rho: float | None = None
+    rho_n: int | None = None
     latency_ms: float | None = None
 
 
@@ -346,6 +306,7 @@ class EntityState(BaseModel):
 class DecisionDetail(BaseModel):
     scope: Scope
     row: DecisionRow
+    agreement: "DecisionAgreement | None" = None
     offers: list[OfferRow]
     entities: list[EntityState]
     phases: list["PhaseSpan"]
@@ -378,12 +339,7 @@ class ActionsPage(BaseModel):
 
 
 class InterruptOption(BaseModel):
-    """One option on a blocking screen, with its per-model scores as data.
-
-    All 69 per-option scores previously existed only inside title attributes -- the
-    heading said so out loud: "hover chosen for all options and scores". Hover text is
-    unselectable, un-searchable and absent on touch, so the scores are fields now.
-    """
+    """One option on a blocking screen, with its per-model scores as data."""
     label: Ident
     exploit: float | None = None
     gnn: float | None = None
@@ -425,11 +381,7 @@ class MenusPage(BaseModel):
 
 
 class PhaseSpan(BaseModel):
-    """One phase of one action, in ms.
-
-    The four phases are the decomposition of a decision's wall clock: the recorder reading
-    the game, the request round trip, featurize+rank, and execute+confirm.
-    """
+    """One phase of one action, in ms."""
     phase: Literal["collect", "queue", "score", "verify"]
     ms: float
 
@@ -517,6 +469,7 @@ class AgreementSummary(BaseModel):
 
 
 class AgreementRankRow(BaseModel):
+    """Where each model ranked the action that was taken, per deciding strategy."""
     picked_by: Ident
     decisions: int
     cat_rank: float | None = None
@@ -524,12 +477,160 @@ class AgreementRankRow(BaseModel):
     gnn_rank: float | None = None
     gnn_pct: float | None = None
     delta_pct: float | None = None
+    rho_median: float | None = None
+    fell_back: int = 0
+
+
+class AnalyticsFreshness(BaseModel):
+    """How current the precomputed numbers on this page are."""
+    tenant: str
+    behind: Count
+    rows: Count
+    computed_through: int | None = None
+    age_seconds: float | None = None
+    formula_version: int = 0
+    state: State = "neutral"
+    detail: str | None = None
+
+
+class RhoBin(BaseModel):
+    lo: float
+    hi: float
+    decisions: int
+
+
+class SecondaryMeasure(BaseModel):
+    """A supplement to the rank correlation, never a substitute for it."""
+    measure: str = Field(min_length=1)
+    value: str
+    rate: Rate | None = None
+
+
+class CorrelationSummary(BaseModel):
+    """The headline: how alike the two models' whole orderings are."""
+    compared: Count
+    coverage: Rate
+    rho_median: float | None = None
+    rho_mean: float | None = None
+    rho_q1: float | None = None
+    rho_q3: float | None = None
+    tau_median: float | None = None
+    tau_mean: float | None = None
+    same_best: Rate
+    overlap_median: float | None = None
+    from_decision: int | None = None
+    to_decision: int | None = None
+    excluded: list[Count] = Field(default_factory=list)
+
+
+class DecisionAgreement(BaseModel):
+    """One decision's agreement, for the detail page."""
+    n: Count
+    status: str
+    rho: float | None = None
+    tau_b: float | None = None
+    rbo: float | None = None
+    top1_same: bool | None = None
+    top3_overlap: float | None = None
+    cat_top_in_gnn: int | None = None
+    gnn_top_in_cat: int | None = None
+    note: str | None = None
+
+
+class AgreementSeriesPoint(BaseModel):
+    label: str
+    seq: int
+    decisions: Count
+    from_decision: int | None = None
+    to_decision: int | None = None
+    from_ts: float | None = None
+    to_ts: float | None = None
+    rho_median: float | None = None
+    rho_mean: float | None = None
+    rho_q1: float | None = None
+    rho_q3: float | None = None
+    tau_mean: float | None = None
+    rbo_mean: float | None = None
+    same_top: Rate
+    gate: str | None = None
+
+
+class GenerationRow(BaseModel):
+    trial: Ident
+    generation: int | None = None
+    retrained: bool = False
+    from_ts: float | None = None
+    to_ts: float | None = None
+    overlapped_by: str | None = None
+    decisions: Count
+    rho_median: float | None = None
+    rho_mean: float | None = None
+    tau_mean: float | None = None
+    rbo_mean: float | None = None
+    same_top: Rate
+
+
+class AgreementSeriesPage(BaseModel):
+    """Agreement over time, and by model generation."""
+    scope: Scope
+    freshness: AnalyticsFreshness
+    axis: Literal["window", "generation"]
+    is_alignment: bool = False
+    caveat: str | None = None
+    bucket_decisions: int | None = None
+    min_decisions: int | None = None
+    ambiguous: Count
+    points: list[AgreementSeriesPoint] = Field(default_factory=list)
+    generations: list[GenerationRow] = Field(default_factory=list)
+    empty_reason: str | None = None
+
+
+class AgreementBreakdownRow(BaseModel):
+    key: Ident
+    decisions: Count
+    rho_median: float | None = None
+    rho_mean: float | None = None
+    tau_mean: float | None = None
+    rbo_mean: float | None = None
+    same_top: Rate
+
+
+class AgreementBreakdownPage(BaseModel):
+    scope: Scope
+    freshness: AnalyticsFreshness
+    dim: Literal["arm", "action_type", "context_kind"]
+    rows: list[AgreementBreakdownRow] = Field(default_factory=list)
+    empty_reason: str | None = None
+
+
+class TenantStatus(BaseModel):
+    tenant: str
+    formula_version: int = 0
+    rows: Count
+    behind: Count
+    watermark: int | None = None
+    built: str | None = None
+    last_run: str | None = None
+    last_run_seconds: float | None = None
+    last_error: str | None = None
+    state: State = "neutral"
+
+
+class AnalyticsPage(BaseModel):
+    scope: Scope
+    tenants: list[TenantStatus] = Field(default_factory=list)
+    db_path: str
+    runner_hint: str
 
 
 class AgreementPage(BaseModel):
     scope: Scope
+    freshness: AnalyticsFreshness
+    correlation: CorrelationSummary | None = None
+    rho_bins: list[RhoBin] = Field(default_factory=list)
     summary: list[AgreementSummary]
     rows: list[AgreementRankRow]
+    secondary: list[SecondaryMeasure] = Field(default_factory=list)
     warning: str | None = None
     empty_reason: str | None = None
 
@@ -547,12 +648,7 @@ class CorrelationRow(BaseModel):
 
 
 class CorrelationTile(BaseModel):
-    """`label` is the tile's identity: "action ranker" or "interrupt model".
-
-    They share arm names, so a check that searches the whole page for an arm row finds the
-    action table every time and never inspects the interrupt one. Splitting by tile is the
-    only way to verify each against its own corpus counts.
-    """
+    """`label` is the tile's identity: "action ranker" or "interrupt model"."""
     label: Literal["action ranker", "interrupt model"]
     rows: list[CorrelationRow]
 
@@ -577,7 +673,12 @@ class TrialRow(BaseModel):
     corpus: int | None = None
     settlements_per_campaign: float | None = None
     settlements_total: float | None = None
-    grew: str | None = None
+    grew: Rate | None = None
+    shrank: Rate | None = None
+    growth_baseline: str | None = Field(
+        default=None,
+        description="which definition this row was measured on. Rows written before the "
+                    "clamp was removed are not comparable with rows written after it.")
     lord_per_campaign: float | None = None
     turns_per_campaign: float | None = None
     seconds_per_campaign: float | None = None

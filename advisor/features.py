@@ -172,21 +172,7 @@ _EMPTY_STACK = {"lord_effective_men": None, "lord_stack_upkeep": None}
 
 
 def lord_stack_block(state):
-    r"""What the stack is made of, off unit_cards[] -- which neither model reads today.
-
-    lord_units counts CARDS, and a card is 12 chaos knights or 160 zombies. At units==10
-    real manpower runs from 154 to 1,238 -- an 8x spread inside one value of the model's
-    central strength column, non-monotone in both units and hp. Multiplying each card by
-    its strength_pct folds in the damage it is already carrying, so a half-dead stack does
-    not read as a full one.
-
-    lord_stack_upkeep is the burden already carried: every recruit is permanent income
-    forgone, and opt_db_upkeep_cost prices only the marginal unit. A faction spending 39%
-    of income on this army looked identical to one spending 80%.
-
-    A key can carry a "@queue" suffix on recruit offers; the roster keys here do not, but
-    partition() costs nothing and keeps the lookup identical to _db_features.
-    """
+    """What the stack is made of, off unit_cards[] -- which neither model reads today."""
     cards = (state or {}).get("unit_cards") or []
     if not cards:
         return dict(_EMPTY_STACK)
@@ -207,8 +193,7 @@ def lord_stack_block(state):
 
 
 def _upkeep_ratio(upkeep, income):
-    """Upkeep as a share of income. abs() because a faction can run negative income and
-    the burden is still a burden; max(.,1) so a zero-income turn is not a divide by zero."""
+    """Upkeep as a share of income. abs() because a faction can run negative income and"""
     if upkeep is None or income is None:
         return None
     return upkeep / max(abs(income), 1.0)
@@ -232,16 +217,7 @@ _EMPTY_PROV = {"prov_province": None, "prov_complete": None, "prov_max_slots": N
 
 
 def _slot_feats(state):
-    """prov_free_slots is the wrong number, and prov_open_slots is the right one.
-
-    free_slots counts EMPTY slots; locked_slots is the subset the settlement level has
-    not unlocked yet. free minus locked is what can actually be built in now, and it is 0
-    on most rows while free_slots is never 0 (min 1) -- so the existing column advertises
-    capacity that does not exist. Not recoverable from (max_slots, buildings,
-    settlement_level): those triples are ambiguous across many rows.
-
-    locked_slots holds STRINGS; only its length is used here, so no int parse is needed.
-    """
+    """prov_free_slots is the wrong number, and prov_open_slots is the right one."""
     free = _f(state.get("free_slots"))
     locked = float(len(state.get("locked_slots") or []))
     return {"prov_locked_slots": locked,
@@ -249,14 +225,7 @@ def _slot_feats(state):
 
 
 def _income_feats(state):
-    """Per-province economy, and the game's own measured cost of holding the place.
-
-    features.py had only camp_income, the faction total, which cannot separate a 695/turn
-    capital from a 0/turn frontier holding -- and per-province income is the denominator
-    of every "is this building worth it HERE" judgement. gross minus net is what
-    corruption, upkeep and public order take off this region, which is exactly the case
-    where an order building or an edict beats a barracks.
-    """
+    """Per-province economy, and the game's own measured cost of holding the place."""
     gross, net = _f(state.get("gross_income")), _f(state.get("income"))
     drain = (gross - net) if (gross is not None and net is not None) else None
     return {"prov_income": net, "prov_gross_income": gross,
@@ -499,23 +468,7 @@ def _visible(h):
 
 
 def _enemy_garrison(world, region_key):
-    r"""(units, hp) defending an enemy settlement, or (None, None) if not visible.
-
-    The settlement hostile's own `units` -- and world.settlements[].units, same field --
-    is the mod-side MISLABELLED one recorded in DATA_GAPS: r:garrison_residence():
-    unit_count() reports the OCCUPYING FIELD ARMY, not the garrison. It reads 0 while a
-    real garrison stands on the tile, which is what fed opt_strength_ratio the claim
-    "I outnumber this target 11 to 0" on most siege offers.
-
-    The garrison is a separate hostile row flagged is_armed_citizenry standing on the
-    settlement's own tile. Measured over every world blob in the corpus: an enemy
-    settlement tile carries exactly one such row 2,962 times and none 8,316 times, and
-    never two -- so joining on (x, y) is unambiguous rather than a heuristic.
-
-    Returns None, not 0, when no row is visible. An unscouted settlement's garrison is
-    UNKNOWN, and a confident 0 is the exact bug this replaces. CatBoost splits on NaN
-    natively, so None is a value the model can use; 0 is a lie it cannot detect.
-    """
+    """(units, hp) defending an enemy settlement, or (None, None) if not visible."""
     w = world or {}
     for h in (w.get("hostiles") or []):
         if h.get("kind") != "settlement" or str(h.get("region")) != str(region_key):
@@ -532,16 +485,7 @@ def _enemy_garrison(world, region_key):
 
 
 def _own_garrison(world):
-    r"""region -> (units, hp) of the armed citizenry holding it.
-
-    world.citizenry is a list of command-queue indices INTO world.armies -- bare strings,
-    not army rows -- so the units live one lookup away. All 3,383 citizenry cqis in the
-    corpus resolve, so this is total rather than best-effort.
-
-    features.py had no own-garrison number at all, and could not have had one from
-    world.settlements[].units: that is the same mislabelled field, falsy on 2,933 of
-    3,405 own-settlement rows.
-    """
+    """region -> (units, hp) of the armed citizenry holding it."""
     w = world or {}
     bycqi = {str(a.get("cqi")): a for a in (w.get("armies") or [])}
     out = {}
@@ -556,12 +500,7 @@ def _own_garrison(world):
 
 
 def own_garrison_block(world, here_region):
-    """What is holding my settlements, and the weakest one.
-
-    0 is honest here in a way it is not on the enemy side: these are our own regions and
-    nothing is shrouded, so a settlement with no citizenry really is undefended. Regions
-    that are not ours stay None.
-    """
+    """What is holding my settlements, and the weakest one."""
     gar = _own_garrison(world)
     own = [s.get("region") for s in ((world or {}).get("settlements") or [])]
     vals = [gar.get(r, (0.0, 0.0))[0] for r in own]
@@ -575,13 +514,7 @@ def own_garrison_block(world, here_region):
 
 
 def _target_is_garrison(atype, params, world):
-    """Is this attack_army aimed at a settlement's garrison rather than a field army?
-
-    An assault on walls and towers that cannot withdraw is a different decision from an
-    open-field engagement that can be declined, and the two present identical units / hp /
-    stance / rank rows today. Every hostile army row carries the flag, so no join beyond
-    the cqi the offer already names.
-    """
+    """Is this attack_army aimed at a settlement's garrison rather than a field army?"""
     if atype != "attack_army":
         return None
     cqi = (params or {}).get("target_cqi")

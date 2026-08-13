@@ -23,18 +23,7 @@ def _con(run_dir):
 
 
 def refusal_report(con):
-    """What actually happened to the actions the agent took.
-
-    This replaces `offer_honesty`, which asked "picked while `available`, did it happen?".
-    Only survivors are stored now, so that question answers itself -- every stored row was
-    available by construction and the number would be a tautology reported as a finding.
-
-    The honest version reads the EXECUTOR's verdict instead. The gates in
-    launcher/*_actions.py re-read live state at click time, so `diagnostics.gates` on the
-    taken row is the only remaining record of "eligible when the advisor generated it,
-    refused when the launcher clicked it" -- which is the real quantity that column was
-    reaching for.
-    """
+    """What actually happened to the actions the agent took."""
     rows = []
     for at, in con.execute("SELECT DISTINCT action_type FROM action_taken"):
         n, ok, pre = con.execute(

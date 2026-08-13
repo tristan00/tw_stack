@@ -95,11 +95,6 @@ def register(action_type, spec):
     spec.setdefault("poll_s", 1.2)
     spec.setdefault("retryable", True)
     spec.setdefault("spends_gold", False)
-    # TERMINOLOGY, and it is load-bearing. A GATE takes a list of options and filters
-    # it -- that is the advisor's job and only the advisor does it. A PRECHECK asks
-    # whether THIS one click can be made: is the panel open, is the pick well formed.
-    # It never has a list and never decides legality. Calling both "gates" is how the
-    # launcher accumulated a second, disagreeing gating layer in the first place.
     spec.setdefault("prechecks", [])
     REGISTRY[action_type] = spec
     return spec
@@ -667,10 +662,6 @@ _LUA_SLOT_OP = (_G +
     "if not s then return 'NO-CTX' end local slots=g(s,'BuildingSlotList') "
     "if type(slots)~='table' then return 'NO-SLOTLIST' end "
     "for i,x in ipairs(slots) do if g(x,'Index')==%(slot)d then "
-    # Truthiness, not `==true`: a Bool guard still has to be true, but the cancel guard is
-    # the presence of the queued ConstructionItemContext -- there is no CanCancel property
-    # to ask, and the CanBeCancelled this used to name belongs to CcoCampaignMission, so
-    # every cancel returned 'REFUSED-nil' for the life of the corpus.
     "  if not g(x,'%(guard)s') then return 'REFUSED-'..ts(g(x,'%(guard)s')) end "
     "  pcall(function() x:Call('%(cmd)s') end) return 'called' end end return 'NO-SLOT'")
 
@@ -817,9 +808,7 @@ def _collect_mod():
 
 
 def _options_mod():
-    """HERO_ACTIONS is the ADVISOR's catalogue -- it decides what may be offered -- so it
-    moved with the rest of the generator. The executor still needs it to name the button
-    and to know what a target is supposed to be."""
+    """HERO_ACTIONS is the ADVISOR's catalogue -- it decides what may be offered -- so it"""
     sys.path.insert(0, common.ADVISOR)
     import options as _O
     return _O
