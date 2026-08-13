@@ -126,8 +126,11 @@ def enrich(row: dict) -> dict:
     out["growth_state"] = state_of(tr)
     span = span_turns(out.get("first_turn"), out.get("last_measured_turn"), tr)
     out["growth_span_turns"] = span
-    s = delta(out.get("first_settlements"), out.get("final_settlements"), tr)
-    l = delta(out.get("first_lord_level"), out.get("final_lord_level"), tr)
+    # To the PEAK, not the last point: a campaign that took a settlement and then lost it
+    # still reached two. Growth is therefore never negative -- the peak is always at least
+    # the first point -- so a loss shows as 0 here and only in `final_` beside it.
+    s = delta(out.get("first_settlements"), out.get("peak_settlements"), tr)
+    l = delta(out.get("first_lord_level"), out.get("peak_lord_level"), tr)
     out["settlements_growth"] = s
     out["lord_growth"] = l
     out["settlements_per_turn"] = per_turn(s, span)

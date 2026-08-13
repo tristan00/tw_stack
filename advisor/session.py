@@ -641,7 +641,9 @@ def _campaign_growth(con, uuid):
         out[part + "_start"] = float(first)
         out[part + "_peak"] = float(t.get("peak_" + part) or first)
         out[part + "_final"] = (float(last) if last is not None else None)
-        out[part + "_gained"] = CG.delta(first, last, turn_rows)
+        # first -> PEAK, the same endpoint the dashboard uses. The ledger and the
+        # dashboard read one definition; they must not diverge again.
+        out[part + "_gained"] = CG.delta(first, out[part + "_peak"], turn_rows)
     return out
 
 
@@ -1171,9 +1173,9 @@ def _parse_ruleset(argv):
     try:
         name = argv[argv.index("--ruleset") + 1].strip()
     except IndexError:
-        raise SystemExit("--ruleset needs a name (D:\\twdata\\rules\\<name>.json)")
+        raise SystemExit("--ruleset needs a name (<TWDATA>/rules\\<name>.json)")
     if not name or name.startswith("--"):
-        raise SystemExit("--ruleset needs a name (D:\\twdata\\rules\\<name>.json)")
+        raise SystemExit("--ruleset needs a name (<TWDATA>/rules\\<name>.json)")
     return name
 
 
@@ -1204,10 +1206,10 @@ def main():
                          "  --strategies -- per-decision sampling mix over %s\n"
                          "                 (default greedy_catboost=0.8,random=0.2; weights "
                          "normalized)\n"
-                         "  --ruleset   -- rule file name under D:\\twdata\\rules\\<name>.json "
+                         "  --ruleset   -- rule file name under <TWDATA>/rules\\<name>.json "
                          "(required when 'ruleset' is in the mix)\n"
                          "  'marwil_gnn' -- MARWIL/AWR on the graph encoder "
-                         "(D:\\twdata\\models\\mapgraph); untrained -> gnn_random_fallback\n"
+                         "(<TWDATA>/models\\mapgraph); untrained -> gnn_random_fallback\n"
                          "  --epsilon E -- legacy sugar for greedy_catboost=1-E,random=E\n"
                          % ("|".join(B.names()), B.DEFAULT,
                             "\n".join("                 %-10s %s" % (k, B.label(k))

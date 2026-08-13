@@ -8,7 +8,7 @@ What differs is the corpus and the weights, and that is the whole point: this is
 separate model for a separate decision family, exactly as advisor/interrupt_model.py is a
 separate CatBoost from advisor/model.py. Nothing here loads the action model's encoder.
 
-    D:\\twdata\\models\\mapgraph_interrupt\\{encoder.pt, head.pt, meta.json}
+    <TWDATA>/models\\mapgraph_interrupt\\{encoder.pt, head.pt, meta.json}
 
 WHAT TO EXPECT. There are 255 trainable screens in the corpus at the time of writing
 (pre_battle 172, occupation 40, battle_results 31, dilemma 8, diplomacy_proposal 4) across

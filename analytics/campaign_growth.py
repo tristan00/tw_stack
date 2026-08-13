@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import campaign_growth as G
 
 NAME = "campaign_growth"
-FORMULA_VERSION = 2
+FORMULA_VERSION = 3
 SOURCE = "decisions"
 DEPENDS_ON = ()
 REBUILD_EVERY_PASS = True

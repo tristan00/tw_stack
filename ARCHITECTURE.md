@@ -9,13 +9,13 @@
    streams: logs · input · shots ·       │              executor registry, nav,      │
    ui-capture · actions · decisions ─────┘              interrupts, screen/ps) ──────┘
                  │                                              ▲
-   run dirs  D:\twdata\runs\human\<ts>\  + CURRENT_RUN          │ execute picked action
+   run dirs  <TWDATA>/runs/human/<ts>/  + CURRENT_RUN           │ execute picked action
                  │                                              │
    advisor (BACKEND: session → loop → policy/model)  ───────────┘
    strategy portfolio: greedy_catboost (argmax of the E1-E2 advantage) · marwil_gnn (MARWIL/AWR
    on the graph encoder) · ruleset · random
    interrupt model · watchdog
-   features ← reference/features_db ← D:\twdata\reference\reference.sqlite
+   features ← reference/features_db ← <TWDATA>/reference/reference.sqlite
                  │
    advisor_api (FRONTEND: :8777 — typed JSON API over decisions.sqlite + SSE,
    serving the built client in ui/; service control: start/kill session, health)
@@ -56,6 +56,6 @@
 2. The **manager** owns bus reads and sqlite writes; the **launcher** executes; the **advisor**
    decides; the **UI** reads.
 3. An action is taken only when `executed AND confirmed` — unverified clicks are voided.
-4. **No logs, data, DBs, or models in this repo.** Everything lives under `D:\twdata`:
-   `runs\` `models\{global,local,interrupt}\` `reference\` `logs\{advisor,launcher,services}\`
-   `scratch\` `tmp\catboost\` `repo_archive\`.
+4. **No logs, data, DBs, or models in this repo.** Everything lives under `TWDATA` (see README):
+   `runs/` `models/{global,local,interrupt}/` `reference/` `logs/{advisor,launcher,services}/`
+   `scratch/` `tmp/catboost/` `repo_archive/`.

@@ -7,7 +7,7 @@ number -- `q` centred within the screen, `q - mean(q)`, because a softmax logit'
 shift is arbitrary and `q - v` would be subtracting a z-scored outcome from an
 unnormalised logit (see rank.py for the full account).
 
-Its weights are its own: D:\\twdata\\models\\mapgraph_interrupt. Nothing here reads the
+Its weights are its own: <TWDATA>/models\\mapgraph_interrupt. Nothing here reads the
 action model.
 
 READINESS IS DELIBERATELY NOT AN ACCURACY GATE. A trained model loads even when it scores

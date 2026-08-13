@@ -798,9 +798,9 @@ function Training() {
       key: 'shrank',
       label: 'shrank',
       group: 'result',
-      // Can now be non-zero. The ledger used to clamp each campaign's gain at zero, so a
-      // campaign that LOST settlements recorded 0 and this column would have been 0 by
-      // construction -- a growth number that could not report loss.
+      // Off by default: growth is measured to the peak, so this is a separate question
+      // from how far a campaign got, and it is not what the run is judged on.
+      optional: true,
       value: (r) => r.shrank?.n ?? undefined,
       sortUndefined: 'last',
       render: (r) => <Bar rate={r.shrank ?? null} width={80} />,

@@ -18,11 +18,12 @@
 
 
 
--- These two are the python side's common.BUS_CMD_PATH / common.BUS_OUT_PATH. This file
--- is compiled into the game pack and runs inside the game's lua VM, so it cannot import
--- python and has to carry its own copies. Change common.py and change these together.
-local CMD_PATH = "D:/totalwar_runner/data/commands.txt"
-local OUT_PATH = "D:/totalwar_runner/data/twcontrol.jsonl"
+-- Substituted by bus/pack_multi.py at build time from common.BUS_CMD_PATH /
+-- common.BUS_OUT_PATH. This runs inside the game's lua VM and cannot import python, so
+-- the paths are baked in when the pack is built. The build fails if these markers are
+-- missing, so the pack can never ship pointing at another machine.
+local CMD_PATH = "@@BUS_CMD_PATH@@"
+local OUT_PATH = "@@BUS_OUT_PATH@@"
 local POLL_SECONDS = 0.1
 
 

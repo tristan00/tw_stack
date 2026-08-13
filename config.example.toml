@@ -1,0 +1,27 @@
+# Copy to config.toml and edit. config.toml is not in git.
+#
+# Every value is optional. Resolution order for each one:
+#   1. environment variable   2. this file   3. autodetection   4. a default
+# So on a machine where the game is in a normal Steam library and you run from the
+# project venv, an empty config.toml is enough.
+#
+# Check what resolved on this machine:  python doctor.py
+
+[paths]
+
+# The Total War: WARHAMMER III install.
+#   env: TW_GAME_DIR
+#   autodetected from the usual Steam library locations
+# game_dir = "D:/SteamLibrary/steamapps/common/Total War WARHAMMER III"
+
+# Everything a run produces: run dirs, models, reference data, logs, archives.
+# Nothing generated is written into the checkout.
+#   env: TWDATA
+#   default: a "twdata" folder beside the checkout
+# twdata = "D:/twdata"
+
+# The folder holding the .venv, and the data/ directory the file bus lives in. The
+# lua mod reads and writes commands.txt and twcontrol.jsonl under <runner>/data.
+#   env: TW_RUNNER
+#   autodetected from the interpreter you are running, if it is a venv
+# runner = "D:/totalwar_runner"

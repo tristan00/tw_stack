@@ -21,15 +21,74 @@ def _env(name, default):
     return os.environ.get(name) or default
 
 
+def _load_config():
+    """`config.toml` beside this file. Absent is normal; unreadable is not."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.toml")
+    if not os.path.exists(path):
+        return {}
+    try:
+        import tomllib
+    except ImportError:
+        return {}
+    try:
+        with open(path, "rb") as fh:
+            return tomllib.load(fh).get("paths", {})
+    except Exception as e:
+        raise SystemExit("config.toml is present but unreadable: %s\n  %s" % (path, e))
+
+
+CONFIG = _load_config()
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.toml")
+
+
+def _setting(env_name, key, autodetect=None, default=None):
+    """env var, then config.toml, then autodetection, then the packaged default."""
+    v = os.environ.get(env_name)
+    if v:
+        return os.path.expandvars(os.path.expanduser(v))
+    v = CONFIG.get(key)
+    if v:
+        return os.path.expandvars(os.path.expanduser(str(v)))
+    if autodetect:
+        found = autodetect()
+        if found:
+            return found
+    return default
+
+
+def _find_game():
+    """The WH3 install, from the usual Steam library locations."""
+    name = os.path.join("steamapps", "common", "Total War WARHAMMER III")
+    roots = []
+    for drive in "CDEFGH":
+        roots += ["%s:\\SteamLibrary" % drive, "%s:\\Program Files (x86)\\Steam" % drive,
+                  "%s:\\Steam" % drive, "%s:\\Games\\Steam" % drive]
+    roots += [os.path.expanduser("~/.steam/steam"),
+              os.path.expanduser("~/.local/share/Steam"),
+              os.path.expanduser("~/Library/Application Support/Steam")]
+    for r in roots:
+        p = os.path.join(r, name)
+        if os.path.isdir(p):
+            return p
+    return None
+
+
+def _find_runner():
+    """The venv that owns the bus files -- the one running us, if it is one."""
+    exe = os.path.abspath(sys.executable)
+    d = os.path.dirname(os.path.dirname(exe))          # <venv>
+    if os.path.basename(d).lower() in (".venv", "venv", "env"):
+        return os.path.dirname(d)
+    return None
+
+
 # --------------------------------------------------------------------------------------
 # (a) CODE -- under the repo root, discovered from this file. Not overridable.
 # --------------------------------------------------------------------------------------
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 if not os.path.isdir(os.path.join(ROOT, "decisions")):
-    # common.py has been copied out of a checkout. Same fallback the four hand-fixed
-    # sites carried, kept so that case behaves as it did before.
-    ROOT = r"D:\tw_stack"
+    raise SystemExit("common.py is not inside a tw_stack checkout: %s" % ROOT)
 
 ADVISOR = os.path.join(ROOT, "advisor")
 ADVISOR_API = os.path.join(ROOT, "advisor_api")
@@ -45,7 +104,9 @@ UI_CAPTURE = os.path.join(ROOT, "ui-capture")
 # (b) DATA -- external, shared by every checkout.
 # --------------------------------------------------------------------------------------
 
-TWDATA = _env("TWDATA", r"D:\twdata")
+# Everything a run produces. Defaults beside the checkout so a fresh clone works.
+TWDATA = _setting("TWDATA", "twdata",
+                  default=os.path.join(os.path.dirname(ROOT), "twdata"))
 _TD = posix(TWDATA)
 
 # runs. RUNS_ROOT is forward-slash because eleven modules spell it that way and the
@@ -131,10 +192,13 @@ ARCHIVE_BUS = os.path.join(ARCHIVE_DIR, "bus")
 # (c) THIRD PARTY -- the runner venv that owns the bus files, and the game install.
 # --------------------------------------------------------------------------------------
 
-RUNNER = _env("TW_RUNNER", r"D:\totalwar_runner")
+# Owns the bus files the lua mod reads and writes.
+RUNNER = _setting("TW_RUNNER", "runner", _find_runner, default=ROOT)
 _RN = posix(RUNNER)
 
-VENV_PY = os.path.join(RUNNER, ".venv", "Scripts", "python.exe")
+VENV_PY = os.path.join(RUNNER, ".venv",
+                       "Scripts" if os.name == "nt" else "bin",
+                       "python.exe" if os.name == "nt" else "python")
 
 
 def require_venv(what=None):
@@ -162,5 +226,5 @@ BUS_OUT_PATH = RUNNER_DATA + "/twcontrol.jsonl"
 BUS_SEND_LOG = RUNNER_DATA + "/bus_send.jsonl"
 BUS_STATS_DB = RUNNER_DATA + "/bus_stats.sqlite"
 
-GAME_DIR = _env("TW_GAME_DIR", r"D:\SteamLibrary\steamapps\common\Total War WARHAMMER III")
+GAME_DIR = _setting("TW_GAME_DIR", "game_dir", _find_game, default="")
 GAME_DATA_DIR = posix(GAME_DIR) + "/data"

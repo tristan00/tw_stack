@@ -32,6 +32,24 @@ INTRO_MARK = "_intro"
 INTRO_EXT = ".ca_vp8"
 
 
+# The lua runs inside the game and cannot import python, so the bus paths are baked in
+# here. Only twcontrol.lua carries the markers; a file without them is passed through.
+MARKERS = {b"@@BUS_CMD_PATH@@": common.BUS_CMD_PATH,
+           b"@@BUS_OUT_PATH@@": common.BUS_OUT_PATH}
+
+
+def _substitute(data: bytes, path: Path) -> bytes:
+    if b"twcontrol" not in path.name.encode() and not any(m in data for m in MARKERS):
+        return data
+    for marker, value in MARKERS.items():
+        if marker in data:
+            data = data.replace(marker, common.posix(value).encode("utf-8"))
+        elif path.name == "twcontrol.lua":
+            sys.exit("%s has lost the %s marker -- the pack would ship a bus path from "
+                     "whatever machine last edited it" % (path, marker.decode()))
+    return data
+
+
 def game_dir(explicit: str | None = None) -> Path:
     return Path(explicit or os.environ.get("GAME_DIR") or DEFAULT_GAME)
 
@@ -99,7 +117,7 @@ def build() -> Path:
     for name, path, env in SCRIPTS:
         if not path.exists():
             sys.exit("missing script: %s" % path)
-        data = path.read_bytes()
+        data = _substitute(path.read_bytes(), path)
         internal = "script\\%s\\mod\\%s.lua" % (env, name)
         entries.append((internal, data))
 

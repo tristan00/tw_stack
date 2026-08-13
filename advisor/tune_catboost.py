@@ -479,7 +479,7 @@ def main():
     log("wrote %s" % out)
     log("per-trial log: %s" % progress)
     log("study persisted to %s (rerun with --study %s to add trials)" % (storage, study_name))
-    log("nothing in D:\\twdata\\models was touched -- apply a winner by editing CB_* in "
+    log("nothing in <TWDATA>/models was touched -- apply a winner by editing CB_* in "
         "advisor/base_model.py")
     return 0
 
