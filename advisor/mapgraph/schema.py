@@ -76,6 +76,7 @@ PROVINCE_RELATIONS = (
     "slot_locked",
     "slot_building",
     "of_chain",
+    "has_edict",
 )
 
 CATALOGUE_RELATIONS = (

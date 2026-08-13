@@ -253,6 +253,11 @@ def build_graph(record):
                 vals["can_set_edict"] = sd.flag("can_set_edict")
         pi = g.add("p:" + prov, "province", vals)
         g.edge(ri, pi, "in_prov")
+        if st is not None:
+            for _e in (st.get("active_edict"), st.get("selected_edict")):
+                _k = str(_e or "")
+                if _k and _k != "none":
+                    g.edge(pi, g.cat_node("edict", _k), "has_edict")
 
     for s in world.get("settlements") or []:
         key = str(s.get("region") or "")
