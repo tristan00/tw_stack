@@ -337,6 +337,14 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
         entry["bus_files"] = _bus_sizes()
         log("   bus: %s" % ", ".join("%s %.1fMB" % (k, v)
                                      for k, v in sorted(entry["bus_files"].items())))
+        # Every campaign starts on a fresh out log. Rotation used to live only in spawn(),
+        # and a campaign boundary respawns the game only on a retrain window or after an
+        # error -- so on a normal ending nothing rotated and twcontrol.jsonl accumulated:
+        # 229MB over 9 campaigns, at which point the bus stopped answering and wedged one.
+        try:
+            ex.rotate_out_log()
+        except Exception as e:
+            log("   out-log rotation failed: %s" % repr(e)[:90])
         if retrain_every and i and i % retrain_every == 0:
             _flush_generation(stretch, backend, backend_cfg, generation, report, trained, log)
             stretch = []

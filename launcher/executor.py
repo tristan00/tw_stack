@@ -357,6 +357,10 @@ class Executor:
                 self.kill_game()
         return not self.game_is_up()
 
+    def rotate_out_log(self):
+        import bus_launcher
+        return bus_launcher.BusLauncher().rotate_out_log()
+
     def hard_restart(self, plan, campaign="Immortal Empires", boot_timeout=90):
         self.kill_game()
         time.sleep(8)
