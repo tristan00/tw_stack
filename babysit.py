@@ -22,16 +22,10 @@ RELAUNCH_COOLDOWN_S = 1800
 
 RUN = {"campaigns": 500, "turns": 20, "model": "catboost",
        "retrain": True, "retrain_every": 10,
-       # Model-driven play raised to 60%: the two learned arms at 0.3 each, random at 0.3
-       # for continued coverage, ruleset at 0.1. Sums to 1.0.
        "strategies": "marwil_gnn=0.3,greedy_catboost=0.3,random=0.3,ruleset=0.1",
        "ruleset": "probe_gaps",
-       # Every start on the map, not the cutscene-filtered subset.
        "factions": "all",
        "campaign": "Realm of Chaos",
-       # dev is ON: the diagnostic streams, including the panel dump, are the reason this
-       # run exists in this shape. A relaunch that quietly drops them collects a campaign
-       # that cannot be debugged when it wedges -- which is the failure that started this.
        "dev": True}
 
 
@@ -103,9 +97,7 @@ def main():
     note("DEAD/STALLED (alive=%s age=%s) -- relaunching" % (alive, age))
     with open(STAMP, "w", encoding="utf-8") as fh:
         fh.write(str(time.time()))
-    # Every field comes from RUN so a relaunch matches how the run was started by hand --
     # a babysitter that quietly brings the run back in a different shape is worse than one
-    # that does nothing, because the corpus keeps growing either way. dev included.
     for step in runctl.up(RUN["campaigns"], RUN["turns"], model=RUN["model"],
                           retrain=RUN["retrain"], retrain_every=RUN["retrain_every"],
                           dev=RUN.get("dev", False), with_ui=True,

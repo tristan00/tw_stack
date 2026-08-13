@@ -517,8 +517,6 @@ class RuleSet:
 
     @classmethod
     def load(cls, name):
-        # The repo copy is what a run plays by. RULES_DIR is a local override, searched
-        # first so an operator can try a variant without editing the checkout.
         candidates = [os.path.join(d, "%s.json" % name)
                       for d in (RULES_DIR, RULES_DIR_REPO)]
         path = next((p for p in candidates if os.path.isfile(p)), None)

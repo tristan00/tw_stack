@@ -18,10 +18,6 @@
 
 
 
--- Substituted by bus/pack_multi.py at build time from common.BUS_CMD_PATH /
--- common.BUS_OUT_PATH. This runs inside the game's lua VM and cannot import python, so
--- the paths are baked in when the pack is built. The build fails if these markers are
--- missing, so the pack can never ship pointing at another machine.
 local CMD_PATH = "@@BUS_CMD_PATH@@"
 local OUT_PATH = "@@BUS_OUT_PATH@@"
 local POLL_SECONDS = 0.1
@@ -1155,8 +1151,6 @@ end
 
 
 
--- Set once we have dispatched cm:quit() for our own death, so a second death event for the
--- same faction (three event names are listened to) cannot dispatch it twice.
 local quit_on_defeat_sent = false
 
 
@@ -1178,7 +1172,6 @@ local function arm_defeat_listener()
           log({ cmd = "faction_destroyed", event = ev, faction = fn,
                 is_us = us, turn = turn() })
 
-          -- LEAVE THE CAMPAIGN FROM IN HERE WHEN IT WAS US.
           if us and not quit_on_defeat_sent then
             quit_on_defeat_sent = true
             local ok = pcall(function() cm:quit() end)
@@ -1304,9 +1297,7 @@ local function arm_event_recorder()
         local pname = or_null(try(function() return context.string end))
         log({ cmd = "panel", opened = true, turn = turn(), name = pname })
 
-        -- THE CAMPAIGN-END PANEL IS THE LAST THING WE CAN ACT ON.
         if pname == "campaign_victory" then
-          -- CLICK "RETURN TO MAIN MENU" FROM IN HERE.
           local seen = {}
           local function walk(c, depth)
             if not c or depth > 6 then return end
@@ -1336,7 +1327,6 @@ local started = false
 local function start(hook)
   local saved = try(function() return cm:get_saved_value("twcontrol_last_seq") end)
   if not started then
-    -- ORDER MATTERS, AND THE LATCH GOES LAST.
     last_seq = saved or max_seq_in_file()
     local armed = false
     pcall(function() cm:callback(poll, POLL_SECONDS); armed = true end)
@@ -1390,7 +1380,6 @@ end
 
 log({ cmd = "intro_cutscene", result = tostring(try(suppress_intro_cutscene)) })
 
--- ARM FROM THE EARLIEST HOOK THAT WILL TAKE US, AND LABEL WHICH ONE WON.
 function twcontrol() start("entry_point") end
 if cm and cm.add_ui_created_callback then
   pcall(function() cm:add_ui_created_callback(function() start("ui_created") end) end)

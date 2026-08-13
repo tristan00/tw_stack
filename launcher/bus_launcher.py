@@ -24,7 +24,6 @@ ROSTER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "startabl
 P_LIST_PARENT = ("campaign_select_new|right_holder|tab_campaign|campaign_holder|"
                  "campaign_button_holder|list_parent")
 P_CONTINUE = "custom_loading_screen|bottom_parent|button_continue"
-# Longest we wait for the intro tour's letterbox to retract after the HUD appears.
 HUD_GRACE = 25.0
 
 
@@ -198,7 +197,6 @@ class BusLauncher:
         return None
 
     def advance_to_hud(self, timeout=200):
-        # A DEAD GAME IS NOT A SLOW ONE, AND WAITING OUT THE TIMEOUT COSTS THE WHOLE BUDGET.
         import bus as _bus
         t0 = time.time()
         did_continue = False
@@ -210,20 +208,9 @@ class BusLauncher:
         while time.time() - t0 < timeout:
             roots = self._roots_safe()
             vis = {k.get("id") for k in roots if k.get("visible")}
-            # hud_campaign becomes visible while the intro TOUR is still running -- the
-            # camera is still flying and cinematic_bars is still drawn over it. Returning
-            # on the HUD alone hands the agent a screen it cannot really act on, and the
-            # first turn's actions get taken into a cutscene.
-            #
-            # So the HUD only counts once the cinematic overlay has gone with it. HUD_GRACE
-            # bounds that wait: if the bars never retract we go anyway rather than burning
-            # the whole timeout, which is what the abandoned cutscene gate did.
             if "hud_campaign" in vis:
                 if hud_since is None:
                     hud_since = time.time()
-                # cinematic_bars ONLY. black_fade is in BASE_ROOTS and PERSISTENT_ROOTS --
-                # permanent furniture that can read visible indefinitely -- so waiting on
-                # it never cleared and every start paid the whole grace: 25s -> 49.2s.
                 blocked = vis & {"cinematic_bars"}
                 waited = time.time() - hud_since
                 if not blocked or waited >= HUD_GRACE:
@@ -247,7 +234,6 @@ class BusLauncher:
                           if k.get("id") in ("campaign_space_bar_options", "black_fade")
                           and k.get("visible")]
             now = time.time()
-            # SKIP ON A CADENCE, NOT ONLY WHEN A SKIP PROMPT HAPPENS TO BE VISIBLE.
             if now - last_skip > 2.0:
                 last_skip = now
                 try:
@@ -369,8 +355,6 @@ class BusLauncher:
             self.bus = Bus()
         key = self.CAMPAIGN_KEYS.get(campaign_map, campaign_map)
         say = log or _log
-        # The bus answers `roots` under `kids`, never under `roots` -- every other reader
-        # gets this right (line 143 here, dumps.py:68).
         reply = self.bus.send("roots", timeout=timeout)
         if not reply or reply.get("error") or (reply.get("kids") is None):
             raise TWError("harvest: the bus did not return a root list (%r)" % (reply,))
@@ -400,8 +384,6 @@ class BusLauncher:
                 say("harvest: sample failed (%s) -- continuing" % repr(e)[:80])
                 time.sleep(poll_s)
                 continue
-            # A sample from the wrong map is dropped, not merged. Overshooting into another
-            # campaign while cycling must not silently contaminate the roster.
             if on_screen and key and key != self.CAMPAIGN_KEYS.get(on_screen, None) \
                     and on_screen.lower().replace("the ", "") not in \
                     str(campaign_map).lower().replace("the ", ""):

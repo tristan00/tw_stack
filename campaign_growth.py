@@ -2,16 +2,8 @@ from __future__ import annotations
 
 """The one definition of campaign growth.
 
-Growth is FIRST -> LAST, signed, per metric, over the sequential decision snapshots.
-
-The source is `decision_points.campaign`, not `target_rows`. A target row is written once
-per turn and is skipped entirely when the turn ends terminally, so a campaign that took a
-settlement and then died recorded the gain nowhere. Measured across 287 campaigns, the two
-sources disagreed on 50 of them (17%), always in the same direction: target_rows read 0 or
-unmeasurable where the snapshots showed a real gain.
-
-`turn_rows` counts snapshots, not turns -- it is the length of the series being
-differenced, which is what state_of() needs to decide whether a span exists at all.
+Growth is FIRST -> PEAK, per metric, over the sequential decision snapshots in
+`decision_points.campaign`. `turn_rows` counts snapshots, not turns.
 
 Four definitions used to coexist, and they disagreed on the source, the window, the sign
 convention, and whether loss could exist at all:
@@ -85,8 +77,6 @@ SELECT ckey,
 """
 
 TRAJECTORY_SQL = _TRAJECTORY % ""
-# One campaign, parameterised. Callers used to string-replace the FROM clause of the query
-# above to bolt a filter on; that breaks silently the moment this SQL is edited.
 TRAJECTORY_SQL_ONE = _TRAJECTORY % "WHERE campaign_id = ?"
 
 
@@ -126,9 +116,6 @@ def enrich(row: dict) -> dict:
     out["growth_state"] = state_of(tr)
     span = span_turns(out.get("first_turn"), out.get("last_measured_turn"), tr)
     out["growth_span_turns"] = span
-    # To the PEAK, not the last point: a campaign that took a settlement and then lost it
-    # still reached two. Growth is therefore never negative -- the peak is always at least
-    # the first point -- so a loss shows as 0 here and only in `final_` beside it.
     s = delta(out.get("first_settlements"), out.get("peak_settlements"), tr)
     l = delta(out.get("first_lord_level"), out.get("peak_lord_level"), tr)
     out["settlements_growth"] = s

@@ -685,12 +685,6 @@ def generate(record):
     """The whole move universe for one recorded decision, ungated."""
     world = record.get("world") or {}
     campaign = record.get("campaign") or {}
-    # The faction-wide reads live on the CAMPAIGN ENTITY, not on record["campaign"], which
-    # is only the snapshot header. _province_options reads lord_pools off this dict, so
-    # without the merge it saw {} and recruit_lord/recruit_hero generated nothing -- zero
-    # offers across the whole corpus, while the pools were being collected the entire time.
-    # Merged rather than replaced so the header's own keys cannot be lost, and hoisted out
-    # of the loop because the campaign entity is not ordered before the provinces.
     for _e in record.get("entities") or ():
         if _e.get("context_kind") == "campaign":
             campaign = dict(campaign, **(_e.get("state") or {}))

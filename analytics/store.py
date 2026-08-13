@@ -177,8 +177,6 @@ def run_tenant(tenant, src, an) -> dict:
     st = state(an, tenant.NAME)
     full = bool(getattr(tenant, "REBUILD_EVERY_PASS", False))
     lo = 0 if full else int(st["watermark"])
-    # Both connections, because a rollup's "how far can I go" is its fact tenant's
-    # watermark, which lives in the analytics database rather than the corpus.
     hi = int(tenant.safe_hi(src, an) or 0)
     t0 = time.time()
     if hi <= lo or (full and hi <= 0):
@@ -194,9 +192,6 @@ def run_tenant(tenant, src, an) -> dict:
         stats = tenant.source_stats(src, watermark)
         source_rows, floor = (stats if stats is not None else (None, None))
         if source_rows is not None and int(source_rows) != rows:
-            # Not a warning. A tenant that stores fewer rows than the source holds at or
-            # below its own watermark has dropped work that nothing will ever come back
-            # for, and every aggregate built on it would be quietly short.
             raise RuntimeError(
                 "%s folded to watermark %d but holds %d rows against %d source rows -- "
                 "rows were dropped" % (tenant.NAME, watermark, rows, source_rows))

@@ -110,7 +110,6 @@ def _ending_evidence(rd, entry, ex):
     out = {}
     try:
         con = dbopen.connect(os.path.join(str(rd), "decisions.sqlite"), timeout=5.0)
-        # The campaign being written up, not whichever one is newest in the database.
         camp = entry.get("campaign_uuid")
         if not camp:
             row = con.execute("SELECT campaign_id FROM decision_points"
@@ -180,8 +179,6 @@ def _ending_evidence(rd, entry, ex):
 
 def _postmortem(runs_root, entry, ex, log):
     rec = {"ts": time.time(), "when": time.strftime("%Y-%m-%d %H:%M:%S"),
-           # The key the corpus files this campaign under. Recorded here so nothing
-           # downstream has to match endings to campaigns by faction and wall clock.
            "campaign_key": entry.get("campaign_uuid"),
            "campaign": entry.get("index"), "faction": entry.get("plan"),
            "policy": entry.get("policy"), "outcome": entry.get("outcome"),
@@ -233,8 +230,6 @@ def _postmortem(runs_root, entry, ex, log):
                                 for f in sorted(os.listdir(logs_dir))] if os.path.isdir(logs_dir) else []
         except Exception:
             rec["game_logs"] = None
-    # Into the store, through the recorder that owns it -- not appended to a text file
-    # beside it that the dashboard then had to parse and guess its way through.
     rd = entry.get("run_dir") or journal.RUN_DIR
     try:
         journal.log_postmortem(rd, rec)
@@ -284,9 +279,6 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
     if cold and "marwil_gnn" in mix:
         raise SystemExit("--cold forces cold_random but the mix includes 'marwil_gnn' -- a cold "
                          "run must not load a trained model; drop 'marwil_gnn' or drop --cold")
-    # --retrain used to mean "and also fit once before campaign 1". That start retrain is
-    # gone, so --retrain WITHOUT a cadence would now silently never fit -- which is the
-    # failure mode this codebase refuses to have. Say so instead of doing nothing.
     if retrain and not retrain_every:
         raise SystemExit("--retrain no longer fits before campaign 1: the start retrain was "
                          "removed because it refits a model that is already on disk under "
@@ -329,7 +321,6 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
         log("=" * 78)
         entry = {"index": i + 1, "started": time.time(), "plan": this_plan,
                  "max_turns": this_turns}
-        # Move the defeat marker to the end of the bus log NOW, before anything can fail.
         try:
             ex.mark_campaign_start()
         except Exception as e:                                  # noqa: BLE001
@@ -346,7 +337,6 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
         entry["bus_files"] = _bus_sizes()
         log("   bus: %s" % ", ".join("%s %.1fMB" % (k, v)
                                      for k, v in sorted(entry["bus_files"].items())))
-        # NO RETRAIN ON START -- only on the interval.
         if retrain_every and i and i % retrain_every == 0:
             _flush_generation(stretch, backend, backend_cfg, generation, report, trained, log)
             stretch = []
@@ -419,7 +409,6 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                     % (i + 1, repr(e)[:180]))
             entry.setdefault("outcome", "in_progress")
             _write(out_path, dict(report, campaigns=report["campaigns"] + [entry]))
-        # LOAD THE MODELS WHILE THE GAME LOADS, NOT AFTER IT.
         _models = {}
 
         def _preload_models():
@@ -428,8 +417,6 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                 _models["ranker"] = r
                 _models["policy"] = P.Policy(r, strategies=mix, ruleset=ruleset)
             except BaseException as e:                              # noqa: BLE001
-                # Re-raised on the main thread at the join, so a broken model still fails
-                # the campaign loudly instead of being swallowed in a worker.
                 _models["error"] = e
 
         _preload = threading.Thread(target=_preload_models, name="model-preload", daemon=True)
@@ -452,8 +439,6 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
             if "error" in _models:
                 raise _models["error"]
             ranker, pol = _models["ranker"], _models["policy"]
-            # How much of the preload did NOT fit inside the launch. 0.0 means it was fully
-            # hidden; a rising number means the models got slower than the game does.
             log("model preload: %.1fs still to wait after the game was up" % (time.time() - _t_join))
             entry["model_preload_wait_s"] = round(time.time() - _t_join, 1)
             entry["backend"] = backend
@@ -504,9 +489,6 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
             except Exception:                                   # noqa: BLE001
                 dead = False
             if dead:
-                # Fall through to the shared post-campaign block below rather than
-                # duplicating it: it already writes the post-mortem, stamps seconds, and
-                # sets hard_restart_next (which "defeated" is in). Only the label changes.
                 entry.update(outcome="defeated", error=repr(e)[:300], **_played(e))
                 log("== campaign %d LOST (faction destroyed; surfaced as %s because the bus "
                     "stops answering on the defeat screen)" % (i + 1, type(e).__name__))
@@ -621,9 +603,6 @@ def _resolve_uuid(con, c):
     return hits[0] if len(hits) == 1 else None
 
 
-# Names BOTH endpoints, not just the baseline. Rows measured to the last point and rows
-# measured to the peak are different numbers over the same campaigns, and a reader cannot
-# tell which by looking at them -- which is the whole reason this field exists.
 GROWTH_BASELINE = "first_decision_snapshot->peak"
 
 
@@ -644,8 +623,6 @@ def _campaign_growth(con, uuid):
         out[part + "_start"] = float(first)
         out[part + "_peak"] = float(t.get("peak_" + part) or first)
         out[part + "_final"] = (float(last) if last is not None else None)
-        # first -> PEAK, the same endpoint the dashboard uses. The ledger and the
-        # dashboard read one definition; they must not diverge again.
         out[part + "_gained"] = CG.delta(first, out[part + "_peak"], turn_rows)
     return out
 
@@ -745,9 +722,6 @@ def _gain_stats(stretch, part):
             "per_turn": round(sum(vals) / turns, 4) if turns else None,
             "campaigns_measured": len(measured),
             "campaigns_that_gained": sum(1 for v in vals if v >= 1),
-            # Counted because it can now be non-zero. Under the old clamp every loss
-            # recorded as a gain of zero, so this would have been 0 by construction and the
-            # ledger reported a portfolio that never lost ground.
             "campaigns_that_lost": sum(1 for v in vals if v <= -1),
             "hist": {str(int(v)): vals.count(v) for v in sorted(set(vals))}}
 
@@ -789,9 +763,6 @@ def _trial_row(stretch, backend, backend_cfg, gen_n, report, trained, log):
            "campaigns_per_hour": (round(len(stretch) / (secs / 3600.0), 2) if secs else None),
            "campaign_hours": round(secs / 3600.0, 2),
            "timing": _timing_stats(stretch),
-           # Which definition this row's growth was measured on. Rows written before the
-           # clamp came out are not comparable with rows written after it, and a reader
-           # cannot tell by looking at the numbers.
            "baseline": GROWTH_BASELINE,
            "campaign_uuids": [c["campaign_uuid"] for c in stretch if c.get("campaign_uuid")],
            "run_dirs": sorted({c["run_dir"] for c in stretch if c.get("run_dir")})}
@@ -848,9 +819,6 @@ def backfill_trials(runs_root=RUNS_ROOT, log=print, recompute=False):
 
 
 def _write_trial(row, log, quiet=False):
-    # An upsert, which is what this always meant: a live trial is checkpointed repeatedly
-    # and the last row for an id wins. As an append to a text file that was a convention;
-    # here it is the primary key.
     try:
         metrics_db.write_trial(row)
     except Exception as e:                                      # noqa: BLE001

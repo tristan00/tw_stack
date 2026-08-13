@@ -17,8 +17,6 @@ from store import DecisionStore
 
 POLL = 0.1
 
-# Every ~60s at POLL=0.1. Spent transport rows are worth clearing often enough that the
-# channel never becomes a second corpus, and rarely enough that it costs nothing.
 PRUNE_EVERY = 600
 
 
@@ -47,8 +45,6 @@ def run(ctx):
             if out_dir != cur_dir:
                 if store is not None:
                     store.close()
-                # The store is opened FIRST: it owns the schema, and the request channel is
-                # a table in it. Only then is there a queue head to start from.
                 store = DecisionStore(out_dir)
                 cur_dir, after_id, seq = out_dir, journal.last_request_id(out_dir), 0
                 ctx.emit({"kind": "decisions_status", "status": "store_open",
@@ -166,9 +162,6 @@ def run(ctx):
                     if rid:
                         journal.respond(out_dir, rid, error=(lambda _m: _m if len(_m) <= 700 else
                                                  _m[:200] + " ...<<cut>>... " + _m[-500:])(repr(e)))
-            # The channel is not the corpus: a spent request still holds the whole ranking
-            # it carried. Pruning here is what keeps the transport from growing into the
-            # database the way it grew into the jsonl files.
             ticks += 1
             if ticks % PRUNE_EVERY == 0 and after_id:
                 gone_a, gone_b = journal.prune(out_dir, after_id)

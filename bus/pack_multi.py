@@ -21,7 +21,6 @@ SCRIPTS = [
 ]
 PACK = HERE / "dist" / "tw.pack"
 
-# THE CAMPAIGN INTRO MOVIES ARE REPLACED WITH AN EMPTY ONE.
 SWAP_INTRO_MOVIES = True
 
 STANDIN_PACK = "movies_spell.pack"
@@ -32,8 +31,6 @@ INTRO_MARK = "_intro"
 INTRO_EXT = ".ca_vp8"
 
 
-# The lua runs inside the game and cannot import python, so the bus paths are baked in
-# here. Only twcontrol.lua carries the markers; a file without them is passed through.
 MARKERS = {b"@@BUS_CMD_PATH@@": common.BUS_CMD_PATH,
            b"@@BUS_OUT_PATH@@": common.BUS_OUT_PATH}
 
@@ -126,8 +123,6 @@ def build() -> Path:
         standin = _standin_bytes(game)
         intros = intro_movies(game)
         if not intros:
-            # Silently shipping no overrides would look identical to the optimisation
-            # working, and the only symptom would be campaigns quietly costing 100s again.
             sys.exit("found 0 campaign intro movies under %s in %s -- the scan is broken; "
                      "refusing to build a pack that silently drops the override"
                      % (INTRO_PREFIX, game / "data"))

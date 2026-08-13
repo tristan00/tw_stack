@@ -52,9 +52,6 @@ def current_run_dir(runs_root=RUNS_ROOT, timeout=0.0):
     return RUN_DIR
 
 
-# One connection per thread. sqlite3 connections are not shareable across threads, and the
-# watchdog runs its state-hash request on a thread of its own while the main loop is inside
-# a decision.
 _local = threading.local()
 
 
@@ -213,7 +210,6 @@ def read_decision(run_dir, decision_id):
     return _store(run_dir).read_decision(decision_id)
 
 
-# ---------------------------------------------------------------------------- requests
 
 def request_snapshot(run_dir, active=None, timeout=180.0):
     rid = _new_id("snapshot")
@@ -253,7 +249,6 @@ def request_hash(run_dir, timeout=45.0):
     return r.get("hash"), r.get("roots") or []
 
 
-# ------------------------------------------------------------------- fire and forget
 
 def log_interrupt(run_dir, payload):
     body = dict(payload)

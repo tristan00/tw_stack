@@ -144,12 +144,10 @@ CREATE TABLE IF NOT EXISTS entity_target_rows(
 -- and a model trained on relationships the player cannot observe would lean at training time
 -- on information it will not have at play time -- the kind of failure that scores fine
 -- offline and is silently wrong in the game.
---
 -- `known_factions` is the filter, carried in the row itself rather than enforced by a
 -- separate guard. Any consumer holds the met-set for that exact turn next to the data, so
 -- clipping is a join and not a convention someone has to remember. The met set changes every
 -- turn, which is precisely why it is stored per row instead of derived later.
---
 -- Written once per TURN, not per action: two factions that are not us cannot change their
 -- relationship while we are taking actions -- the AI moves between turns. PRIMARY KEY makes
 -- the repeat writes within a turn a no-op.
@@ -159,54 +157,21 @@ CREATE TABLE IF NOT EXISTS diplo_state(
   war_blob INTEGER NOT NULL REFERENCES blobs(blob_id),    -- [{faction,at_war_with:[]}], ALL factions
   PRIMARY KEY(campaign_id, turn)) WITHOUT ROWID;
 
--- ------------------------------------------------------------------ the request channel
---
--- The advisor and the recorder are separate processes, and this is how they talk. It was
--- two append-only jsonl files, and the reader scanned its file FROM BYTE 0 on every single
--- call: journal._await read and JSON-parsed the entire responses log to find one req_id.
--- That is O(everything written so far) against a file that only grows. Measured on the run
--- that exposed it: 11.85 ms per MB, a 234 MB responses log, ~3000 ms per request by the end
--- of the day, and 3.37 hours of a 24.19-hour run -- 13.9% of wall clock -- spent scanning
--- text. The same record read out of this database measures 0.30 ms.
---
--- Here the reply lookup is a primary-key probe. It costs the same on hour 24 as on minute
--- one, which is the property the file never had.
 CREATE TABLE IF NOT EXISTS rpc_requests(
   rpc_id INTEGER PRIMARY KEY AUTOINCREMENT,
   req_id TEXT UNIQUE, kind TEXT NOT NULL, ts REAL NOT NULL, payload TEXT);
 
--- A reply carries NO record. The recorder has already written the decision by the time it
--- answers, so the advisor reads it back by decision_id instead of being handed a 52 KB
--- copy through the channel. That copy is what inflated the responses log in the first
--- place, and it was introduced to avoid a database read that costs a third of a
--- millisecond.
 CREATE TABLE IF NOT EXISTS rpc_responses(
   req_id TEXT PRIMARY KEY, ts REAL NOT NULL,
   decision_id INTEGER, payload TEXT, error TEXT) WITHOUT ROWID;
 
--- ------------------------------------------------------------- application data, not logs
---
--- These three were jsonl files that the dashboard re-parsed on request. They are corpus
--- data -- a campaign's outcome is the label every training run needs -- and §3.5 of the
--- pre-wipe spec already recorded "campaign outcome was never in the DB at all" as one of
--- the three reasons the v1 corpus could not migrate. It is in the DB now.
--- campaign_key is nullable and NOT the primary key on purpose. The postmortem log carried
--- only a faction and a wall clock, so the dashboard had to guess which campaign each
--- ending belonged to -- a time-window match that resolved 119 of 136 and silently dropped
--- the rest. The key is recorded at write time now, but an ending we genuinely cannot key
--- must still be storable and countable rather than discarded to make a join work.
 CREATE TABLE IF NOT EXISTS postmortems(
   postmortem_id INTEGER PRIMARY KEY AUTOINCREMENT,
   campaign_key TEXT, ts REAL, run_dir TEXT,
   faction TEXT, turn INTEGER, outcome TEXT, defeated INTEGER,
   reason TEXT, payload TEXT);
 
--- The training trial ledger is NOT here. It spans every run directory, and this database
--- is one run directory's corpus -- filing a global ledger inside it would scope it wrong.
--- It lives in metrics_db.py, which is a database at the level the data actually belongs to.
 
--- The diplomacy event tail. Was run/diplomacy.jsonl. This is the per-event stream the
--- campaign view shows; diplo_state above is the per-turn world graph and stays separate.
 CREATE TABLE IF NOT EXISTS diplomacy_events(
   event_id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts REAL, campaign_key TEXT, turn INTEGER, kind TEXT, payload TEXT);

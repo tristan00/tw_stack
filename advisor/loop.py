@@ -377,8 +377,6 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
     pol.new_turn()
     turn, campaign_uuid = journal.request_turn(run_dir)
     DS.TURN[0] = turn
-    # The campaign a diplomacy event belongs to. Without it every event was written with a
-    # null campaign and the campaign-detail panel filtered all of them out.
     DS.CAMPAIGN[0] = campaign_uuid
     _last_done_ts = [None]
     _hk_parts = [{}]

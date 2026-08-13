@@ -33,15 +33,10 @@ from analytics import metrics as M
 from decisions import store_schema as S
 
 NAME = "model_agreement"
-# 2: the stored `arm` is the canonical strategy name, so rows folded before the arms were
-#    renamed carry values no page looks up any more. Bumping wipes and recomputes rather
-#    than leaving two spellings of one arm in one column.
 FORMULA_VERSION = 2
 SOURCE = "decisions"
 DEPENDS_ON = ()
 
-# Resolved from the collector's own field list, never written as literals. If a score field
-# is ever inserted, these move with it instead of silently reading the neighbouring column.
 _CAT = S.SCORE_FIELDS.index("rank")
 _GNN = S.SCORE_FIELDS.index("gnn_rank")
 _WIDTH = len(S.SCORE_FIELDS)
@@ -148,8 +143,6 @@ def _one(row) -> dict:
         return out
     buf = np.frombuffer(packed, dtype="<f4")
     if buf.size == 0 or buf.size % _WIDTH:
-        # Never reshaped on a guess: a blob that is not a whole number of offers is a
-        # corrupt record, and silently truncating it would produce a plausible ranking.
         return out
     m = buf.reshape(-1, _WIDTH)
     cat = m[:, _CAT].astype(np.float64)

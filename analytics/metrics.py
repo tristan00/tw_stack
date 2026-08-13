@@ -27,9 +27,6 @@ import numpy as np
 
 MIN_N = 3
 
-# RBO's persistence. 0.9 puts roughly 86% of the weight in the first ten ranks. It is a
-# choice, not a measurement -- which is exactly why RBO is reported as secondary: a
-# different p is a different number over the same data.
 RBO_P = 0.9
 
 TOP_KS = (1, 3, 5, 10)
