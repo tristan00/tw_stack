@@ -54,6 +54,10 @@ _OUTCOME_STATE = {
 # recorded, which is the true statement, and leaves the genuinely live campaign alone.
 LIVE_WINDOW_S = 600.0
 
+# A trial's row is rewritten once per campaign, and a campaign runs a few minutes, so this
+# is deliberately looser than the per-campaign window above.
+TRIAL_LIVE_WINDOW_S = 1200.0
+
 
 def _ended_because(pm: dict) -> str | None:
     """Why the RUN stopped this campaign. NOT a growth measurement."""
@@ -1571,7 +1575,17 @@ def trials():
 @db.cached_files(metrics_db.DB_PATH, metrics_db.DB_PATH + "-wal")
 def _trials() -> list:
     out = []
-    for d in metrics_db.trials():
+    # `running` is written by _checkpoint_trial and never cleared, so every session that
+    # was killed rather than finished leaves its last row claiming to be live forever.
+    # Measured: 3 rows marked running, of which 1 was the live session.
+    #
+    # A running trial rewrites its row after every campaign, so a live one always has a
+    # fresh ts -- and only the newest such row can be live, because a session superseded
+    # by a later one has certainly stopped.
+    rows = list(metrics_db.trials())
+    newest_live = max((float(d.get("ts") or 0) for d in rows if d.get("running")),
+                      default=None)
+    for d in rows:
         corpus = d.get("corpus_at_train") or {}
         setts = d.get("settlements") or {}
         lord = d.get("lord_level") or {}
@@ -1603,7 +1617,9 @@ def _trials() -> list:
             turns_per_campaign=_f(d.get("turns_per_campaign")),
             seconds_per_campaign=_f(timing.get("s_per_campaign")),
             seconds_per_turn=_f(timing.get("s_per_turn")),
-            live=bool(d.get("running")),
+            live=(bool(d.get("running"))
+                  and float(d.get("ts") or 0) == newest_live
+                  and time.time() - float(d.get("ts") or 0) <= TRIAL_LIVE_WINDOW_S),
             notes=(", ".join("%s %s" % (k, v)
                              for k, v in (d.get("outcomes") or {}).items()) or None))
         row.snapshots = _i(d.get("_snapshots"), 1)
