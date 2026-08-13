@@ -246,6 +246,7 @@ def fit_net(datas, ys, groups, cfg, log=print):
         d.y_z = (d.y - y_mean) / y_sd
 
     net = N.from_cfg(cfg).to(dev)
+    net.encoder.type_enc.fit_norm([datas[i] for i in trn_idx], log=log)
     opt = torch.optim.AdamW(net.parameters(), lr=cfg["lr"],
                             weight_decay=cfg["weight_decay"],
                             fused=(dev.type == "cuda"))

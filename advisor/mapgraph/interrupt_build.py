@@ -142,12 +142,12 @@ def _screen_values(screen, panel):
         return {}
     rd = G.Reader(nums, "screen:%s" % screen, "panel")
     return {
-        "attitude": (rd.num("attitude") / S.ATTITUDE_SCALE).clip(-1.0, 1.0),
-        "amount_demanded": (rd.num("amount_demanded") / S.DEAL_GOLD_SCALE).clip(0.0, 2.0),
-        "amount_offered": (rd.num("amount_offered") / S.DEAL_GOLD_SCALE).clip(0.0, 2.0),
-        "strength_them": (rd.num("strength_them") / S.STRENGTH_RANK_SCALE).clip(0.0, 2.0),
-        "strength_us": (rd.num("strength_us") / S.STRENGTH_RANK_SCALE).clip(0.0, 2.0),
-        "settlements": (rd.num("settlements") / S.SCREEN_SETTLEMENTS_SCALE).clip(0.0, 5.0),
+        "attitude": rd.num("attitude"),
+        "amount_demanded": rd.num("amount_demanded").slog(),
+        "amount_offered": rd.num("amount_offered").slog(),
+        "strength_them": rd.num("strength_them"),
+        "strength_us": rd.num("strength_us"),
+        "settlements": rd.num("settlements"),
     }
 
 
