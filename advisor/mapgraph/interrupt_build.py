@@ -143,8 +143,8 @@ def _screen_values(screen, panel):
     rd = G.Reader(nums, "screen:%s" % screen, "panel")
     return {
         "attitude": rd.num("attitude"),
-        "amount_demanded": rd.num("amount_demanded").slog(),
-        "amount_offered": rd.num("amount_offered").slog(),
+        "amount_demanded": rd.num("amount_demanded"),
+        "amount_offered": rd.num("amount_offered"),
         "strength_them": rd.num("strength_them"),
         "strength_us": rd.num("strength_us"),
         "settlements": rd.num("settlements"),
