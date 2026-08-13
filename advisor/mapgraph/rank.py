@@ -1,23 +1,5 @@
 from __future__ import annotations
 
-"""Inference: one forward pass per decision, scores for every offer.
-
-Drop-in for `mapgraph.rank.Ranker` -- same three entry points the policy uses
-(`ready`, `score_elig(offers, record)`, `pick(elig, record)` + `last_impact`).
-
-One forward pass builds the whole decision graph, action nodes included, and every
-offer's score is read off its own node. Offers are matched back to nodes by the same
-`(context_kind, context_id, action_type, key)` tuple `strategies.offer_key` uses.
-
-Reported number is `q` centred within the decision, `q - mean(q)`.
-
-Not `q - v`, which is what the predecessor reported and what I wrote first: `q` is an unnormalised
-softmax logit whose absolute shift is arbitrary (softmax is shift-invariant), and `v` is
-a z-scored outcome prediction. Subtracting one from the other is apples-oranges -- it
-produced numbers like -12.4 that mean nothing. Centring removes the arbitrary shift and
-gives "how much this candidate is preferred over the average candidate in its own choice
-set", which is what a per-offer number should say. Ordering is identical either way.
-"""
 
 import json
 import os
@@ -68,9 +50,7 @@ class Ranker:
             except ImportError:
                 import net as N
             cfg = meta.get("cfg") or {}
-            net = N.Net(cfg.get("hidden", N.HIDDEN),
-                        cfg.get("entity_layers", N.ENTITY_LAYERS),
-                        cfg.get("action_rounds", N.ACTION_ROUNDS))
+            net = N.from_cfg(cfg)
             net.encoder.load_state_dict(
                 torch.load(os.path.join(model_dir, "encoder.pt"), map_location="cpu"))
             net.head.load_state_dict(
@@ -99,7 +79,6 @@ class Ranker:
             out = self.net(data)
             q = out["q"].tolist()
             self.last_value = float(out["v"][0])
-        # centre within the decision: the softmax logit's absolute shift is arbitrary
         v = sum(q) / float(len(q))
         by_key = {}
         for k, s in zip(g.action_keys, q):

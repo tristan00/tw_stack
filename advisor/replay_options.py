@@ -1,27 +1,5 @@
 from __future__ import annotations
 
-"""Every stored option must be regenerable from the stored state.
-
-This is the property the whole recorder/advisor split rests on. The recorder writes state;
-the advisor builds the move universe from that state and hands back the survivors. If an
-option is in the database that `options.generate` cannot produce from the same record,
-then the state is INCOMPLETE -- the generator used something at collection time that was
-never written down, and every later reader (features, the graph, a retrain) is working
-from a record that cannot explain its own contents.
-
-That failure is silent by construction. The corpus looks fine, training runs, and the
-model learns from options whose provenance is missing. So it is checked rather than
-assumed:
-
-    for every decision:  stored options  ⊆  options.generate(record)
-
-Gating is deliberately NOT compared. It is intra-turn stateful -- caps, retirement,
-blacklists all depend on what happened earlier in that turn -- so the same record gated at
-replay would not reproduce the live decision, and pretending otherwise would make this
-check lie. Generation is a pure function of the record; that is what is checked.
-
-    python -m advisor.replay_options [run_dir] [--n 200]
-"""
 
 import collections
 import os
@@ -30,7 +8,7 @@ import sys
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.dirname(_HERE))
-import common  # noqa: E402
+import common
 
 sys.path.insert(0, common.DECISIONS)
 

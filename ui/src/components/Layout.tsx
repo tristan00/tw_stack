@@ -6,14 +6,7 @@ import { useApi, type RunPage } from '@/lib/api'
 import { ago } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
-/**
- * Five destinations, each answering one question.
- *
- * The previous dashboard had sixteen flat tabs of equal weight in one scrolling row --
- * an accident of the order the panels were written, not a structure. Everything still
- * reachable is reachable here; what changed is that you arrive by asking a question
- * rather than by remembering which of sixteen words was the right one.
- */
+
 const NAV = [
   { to: '/run', label: 'run', asks: 'is it healthy right now' },
   { to: '/campaigns', label: 'campaigns', asks: 'how are campaigns going' },
@@ -37,14 +30,7 @@ function useTheme() {
   return { theme, setTheme }
 }
 
-/**
- * The status line.
- *
- * Faction, turn and state come from one endpoint and therefore from one source. The old
- * header resolved them from the corpus while the live panel resolved them from a parse of
- * the session log, and the two rendered side by side disagreeing about which faction was
- * playing -- so the header is fed by the same `current` the run view shows.
- */
+
 function StatusLine() {
   const { data } = useApi<RunPage>('/api/run')
   const cur = data?.current

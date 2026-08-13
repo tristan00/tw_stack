@@ -1,35 +1,5 @@
 from __future__ import annotations
 
-"""The analytics database, and the contract every tenant implements.
-
-WHY THIS IS A SEPARATE FILE FROM THE CORPUS. `decisions/store_schema.py` is the
-collector's contract with the game. It carries its own SCHEMA_VERSION and its own migration
-story, and the collector holds it open at roughly a decision a second. Putting a DERIVED
-number in there couples a formula change to a corpus schema change, puts a second writer on
-the file the collector is writing, and hands `test_store`'s layout invariant rows it does
-not own. The API could not maintain it in any case: `advisor_api/db.py` opens the corpus
-read-only by construction, and that property is worth keeping.
-
-WHY THE RUN DIR AND NOT metrics.sqlite. The key's scope decides the file. `decision_id` is
-unique only inside one run dir -- this corpus starts at 91, not 1 -- so a per-decision table
-keyed in a cross-run database is ambiguous the moment a second run dir exists.
-`common.run_dbs()` already documents that exact trap. Facts keyed by something global
-(a trial id, a model sha) belong in metrics.sqlite; facts keyed by a corpus id belong here.
-A fresh run dir starts with no analytics file, which is the correct behaviour: it is
-impossible to serve a row derived from a different corpus.
-
-THE WHOLE FILE IS DISPOSABLE. A full rebuild is seconds. That is what lets this module be
-absolute about version drift -- when anything suggests the stored rows and the current
-formula might disagree, it deletes and recomputes rather than reconciling. There is never a
-`_v2` table and never two definitions in one place.
-
-COMPLETENESS IS COUNTED, NOT ASSUMED. The watermark says how far the fold has reached; it
-does not by itself prove nothing was dropped in between. So every pass also records how
-many source rows sit at or below the watermark, and a tenant that stores fewer rows than
-that has silently lost work. Note this is deliberately NOT an id-contiguity rule: decision
-ids can carry permanent gaps, and refusing to advance past one would stall the whole
-pipeline forever on a hole that is never going to be filled.
-"""
 
 import os
 import sqlite3
@@ -62,7 +32,6 @@ def analytics_path(run_dir: str) -> str:
 
 
 def connect(path: str, readonly: bool = False) -> sqlite3.Connection | None:
-    """Open the sidecar. None when a readonly caller finds no file."""
     if readonly:
         if not os.path.isfile(path):
             return None
@@ -113,7 +82,6 @@ def _table_rows(an: sqlite3.Connection, name: str) -> int:
 
 
 def _dep_version(an, tenant) -> int | None:
-    """The summed formula version of everything this tenant is derived from."""
     deps = getattr(tenant, "DEPENDS_ON", ())
     if not deps:
         return None
@@ -121,7 +89,6 @@ def _dep_version(an, tenant) -> int | None:
 
 
 def rebuild_reason(tenant, src, an) -> str | None:
-    """Why the stored rows cannot be trusted, or None."""
     st = state(an, tenant.NAME)
     if st["formula_version"] is None:
         return None
@@ -153,7 +120,6 @@ def rebuild_reason(tenant, src, an) -> str | None:
 
 
 def ensure(tenant, src, an) -> str | None:
-    """Create the tenant's table, and wipe it if anything drifted. Returns the wipe reason."""
     an.executescript(tenant.DDL)
     why = rebuild_reason(tenant, src, an)
     if why:
@@ -172,7 +138,6 @@ def ensure(tenant, src, an) -> str | None:
 
 
 def run_tenant(tenant, src, an) -> dict:
-    """One pass. Everything the pass produces commits together, or none of it does."""
     wiped = ensure(tenant, src, an)
     st = state(an, tenant.NAME)
     full = bool(getattr(tenant, "REBUILD_EVERY_PASS", False))
@@ -214,7 +179,6 @@ def run_tenant(tenant, src, an) -> dict:
 
 
 def order_tenants(tenants: list) -> list:
-    """Dependencies first, so a rollup never runs ahead of the facts it summarises."""
     by_name = {t.NAME: t for t in tenants}
     out, seen = [], set()
 

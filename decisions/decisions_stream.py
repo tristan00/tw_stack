@@ -68,9 +68,6 @@ def run(ctx):
                                         collect_ms=int((t1 - t0) * 1000),
                                         store_ms=int((t2 - t1) * 1000),
                                         pickup_lag_ms=pickup_lag_ms)
-                        # No offer count here any more: a snapshot is STATE. The
-                        # option count is emitted by the "options" request, which is the
-                        # only thing that knows it.
                         ctx.emit({"kind": "decisions_point", "decision_id": did,
                                   "entities": len(snap["entities"]),
                                   "turn": snap["campaign"].get("turn"),
@@ -86,7 +83,7 @@ def run(ctx):
                         try:
                             known, wg = collect.diplo_world(bus)
                             store.write_diplo_state(ckey, r.get("turn"), known, wg)
-                        except Exception as e:  # never lose a target row over this
+                        except Exception as e:
                             sys.stderr.write("diplo_world failed: %s\n" % repr(e)[:180])
                         counts["target"] += 1
                         journal.respond(out_dir, rid, row=r, inserted=bool(wrote))

@@ -1,13 +1,7 @@
 import { useSearchParams } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 
-/**
- * Views within a destination, addressed by URL.
- *
- * The selected view is a search parameter rather than component state, so every view has
- * a link you can paste. `replace` keeps the back button meaning "the previous
- * destination" instead of "the previous tab I clicked".
- */
+
 export function SubNav({
   views,
   param = 'view',

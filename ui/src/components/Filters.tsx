@@ -4,21 +4,6 @@ import { X } from 'lucide-react'
 import { n } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
-/**
- * Predicate filters over a table already in memory.
- *
- * Filtering happens on the client because the page has every row already -- the campaigns
- * endpoint returns the whole run dir -- so a round trip would buy nothing and cost the
- * instant feedback that makes a compound question worth asking at all.
- *
- * The predicates live in the URL, like `?view=` does, so "every campaign that grew faster
- * than 0.7 a turn while surviving six turns" is a link you can paste rather than a set of
- * controls you have to describe to someone.
- *
- * A row whose value is NULL never satisfies a numeric predicate. Missing data is not zero,
- * and treating it as zero is the exact defect the growth columns were rebuilt to remove --
- * a campaign with no measurable span must not answer "is growth below 1?" with yes.
- */
 
 export type FilterKind = 'number' | 'enum'
 
@@ -26,7 +11,7 @@ export interface FilterField<T> {
   key: string
   label: string
   kind: FilterKind
-  /** The value the predicate tests. Return null/undefined for "not measured". */
+
   value: (row: T) => number | string | null | undefined
   unit?: string
   step?: number
@@ -59,7 +44,7 @@ function opLabel(kind: FilterKind, op: string) {
   return (opsFor(kind).find((o) => o.key === op) || { label: op }).label
 }
 
-/** `turns:ge:6,settlements_per_turn:gt:0.7` — compact enough to read in the address bar. */
+
 function decode(raw: string | null): Predicate[] {
   if (!raw) return []
   return raw
@@ -79,7 +64,7 @@ function passes<T>(row: T, p: Predicate, field: FilterField<T>) {
     const s = v === null || v === undefined ? '' : String(v)
     return p.op === 'not' ? s !== p.value : s === p.value
   }
-  // Missing is not zero: a null value satisfies no numeric comparison in either direction.
+
   if (v === null || v === undefined) return false
   const a = Number(v)
   const b = Number(p.value)
@@ -117,8 +102,8 @@ export function useFilters<T>(fields: FilterField<T>[], rows: T[], param = 'f') 
       rows.filter((r) =>
         preds.every((p) => {
           const f = byKey.get(p.field)
-          // A predicate naming a column that no longer exists is dropped rather than
-          // silently filtering everything out -- old links must not render an empty table.
+
+
           return f ? passes(r, p, f) : true
         }),
       ),
@@ -128,7 +113,7 @@ export function useFilters<T>(fields: FilterField<T>[], rows: T[], param = 'f') 
   return { preds, set, filtered }
 }
 
-/** Distinct non-empty values a field takes across the rows, for an enum picker. */
+
 export function optionsOf<T>(field: FilterField<T>, rows: T[]) {
   const seen = new Map<string, string>()
   for (const r of rows) {
@@ -154,7 +139,7 @@ export function FilterBar<T>({
   preds: Predicate[]
   set: (p: Predicate[]) => void
   noun?: string
-  /** Display text for an enum value, when the raw value is not what you want read. */
+
   labelFor?: (fieldKey: string, value: string) => string
 }) {
   const byKey = new Map(fields.map((f) => [f.key, f]))
@@ -193,8 +178,7 @@ export function FilterBar<T>({
           </button>
         </div>
       )}
-      {/* The denominator is never hidden. A filtered table that only says "12" invites the
-          reader to treat 12 as the population. */}
+      {}
       <div className="text-dim text-2xs">
         showing <span className="num text-fg">{n(filtered.length)}</span> of{' '}
         <span className="num">{n(rows.length)}</span> {noun}

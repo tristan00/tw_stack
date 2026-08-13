@@ -1,19 +1,5 @@
 from __future__ import annotations
 
-"""One place that opens decisions.sqlite, because the schema needs two helper functions.
-
-The store keeps its JSON blobs zlib-compressed and content-addressed, and its per-offer
-scores packed as float32. The compatibility views (`decision_points`, `entity_snapshots`,
-`action_offers`, `action_taken`) reconstruct the old flat columns out of those, which
-means they call `unz()` and `f32()` -- and an application-defined SQLite function only
-exists on the connection that registered it. Fifteen call sites used to spell
-`sqlite3.connect("file:%s?mode=ro" % ...)` by hand; a view is invisible to all of them
-unless they come through here.
-
-    from decisions import dbopen
-    con = dbopen.connect(path)                  # read-only by default
-    con = dbopen.connect(path, readonly=False)  # writers
-"""
 
 import sqlite3
 import zlib
@@ -23,7 +9,6 @@ ZRAW, ZDEFLATE = 0, 1
 
 
 def pack(text, level=6):
-    """Store whichever is smaller, tagged so the reader never has to guess."""
     raw = text.encode("utf-8")
     z = zlib.compress(raw, level)
     if len(z) < len(raw):
@@ -32,7 +17,6 @@ def pack(text, level=6):
 
 
 def _unz(z):
-    """A packed blob -> the text that was stored. NULL stays NULL."""
     if z is None:
         return None
     try:
@@ -47,7 +31,6 @@ def _unz(z):
 
 
 def _f32(packed, i):
-    """One float out of a packed float32 array. Out of range reads as NULL rather than"""
     if packed is None or i is None:
         return None
     import struct
@@ -56,18 +39,16 @@ def _f32(packed, i):
     if i < 0 or (i + 1) * 4 > len(b):
         return None
     v = struct.unpack_from("<f", b, i * 4)[0]
-    return None if v != v else v          # NaN is "not recorded"
+    return None if v != v else v
 
 
 def register(con):
-    """Teach a connection the two functions the views are written in terms of."""
     con.create_function("unz", 1, _unz)
     con.create_function("f32", 2, _f32)
     return con
 
 
 def connect(path, readonly=True, timeout=10.0, uri=None):
-    """Open decisions.sqlite with the view helpers registered."""
     p = str(path).replace("\\", "/")
     if uri or (readonly and not str(path).startswith("file:")):
         con = sqlite3.connect("file:%s?mode=ro" % p, uri=True, timeout=timeout)

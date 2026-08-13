@@ -1,19 +1,5 @@
 from __future__ import annotations
 
-"""What must stay true of the graph model, checked mechanically.
-
-Its predecessor was not dropped because it was slow. It was dropped because it was a graph in name
-only: the candidate action was a feature vector rather than a node, the loss broadcast
-one graph-level scalar onto every candidate so no term ever compared two candidates, and
-CatBoost columns were stamped into the record before the graph was built.
-
-Optimisation work is exactly the situation in which those properties get traded away
-quietly -- a conv that is 1.5x cheaper but cannot tell which relation attached to which
-neighbour still trains, still reports a loss, and still looks fine. So each upgrade gets
-a mechanical check here, and speed work has to keep them all green.
-
-    python -m advisor.mapgraph.invariants
-"""
 
 import ast
 import inspect
@@ -30,26 +16,21 @@ for _p in (common.DECISIONS, common.ADVISOR, common.ROOT):
 
 
 def _code_only(path):
-    """Source with docstrings removed."""
     tree = ast.parse(open(path, encoding="utf-8").read())
     for node in ast.walk(tree):
         if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef,
                              ast.ClassDef)) and ast.get_docstring(node):
             node.body = node.body[1:]
-            # a class or def whose entire body was the docstring still needs a body,
-            # or ast.unparse emits something that will not re-parse
             if not node.body and not isinstance(node, ast.Module):
                 node.body = [ast.Pass()]
     return ast.unparse(tree)
 
 
 def _launcher_screens():
-    """Screen names launcher/interrupts.py actually answers, read out of its source."""
     path = os.path.join(common.LAUNCHER, "interrupts.py")
     tree = ast.parse(open(path, encoding="utf-8").read())
 
     def lits(node):
-        """String literals a value expression can evaluate TO (branches, not tests)."""
         if isinstance(node, ast.Constant):
             return {node.value} if isinstance(node.value, str) else set()
         if isinstance(node, ast.IfExp):
@@ -68,9 +49,6 @@ def _launcher_screens():
                 got |= lits(n.value)
         return got
 
-    # Innermost enclosing function per call. Walking the module as one scope resolves a
-    # variable against every assignment in the file, which is how `accept`/`decline` from
-    # answer_diplomacy's unrelated `kind` reached a check about screen names.
     parent = {}
     for n in ast.walk(tree):
         for c in ast.iter_child_nodes(n):
@@ -95,7 +73,6 @@ def _launcher_screens():
 
 
 def check_catalogue(verbose=True):
-    """No two live game keys may share a catalogue embedding row."""
     try:
         from advisor.mapgraph import schema as S
         from advisor.mapgraph import catalogue as C
@@ -124,7 +101,6 @@ def check_catalogue(verbose=True):
                            "" if not dup else "  COLLIDING: %s" % list(dup.values())[:2])))
         results.append((spare > 0, "cat_index has room above %-11s" % kind,
                         "%d free of %d" % (spare, S.CAT_BUCKETS[kind])))
-    # cat_global must keep the kinds in disjoint ranges
     span = {k: (S.CAT_OFFSET[k], S.CAT_OFFSET[k] + S.CAT_BUCKETS[k]) for k in S.CAT_BUCKETS}
     overlap = [(a, b) for a in span for b in span
                if a < b and span[a][0] < span[b][1] and span[b][0] < span[a][1]]
@@ -152,33 +128,26 @@ def check(verbose=True):
     def ok(name, cond, detail=""):
         results.append((bool(cond), name, detail))
 
-    # 1. the candidate action is a NODE and q reads that node alone after message
-    #    passing -- nothing pooled or concatenated back in. This is the whole point.
     head = inspect.getsource(N.Head.forward)
     q_line = [l for l in head.splitlines() if l.strip().startswith("q =")][0]
     ok("action is a node; q reads h[action_index] alone",
        "self.q(h[data.action_index])" in q_line and "cat" not in q_line, q_line.strip())
 
-    # 2. the loss compares candidates within a decision
     nll = inspect.getsource(N.listwise_nll)
     ok("listwise NLL over each decision's candidate set",
        "softmax(q, a_graph" in nll and "-torch.log" in nll)
 
-    # 3. no mse(q, y): in the predecessor, q and v regressed to the same scalar, so q-v was zero by
-    #    construction and non-zero only where v underfit
     mse = [ast.unparse(n) for n in ast.walk(ast.parse(code_trn))
            if isinstance(n, ast.Call) and "mse" in ast.unparse(n.func).lower()]
     ok("no mse(q, ...); only mse(v, y_z)",
        all(not c.replace(" ", "").split("(", 1)[1].startswith("q,") for c in mse),
        "; ".join(mse) or "none")
 
-    # 4. advantage weighting: what makes this policy improvement, not plain imitation
     ok("advantage weight exp((y_z - v)/tau), clipped",
        "b.y_z - v.detach()" in code_trn and "adv_clip" in code_trn)
 
     banned_calls, importers = [], []
     for fn in sorted(os.listdir(_HERE)):
-        # skip this file: it names the banned helpers in order to look for them
         if not fn.endswith(".py") or fn == os.path.basename(__file__):
             continue
         code = _code_only(os.path.join(_HERE, fn))
@@ -194,8 +163,6 @@ def check(verbose=True):
        not banned_calls and not importers,
        "importers: %s  banned calls: %s" % (importers or "none", banned_calls or "none"))
 
-    # 6. entity-only layers before actions join, so the map embedding cannot depend on
-    #    which offers the generator happened to emit
     enc = inspect.getsource(N.Encoder.forward)
     ok("entity-only phase runs before any action round",
        "for _ in range(self.entity_layers)" in enc
@@ -210,15 +177,11 @@ def check(verbose=True):
     ok("RelConv returns a pure message (exactly 0 with no edges)",
        bool(torch.all(empty == 0)), "max|out|=%.3g" % float(empty.abs().max()))
 
-    # 8. relation identity is bound to its endpoint INSIDE the message. If the message
-    #    is linear in (source, relation) the two sums decouple and "besieging S while
-    #    garrisoned in T" is indistinguishable from the swap.
     msg = inspect.getsource(N.RelConv.message)
     ok("message conditions on x_i, x_j and rel jointly",
        all(t in msg for t in ("x_i", "x_j", "rel", "cat")),
        msg.strip().splitlines()[-1].strip())
 
-    # 9/10. per-node-type parameters, and the schema breadth the predecessor lacked
     ok("per-node-type encoders and norms",
        "F.embedding(node_type, self.bias)" in src_net
        and "F.embedding(node_type, self.affine)" in src_net)
@@ -243,7 +206,6 @@ def check(verbose=True):
        len(S.NODE_TYPES) >= 15,
        "%d node types, %d relations" % (len(S.NODE_TYPES), S.N_RELATIONS))
 
-    # 11. every blocking screen the launcher answers is a screen this schema knows.
     launcher_screens = _launcher_screens()
     missing = sorted(launcher_screens - set(S.SCREEN_TYPES))
     ok("every launcher interrupt screen is in schema.SCREEN_TYPES",
@@ -251,9 +213,6 @@ def check(verbose=True):
        "%d found in launcher/interrupts.py%s"
        % (len(launcher_screens), ("  MISSING: %s" % missing) if missing else ""))
 
-    # 12. a screen action type must not collide with a map action type. `diplomacy` is
-    #     both a proposal we send and a panel we are shown; if they shared an atype the
-    #     model could not tell "offer them peace" from "they offered us peace".
     map_types = set(S.ACTION_TYPES) - set(S.SCREEN_ACTION_TYPES)
     clash = sorted(map_types & set(S.SCREEN_ACTION_TYPES))
     ok("screen action types do not collide with map action types",

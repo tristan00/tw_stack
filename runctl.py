@@ -57,8 +57,6 @@ def kill_game():
         sys.stderr.write("runctl: kill game -> %s\n" % repr(e)[:110])
 
 
-
-
 def kill_session(game=True):
     n = _ps_kill("session.py")
     if game:
@@ -82,7 +80,6 @@ def start_recorder(shots=DEFAULT_SHOTS, dev=True):
 
 
 def start_ui(port=DEFAULT_PORT):
-    """The dashboard: one process serving the JSON API and the built client."""
     log = os.path.join(SERVICES_LOG_DIR, "ui_%s.log" % _stamp())
     _spawn([VENV_PY, "-u", "-m", "advisor_api.app", str(port)], log)
     return "ui :%d -> %s" % (port, log)
@@ -93,14 +90,12 @@ def kill_analytics():
 
 
 def start_analytics():
-    """The analytics builder: precomputes what the dashboard reads."""
     log = os.path.join(SERVICES_LOG_DIR, "analytics_%s.log" % _stamp())
     _spawn([VENV_PY, "-u", "-m", "analytics.runner"], log, merge_err=True)
     return "analytics -> %s" % log
 
 
 def rebuild_analytics():
-    """Wipe every precomputed table and rebuild, then keep serving."""
     steps = [kill_analytics()]
     time.sleep(0.5)
     log = os.path.join(SERVICES_LOG_DIR, "analytics_rebuild_%s.log" % _stamp())
@@ -111,7 +106,7 @@ def rebuild_analytics():
 
 def start_session(campaigns, turns, model=None, cfg=None, retrain=True, retrain_every=0,
                   cold=False, dev=True, epsilon=None, factions="all", strategies=None,
-                  ruleset=None, campaign=None):
+                  ruleset=None, campaign=None, retrain_first=False):
     if not str(factions or "").strip():
         raise SystemExit("--factions must be 'all', 'no-cutscene', or a comma-separated "
                          "list of faction keys")
@@ -128,6 +123,7 @@ def start_session(campaigns, turns, model=None, cfg=None, retrain=True, retrain_
             + (["--cold"] if cold else [])
             + (["--retrain"] if retrain and not cold else [])
             + (["--retrain-every", str(retrain_every)] if retrain_every and not cold else [])
+            + (["--retrain-first"] if retrain_first and retrain_every and not cold else [])
             + (["--epsilon", str(epsilon)] if epsilon is not None else [])
             + (["--strategies", str(strategies)] if strategies else [])
             + (["--ruleset", str(ruleset)] if ruleset else [])
@@ -142,7 +138,7 @@ def start_session(campaigns, turns, model=None, cfg=None, retrain=True, retrain_
 
 def up(campaigns, turns, model=None, cfg=None, retrain=True, retrain_every=0, cold=False,
        dev=True, shots=DEFAULT_SHOTS, port=DEFAULT_PORT, with_ui=True, epsilon=None,
-       factions="all", strategies=None, ruleset=None, campaign=None):
+       factions="all", strategies=None, ruleset=None, campaign=None, retrain_first=False):
     steps = [kill_session(), kill_recorder()]
     if with_ui:
         steps.append(kill_ui())
@@ -158,7 +154,8 @@ def up(campaigns, turns, model=None, cfg=None, retrain=True, retrain_every=0, co
                                                  retrain=retrain, retrain_every=retrain_every,
                                                  cold=cold, dev=dev, epsilon=epsilon,
                                                  factions=factions, strategies=strategies,
-                                                 ruleset=ruleset, campaign=campaign))
+                                                 ruleset=ruleset, campaign=campaign,
+                                                 retrain_first=retrain_first))
     return steps
 
 
@@ -212,6 +209,9 @@ def main():
         s.add_argument("--cfg", action="append")
         s.add_argument("--no-retrain", action="store_true")
         s.add_argument("--retrain-every", type=int, default=0)
+        s.add_argument("--retrain-first", action="store_true",
+                       help="also take the retrain window at campaign 1, instead of first "
+                            "at campaign N+1")
         s.add_argument("--epsilon", type=float, default=None)
         s.add_argument("--strategies", default=None)
         s.add_argument("--ruleset", default=None)
@@ -235,8 +235,8 @@ def main():
         print("\n".join(down()))
         return
     common = dict(model=a.model, cfg=_cfg(a.cfg), retrain=not a.no_retrain,
-                  retrain_every=a.retrain_every, cold=a.cold, dev=not a.no_dev,
-                  epsilon=a.epsilon,
+                  retrain_every=a.retrain_every, retrain_first=a.retrain_first,
+                  cold=a.cold, dev=not a.no_dev, epsilon=a.epsilon,
                   factions=a.factions, strategies=a.strategies, ruleset=a.ruleset,
                   campaign=a.campaign)
     if a.cmd == "session":

@@ -57,7 +57,6 @@ class Ruleset:
 
 
 def offer_key(r):
-    """Identity of an offer, matching how the store keys action_offers rows."""
     return (r.get("context_kind"), str(r.get("context_id")),
             r.get("action_type"), str(r.get("key")))
 
@@ -68,9 +67,6 @@ class MarwilGnn:
         self.gnn = gnn
         self.errors = 0
         self.last_scores = {}
-        # Scores the policy computed for this decision before drawing. The gnn now forms
-        # its opinion up front like catboost does, so picking is a lookup, not a second
-        # forward pass -- and the number it chooses on is exactly the number recorded.
         self.scored = None
 
     @property
@@ -88,7 +84,6 @@ class MarwilGnn:
                     best, best_v = r, v
             if best is not None:
                 return best
-        # no precomputed scores (caller is not the policy, or scoring failed) -- score here
         self.last_scores = {}
         try:
             best = self.gnn.pick(elig, record)

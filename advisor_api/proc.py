@@ -1,4 +1,3 @@
-"""Which processes are alive, sampled off the request path."""
 
 from __future__ import annotations
 
@@ -13,8 +12,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import common
 
 POLL_S = 4.0
-# Longer than the poll interval, so one slow sample does not blank the panel; short
-# enough that a dead poller is visible rather than silently serving history.
 STALE_S = 20.0
 
 _PS = ("Get-CimInstance Win32_Process -Filter \"Name like 'python%' or "
@@ -75,9 +72,6 @@ def snapshot() -> tuple:
         return list(_sample["procs"]), _sample["at"]
 
 
-# What each service looks like in a command line. `ui.py` is deliberately absent: this
-# process IS the dashboard, so it reports itself from the inside rather than hunting for
-# a process that may or may not be the one answering.
 _MATCH = (
     ("advisor session", "session.py"),
     ("recorder", "manager.py"),
@@ -86,7 +80,6 @@ _MATCH = (
 
 
 def services() -> list:
-    """One row per service, plus the game, plus this process."""
     from advisor_api.models import Service
     procs, at = snapshot()
     age = time.time() - at if at else None
@@ -119,13 +112,11 @@ def kill_session_and_game() -> list:
 
 
 def rebuild_analytics() -> list:
-    """Ask the analytics service to rebuild. Delegates to runctl, like every other control,"""
     import runctl
     return runctl.rebuild_analytics()
 
 
 def launch(kind: str, params: dict) -> list:
-    """Start a run. Delegates to runctl so there is one definition of how a run starts."""
     import runctl
     turns = params.get("turns") or "%s-%s" % (params.get("turns_min", 2),
                                               params.get("turns_max", 20))

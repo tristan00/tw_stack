@@ -80,10 +80,6 @@ def agent_action_label(action_key):
     return label(_TR_PREFIX + m.group(1))
 
 
-
-
-
-
 def agent_action_keys(name_suffix):
     sufs = [name_suffix] if isinstance(name_suffix, str) else list(name_suffix or ())
     out = []
@@ -148,8 +144,6 @@ def verify_hero_action_mappings(hero_actions):
     return out
 
 
-
-
 def agent_action_rows(name_suffix):
     sufs = [name_suffix] if isinstance(name_suffix, str) else list(name_suffix or ())
     out = []
@@ -202,26 +196,6 @@ def permitted_agent_subtypes(faction):
     return [(r["agent"], r["subtype"]) for r in _connect().execute(
         "SELECT agent,subtype FROM agent_permitted_subtypes WHERE faction=? ORDER BY agent,subtype",
         (str(faction),))]
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 _CAPTIVE_BUTTONS = ("kill", "enslave", "release")

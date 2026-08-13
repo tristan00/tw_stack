@@ -234,10 +234,6 @@ def _roots(bus):
         return None
 
 
-
-
-
-
 def _selected_edict(bus, region):
     return _ev(bus, _G + "local s=cco('CcoCampaignSettlement','settlement:%s');"
                          "local m=g(s,'FactionProvinceManagerContext'); if not m then return 'NO-MGR' end "
@@ -258,8 +254,6 @@ def _edict_snapshot(bus, ctx, pick):
     region = ctx["entity_id"]
     prepare(bus, "settlement", region)
     return {"selected": _selected_edict(bus, region), "options": edict_options(bus, region)}
-
-
 
 
 _LUA_EDICT_CLICK = (
@@ -407,7 +401,6 @@ def _recruit_snapshot(bus, ctx, pick):
 
 
 def _recruit_precheck(bus, ctx, pick, before):
-    """Crash guard only -- NOT a judgement about whether the recruit is legal."""
     if not before.get("units_panel_open"):
         return False, "units_panel_not_open_CTD_guard"
     return True, None
@@ -457,7 +450,6 @@ def _recruit_execute_inner(bus, ctx, pick, before):
 
 
 def _cheapest_pool(cards):
-    """Among the pools offering one unit, the one that costs the fewest turns, then the"""
     if not cards:
         return None
 
@@ -478,7 +470,6 @@ def _recruit_confirm(bus, ctx, pick, before):
     dropped = (t is not None and before.get("treasury") is not None and t < before["treasury"])
     return queued, {"treasury": t, "pending": after, "pending_before": prior,
                     "treasury_dropped": dropped,
-                    # which pool the click actually landed in -- observed, not asserted
                     "queue_used": (pick.get("params") or {}).get("queue_used")}
 
 
@@ -564,7 +555,6 @@ def _merc_snapshot(bus, ctx, pick):
 
 
 def _merc_precheck(bus, ctx, pick, before):
-    """Crash guard only. `army_full` is decided by the advisor from state.units."""
     if not before.get("units_panel_open"):
         return False, "units_panel_not_open_CTD_guard"
     return True, None
@@ -659,10 +649,6 @@ def _character_count(bus):
     return None
 
 
-
-
-
-
 def lore_tabs(bus):
     try:
         t = bus.send("tree", "%s 6 4000" % LORE_LIST, timeout=20) or {}
@@ -742,9 +728,6 @@ def _lord_execute_inner(bus, ctx, pick, before):
         sys.stderr.write("click_actions: %s refused, not a known state -> %s"
                          % (pick.get("action_type") or "recruit", why) + chr(10))
         return False
-    # recruit keys are "<subtype>@<candidate_index>" -- the pool offers one row per
-    # candidate now, and the subtype is what names the UI button. Same "@" convention
-    # recruit_unit and the building slot ops already use. Bare subtypes still parse.
     want = str(pick["key"]).split("@", 1)[0]
     params = pick.get("params") or {}
     is_hero = pick.get("action_type") == "recruit_hero"

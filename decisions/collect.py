@@ -39,7 +39,6 @@ def _note_try_fails(reply):
 
 
 def _drain_try_fails():
-    """{error message: total count} since the last drain."""
     out = {}
     for row in _TRY_FAILS:
         try:
@@ -77,8 +76,6 @@ def _num(x):
         return float(x)
     except (TypeError, ValueError):
         return None
-
-
 
 
 _LUA_TARGET = (_G +
@@ -143,10 +140,6 @@ def faction_resources(bus):
     return _parse_resources(_ev(bus, _LUA_FACTION_RESOURCES, timeout=25.0, allow_nil=True))
 
 
-
-
-
-
 CAMPAIGN_UUID_KEY = "tw_stack_campaign_uuid"
 
 _LUA_UUID_EXPR = ("local ok,v=pcall(function() return cm:get_cached_value('%s', function() "
@@ -171,8 +164,6 @@ _LUA_CAMPAIGN_MAP = (
     "try(function() return cco('CcoCampaignRoot',''):Call('CampaignKey') end) "
     "return out")
 
-# Constant for the life of a campaign, so it is fetched once and cached rather than asked on
-# every action. Keyed by campaign uuid so a new campaign in the same process refetches.
 _MAP_CACHE = {}
 
 
@@ -276,9 +267,6 @@ def _parse_campaign(raw):
             "_eval_ms": _num(p[13]) if len(p) > 13 else None,
             "ll_wounded": (p[14] == "true") if len(p) > 14 and p[14] in ("true", "false") else None,
             "game_version": _game_version(),
-            # None, not False, when the field is absent: "we did not ask" and "the
-            # faction is alive" are different facts and conflating them is what let this
-            # sit broken. A coverage check can see a None; it cannot see a wrong False.
             "defeated": ((p[15] == "true") if len(p) > 15 and p[15] in ("true", "false")
                          else None)}
 
@@ -340,7 +328,6 @@ def regions(bus):
     return _parse_regions(_ev(bus, _LUA_REGIONS, timeout=30.0, allow_nil=True))
 
 
-# Third-party wars: who among the factions we KNOW is fighting whom.
 _LUA_WAR_GRAPH = (
     "local me=cm:get_local_faction(true) local ml=me:factions_met() "
     "local metset={} metset[me:name()]=true "
@@ -356,7 +343,6 @@ _LUA_WAR_GRAPH = (
 
 
 def _parse_war_graph(raw):
-    """[{faction, at_war_with:[...]}] over KNOWN factions only."""
     out = []
     for row in str(raw or "").split(","):
         subj, _, rest = row.partition(">")
@@ -368,7 +354,6 @@ def _parse_war_graph(raw):
     return out
 
 
-# The same war graph over EVERY faction in the world, met or not, plus the met set itself.
 _LUA_DIPLO_WORLD = (
     "local me=cm:get_local_faction(true) local ml=me:factions_met() local met={} "
     "for i=0,ml:num_items()-1 do met[#met+1]=ml:item_at(i):name() end "
@@ -382,7 +367,6 @@ _LUA_DIPLO_WORLD = (
 
 
 def diplo_world(bus):
-    """(known_factions, war_graph_over_all_factions). Once per turn -- see _LUA_DIPLO_WORLD."""
     raw = str(_ev(bus, _LUA_DIPLO_WORLD, timeout=40.0, allow_nil=True) or "")
     met_raw, _, war_raw = raw.partition("||")
     known = [f for f in met_raw.split(",") if f]
@@ -490,10 +474,6 @@ def state_hash(bus):
             "roots": roots, "chars": blob.count("@"), "ts": time.time()}
 
 
-
-
-
-
 _LUA_RECRUITABLE = (_G +
     "local c=cm:get_character_by_cqi(%(cqi)s) "
     "if not c or not c:has_military_force() then return '' end "
@@ -505,7 +485,6 @@ _LUA_RECRUITABLE = (_G +
     "local out={} "
     "for i=1,#rl do local k=g(rl[i],'Key') "
     "  if k then local ok,v=pcall(function() return mf:can_recruit_unit(ts(k)) end) "
-    # Cost and the disabled flag come off the record already in hand -- no extra pass.
     "    if ok and v then out[#out+1]=ts(k)..'~'..ts(g(rl[i],'Cost'))"
     "..'~'..ts(g(rl[i],'IsRecruitmentDisabled')) end end end "
     "return table.concat(out,',')")
@@ -521,8 +500,6 @@ def _parse_recruitable(raw):
                     "cost": _num(p[1]) if len(p) > 1 else None,
                     "disabled": (p[2] == "true") if len(p) > 2 else None})
     return out
-
-
 
 
 _LUA_MERC_POOLS = (_G +
@@ -622,12 +599,6 @@ def _parse_merc_pools(raw):
     return pools
 
 
-
-
-
-
-
-
 _LUA_LORD = (_G +
     "local c=cco('CcoCampaignCharacter','%(cqi)s') if not c then return 'NO-CHAR' end "
     "local mf=g(c,'MilitaryForceContext') local ch=cm:get_character_by_cqi(%(cqi)s) "
@@ -663,8 +634,6 @@ _LUA_LORD = (_G +
     "..'|'..ts(ch and ch:loyalty())")
 
 
-
-
 def _parse_lord(raw, cqi):
     p = str(raw).split("|")
     if len(p) < 15:
@@ -680,9 +649,6 @@ def _parse_lord(raw, cqi):
                                      if k and k not in ("nil", "-")],
             "ap_remaining": _num(p[15]) if len(p) > 15 else None,
             "ap_per_turn": _num(p[16]) if len(p) > 16 else None,
-            # `hp` is NOT hit points and never was: it is the summed
-            # percentage_proportion_of_full_strength over the army, /100. Named badly since
-            # before this file was split, and read as character health three times in review.
             "hp": _num(p[17]) if len(p) > 17 else None,
             "unit_cards": _parse_unit_cards(p[18] if len(p) > 18 else ""),
             "wounded": (p[19] == "true") if len(p) > 19 and p[19] != "" else None,
@@ -690,7 +656,6 @@ def _parse_lord(raw, cqi):
 
 
 def _parse_unit_cards(raw):
-    """key~pct_strength~category~xp per unit, comma separated."""
     out = []
     for chunk in str(raw or "").split(","):
         bits = chunk.split("~")
@@ -739,14 +704,9 @@ _LUA_PROVINCE = (_G +
     "local k=lv and ts(g(lv,'Key')) or '' "
     "if k~='' and string.find(k,'settlement') then n=n+(tonumber(g(lv,'Level')) or 0) end "
     "end end return n end)()"
-    # Economics, each read at the level the GAME puts it on -- measured live, not assumed.
     "..'|'..ts(m and g(m,'GrowthPerTurn'))..'|'..ts(m and g(m,'GrossIncome'))"
     "..'|'..ts(m and g(m,'DevelopmentPoints'))..'|'..ts(g(s,'Income'))"
-    # Port and walls were both on the wanted list as "needs collection" and are one property
-    # each on the settlement. Walls decide whether an attack is a siege or a field battle.
     "..'|'..ts(g(s,'HasPort'))..'|'..ts(g(s,'HasWalls'))")
-
-
 
 
 def _parse_province(raw, region):
@@ -782,11 +742,9 @@ def _parse_province(raw, region):
             "built": built, "locked_slots": locked, "building_now": building_now,
             "corruption": corruption,
             "settlement_level": (_num(p[12]) if len(p) > 12 else None),
-            # province-scoped (FactionProvinceManagerContext)
             "growth_per_turn": (_num(p[13]) if len(p) > 13 else None),
             "gross_income": (_num(p[14]) if len(p) > 14 else None),
             "development_points": (_num(p[15]) if len(p) > 15 else None),
-            # settlement-scoped
             "income": (_num(p[16]) if len(p) > 16 else None),
             "has_port": (p[17] == "true") if len(p) > 17 else None,
             "has_walls": (p[18] == "true") if len(p) > 18 else None}
@@ -827,8 +785,6 @@ def entity_target_rows(bus):
         if v is not None:
             out.append({"context_kind": p[0], "context_id": p[1], "value": v})
     return out
-
-
 
 
 _LUA_MOVE_CANDIDATES = (
@@ -872,12 +828,7 @@ def _move_lua(cqi, state):
     return _LUA_MOVE_CANDIDATES % {"cqi": cqi, "minr": int(MOVE_MIN_R), "n": MOVE_CANDIDATES}
 
 
-
-
-
-
 def _parse_move_tiles(raw):
-    """Destinations the game itself validated, as tiles."""
     raw = str(raw or "")
     rays_part, _, tiles_part = raw.partition("||")
     rays = [int(float(r)) for r in rays_part.split(",") if r.strip().lstrip("-").isdigit()]
@@ -903,7 +854,6 @@ def _reach_lua(cqi, target_cqis, regions):
 
 
 def _reach(bus, cqi, target_cqis, regions):
-    """Can this character reach these targets, asked live."""
     if not target_cqis and not regions:
         return {}, {}
     return _parse_reach(_ev(bus, _reach_lua(cqi, target_cqis, regions), timeout=40.0,
@@ -918,8 +868,6 @@ def _parse_reach(raw):
         k, v = part.rsplit("=", 1)
         (chars if k.startswith("C") else setts)[k[1:]] = (v == "true")
     return chars, setts
-
-
 
 
 _LUA_LORD_OFFERS = (_G +
@@ -1001,14 +949,6 @@ def _parse_horde_slots(raw):
     return out
 
 
-
-
-
-
-
-
-
-
 _LUA_HERO_OFFERS = (_G +
     "local c=cco('CcoCampaignCharacter','%(cqi)s') "
     "local sk={} local s=g(c,'SkillList') "
@@ -1021,25 +961,6 @@ _LUA_HERO_OFFERS = (_G +
     "if type(h)=='table' then for i=1,#h do hk[#hk+1]=ts(g(h[i],'Key')) end end "
     "return ts(g(c,'IsAgent'))..'||'..ts(g(c,'CanBeEmbedded'))..'||'..table.concat(sk,',')..'||'..tk"
     "..'||'..table.concat(hk,',')")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 _LUA_ANCILLARY_POOL = (_G +
@@ -1089,8 +1010,6 @@ def _parse_ancillaries(raw):
     for row in str(raw or "").split("|"):
         p = row.split("~")
         if len(p) == 3 and p[0].isdigit():
-            # ts() now yields '' for an unread property, and '' must reach the DB as null
-            # rather than as an empty string that reads like a real, blank key.
             out.append({"index": int(p[0]), "name": p[1],
                         "key": p[2] or None})
     return out
@@ -1099,34 +1018,6 @@ def _parse_ancillaries(raw):
 def ancillary_pool(bus, faction_cqi):
     return _parse_ancillaries(_ev(bus, _LUA_ANCILLARY_POOL % {"fac": faction_cqi},
                                   timeout=25.0, allow_nil=True))
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 _LUA_PROVINCE_OFFERS = (_G +
@@ -1142,9 +1033,6 @@ _LUA_PROVINCE_OFFERS = (_G +
     "o[#o+1]=ts(g(sl,'Index'))..'~'..ts(g(sl,b..'.Key'))"
     "..'~'..ts(g(sl,b..'.IsActiveForBuildingBrowser(this)'))"
     "..'~'..ts(empty)..'~'..ts(canup)"
-    # Cost was never recorded, so "can I afford this" was not expressible and CanUpgrade
-    # was parsed and thrown away. Arguments are routes relative to the receiver -- the
-    # same shape as CanRecruitUnitForFaction(FactionContext, ...) in _LUA_MERC_POOLS.
     "..'~'..ts(g(sl,b..'.CreateCost(SettlementContext)'))"
     "..'~'..ts(g(sl,b..'.UpkeepCost'))"
     "..'~'..ts(g(sl,b..'.Level'))"
@@ -1166,15 +1054,10 @@ _LUA_SLOT_STATES = (_G +
     "..'~'..ts(g(sl,'CanRepair'))..'~'..ts(g(sl,'IsRepairing'))"
     "..'~'..ts(g(sl,'CanDismantle'))"
     "..'~'..ts(g(sl,'BuildingContext.DismantleRefundAmount'))"
-    # A queued construction item is exactly what cancelling cancels, so its presence is
-    # the availability condition; there is no CanCancel property to ask.
     "..'~'..ts(ci~=nil)"
     "..'~'..ts(cl and g(cl,'Key'))"
     "..'~'..ts(g(sl,'IsEmpty'))"
     "..'~'..ts(g(sl,'BuildingContext.BuildingLevelRecordContext.Key'))"
-    # Free on contexts already in hand: the state a repair or dismantle decision is
-    # actually about. Health/MaxHealth/IsRuined say how bad it is, RepairCost what it
-    # costs, and IsUpgrading/IsDismantling what the slot is already busy doing.
     "..'~'..ts(g(sl,'BuildingContext.Health'))"
     "..'~'..ts(g(sl,'BuildingContext.MaxHealth'))"
     "..'~'..ts(g(sl,'BuildingContext.IsRuined'))"
@@ -1194,8 +1077,6 @@ def _parse_slot_states(raw):
         out.append({"index": _num(p[0]), "damaged": p[1] == "true", "can_repair": p[2] == "true",
                     "repairing": p[3] == "true", "can_dismantle": p[4] == "true",
                     "refund": _num(p[5]), "queued": p[6] == "true",
-                    # queued_key: what is being CONSTRUCTED here. key: what is STANDING
-                    # here. The slot ops act on the latter.
                     "queued_key": None if p[7] in ("nil", "") else p[7],
                     "empty": p[8] == "true",
                     "key": None if p[9] in ("nil", "") else p[9],
@@ -1203,15 +1084,6 @@ def _parse_slot_states(raw):
                     "ruined": p[12] == "true", "repair_cost": _num(p[13]),
                     "upgrading": p[14] == "true", "dismantling": p[15] == "true"})
     return out
-
-
-
-
-# (province_offers() lived here: no callers anywhere in the repo, and it referenced an
-# undefined global `world`, so calling it would have raised NameError. The live path is
-# _province_offers_assemble, called from the batched snapshot below.)
-
-
 
 
 _LUA_SUBCULTURE_SUBTYPES = (
@@ -1264,9 +1136,6 @@ def _lord_subtypes(bus, faction):
 
 TRAITS_UNREAD = "!"
 
-# Hoisted to module scope so decisions/cco_audit.py can see it. While this was built
-# inline inside the function, none of its routes were ever checked against CCO.tsv -- and
-# this is the read behind both recruit_lord and recruit_hero.
 _LUA_LORD_POOLS = (_G +
     "local f=cco('CcoCampaignFaction','%(cqi)s') local out={} "
     "for _,sub in ipairs({%(subs)s}) do "
@@ -1282,13 +1151,10 @@ _LUA_LORD_POOLS = (_G +
     "local okk,k=pcall(function() return f:Call(base..'.CharacterContext.TraitsList['..j..'].TraitRecordContext.Key') end) "
     "if okk and k then tr[#tr+1]=ts(k) end end trs=table.concat(tr,'+') end "
     "local oka,ia=pcall(function() return f:Call(base..'.CharacterContext.IsAgent') end) "
-    # The differentiators an actual recruitment card shows.
     "local bg=ts(g(f,e..'['..i..'].CharacterContext.BackgroundSkillContext.Key')) "
     "local cq=ts(g(f,e..'['..i..'].CharacterContext.CQI')) "
     "local st=ts(g(f,e..'['..i..'].CharacterContext.AgentSubtypeRecordContext.Key')) "
     "local un=ts(g(f,e..'['..i..'].MainUnitRecordContext.Key')) "
-    # Rank is read even though a pool entry is not yet a character and this may well come
-    # back a constant. That is coverage's call to make from the data, not a comment's.
     "local rk=ts(g(f,e..'['..i..'].CharacterContext.Rank')) "
     "o[#o+1]=can..'^'..trs..'^'..ts(oka and ia)..'^'..bg..'^'..cq..'^'..st..'^'..un"
     "..'^'..rk end "
@@ -1369,10 +1235,6 @@ def current_research(bus, faction_cqi):
     return None if v in (None, "none", "nil") else str(v)
 
 
-
-
-
-
 DIPLO_SCHEMA = 2
 
 
@@ -1412,14 +1274,6 @@ _LUA_DIPLO_TARGETS = (
     "return table.concat(out,',')")
 
 
-
-
-
-
-
-
-
-
 def _parse_diplo_targets(raw):
     if raw is None or str(raw) in ("nil", "None", "READ_FAILED"):
         return None
@@ -1439,9 +1293,6 @@ def _parse_diplo_targets(raw):
                         "def_ally": len(p) > 8 and p[8] == "1",
                         "nap": len(p) > 9 and p[9] == "1",
                         "mil_access": len(p) > 10 and p[10] == "1",
-                        # Are WE their vassal. `their_vassal` is the other direction, and
-                        # only that one was recorded -- so "already in vassalage" was
-                        # unanswerable from the snapshot and the launcher gated it instead.
                         "our_master": len(p) > 11 and p[11] == "1"})
     return targets
 
@@ -1458,11 +1309,7 @@ def diplo_unseen_check(targets, world):
     return sorted(seen - known)
 
 
-
-
-
 def _parse_stance_skills(raw):
-    """Split the one eval that fetches both a character's stances and its skills."""
     parts = str(raw or "").split("||")
     st_raw = parts[0] if parts else ""
     sk_raw = parts[1] if len(parts) > 1 else ""
@@ -1501,7 +1348,6 @@ def _parse_hero_blob(raw):
 
 
 def _parse_buildable(raw):
-    """Constructible/upgradeable buildings per slot, and the province's edict list."""
     cparts = str(raw or "").split("||")
     if len(cparts) < 3:
         raise CollectError("province offers malformed: %r" % str(raw)[:120])
@@ -1556,7 +1402,6 @@ def _hero_type_counts(world):
     return out
 
 
-
 def _bres(reply, what, allow_nil=False):
     r = _note_try_fails(reply) or {}
     if r.get("error"):
@@ -1581,7 +1426,6 @@ def snapshot(bus, active=None):
     camp = _parse_campaign(_bres(ra[0], "campaign_state"))
     prof["campaign_state_engine_ms"] = camp.pop("_eval_ms", None)
     camp["resources"] = _parse_resources(_bres(ra[1], "faction_resources", allow_nil=True))
-    # Constant per campaign and cached, so this is one bus call per campaign, not per action.
     camp["campaign_map"] = campaign_map(bus, camp.get("campaign_uuid"))
     regs = _parse_regions(_bres(ra[2], "regions", allow_nil=True))
     rs = _ruins_of(regs)
@@ -1721,9 +1565,6 @@ def snapshot(bus, active=None):
         st = lord_state.get(cqi) or hero_state.get(cqi)
         st["move_tiles"] = _parse_move_tiles(_bres(rc_[j], "moves:%s" % cqi, allow_nil=True))
 
-    # Faction-wide reads the per-entity generators need. They were fetched, used once and
-    # dropped; the campaign entity is where they belong, because that is what they are
-    # about -- one pool, one equipped set, one recruitment pool per subtype.
     t0 = time.time()
     camp = dict(camp, hero_type_counts=_hero_type_counts(world))
     pools = (_lord_pools(bus, camp["faction_cqi"], _lord_subtypes(bus, camp["faction"]))
@@ -1753,9 +1594,6 @@ def snapshot(bus, active=None):
     prof["_regions"] = len(regions)
     prof["_wave_b_cmds"] = len(wave_b)
     prof["_wave_c_cmds"] = len(wave_c)
-    # A read that failed inside the game is a fact about this decision, so it is recorded
-    # with it rather than printed and lost.
     camp["read_failures"] = _drain_try_fails()
-    # NO `offers` KEY. The recorder collects; the advisor infers.
     return {"ts": time.time(), "campaign": camp, "world": world,
             "entities": ents, "profile": prof}

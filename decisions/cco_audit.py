@@ -1,27 +1,5 @@
 from __future__ import annotations
 
-"""Check every CCO route the collector uses against the game's own catalogue.
-
-`g(c,p)` is `pcall(c:Call(p))` and swallows its failure by design, so a property name that
-does not exist on the context it is called against returns nil forever. Nothing downstream
-can tell that apart from "the game had nothing to say". That is how `params.item_key` was
-the string "nil" in 95,178 of 95,178 rows -- `CcoCampaignAncillary` has no `Key` -- and how
-`building_dismantle.refund` was null in every row of the corpus: `DismantleRefundAmount` is
-a real property, but it lives on `CcoCampaignBuilding`, not on the
-`CcoCampaignBuildingSlot` we were calling it against. Reading a property off the wrong
-context looks exactly like reading a legitimately-absent one.
-
-`reference/ui3_extraction/CCO.tsv` is CA's own dump of every context and every property on
-it. This walks the Lua embedded in collect.py, resolves the context type of each `g()`
-receiver, and checks each route segment against that catalogue.
-
-    python -m decisions.cco_audit [--verbose] [--tsv PATH]
-
-Exit code 1 means a route names a property that does not exist on the context it is called
-against, or that a receiver's type could not be resolved. UNRESOLVED is a failure too: a
-route nobody can type is a route nobody can check, and every silent-nil bug in the corpus
-lived in exactly that gap.
-"""
 
 import os
 import re
@@ -29,32 +7,22 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(_HERE))
-import common  # noqa: E402
+import common
 
 CCO_TSV = common.CCO_TSV
 
 ROOTS = {
-    # agg(list, canfn) is called twice, with FactionContext.MercenaryPoolContext... and
-    # ProvinceContext.MercenaryPoolContext...; both are MercenaryPoolUnitList.
     ("_LUA_MERC_POOLS", "u"): "CcoCampaignMercenaryPoolUnit",
     ("_LUA_MERC_POOLS", "rec"): "CcoMainUnitRecord",
 }
 
-# CA's dump declares every CcoCampaignConstructionItem property as returning Void, so a
-# route cannot be followed through it on the catalogue alone. The property exists; only
-# its return type is missing upstream. Naming it here keeps the segment checked.
 TYPE_HINTS = {
     ("CcoCampaignConstructionItem", "BuildingLevelRecordContext"): "CcoBuildingLevelRecord",
     ("CcoCharacterTraitLevelRecord", "TraitRecordContext"): "CcoCharacterTraitRecord",
 }
 
-# An un-indexed list value is still a context: CcoContextList is where Size, Count and
-# IsEmpty live, and `SomeList.Size` is how the collector reads a length.
 _LIST_CTX = "CcoContextList"
 
-# The collector reads; the executors act on what it read. A guard property that does not
-# exist fails identically in both -- `_slot_exec("CancelConstruction", "CanBeCancelled")`
-# made `building_cancel` return 'REFUSED-nil' for the life of the corpus.
 MODULES = ("decisions.collect", "launcher.cco_actions")
 
 LUA_FILES = (os.path.join(os.path.dirname(_HERE), "bus", "mod", "twcontrol.lua"),
@@ -62,7 +30,6 @@ LUA_FILES = (os.path.join(os.path.dirname(_HERE), "bus", "mod", "twcontrol.lua")
 
 
 def load_catalogue(path=None):
-    """context -> {property: (return_type, arg_type)}"""
     cat = {}
     with open(path or CCO_TSV, "r", encoding="utf-8", errors="replace") as fh:
         for line in fh:
@@ -76,17 +43,13 @@ def load_catalogue(path=None):
 
 
 def _elem(ret):
-    """'CcoBuildingLevelRecord (list)' -> ('CcoBuildingLevelRecord', True)"""
     ret = (ret or "").strip()
     if ret.endswith("(list)"):
         return ret[: -len("(list)")].strip(), True
     return ret, False
 
 
-# ------------------------------------------------------------------ Lua extraction
-
 def _args_of(src, i):
-    """src[i] is the '(' opening a call. Return (arg_strings, index_after_close)."""
     depth, j, out, start, q = 0, i, [], i + 1, None
     while j < len(src):
         ch = src[j]
@@ -114,7 +77,6 @@ _IDENT = re.compile(r"[A-Za-z_]\w*")
 
 
 def _concat_parts(expr):
-    """Parse a Lua `a..'b'..c` concatenation into [('lit',s) | ('var',name)]."""
     parts, i, n = [], 0, len(expr)
     while True:
         while i < n and expr[i] == " ":
@@ -136,7 +98,6 @@ def _concat_parts(expr):
             k = i
             while k < n and expr[k] == " ":
                 k += 1
-            # A call, an index or a field access is not a concatenation. '..' is.
             if k < n and (expr[k] in "([:" or
                           (expr[k] == "." and expr[k:k + 2] != "..")):
                 return None
@@ -149,7 +110,6 @@ def _concat_parts(expr):
 
 
 def _string_vars(src):
-    """Lua locals whose value is a literal string, or a concatenation of them. Unknown"""
     seen = {}
     assigns = []
     for m in re.finditer(r"local\s+(\w+)\s*=\s*", src):
@@ -173,11 +133,8 @@ def _string_vars(src):
 
 
 def _template(expr, svars=None):
-    """A Lua string expression -> its literal text, every interpolated run replaced by"""
     exact = _concat_parts(expr)
     if exact is not None:
-        # `g(c,p)` inside g()'s own body is a route made entirely of a parameter. There is
-        # nothing there to check against the catalogue, so it is not a route.
         if not any(k == "lit" and v for k, v in exact):
             return None
         svars = svars or {}
@@ -188,7 +145,7 @@ def _template(expr, svars=None):
         if saw and expr[pos:m.start()].strip(" .") != "":
             parts.append("#")
         elif saw and expr[pos:m.start()].strip() == "":
-            parts.append("#")          # adjacency without '..' cannot happen in Lua
+            parts.append("#")
         parts.append(m.group(1) if m.group(1) is not None else m.group(2))
         pos, saw = m.end(), True
     if not saw:
@@ -199,7 +156,6 @@ def _template(expr, svars=None):
 
 
 def _split_route(route):
-    """Split on '.' at bracket depth 0 -- arguments and indices contain dots."""
     segs, depth, cur = [], 0, []
     for ch in route:
         if ch in "([":
@@ -216,7 +172,6 @@ def _split_route(route):
 
 
 def _ctx_after(ctx, segs):
-    """The context a prefix of a route lands on, for blaming the right segment."""
     ret = walk(ctx, ".".join(segs), _CAT)
     if ret is None:
         return None
@@ -225,13 +180,10 @@ def _ctx_after(ctx, segs):
 
 
 _ARG_ROUTE = re.compile(r"^[A-Za-z_][\w.\[\]#()\"', ]*$")
-# CCO globals that build a context out of thin air rather than off the receiver, so they
-# are arguments but not routes.
 _ARG_GLOBALS = ("DatabaseRecordContext",)
 
 
 def _arg_routes(seg):
-    """Arguments to a CCO call are themselves routes, resolved against the *receiver* --"""
     if "(" not in seg:
         return []
     inner = seg[seg.index("(") + 1:seg.rindex(")")] if seg.rstrip().endswith(")") else ""
@@ -250,7 +202,6 @@ def _arg_routes(seg):
     keep = []
     for a in out:
         a = a.strip()
-        # `this` is the receiver itself; literals and numbers are not routes.
         if not a or a == "this" or a[0] in "\"'#" or a[0].isdigit():
             continue
         if a.startswith(_ARG_GLOBALS):
@@ -263,7 +214,6 @@ def _arg_routes(seg):
 
 
 def walk(ctx, route, cat, root=None):
-    """Follow a dotted route from context `ctx`. Returns the final declared return type,"""
     cur, last = ctx, None
     root = root or ctx
     for seg in _split_route(route):
@@ -290,16 +240,12 @@ def walk(ctx, route, cat, root=None):
     return last
 
 
-# ------------------------------------------------------------------ type resolution
-
 _CCO_CALL = re.compile(r"cco\(\s*'(Cco\w+)'")
 _INDEXED = re.compile(r"^(\w+)\s*\[")
-# `local sf = s and g(s,'StationedForceContext')` -- the guard chain is idiomatic here.
 _ASSIGNED = re.compile(r"(?:local\s+)?(\w+)\s*=\s*(?:[\w\[\]]+\s+and\s+)*$")
 
 
 def _resolve(expr, types, lists):
-    """Context type of a `g()` receiver expression, or None."""
     expr = expr.strip().strip("()").strip()
     expr = expr.split(" and ")[-1].strip()
     m = _CCO_CALL.search(expr)
@@ -312,7 +258,6 @@ def _resolve(expr, types, lists):
 
 
 def _recv_before(src, i):
-    """The receiver expression ending at src[i] (exclusive) -- `x`, or `cco(..)`."""
     j = i - 1
     while j >= 0 and src[j] == " ":
         j -= 1
@@ -343,7 +288,6 @@ def _recv_before(src, i):
 
 
 def _calls(src):
-    """Yield (assigned_name_or_None, receiver_expr, route_template) for every"""
     svars = _string_vars(src)
     i = 0
     while True:
@@ -374,14 +318,13 @@ def _calls(src):
         if route is None:
             continue
         recv, start = _recv_before(src, k)
-        if not recv or recv == "c":       # `c:Call(p)` is g()'s own body
+        if not recv or recv == "c":
             continue
         m = _ASSIGNED.search(src[max(0, start - 60):start])
         yield (m.group(1) if m else None), recv, route
 
 
 def _var_types(src):
-    """Iterate to a fixed point: an assignment may reference a variable typed later."""
     types, lists = {}, {}
     for m in re.finditer(r"(?:local\s+)?(\w+)\s*=\s*cco\(\s*'(Cco\w+)'", src):
         types[m.group(1)] = m.group(2)
@@ -415,7 +358,6 @@ _PLACEHOLDER = re.compile(r"%\((\w+)\)s")
 
 
 def _subs_for(mod):
-    """The literal values a template's %(name)s placeholders take, read back off the call"""
     import inspect
     out = {}
     try:
@@ -430,7 +372,6 @@ def _subs_for(mod):
 
 
 def _expand(route, subs):
-    """A route naming a placeholder becomes one route per literal value it can take."""
     names = _PLACEHOLDER.findall(route)
     if not names:
         return [route]
@@ -438,13 +379,12 @@ def _expand(route, subs):
     for n in names:
         vals = subs.get(n)
         if not vals:
-            return []                      # unsubstitutable -> caller reports it
+            return []
         out = [r.replace("%%(%s)s" % n, v) for r in out for v in sorted(vals)]
     return out
 
 
 def routes_in(name, src, subs=()):
-    """Yield (receiver_expr, route, resolved_context_or_None)."""
     types, lists = _var_types(src)
     for _assigned, recv, route in _calls(src):
         base = re.split(r"[\[ ]", recv.split(" and ")[-1].strip().strip("()").strip(),
@@ -514,8 +454,6 @@ def check(verbose=False, tsv=None, modules=MODULES):
         for name, ctx, route in bad:
             print("  %-34s %s . %s" % (name, ctx, route))
             segs = _split_route(route)
-            # Re-walk one segment at a time so the blame lands on the segment that
-            # actually broke, against the context it was actually applied to.
             for k in range(1, len(segs) + 1):
                 if walk(ctx, ".".join(segs[:k]), _CAT) is not None:
                     continue
@@ -536,20 +474,17 @@ _CAT = {}
 
 
 def selftest(tsv=None):
-    """A checker nobody has seen fail is a checker nobody should trust. These are the"""
     cat = load_catalogue(tsv)
     cases = [
-        # (context, route, must_resolve)
         ("CcoCampaignBuildingSlot", "BuildingContext.DismantleRefundAmount", True),
-        ("CcoCampaignBuildingSlot", "DismantleRefundAmount", False),   # the real bug
-        ("CcoCampaignBuildingSlot", "IsDamaged", False),               # the real bug
-        ("CcoCampaignBuildingSlot", "CanBeCancelled", False),          # the real bug
-        ("CcoCampaignAncillary", "Key", False),                        # item_key = "nil"
+        ("CcoCampaignBuildingSlot", "DismantleRefundAmount", False),
+        ("CcoCampaignBuildingSlot", "IsDamaged", False),
+        ("CcoCampaignBuildingSlot", "CanBeCancelled", False),
+        ("CcoCampaignAncillary", "Key", False),
         ("CcoCampaignCharacter", "AncillaryList[#].AncillaryRecordContext.Key", True),
-        ("CcoCampaignCharacter", "TraitsList.Size", True),             # list -> Size
+        ("CcoCampaignCharacter", "TraitsList.Size", True),
         ("CcoCampaignCharacter", "IsGarrisoned", True),
         ("CcoCampaignCharacter", "NoSuchPropertyAtAll", False),
-        # arguments are routes off the receiver, and are checked as such
         ("CcoCampaignBuildingSlot",
          "PossibleUpgradeWithoutConversionsList[#].CreateCost(SettlementContext)", True),
         ("CcoCampaignBuildingSlot",

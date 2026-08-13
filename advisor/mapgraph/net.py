@@ -1,29 +1,5 @@
 from __future__ import annotations
 
-"""The network.
-
-* Candidate actions are NODES, and `q = MLP(h_action)` reads that node alone after
-  message passing. Nothing else is concatenated back in. If that is not enough to rank,
-  message passing failed and I want to see it rather than hide it behind a pooled
-  context vector the way v2 did.
-
-* Layers 0..1 run on the ENTITY subgraph only. Action nodes join from layer 2. Without
-  that gap the map embeddings depend on which offers the generator emitted, and the
-  model can learn the offer generator instead of the world.
-
-* Then alternating rounds, ASNets-style (Toyer et al. 2018): entities <- actions, then
-  actions <- entities, ending on `actions <-`.
-
-* No action<->action edges. Candidates meet through the entities and the candidate-group
-  node they share.
-
-* action -> entity is mean-aggregated and gated by a zero-initialised scalar. One
-  campaign ego can carry 600+ candidates; summed, they bury its own state. Zero-init
-  starts training at "actions do not perturb the map" and makes the channel earn itself.
-
-* Per-node-type input encoders and per-node-type norm: ~75% of the node population is
-  action nodes, so one shared norm would compute its statistics almost entirely off them.
-"""
 
 import numpy as np
 import torch
@@ -38,6 +14,16 @@ from advisor.mapgraph import schema as S
 HIDDEN = 192
 ENTITY_LAYERS = 2
 ACTION_ROUNDS = 2
+MAP_AGGR = "mean"
+ACT_AGGR = "add+mean"
+ATTN = "none"
+CONV = "rel"
+CONV_MAP = None
+CONV_A2E = None
+CONV_E2A = "rel"
+DST_DIM = 96
+UPDATE = "none"
+SELF_TRANSFORM = True
 
 
 class DecisionGraph(Data):
@@ -53,7 +39,6 @@ _IDX_FIELDS = ("node_type", "race_idx", "agent_idx", "stance_idx", "subtype_idx"
 
 
 def to_data(g, y=None, taken=None):
-    """Split the flat edge list into the three channels the encoder needs."""
     act = S.ACTION_TYPE_INDEX
     ne, nn_ = len(g.src), len(g.x)
     src = np.fromiter(g.src, dtype=np.int64, count=ne)
@@ -64,8 +49,6 @@ def to_data(g, y=None, taken=None):
     is_act = ntype == act
     s_act, d_act = is_act[src], is_act[dst]
     chan = []
-    #        map                a2e: entities <- actions   e2a: actions <- entities
-    # action<->action edges are not built; s_act & d_act is dropped on purpose
     for mk in (~(s_act | d_act), s_act & ~d_act, d_act & ~s_act):
         s2, d2, r2 = src[mk], dst[mk], rel[mk]
         if s2.size == 0:
@@ -107,26 +90,40 @@ def _mlp(dims, dropout=0.0):
 
 
 class RelConv(MessagePassing):
-    """Message conditioned on both endpoints and the relation."""
 
-    def __init__(self, hidden, rel_dim, aggr):
-        super().__init__(aggr=aggr)
-        self.msg = _mlp([hidden * 2 + rel_dim, hidden * 2, hidden])
+    def __init__(self, hidden, rel_dim, aggr, attn=False, conv=CONV, dst_dim=DST_DIM):
+        aggrs = [a for a in str(aggr).split("+") if a]
+        super().__init__(aggr="add" if attn else (aggrs if len(aggrs) > 1 else aggrs[0]))
+        self.conv_kind = conv
+        d = 0 if conv == "sage" else (hidden if dst_dim is None else int(dst_dim))
+        self.dst = nn.Linear(hidden, d) if (d and d != hidden) else None
+        dim = d + hidden + rel_dim
+        self.msg = _mlp([dim, hidden * 2, hidden])
+        self.att = nn.Linear(dim, 1) if attn else None
+        self.merge = (nn.Linear(hidden * len(aggrs), hidden)
+                      if len(aggrs) > 1 and not attn else None)
 
     def forward(self, x, edge_index, rel_emb):
         if edge_index.numel() == 0:
             return x.new_zeros(x.size())
-        return self.propagate(edge_index, x=x, rel=rel_emb)
+        out = self.propagate(edge_index, x=x, rel=rel_emb)
+        return out if self.merge is None else self.merge(out)
 
-    def message(self, x_i, x_j, rel):
-        return self.msg(torch.cat([x_i, x_j, rel], dim=-1))
+    def message(self, x_i, x_j, rel, index, size_i):
+        parts = [x_j, rel]
+        if self.conv_kind != "sage":
+            parts.insert(0, x_i if self.dst is None else self.dst(x_i))
+        z = torch.cat(parts, dim=-1)
+        m = self.msg(z)
+        if self.att is None:
+            return m
+        return m * softmax(self.att(z), index, num_nodes=size_i)
 
 
 _NT = len(S.NODE_TYPES)
 
 
 class TypeEncoders(nn.Module):
-    """Per-node-type input projection, as ONE block-diagonal matmul."""
 
     def __init__(self, hidden):
         super().__init__()
@@ -142,13 +139,11 @@ class TypeEncoders(nn.Module):
 
 
 class TypeNorm(nn.Module):
-    """LayerNorm with per-node-type affine parameters, fused."""
 
     def __init__(self, hidden, eps=1e-5):
         super().__init__()
         self.eps = eps
         self.hidden = hidden
-        # weight and bias live in ONE table so a node costs one lookup, not two.
         self.affine = nn.Parameter(torch.cat(
             [torch.ones(_NT, hidden), torch.zeros(_NT, hidden)], dim=1))
 
@@ -163,8 +158,16 @@ class TypeNorm(nn.Module):
 class Encoder(nn.Module):
 
     def __init__(self, hidden=HIDDEN, entity_layers=ENTITY_LAYERS,
-                 action_rounds=ACTION_ROUNDS):
+                 action_rounds=ACTION_ROUNDS, map_aggr=MAP_AGGR, act_aggr=ACT_AGGR,
+                 attn=ATTN, conv=CONV, conv_map=CONV_MAP, conv_a2e=CONV_A2E,
+                 conv_e2a=CONV_E2A, dst_dim=DST_DIM, update=UPDATE,
+                 self_transform=SELF_TRANSFORM):
         super().__init__()
+        map_attn = attn in ("map", "all")
+        act_attn = attn in ("act", "all")
+        c_map = conv_map or conv
+        c_a2e = conv_a2e or conv
+        c_e2a = conv_e2a or conv
         self.entity_layers, self.action_rounds = entity_layers, action_rounds
         self.type_enc = TypeEncoders(hidden)
         self.rel_emb = nn.Embedding(S.N_RELATIONS, S.REL_DIM)
@@ -178,22 +181,41 @@ class Encoder(nn.Module):
         ident = (S.RACE_DIM + S.AGENT_DIM + S.STANCE_DIM + S.SUBTYPE_DIM
                  + S.ATYPE_DIM + S.TERM_DIM + S.CAT_DIM)
         self.ident = nn.Linear(ident, hidden)
-        # put identity and message passing on the same scale before the first round
         self.in_norm = TypeNorm(hidden)
 
         n_map = entity_layers + action_rounds
-        self.map_conv = nn.ModuleList([RelConv(hidden, S.REL_DIM, "add")
+        self.map_conv = nn.ModuleList([RelConv(hidden, S.REL_DIM, map_aggr, map_attn, c_map, dst_dim)
                                        for _ in range(n_map)])
         self.map_norm = nn.ModuleList([TypeNorm(hidden) for _ in range(n_map)])
-        self.a2e_conv = nn.ModuleList([RelConv(hidden, S.REL_DIM, "mean")
+        self.a2e_conv = nn.ModuleList([RelConv(hidden, S.REL_DIM, act_aggr, act_attn,
+                                               c_a2e, dst_dim)
                                        for _ in range(action_rounds)])
         self.a2e_norm = nn.ModuleList([TypeNorm(hidden) for _ in range(action_rounds)])
         self.a2e_gate = nn.Parameter(torch.zeros(action_rounds))
-        self.e2a_conv = nn.ModuleList([RelConv(hidden, S.REL_DIM, "mean")
+        self.e2a_conv = nn.ModuleList([RelConv(hidden, S.REL_DIM, act_aggr, act_attn,
+                                               c_e2a, dst_dim)
                                        for _ in range(action_rounds)])
         self.e2a_norm = nn.ModuleList([TypeNorm(hidden) for _ in range(action_rounds)])
         self.drop = nn.Dropout(0.15)
+        n_upd = n_map + 2 * action_rounds
+        if update == "linear":
+            self.upd = nn.ModuleList([nn.Linear(hidden * 2, hidden) for _ in range(n_upd)])
+        elif update == "mlp":
+            self.upd = nn.ModuleList([_mlp([hidden * 2, hidden * 2, hidden])
+                                      for _ in range(n_upd)])
+        else:
+            self.upd = None
+        self.self_lin = nn.Linear(hidden, hidden) if self_transform else None
         self.jk = nn.Linear(hidden * (1 + entity_layers + 2 * action_rounds), hidden)
+
+    def _combine(self, h, m, nt, norm, ui, gate=None):
+        m = norm(m, nt)
+        if self.upd is not None:
+            m = self.upd[ui](torch.cat([h, m], dim=-1))
+        m = self.drop(torch.relu(m))
+        if gate is not None:
+            m = gate * m
+        return (h if self.self_lin is None else self.self_lin(h)) + m
 
     def forward(self, data):
         nt = data.node_type
@@ -208,22 +230,25 @@ class Encoder(nn.Module):
         a2e_rel = self.rel_emb(data.a2e_rel)
         e2a_rel = self.rel_emb(data.e2a_rel)
 
+        n_map = self.entity_layers + self.action_rounds
         li = 0
         for _ in range(self.entity_layers):
             m = self.map_conv[li](h, data.edge_index, map_rel)
-            h = h + self.drop(torch.relu(self.map_norm[li](m, nt)))
+            h = self._combine(h, m, nt, self.map_norm[li], li)
             states.append(h)
             li += 1
 
         for r in range(self.action_rounds):
             m = self.a2e_conv[r](h, data.a2e_index, a2e_rel)
-            h = h + self.a2e_gate[r] * self.drop(torch.relu(self.a2e_norm[r](m, nt)))
+            h = self._combine(h, m, nt, self.a2e_norm[r], n_map + r,
+                              gate=self.a2e_gate[r])
             m = self.map_conv[li](h, data.edge_index, map_rel)
-            h = h + self.drop(torch.relu(self.map_norm[li](m, nt)))
+            h = self._combine(h, m, nt, self.map_norm[li], li)
             states.append(h)
             li += 1
             m = self.e2a_conv[r](h, data.e2a_index, e2a_rel)
-            h = h + self.drop(torch.relu(self.e2a_norm[r](m, nt)))
+            h = self._combine(h, m, nt, self.e2a_norm[r],
+                              n_map + self.action_rounds + r)
             states.append(h)
 
         h = self.jk(torch.cat(states, dim=1))
@@ -253,9 +278,14 @@ class Head(nn.Module):
 class Net(nn.Module):
 
     def __init__(self, hidden=HIDDEN, entity_layers=ENTITY_LAYERS,
-                 action_rounds=ACTION_ROUNDS):
+                 action_rounds=ACTION_ROUNDS, map_aggr=MAP_AGGR, act_aggr=ACT_AGGR,
+                 attn=ATTN, conv=CONV, conv_map=CONV_MAP, conv_a2e=CONV_A2E,
+                 conv_e2a=CONV_E2A, dst_dim=DST_DIM, update=UPDATE,
+                 self_transform=SELF_TRANSFORM):
         super().__init__()
-        self.encoder = Encoder(hidden, entity_layers, action_rounds)
+        self.encoder = Encoder(hidden, entity_layers, action_rounds,
+                               map_aggr, act_aggr, attn, conv, conv_map, conv_a2e,
+                               conv_e2a, dst_dim, update, self_transform)
         self.head = Head(hidden)
 
     def forward(self, data):
@@ -266,7 +296,23 @@ class Net(nn.Module):
 
 
 def listwise_nll(q, a_graph, is_taken, n_graphs):
-    """-log p(taken) under a per-decision softmax over that decision's candidate set."""
     p = softmax(q, a_graph, num_nodes=n_graphs)
     hit = scatter(p * is_taken, a_graph, dim=0, dim_size=n_graphs, reduce="sum")
     return -torch.log(hit.clamp(min=1e-9))
+
+
+def from_cfg(cfg):
+    cfg = cfg or {}
+    return Net(cfg.get("hidden", HIDDEN),
+               cfg.get("entity_layers", ENTITY_LAYERS),
+               cfg.get("action_rounds", ACTION_ROUNDS),
+               map_aggr=cfg.get("map_aggr", MAP_AGGR),
+               act_aggr=cfg.get("act_aggr", ACT_AGGR),
+               attn=cfg.get("attn", ATTN),
+               conv=cfg.get("conv", CONV),
+               conv_map=cfg.get("conv_map", CONV_MAP),
+               conv_a2e=cfg.get("conv_a2e", CONV_A2E),
+               conv_e2a=cfg.get("conv_e2a", CONV_E2A),
+               dst_dim=cfg.get("dst_dim", DST_DIM),
+               update=cfg.get("update", UPDATE),
+               self_transform=cfg.get("self_transform", SELF_TRANSFORM))

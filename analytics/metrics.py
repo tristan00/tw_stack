@@ -1,27 +1,5 @@
 from __future__ import annotations
 
-"""How alike are two rankings of the same decision.
-
-Pure functions. No database, no I/O, no configuration -- so the gates in
-test_analytics.py can assert exact constants against hand-computed cases, and so the
-formulas can be read without reading a query.
-
-Every function here takes RANK VECTORS, not ordered lists: `xs[i]` is the position model A
-gave offer `i`, 1 = best. That is the shape the corpus stores (`scores.packed` carries
-`rank` and `gnn_rank` per offer) and converting to ordered lists at the boundary would
-force an arbitrary tiebreak on the 9 decisions where the graph model ties. Callers mask
-out offers either model did not rank, and pass the two aligned vectors.
-
-THE HEADLINE IS `spearman`. `kendall_tau_b` is a second correlation that handles the tie
-structure properly. `rbo` and `topk_overlap` are supplements: they answer "do they agree
-about the TOP", which a correlation over the whole ordering can miss, and they are reported
-as secondary everywhere they appear. They do not replace the correlations.
-
-A note on what these numbers mean, because it is easy to read them as a score. Near +1 the
-two models are ranking on the same thing and the second is close to redundant; near 0 they
-are ranking on effectively unrelated criteria; near -1 one is the other reversed. None of
-the three is a fault by itself. Nothing here grades its output.
-"""
 
 import numpy as np
 
@@ -33,7 +11,6 @@ TOP_KS = (1, 3, 5, 10)
 
 
 def tie_averaged_ranks(v) -> np.ndarray:
-    """Ranks 1..n with ties sharing their average position."""
     a = np.asarray(v, dtype=np.float64)
     n = a.size
     order = np.argsort(a, kind="stable")
@@ -49,7 +26,6 @@ def tie_averaged_ranks(v) -> np.ndarray:
 
 
 def spearman(xs, ys):
-    """Spearman's rho: Pearson correlation over tie-averaged ranks."""
     n = len(xs)
     if n < MIN_N:
         return None
@@ -62,7 +38,6 @@ def spearman(xs, ys):
 
 
 def kendall_tau_b(xs, ys):
-    """Kendall's tau-b: (C - D) / sqrt((n0 - Tx)(n0 - Ty))."""
     n = len(xs)
     if n < MIN_N:
         return None
@@ -84,12 +59,10 @@ def kendall_tau_b(xs, ys):
 
 
 def _prefix_set(ranks: np.ndarray, k: int) -> set:
-    """The offers a model placed at position k or better."""
     return set(np.nonzero(ranks <= k)[0].tolist())
 
 
 def topk_overlap(xs, ys, k: int):
-    """How much of each model's top k the other also put in its top k."""
     n = len(xs)
     if n < 1 or k < 1:
         return None
@@ -100,7 +73,6 @@ def topk_overlap(xs, ys, k: int):
 
 
 def rbo(xs, ys, p: float = RBO_P):
-    """Rank-biased overlap, extrapolated."""
     n = len(xs)
     if n < MIN_N:
         return None
@@ -115,7 +87,6 @@ def rbo(xs, ys, p: float = RBO_P):
 
 
 def cross_ranks(xs, ys):
-    """(where model B placed A's best offer, where A placed B's best offer)."""
     n = len(xs)
     if n < 1:
         return None, None
@@ -125,7 +96,6 @@ def cross_ranks(xs, ys):
 
 
 def same_best(xs, ys) -> bool:
-    """Do the two models share a best offer."""
     if len(xs) < 1:
         return False
     x = np.asarray(xs, dtype=np.float64)
@@ -134,7 +104,6 @@ def same_best(xs, ys) -> bool:
 
 
 def compare(xs, ys) -> dict:
-    """Every measure for one decision, in one pass."""
     n = len(xs)
     out = {
         "n": n,

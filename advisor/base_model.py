@@ -69,12 +69,10 @@ def grouped_split(n, groups, frac=VAL_FRACTION, seed=SPLIT_SEED):
         return [], list(range(n))
     return val, trn
 
-# A frozen salt, NOT a version reference -- do not "tidy" it to match a module name.
 HOLDOUT_SALT = "gnn3"
 
 
 def stable_split(n, groups, frac=VAL_FRACTION, salt=HOLDOUT_SALT):
-    """Hold out whole campaigns, chosen by hashing the campaign id."""
     import hashlib
     import random
     if not groups or len(groups) != n:
@@ -220,7 +218,5 @@ def turns_left(turns, turn):
         return None
     last = max(ts)
     return float(last - int(turn or 0)) if last >= int(turn or 0) else None
-
-
 
 

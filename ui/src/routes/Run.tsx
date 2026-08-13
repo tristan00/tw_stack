@@ -23,10 +23,8 @@ const timingCols: Col<TimingRow>[] = [
     unit: 'ms',
     align: 'right',
     value: (r) => r.max_ms ?? 0,
-    // The worst case sits beside the median on purpose. A stage whose median is 100ms and
-    // whose worst is 6s is a different problem from one that is uniformly slow, and a
-    // median alone cannot tell them apart -- the old panel buried its single largest
-    // number inside a dim run-on sentence beneath a table reading 103.
+
+
     render: (r) => ms(r.max_ms),
   },
 ]

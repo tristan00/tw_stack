@@ -1,27 +1,5 @@
 from __future__ import annotations
 
-"""Weisfeiler-Leman identity: can the network tell two candidate actions apart at all?
-
-A message-passing network cannot distinguish two nodes that WL refinement gives the same
-colour -- not at this depth, not at any depth, not with more parameters. So if the action
-the agent took and an action it did not take end up the same colour, the loss is asking
-for something the architecture cannot express, and every gradient spent on that pair is
-noise. Measured on the previous corpus: 543 of 544 graphs contained at least one violating
-class, 24.8% of action nodes were in one, and 47.4% of taken actions were indistinguishable
-from a candidate that was not taken.
-
-The tolerance is a DERIVED PREDICATE, never a per-type whitelist. A class of two or more
-action nodes is acceptable only if every offer in it has identical
-(action_type, action_key, params) -- i.e. they really are the same action offered twice,
-and picking either is the same decision. Anything else is a defect, whoever it belongs to.
-That rule is why this is a check and not a metric: nobody gets to add their action type to
-an exemption list.
-
-    python -m advisor.mapgraph.wl [run_dir] [--n 40] [--verbose]
-
-Exit code 1 means at least one pair of genuinely different actions is invisible to the
-network.
-"""
 
 import collections
 import json
@@ -31,15 +9,14 @@ import sys
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(os.path.dirname(_HERE)))
 
-import common  # noqa: E402
-from advisor.mapgraph import build as B      # noqa: E402
-from advisor.mapgraph import schema as S     # noqa: E402
+import common
+from advisor.mapgraph import build as B
+from advisor.mapgraph import schema as S
 
 MAX_ROUNDS = 40
 
 
 def colours(g, max_rounds=MAX_ROUNDS):
-    """WL refinement to convergence. Returns the final colour per node."""
     n = len(g.node_type)
     init = []
     for i in range(n):
@@ -60,13 +37,12 @@ def colours(g, max_rounds=MAX_ROUNDS):
             sig = (cur[i], tuple(sorted((r, cur[d]) for r, d in adj[i])))
             nxt.append(pal.setdefault(sig, len(pal)))
         if len(set(nxt)) == len(set(cur)):
-            return nxt                    # the partition stopped refining
+            return nxt
         cur = nxt
     return cur
 
 
 def _offers_in_order(record):
-    """The offers in the order build_graph adds their action nodes."""
     out = []
     for e in record.get("entities") or []:
         for o in e.get("offers") or []:
@@ -75,15 +51,12 @@ def _offers_in_order(record):
 
 
 def violations(record, g=None):
-    """[(colour, [offer, ...])] for every class of action nodes that a message-passing"""
     g = g or B.build_graph(record)
     if g is None:
         return [], 0
     col = colours(g)
     offers = _offers_in_order(record)
     if len(offers) != len(g.action_nodes):
-        # build_graph and this walk disagree about order, which would make every verdict
-        # below meaningless. Say so rather than report a number.
         raise RuntimeError("wl: %d offers but %d action nodes -- the orders have diverged"
                            % (len(offers), len(g.action_nodes)))
     by_colour = collections.defaultdict(list)
@@ -103,7 +76,6 @@ def violations(record, g=None):
 
 
 def _synthetic(item_keys, building_keys):
-    """One province with two slots and one lord, offering the action types that dominate"""
     world = {
         "regions": [{"region": "reg_a", "province": "prov_a", "owner": "me",
                      "x": 10, "y": 10, "adjacent": []}],
@@ -135,11 +107,10 @@ def _synthetic(item_keys, building_keys):
 
 
 def selftest():
-    """The checker has to be seen failing before a green run means anything."""
     broken = _synthetic(item_keys=["nil", "nil"],
-                        building_keys=[None, None])      # the old collector
+                        building_keys=[None, None])
     fixed = _synthetic(item_keys=["anc_horse_a", "anc_horse_b"],
-                       building_keys=["bldg_a", "bldg_b"])   # the fixed one
+                       building_keys=["bldg_a", "bldg_b"])
     bad_b, n_b = violations(broken)
     bad_f, n_f = violations(fixed)
     n_broken = sum(len(o) for _c, o in bad_b)

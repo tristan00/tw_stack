@@ -1,4 +1,3 @@
-"""Every query the dashboard can ask, with its cost bounded and its population named."""
 
 from __future__ import annotations
 
@@ -32,9 +31,6 @@ MENUS_ROWS = 60
 DIPLO_TAIL = 600
 REWARD_CAMPAIGNS = 10
 
-# Outcomes are not all failures, and colouring them as if they were misreports the run.
-# A campaign the harness abandoned on the growth bar is a tuning signal; a campaign that
-# lost a war is the game working. Only harness faults are red.
 _OUTCOME_STATE = {
     "error": "bad",
     "stuck": "bad",
@@ -48,7 +44,6 @@ LIVE_WINDOW_S = 600.0
 
 
 def _ended_because(pm: dict) -> str | None:
-    """Why the RUN stopped this campaign. NOT a growth measurement."""
     g = pm.get("growth") or {}
     outcome = str(pm.get("outcome") or "")
     if g.get("reason") == "legendary_lord_wounded":
@@ -87,7 +82,6 @@ def _f(v, default=None):
 
 
 def _jload(v):
-    """Parse a stored JSON column into a container, never into None."""
     if not v:
         return {}
     if isinstance(v, (dict, list)):
@@ -100,7 +94,6 @@ def _jload(v):
 
 
 def _text(v):
-    """Whatever a stream wrote, as a string a cell can hold."""
     if v is None or v == "":
         return None
     if isinstance(v, str):
@@ -129,7 +122,6 @@ def _fac(v) -> Ident:
 
 
 def _by_arm(rows) -> list:
-    """Fold a (policy, count) tally onto strategies. [(arm, picks, fell_back)], biggest first."""
     agg: dict = {}
     for r in rows:
         raw = r["p"]
@@ -143,7 +135,6 @@ def _by_arm(rows) -> list:
 
 
 def _clock(ts):
-    """An epoch stamp as a local wall-clock string, or None."""
     t = _f(ts)
     return time.strftime("%Y-%m-%d %H:%M", time.localtime(t)) if t else None
 
@@ -161,11 +152,8 @@ def _age_words(seconds):
     return "%dd ago" % (s // 86400)
 
 
-# file-backed sources
-
 @db.cached
 def postmortems(con) -> list:
-    """Every recorded campaign ending, newest last."""
     out = []
     for payload, key in con.execute(
             "SELECT payload,campaign_key FROM postmortems ORDER BY postmortem_id"):
@@ -178,7 +166,6 @@ def postmortems(con) -> list:
 
 @db.cached
 def join_outcomes(con) -> dict:
-    """campaign_key -> the postmortem that ended it."""
     claimed = {}
     for pm in postmortems(con):
         key = pm.get("campaign_key")
@@ -189,17 +176,13 @@ def join_outcomes(con) -> dict:
 
 @db.cached
 def unjoined_endings(con) -> int:
-    """Endings naming no campaign this corpus holds."""
     keys = {r[0] for r in con.execute("SELECT campaign_key FROM campaigns")}
     return sum(1 for pm in postmortems(con)
                if not pm.get("campaign_key") or pm["campaign_key"] not in keys)
 
 
-# run
-
 @db.cached
 def current(con) -> Current:
-    """The campaign being played right now, resolved once."""
     row = con.execute(
         "SELECT campaign_id, turn, settlements, power_rank, lord_level, ts"
         " FROM target_rows ORDER BY ts DESC LIMIT 1").fetchone()
@@ -213,7 +196,6 @@ def current(con) -> Current:
 
 @db.cached
 def totals(con) -> list:
-    """The corpus totals, each naming the population it counted."""
     q = lambda s: con.execute(s).fetchone()[0] or 0
     return [
         Count(value=q("SELECT COUNT(DISTINCT campaign_id) FROM decision_points"),
@@ -229,7 +211,6 @@ def totals(con) -> list:
 
 @db.cached
 def throughput(con) -> list:
-    """Campaign and turn rates over the recent window, with the window stated."""
     rows = con.execute(
         "SELECT ts, campaign_id, turn FROM decision_points"
         " ORDER BY decision_id DESC LIMIT 4000").fetchall()
@@ -260,7 +241,6 @@ SPARK_BUCKETS = 16
 
 
 def _rate_sparks(rows, buckets=SPARK_BUCKETS):
-    """Distinct campaigns and campaign-turns per equal-width time bucket, oldest first."""
     stamps = [(_f(r["ts"]) or 0.0, r["campaign_id"], r["turn"]) for r in rows]
     stamps = [s for s in stamps if s[0]]
     if len(stamps) < buckets:
@@ -280,7 +260,6 @@ def _rate_sparks(rows, buckets=SPARK_BUCKETS):
 
 @db.cached
 def _confirm_spark(con, buckets=SPARK_BUCKETS):
-    """Confirm rate per equal-count bucket over the recent window, oldest first."""
     rows = con.execute(
         "SELECT counted, refusal FROM action_taken"
         " ORDER BY decision_id DESC LIMIT 2000").fetchall()
@@ -301,7 +280,6 @@ def _confirm_spark(con, buckets=SPARK_BUCKETS):
 
 @db.cached
 def collect_timing(con) -> list:
-    """Median ms per recorder stage over the recent window."""
     rows = con.execute("SELECT timings FROM decision_points"
                        " ORDER BY decision_id DESC LIMIT 400").fetchall()
     buckets = {}
@@ -330,7 +308,6 @@ def collect_timing(con) -> list:
 
 @db.cached
 def cycle_timing(con) -> list:
-    """Median ms per execution stage over the recent window."""
     rows = con.execute("SELECT timing FROM action_taken"
                        " ORDER BY decision_id DESC LIMIT 400").fetchall()
     buckets = {}
@@ -354,11 +331,8 @@ def cycle_timing(con) -> list:
     return out
 
 
-# campaigns
-
 @db.cached
 def campaign_rows(con) -> list:
-    """One row per campaign: its decisions, its trajectory, and its outcome."""
     decs = {r["ckey"]: r for r in con.execute(
         "SELECT campaign_id ckey, COUNT(*) n, MIN(ts) t0, MAX(ts) t1, MAX(turn) last_turn"
         " FROM decision_points GROUP BY campaign_id")}
@@ -390,8 +364,6 @@ def campaign_rows(con) -> list:
             campaign_map=_id(ident.campaign_map(m["campaign_map"] if m else None)),
             turns=_i(d["last_turn"], _i(m["turns"]) if m else None),
             decisions=n_dec,
-            # A decision point that produced no action row at all is not a failed action;
-            # it is a decision where nothing was offered or nothing was chosen.
             no_action=max(0, n_dec - rows_),
             attempted=attempted,
             confirmed=confirmed,
@@ -433,7 +405,6 @@ def campaign_rows(con) -> list:
             row.outcome_state = _OUTCOME_STATE["no_ending_recorded"]
             row.ended_because = ("the session stopped before this campaign ended, so no "
                                  "outcome was recorded for it")
-    # newest first
         out.append(row)
     out.sort(key=lambda r: -(decs[r.campaign.raw]["t1"] or 0))
     return out
@@ -441,7 +412,6 @@ def campaign_rows(con) -> list:
 
 @db.cached
 def outcome_headline(con) -> list:
-    """The outcome spread across joined campaigns, worst first."""
     tally = {}
     for row in campaign_rows(con):
         if not row.outcome:
@@ -456,7 +426,6 @@ def outcome_headline(con) -> list:
 
 @db.cached
 def starts_rows(con) -> list:
-    """Per-faction start quality. One grouped query per fact, never one per campaign."""
     per = {}
     for row in campaign_rows(con):
         fkey, _ = ident.split_campaign_key(row.campaign.raw)
@@ -491,7 +460,6 @@ def starts_rows(con) -> list:
             avg_turns=round(sum(b["turns"]) / len(b["turns"]), 1) if b["turns"] else None,
             best_turns=max(b["turns"]) if b["turns"] else None,
             best_settlements=max(b["sett"]) if b["sett"] else None,
-            # power rank counts downwards, so the best value is the smallest one.
             best_power_rank=min(b["rank"]) if b["rank"] else None,
             best_lord_level=max(b["lord"]) if b["lord"] else None,
             ever_allied=ever_a.get(fkey, 0), ever_vassal=ever_v.get(fkey, 0),
@@ -503,7 +471,6 @@ def starts_rows(con) -> list:
 
 @db.cached
 def matrix(con, kind: str = "action"):
-    """faction x action-type crosstab, and the totals row that makes it readable."""
     if kind == "interrupt":
         sql = ("SELECT c.faction faction, i.kind atype,"
                "       COUNT(*) tried,"
@@ -535,10 +502,7 @@ def matrix(con, kind: str = "action"):
     return grid, totals_
 
 
-# decisions
-
 def _options_of(options_json) -> list:
-    """The options on a blocking screen, as (label, payload) pairs."""
     opts = _jload(options_json)
     if isinstance(opts, dict):
         return [(k, v) for k, v in opts.items() if isinstance(v, dict)]
@@ -566,7 +530,6 @@ def _result_of(row) -> tuple:
 
 def decisions_page(con, offset=0, limit=DECISIONS_PAGE, action_type=None, policy=None,
                    result=None, campaign=None, q=None):
-    """The decision log, one page at a time."""
     where, args = [], []
     if action_type:
         where.append("at.action_type = ?")
@@ -628,9 +591,6 @@ def decisions_page(con, offset=0, limit=DECISIONS_PAGE, action_type=None, policy
         n_off = _i(r["n_offers"])
         delta = None
         if gnn_rank and cat_rank and n_off and n_off > 1:
-            # Percentile, so decisions with different offer counts are comparable.
-            # gnn minus catboost: positive means the graph model rated the taken action
-            # higher than the tree did.
             delta = round(100.0 * (cat_rank - gnn_rank) / (n_off - 1), 1)
         out.append(DecisionRow(
             decision_id=_i(r["decision_id"], 0) or 0, ts=_f(r["ts"]),
@@ -650,7 +610,6 @@ def decisions_page(con, offset=0, limit=DECISIONS_PAGE, action_type=None, policy
 
 @db.cached
 def decision_facets(con) -> dict:
-    """The distinct values worth filtering by, so the client never invents a filter."""
     at = [r[0] for r in con.execute(
         "SELECT DISTINCT action_type FROM action_taken WHERE action_type IS NOT NULL"
         " ORDER BY action_type")]
@@ -662,7 +621,6 @@ def decision_facets(con) -> dict:
 
 
 def decision_detail(con, decision_id: int):
-    """One decision, in full. Every query is keyed on the id, so cost is flat."""
     row = con.execute(
         "SELECT at.decision_id, at.ts, at.context_kind, at.context_id, at.action_type,"
         "       at.action_key, at.executed, at.confirmed, at.counted, at.refusal,"
@@ -714,7 +672,6 @@ def decision_detail(con, decision_id: int):
 
 
 def _phases(row) -> list:
-    """The four phases of one action, in ms."""
     t = _jload(row["timings"] if "timings" in row.keys() else None)
     a = _jload(row["timing"] if "timing" in row.keys() else None)
     collect = _f(t.get("collect_ms"), 0.0) or 0.0
@@ -732,7 +689,6 @@ def _phases(row) -> list:
 
 @db.cached
 def actions_summary(con):
-    """Confirm rate per action type, plus the policy tally, plus every denominator named."""
     rows = []
     for r in con.execute(
             "SELECT action_type,"
@@ -765,8 +721,6 @@ def actions_summary(con):
     for p, n, fell in pol_rows:
         note = None
         if p == "forced_end_turn":
-            # Not a strategy draw: the loop ends the turn when nothing is eligible, so
-            # counting it inside the mix would understate every real arm's share.
             note = "not a strategy draw -- the loop ended the turn"
         elif fell:
             note = ("%d of these were drawn but could not score, so random picked instead"
@@ -797,11 +751,8 @@ def actions_summary(con):
     return tiles, rows, policies, denominators
 
 
-# blocking screens
-
 @db.cached
 def menus(con):
-    """Blocking-screen decisions, with every per-option model score as data."""
     total = _i(con.execute("SELECT COUNT(*) FROM interrupt_decisions").fetchone()[0], 0) or 0
     by_screen = [Count(value=_i(r["n"], 0) or 0, noun=str(r["kind"] or "screens"),
                        population="blocking-menu decisions of this kind")
@@ -838,8 +789,6 @@ def menus(con):
             chosen=_phrase(chosen), n_options=_i(r["n_options"]),
             policy=_phrase(r["policy"]), latency_ms=_f(r["latency_ms"]), options=options))
 
-    # Arm coverage: how often each screen kind was scored by each arm, from the stored
-    # options rather than from a model reload -- the panel must not import a ranker.
     for r in con.execute("SELECT kind, options_json FROM interrupt_decisions"):
         b = cover.setdefault(r["kind"], {"rows": 0, "tree": 0, "graph": 0, "both": 0,
                                          "agree": 0, "cmp": 0})
@@ -867,11 +816,8 @@ def menus(con):
             by_screen, policies, coverage, rows)
 
 
-# timeline
-
 @db.cached
 def timeline(con) -> list:
-    """The most recent actions, grouped into (campaign, turn) lanes."""
     rows = con.execute(
         "SELECT at.decision_id, at.ts, at.action_type, at.action_key, at.executed,"
         "       at.confirmed, at.counted, at.refusal, at.timing,"
@@ -880,7 +826,7 @@ def timeline(con) -> list:
         " ORDER BY at.decision_id DESC LIMIT ?", (TIMELINE_DECISIONS,)).fetchall()
     lanes: dict = {}
     prev_ts: dict = {}
-    for r in reversed(rows):                       # oldest first, so gaps make sense
+    for r in reversed(rows):
         key = (r["campaign_id"], _i(r["turn"], 0) or 0)
         lane = lanes.setdefault(key, {"actions": [], "ok": 0, "n": 0, "t0": None, "t1": None})
         res, state = _result_of(r)
@@ -890,8 +836,6 @@ def timeline(con) -> list:
         gap = None
         last = prev_ts.get(r["campaign_id"])
         if last is not None:
-            # Blank across a campaign boundary: the elapsed time there is game teardown
-            # and reload, not anything this action did.
             gap = round(max(0.0, (ts - last) * 1000.0), 1)
         prev_ts[r["campaign_id"]] = ts
         lane["actions"].append(TimelineAction(
@@ -915,8 +859,6 @@ def timeline(con) -> list:
     out.reverse()
     return out
 
-
-# models
 
 _MODEL_DIRS = (
     ("greedy_catboost global", common.MODEL_GLOBAL, "catboost",
@@ -991,6 +933,17 @@ def _model_cards() -> list:
                     rows.append(("fit", ", ".join("%s %s" % (k, v)
                                                   for k, v in list(fit.items())[:3])))
             else:
+                cfit = meta.get("fit") or {}
+                for tag, label in (("e1", "held-out RMSE (state+action)"),
+                                   ("local_e1", "held-out RMSE (state+action)"),
+                                   ("e2", "held-out RMSE (state only)"),
+                                   ("local_e2", "held-out RMSE (state only)")):
+                    part = cfit.get(tag) or {}
+                    if part.get("val_rmse") is not None:
+                        rows.append((label, "%.4f over %s val rows"
+                                     % (_f(part["val_rmse"]) or 0, part.get("val_rows"))))
+                if meta.get("mae_in_sample") is not None:
+                    rows.append(("in-sample MAE", "%.4f" % (_f(meta["mae_in_sample"]) or 0)))
                 for k, label in (("sd_global", "target spread (sd)"),
                                  ("sd_local", "target spread (sd)"),
                                  ("epsilon", "epsilon"), ("beta", "beta")):
@@ -1043,7 +996,6 @@ def _fit_config() -> list:
 
 @db.cached
 def forcing(con):
-    """What each model wants to do: the action-type mix each arm actually picked."""
     rows = con.execute(
         "SELECT COALESCE(policy,'(unrecorded)') p, action_type, COUNT(*) n"
         " FROM action_taken WHERE action_type IS NOT NULL GROUP BY p, action_type").fetchall()
@@ -1074,7 +1026,6 @@ def forcing(con):
 
 
 def _wilson(k, n, z=1.96):
-    """Wilson score interval. A bar with no interval invites reading noise as signal."""
     if not n:
         return 0.0, 0.0
     p = k / n
@@ -1084,9 +1035,7 @@ def _wilson(k, n, z=1.96):
     return max(0.0, (c - s) / d), min(1.0, (c + s) / d)
 
 
-
 def _freshness(tenant: str):
-    """How current the precomputed numbers are, as a required field on every page."""
     from advisor_api.models import AnalyticsFreshness
     st = adb.tenant_state(tenant)
     rows = _i(st.get("rows"), 0) or 0
@@ -1143,7 +1092,6 @@ _SECONDARY_NOTE = "a supplement to the rank correlation above, not a substitute 
 
 
 def _secondary(s: dict) -> list:
-    """RBO and top-k overlap. Reported, and reported as secondary."""
     from advisor_api.models import SecondaryMeasure
     comparable = _i(s.get("comparable"), 0) or 0
     out = []
@@ -1165,7 +1113,6 @@ def _secondary(s: dict) -> list:
 
 @adb.cached
 def agreement_page():
-    """Everything the agreement view shows. Keyed reads of a flat table, no aggregation."""
     from advisor_api.models import (AgreementPage, AgreementRankRow, AgreementSummary,
                                     CorrelationSummary, RhoBin)
     fresh = _freshness("model_agreement")
@@ -1245,7 +1192,6 @@ _GENERATION_CAVEAT = (
 
 @adb.cached
 def agreement_series(axis: str = "window"):
-    """Agreement over time, or by model generation."""
     from advisor_api.models import (AgreementSeriesPage, AgreementSeriesPoint,
                                     GenerationRow)
     axis = "generation" if axis == "generation" else "window"
@@ -1348,7 +1294,6 @@ def analytics_status():
 
 
 def decision_agreement(decision_id: int):
-    """One decision's agreement -- a primary-key read, not a recompute."""
     from advisor_api.models import DecisionAgreement
     r = adb.one("SELECT * FROM model_agreement WHERE decision_id=?", (int(decision_id),))
     if not r:
@@ -1372,10 +1317,9 @@ def decision_agreement(decision_id: int):
 
 
 def rho_for(decision_ids) -> dict:
-    """{decision_id: (rho, n)} for the ids on one page of the log."""
     ids = [int(i) for i in decision_ids if i is not None]
     out = {}
-    for i in range(0, len(ids), 400):                      # under SQLite's variable limit
+    for i in range(0, len(ids), 400):
         chunk = ids[i:i + 400]
         marks = ",".join("?" * len(chunk))
         for r in adb.rows("SELECT decision_id, rho, n FROM model_agreement"
@@ -1386,7 +1330,6 @@ def rho_for(decision_ids) -> dict:
 
 @db.cached
 def correlations(con) -> list:
-    """Does an arm's share of a campaign track how that campaign went?"""
     tiles = []
     for label, table, idcol in (("action ranker", "action_taken", "decision_id"),
                                 ("interrupt model", "interrupt_decisions", "interrupt_id")):
@@ -1441,7 +1384,6 @@ def correlations(con) -> list:
 
 
 def _pearson_gated(xs, ys, min_n=12):
-    """Pearson r, or None with the reason it was not computed."""
     pairs = [(x, y) for x, y in zip(xs, ys) if x is not None and y is not None]
     if len(pairs) < min_n:
         return None, "n=%d, below %d" % (len(pairs), min_n)
@@ -1459,7 +1401,6 @@ SESSION_REPORTS = 12
 
 
 def training_history() -> list:
-    """One row per retrain, newest first: what the corpus was and what the fit produced."""
     return _training_history()
 
 
@@ -1499,8 +1440,6 @@ def _training_history() -> list:
                 "catboost global": _clean({
                     "e1 rmse": r1,
                     "e2 rmse": r2,
-                    # e2 is the baseline e1 is measured against; the lift is the number
-                    # that says whether this retrain was worth anything.
                     "lift": (round(r2 - r1, 4) if (r1 is not None and r2 is not None)
                              else None),
                     "val rows": _i(e1.get("val_rows")),
@@ -1537,18 +1476,14 @@ def _training_history() -> list:
 
 
 def _clean(d: dict) -> dict:
-    """Drop keys with no value, so an empty group is visibly empty rather than a row of dashes."""
     return {k: v for k, v in d.items() if v is not None}
 
 
-# No floor beyond what Pearson needs to exist. Two campaigns always give r = +/-1, so the
-# campaign count rides on every coefficient and is the thing to read it against.
 TRIAL_CORR_MIN_N = 2
 
 
 @db.cached
 def _campaign_arm_shares(con) -> dict:
-    """{campaign_id: {arm: its share of that campaign's picks}}."""
     per: dict = {}
     totals: dict = {}
     for r in con.execute(
@@ -1558,7 +1493,6 @@ def _campaign_arm_shares(con) -> dict:
             "      ON dp.decision_id = at.decision_id"
             " GROUP BY arm, ckey"):
         arm = arms.arm_of(r["arm"]) or arms.UNRECORDED
-        # A loop decision is not a strategy draw; counting it understates every real arm.
         if arm in arms.NOT_A_DRAW:
             continue
         n = _i(r["n"], 0) or 0
@@ -1570,7 +1504,6 @@ def _campaign_arm_shares(con) -> dict:
 
 @db.cached
 def _campaign_settlement_growth(con) -> dict:
-    """{campaign_id: settlements gained, first snapshot -> peak}."""
     out = {}
     for ckey, row in CG.trajectories(con).items():
         g = CG.enrich(row).get("settlements_growth")
@@ -1580,7 +1513,6 @@ def _campaign_settlement_growth(con) -> dict:
 
 
 def _growth_corr(uuids, shares, growth) -> dict:
-    """Per arm: does its share of a campaign's picks track that campaign's growth?"""
     pairs = [(shares[u], growth[u]) for u in (uuids or [])
              if u in shares and u in growth]
     ys = [g for _, g in pairs]
@@ -1596,12 +1528,6 @@ def _growth_corr(uuids, shares, growth) -> dict:
 
 
 def trials(con=None):
-    """The ledger, newest first, with `live` and the growth correlations decided per read.
-
-    Liveness cannot be memoized on the ledger's file stamp: a session that dies stops
-    touching the very file whose change would expire its own claim to be running. The
-    correlations come from the corpus, which moves on its own stamp, not the ledger's.
-    """
     out, meta = _trials()
     live = metrics_db.live_trials(meta)
     shares = _campaign_arm_shares(con) if con is not None else {}
@@ -1655,14 +1581,11 @@ def _trials() -> tuple:
                              for k, v in (d.get("outcomes") or {}).items()) or None))
         row.snapshots = _i(d.get("_snapshots"), 1)
         out.append(row)
-    out.reverse()                                          # newest first
+    out.reverse()
     return out[:200], meta
 
 
-# campaign detail
-
 def reward_series(con, campaign_key: str):
-    """The turn series for one campaign, plus the columns that carry no signal."""
     rows = con.execute(
         "SELECT turn, income, settlements, allies, vassals, power_rank"
         " FROM target_rows WHERE campaign_id = ? ORDER BY turn", (campaign_key,)).fetchall()
@@ -1680,7 +1603,6 @@ def reward_series(con, campaign_key: str):
 
 @db.cached
 def diplomacy_tail(con, campaign_key: str | None = None) -> list:
-    """Recent deal events, newest first."""
     if campaign_key:
         rows = con.execute(
             "SELECT ts,campaign_key,turn,kind,payload FROM diplomacy_events"
@@ -1703,7 +1625,6 @@ def diplomacy_tail(con, campaign_key: str | None = None) -> list:
         elif outcome in ("declined", "ai_would_refuse"):
             state = "warn"
         elif outcome in ("not_staged", "deal_selection"):
-            # our own failure to build the deal, not a diplomatic answer
             state = "bad"
         out.append(DiploEvent(
             turn=_i(d.get("turn")), channel=_phrase(d.get("channel") or d.get("kind")),
@@ -1712,8 +1633,6 @@ def diplomacy_tail(con, campaign_key: str | None = None) -> list:
             terms=_text(d.get("terms") or d.get("speech")), state=state))
     return out[:200]
 
-
-# infra
 
 _ACTIVITY = (
     ("session log", None),

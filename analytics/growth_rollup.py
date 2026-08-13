@@ -1,17 +1,5 @@
 from __future__ import annotations
 
-"""Materialised aggregates over `campaign_growth`.
-
-Small today -- a few hundred campaigns -- and built here anyway, for the same reason the
-agreement rollups are: the Campaigns page reads a flat row rather than aggregating on the
-request path, so the shape of that page does not change when the corpus does.
-
-It also carries the distribution that makes the fix auditable. The column this replaces
-could not represent growth at all: it was copied out of the abandonment verdict, which is
-only written when the gate fired, so 147 of 152 filled cells read `N -> N`, five read down,
-and none could ever read up. `settlements_up / flat / down` here is the direct answer to
-"can this column move in both directions", and `advisor_api/test_api.py` gates on it.
-"""
 
 import os
 import sys

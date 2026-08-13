@@ -1,18 +1,5 @@
 from __future__ import annotations
 
-"""Static game vocabulary from reference.sqlite, loaded once per process.
-
-These are the shared nodes: the same `wh3_main_tze_horror_barracks_1` node is pointed at
-by every province that built it and every offer that proposes it, across every campaign.
-That sharing is what lets statistics pool across 546 campaigns instead of being trapped
-in run-local instance ids.
-
-Every key observed in the corpus joins: 357/357 buildings, 3214/3214 skills, 1766/1766
-tech, 184/184 units, 97/97 edicts, 561/561 regions, 214/214 provinces.
-
-CatBoost reads two columns of this database. It is the largest structure in the game
-that the peer model cannot see.
-"""
 
 import os
 import sqlite3
@@ -70,9 +57,6 @@ def _load():
             sys.stderr.write("mapgraph.catalogue: unlocks load failed -> %s\n"
                              % repr(e)[:160])
 
-    # tech prerequisites live in the pack, not in reference.sqlite; the DAG edge is
-    # written the moment that table is extracted. Absent for now, and said out loud
-    # rather than quietly skipped.
     _CACHE.update(out)
     return _CACHE
 
@@ -80,13 +64,11 @@ def _load():
 _KIND_TABLE = {"building": "buildings", "chain": "building_chains", "unit": "units",
                "tech": "tech", "skill": "skills", "ritual": "rituals",
                "agent_action": "agent_actions"}
-# tables whose key column is not called "key"
 _KIND_COLUMN = {"agent_subtype": ("agent_permitted_subtypes", "subtype")}
 _DENSE = {}
 
 
 def dense_ids():
-    """{kind: {key: 1..n}}. Sorted by key so an id is a property of the game data and not"""
     if _DENSE:
         return _DENSE
     path = S.REFERENCE_DB
@@ -118,14 +100,8 @@ def chain_of(building_key):
     return _load()["building_chain"].get(building_key)
 
 
-
-
 def ability_of(agent_action_key):
     return _load()["agent_ability"].get(agent_action_key)
-
-
-
-
 
 
 def ready():

@@ -1,18 +1,5 @@
 from __future__ import annotations
 
-"""Per-campaign growth. One row per campaign, from the shared definition.
-
-The formula is not here. It is in the root `campaign_growth.py`, imported below, because
-`advisor/session.py` needs the same numbers for the training ledger and the two must not be
-able to disagree -- they disagreed for months, which is the bug this whole change exists to
-fix. This module runs that SQL and stores the result; it does not define growth.
-
-A running campaign's growth changes every turn it plays, so this tenant re-folds rather
-than watermarking forward: a watermark would freeze the in-flight campaign at whatever it
-happened to be on the pass that first saw it, and never look again. The source is one pass
-over `target_rows` (1139 rows today), so re-folding is cheaper than the bookkeeping needed
-to avoid it.
-"""
 
 import os
 import sys

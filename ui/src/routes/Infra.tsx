@@ -36,8 +36,7 @@ function Field({
     <label className="block">
       <span className="text-dim text-2xs uppercase tracking-wide">{label}</span>
       {children}
-      {/* The rule that matters most on this panel is visible, not hidden in a tooltip on
-          a form field nobody hovers. */}
+      {}
       {help && <span className="text-dim mt-0.5 block text-2xs leading-snug">{help}</span>}
     </label>
   )
@@ -58,7 +57,7 @@ function LaunchForm({
       const saved = localStorage.getItem(storeKey)
       if (saved) return { ...defaults, ...JSON.parse(saved) }
     } catch {
-      /* a corrupt saved form must not stop the panel rendering */
+
     }
     return defaults
   })
@@ -234,7 +233,7 @@ export function Infra() {
               </div>
               {s.pid && <div className="num text-dim mt-1 text-2xs">pid {s.pid}</div>}
               {s.started && <div className="text-dim text-2xs">{s.started}</div>}
-              {/* "I could not look" and "it is not running" are different facts. */}
+              {}
               {s.detail && <div className="text-warn mt-1 text-2xs">{s.detail}</div>}
             </Card>
           ))}

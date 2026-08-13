@@ -160,7 +160,6 @@ NO_MODEL_DIR = common.MODEL_COLD_START
 def _verify_action_catalogues(log):
     try:
         sys.path.insert(0, common.REFERENCE)
-        # HERO_ACTIONS lives with the generator that uses it, not with the collector.
         import features_db as DB
         import options as O
         mapped = DB.verify_hero_action_mappings(O.HERO_ACTIONS)
@@ -297,7 +296,7 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
                 raise stop
     except (CampaignLost, CampaignStagnant, GameStuck) as e:
         raise _carry(e)
-    except Exception as e:                                      # noqa: BLE001
+    except Exception as e:
         if executor.defeated_row_seen():
             raise _carry(CampaignLost(
                 "faction destroyed -- the bus stopped answering, which is what a defeat "
@@ -347,8 +346,6 @@ def _turn_trail(run_dir, executor, row, turn_index, log):
         log("   turn trail: ended_by=%s roots=%s ui=%s shot=%s"
             % (row.get("ended_by"), ",".join(str(r) for r in (rec.get("roots") or []))[:140],
                rec.get("ui_state"), rec.get("screenshot")))
-
-
 
 
 def _drain_interrupts(run_dir, log):
@@ -466,9 +463,6 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
             no_hud = 0
         t_housekeep0 = _last_done_ts[0]
         decision_id, record = journal.request_snapshot(run_dir, active=active)
-        # THE PIPELINE. The recorder stored state; the advisor builds the move universe
-        # from it, gates it, and hands the survivors back for the recorder to store.
-        # Nothing gated is ever written.
         _t_gen = time.time()
         options = pol.gate.apply(record, actions_taken=actions)
         journal.log_options(run_dir, decision_id, options)

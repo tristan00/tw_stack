@@ -265,12 +265,6 @@ def _stance_snapshot(bus, ctx, pick):
 _STANCE_STACK = "hud_campaign|BL_parent|land_stance_button_stack|clip_parent|stack_background"
 
 
-
-
-
-
-
-
 def _stance_execute(bus, ctx, pick, before):
     return _ev(bus, _LUA_STANCE_ACTIVATE % {"cqi": ctx["entity_id"], "key": pick["key"]}) == "called"
 
@@ -313,8 +307,6 @@ def _building_snapshot(bus, ctx, pick):
         cost = _build_cost(pick["key"])
         pick.setdefault("params", {})["cost"] = cost
     return {"treasury": t, "slot_is_building_new": is_new == "true", "cost": cost}
-
-
 
 
 def _building_execute(bus, ctx, pick, before):
@@ -363,8 +355,6 @@ def _horde_build_snapshot(bus, ctx, pick):
     slot, _key = _horde_parts(pick)
     return {"slot": slot, "state": _ev(bus, _LUA_HORDE_SLOT_STATE % {"slot": slot}, timeout=12.0),
             "treasury": _treasury(bus)}
-
-
 
 
 def _horde_build_execute(bus, ctx, pick, before):
@@ -442,8 +432,6 @@ def _research_snapshot(bus, ctx, pick):
     return {"faction": str(fac), "researching": _researching(bus), "current": _current_tech(bus, fac)}
 
 
-
-
 def _research_execute(bus, ctx, pick, before):
     res = _ev(bus, (_LUA_TECH % {"fac": before["faction"]}) +
               "for i=1,#l do local t=l[i]; if ts(g(t,'NodeKey'))=='%s' then "
@@ -492,8 +480,6 @@ def _skills_snapshot(bus, ctx, pick):
     }
 
 
-
-
 def _skills_execute(bus, ctx, pick, before):
     cqi = ctx["entity_id"]
     res = _ev(bus, (_LUA_SKILLS % {"cqi": cqi}) +
@@ -509,15 +495,26 @@ def _skills_execute(bus, ctx, pick, before):
     return True
 
 
+def _spent_a_point(before_points, after_points):
+    try:
+        return float(after_points) < float(before_points)
+    except (TypeError, ValueError):
+        return False
+
+
 def _skills_confirm(bus, ctx, pick, before):
     cqi = ctx["entity_id"]
     has = _has_skill(bus, cqi, pick["key"])
+    points = _ev(bus, _G + "return ts(g(cco('CcoCampaignCharacter','%s'),'SkillPointsAvailable'))" % cqi)
     uncommitted = _ev(bus, _G + "return ts(g(cco('CcoCampaignCharacter','%s'),'HasUncommitedSkills'))" % cqi)
-    return (has == "true" and uncommitted == "false"), {"has_skill": has, "uncommitted": uncommitted}
+    spent = _spent_a_point(before.get("points"), points)
+    return (has == "true" and uncommitted == "false" and spent), {
+        "has_skill": has, "uncommitted": uncommitted, "points": points,
+        "points_before": before.get("points"), "spent": spent}
 
 
 register("skills", {
-    "layer": "cco", "signal": "has_skill_flip_and_committed",
+    "layer": "cco", "signal": "skill_point_spent_and_committed",
     "snapshot": _skills_snapshot, "prechecks": [],
     "execute": _skills_execute, "confirm": _skills_confirm,
     "timeout_s": 6.0, "poll_s": 1.2,
@@ -554,8 +551,6 @@ def _items_snapshot(bus, ctx, pick):
                   "local a=l[%d]; if not a then return 'NO-ITEM' end "
                   "return ts(g(a,'CanCharacterEquip(SelectedCharacter())'))" % int(idx), timeout=20.0)
     return {"faction": str(fac), "equipped": _equipped_names(bus, cqi), "can_equip": can}
-
-
 
 
 def _items_execute(bus, ctx, pick, before):
@@ -634,8 +629,6 @@ def _rites_snapshot(bus, ctx, pick):
     return {"faction": str(fac), "flags": _rite_flags(bus, fac, idx)}
 
 
-
-
 def _rites_execute(bus, ctx, pick, before):
     idx = int(pick["params"]["rite_index"])
     res = _ev(bus, (_LUA_RITES % {"fac": before["faction"]}) +
@@ -671,8 +664,6 @@ _LUA_SLOT_FLAGS = (_G +
     "if type(slots)~='table' then return 'NO-SLOTLIST' end "
     "for i,x in ipairs(slots) do if g(x,'Index')==%(slot)d then "
     "  local ci=g(x,'ConstructionItemContext') "
-    # IsDamaged is CcoCampaignBuilding's, not the slot's -- read off the slot it was nil
-    # forever, so building_repair's confirm could never see a damaged building.
     "  return ts(g(x,'BuildingContext.IsDamaged'))..'~'..ts(g(x,'IsRepairing'))"
     "..'~'..ts(ci~=nil)..'~'..ts(g(x,'IsEmpty')) end end return 'NO-SLOT'")
 
@@ -808,7 +799,6 @@ def _collect_mod():
 
 
 def _options_mod():
-    """HERO_ACTIONS is the ADVISOR's catalogue -- it decides what may be offered -- so it"""
     sys.path.insert(0, common.ADVISOR)
     import options as _O
     return _O
@@ -900,12 +890,6 @@ def _hero_action_snapshot(bus, ctx, pick):
         st["bundle_before"], st["effects_before"] = _bundle_state(
             bus, tid, (payload or {}).get("target_bundle"))
     return st
-
-
-
-
-
-
 
 
 _LUA_CHAR_REGION = ("local c=cm:get_character_by_cqi(%(tgt)s) if not c then return '' end "

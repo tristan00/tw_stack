@@ -268,10 +268,6 @@ _guard: SuppressionGuard | None = None
 _guard_lock = threading.Lock()
 
 
-
-
-
-
 def active() -> bool:
     return _env_enabled() or _env_guard_enabled()
 
@@ -307,8 +303,6 @@ def install_tracker(tracker: StatsTracker | None) -> None:
     global _tracker
     with _tracker_lock:
         _tracker = tracker
-
-
 
 
 def get_guard() -> SuppressionGuard | None:

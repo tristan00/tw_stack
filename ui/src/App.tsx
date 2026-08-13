@@ -8,15 +8,7 @@ import { Infra } from '@/routes/Infra'
 import { Models } from '@/routes/Models'
 import { Run } from '@/routes/Run'
 
-/**
- * Every view has a URL, and every URL is the whole state.
- *
- * Filters, the selected tab within a destination and the object you drilled into all
- * live in the address bar, so a view can be bookmarked, pasted into a note, or reopened
- * exactly as it was. The previous dashboard kept that state in sessionStorage and served
- * a byte-identical shell for every `?tab=`, so no link ever pointed at what you were
- * looking at.
- */
+
 export default function App() {
   return (
     <Routes>

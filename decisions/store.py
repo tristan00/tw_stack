@@ -1,21 +1,5 @@
 from __future__ import annotations
 
-"""Read and write the decision corpus.
-
-The storage layout is decisions/store_schema.py; read its docstring for why it looks the way
-it does. This file is the API, and the API is deliberately unchanged from v1: everything
-above the store still speaks (decision, entities, offers), and every reader outside this
-package still speaks v1 SQL through the compatibility views. Open the database with
-decisions.dbopen.connect() so those views have the functions they are written in terms of.
-
-A v1 database is not upgraded in place and never will be. The mechanics would be about a
-minute; the semantics do not survive. 0.705% of recent v1 offers collide on the identity
-tuple their labels were attached by -- the disambiguating params were never part of the
-key -- so 1,643 of ~4,200 recent decisions have a genuinely ambiguous taken row. Collector
-version cannot be reconstructed without guessing, which is the failure `collector_versions`
-exists to end. And campaign outcome was never in the database at all. Opening a v1 file
-raises IncompatibleStore, pointing at the archive.
-"""
 
 import hashlib
 import json
@@ -62,7 +46,6 @@ class _SnapshotRead:
 
 
 def _int_or_none(v):
-    """A turn count that was never read must stay NULL, not become 0 -- the two mean"""
     try:
         return int(float(v))
     except (TypeError, ValueError):
@@ -70,7 +53,6 @@ def _int_or_none(v):
 
 
 def _dumps(o):
-    """Canonical JSON: interning and content-addressing both depend on two equal payloads"""
     return json.dumps(o, default=str, sort_keys=True, separators=(",", ":"))
 
 
@@ -92,7 +74,6 @@ class DecisionStore:
         fresh = not os.path.exists(self.path) or os.path.getsize(self.path) == 0
         self.con = dbopen.connect(self.path, readonly=False)
         if fresh:
-            # auto_vacuum can only be chosen before the first table exists.
             for p in S.PRAGMAS:
                 self.con.execute(p)
         else:
@@ -113,7 +94,6 @@ class DecisionStore:
             if col not in have:
                 self.con.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, col, decl))
 
-    # ------------------------------------------------------------------ compatibility
 
     def _assert_compatible(self, fresh=False):
         have = {r[0] for r in self.con.execute(
@@ -142,10 +122,8 @@ class DecisionStore:
         except Exception:
             pass
 
-    # ------------------------------------------------------------------ interning
 
     def _blob(self, text):
-        """Content-address a JSON payload. `world` is 58.2% byte-identical to the previous"""
         if text is None:
             return None
         sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -187,9 +165,6 @@ class DecisionStore:
     def _campaign_id(self, key, faction=None, campaign_map=None):
         hit = self._campaign_cache.get(key)
         if hit is not None:
-            # The map arrives with the first decision but the campaign row may have been
-            # created by an earlier write (a target row, say) that did not carry it. Fill it
-            # in once rather than leaving the column null for the campaign's whole life.
             if campaign_map:
                 self.con.execute(
                     "UPDATE campaigns SET campaign_map=? "
@@ -205,7 +180,6 @@ class DecisionStore:
         return cid
 
     def register_collector(self, collector_sha, git_sha=None, note=None):
-        """Which build produced the rows that follow. v1 could not say, and that alone"""
         self._assert_writable("register_collector")
         self.con.execute(
             "INSERT OR IGNORE INTO collector_versions(collector_sha,git_sha,started_ts,note)"
@@ -218,7 +192,6 @@ class DecisionStore:
 
     _version_id = None
 
-    # ------------------------------------------------------------------ writes
 
     def write_decision(self, snapshot, decision_seq=0, policy=None):
         self._assert_writable("write_decision")
@@ -260,7 +233,6 @@ class DecisionStore:
         return did
 
     def attach_options(self, decision_id, options):
-        """Store the options the advisor's gate let through. Only survivors reach here."""
         self._assert_writable("attach_options")
         ents = {(k, str(i)): seq for seq, (k, i) in enumerate(
             self.con.execute("SELECT context_kind,context_id FROM entities"
@@ -296,7 +268,6 @@ class DecisionStore:
         return 1
 
     def _seq_by_identity(self, decision_id):
-        """(context_kind, context_id, action_type, action_key) -> offer_seq."""
         out = {}
         for seq, ck, cid, at, ak in self.con.execute(
                 "SELECT o.offer_seq,a.context_kind,a.context_id,a.action_type,a.action_key"
@@ -306,7 +277,6 @@ class DecisionStore:
         return out
 
     def attach_scores(self, decision_id, scores):
-        """Packed float32, one row per decision, indexed by offer_seq."""
         if not scores:
             return 0
         self._assert_writable("attach_scores")
@@ -351,8 +321,6 @@ class DecisionStore:
             (decision_id, ck, cid, atype, akey)).fetchone()
         seq, ent_seq, action_id = row if row else (None, None, None)
         if action_id is None:
-            # The action was played but never offered. Intern it anyway so the label keeps
-            # its identity instead of becoming a null join.
             action_id = self._action_id(ck, cid, atype, akey,
                                         _dumps(taken.get("params") or {}))
         conf = taken.get("confirm") or {}
@@ -402,7 +370,6 @@ class DecisionStore:
         return n
 
     def write_postmortem(self, rec):
-        """How a campaign ended. Was an append to runs/postmortems.jsonl."""
         self._assert_writable("write_postmortem")
         rec = dict(rec or {})
         key = rec.get("campaign_key") or rec.get("campaign_uuid") or None
@@ -424,7 +391,6 @@ class DecisionStore:
         return True
 
     def postmortems(self, limit=2000):
-        """Every recorded ending, newest last. One read, no file parse."""
         out = []
         for payload, key in self.con.execute(
                 "SELECT payload,campaign_key FROM postmortems"
@@ -440,7 +406,6 @@ class DecisionStore:
         return out
 
     def write_diplomacy_event(self, row):
-        """One deal event. Was an append to run/diplomacy.jsonl that the dashboard re-read"""
         self._assert_writable("write_diplomacy_event")
         body = {k: v for k, v in (row or {}).items()
                 if k not in ("kind", "turn", "campaign_key", "campaign_id", "ts")}
@@ -454,7 +419,6 @@ class DecisionStore:
         return True
 
     def diplomacy_events(self, limit=200, campaign_key=None):
-        """The most recent events, oldest first. One indexed read, no file tail."""
         if campaign_key:
             rows = self.con.execute(
                 "SELECT ts,campaign_key,turn,kind,payload FROM diplomacy_events"
@@ -476,7 +440,6 @@ class DecisionStore:
         return out
 
     def write_diplo_state(self, campaign_id, turn, known_factions, war_graph):
-        """The whole world's war graph for one turn, met-set included in the row."""
         self._assert_writable("write_diplo_state")
         if not campaign_id or war_graph is None:
             return False
@@ -494,7 +457,6 @@ class DecisionStore:
         return None if v is None else (1 if v else 0)
 
     def write_interrupt(self, row):
-        """`tree` is accepted and dropped. interrupt_decisions.tree_json was 886 MB, 18.5%"""
         self._assert_writable("write_interrupt")
         camp = row.get("campaign") or {}
         opts = row.get("options") or {}
@@ -521,7 +483,6 @@ class DecisionStore:
              row.get("policy")))
         self.con.commit()
 
-    # ------------------------------------------------------------------ reads
 
     def summary(self):
         q = lambda s: self.con.execute(s).fetchone()[0]
@@ -538,7 +499,6 @@ class DecisionStore:
         return int(r[0]) if r and r[0] is not None else 0
 
     def _entities_and_offers(self, where="", args=()):
-        """Both clustered scans, merged on decision_id. Entities come back in entity_seq"""
         ents_by_dec = {}
         for did, ei, ck, cid, feats in self.con.execute(
                 "SELECT e.decision_id,e.entity_seq,e.context_kind,e.context_id,unz(b.z)"
@@ -579,14 +539,12 @@ class DecisionStore:
                 "entities": ents.get(decision_id, [])}
 
     def decision_index(self):
-        """[(decision_id, campaign_key, ts)] in decision_id order -- no blobs, no offers."""
         return [(int(did), ck, ts or 0.0) for did, ck, ts in self.con.execute(
             "SELECT d.decision_id,c.campaign_key,d.ts FROM decisions d"
             " JOIN campaigns c ON c.campaign_id=d.campaign_id"
             " ORDER BY d.decision_id")]
 
     def taken_map(self, confirmed_only=False):
-        """{decision_id: ((kind, id, type, key), counted)} for every labelled decision."""
         out = {}
         for did, ck, cid, at, ak, counted, refusal in self.con.execute(
                 "SELECT t.decision_id,a.context_kind,a.context_id,a.action_type,a.action_key,"
@@ -599,7 +557,6 @@ class DecisionStore:
         return out
 
     def labelled_decisions(self, confirmed_only=False, after=None, before=None):
-        """Rows in decision_id order. `after` (exclusive) and `before` (inclusive) bound"""
         rng, args = "", []
         if after is not None:
             rng += " AND decision_id>?"
@@ -721,8 +678,6 @@ class DecisionStore:
             out.setdefault(camp, {}).setdefault((kind, str(cid)), {})[int(turn)] = float(val)
         return out
 
-    # ------------------------------------------------------------------ checks
 
     def layout_violations(self):
-        """`offer_seq < n_available` must mean exactly `available`. If this is ever"""
         return self.con.execute(S.LAYOUT_INVARIANT).fetchone()[0]

@@ -1,24 +1,5 @@
 from __future__ import annotations
 
-"""Drive the game directly and check that a chosen lord's state fields actually populate.
-
-No session, no advisor, no runctl. Launch one faction, call collect.snapshot(bus) by hand,
-and read the fields. This is the only way to tell "the game says no" from "the read is
-broken" -- a random run cannot do it, because the fields that matter here only exist in
-states random play essentially never reaches.
-
-WHY IT TAKES A FACTION. Some state is a property of the LORD, not the race: `horde_slots`
-is read off that character's own MilitaryForceContext.IsHorde, and a race can field both
-horde and non-horde lords. So "sample enough campaigns and it will turn up" is not a test,
-it is a hope. Each entry below names a faction whose STARTING lord is known to have the
-property, and asserts the field is non-empty.
-
-Measured on a cold random run of three campaigns: 25 of 26 state fields populated from
-ordinary play. The residue is what this exists for.
-
-    python -m decisions.probe_state                     -- every faction in EXPECTS
-    python -m decisions.probe_state <faction_key> ...   -- just those
-"""
 
 import json
 import os
@@ -26,7 +7,7 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(_HERE))
-import common  # noqa: E402
+import common
 
 sys.path.insert(0, common.BUS)
 sys.path.insert(0, common.LAUNCHER)
@@ -37,8 +18,6 @@ EXPECTS = {
         ("lord", "horde_slots",
          "Malakai's army is a horde; his faction's other lords are not"),
     ],
-    # The control: Beastmen have no settlements and every army is a horde army, so this
-    # must populate on turn 1 for every lord.
     "wh_dlc03_bst_beastmen": [
         ("lord", "horde_slots", "all Beastmen armies are horde armies"),
     ],

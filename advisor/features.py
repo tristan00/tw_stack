@@ -133,6 +133,7 @@ def campaign_block(campaign, world):
             "camp_power_rank": _f(campaign.get("power_rank")),
             "camp_treasury": _f(campaign.get("treasury")),
             "camp_is_researching": _f(campaign.get("is_researching")),
+            "camp_map": str(campaign.get("campaign_map") or "?"),
             "camp_armies": float(sum(1 for a in armies if a.get("has_army"))),
             "camp_army_units": float(sum((a.get("units") or 0) for a in armies if a.get("has_army"))),
             "camp_enemy_units_known": float(sum((h.get("units") or 0) for h in hostiles
@@ -150,7 +151,12 @@ _EMPTY_LORD = {"lord_rank": None, "lord_skill_points": None, "lord_units": None,
                "lord_besieging": None, "lord_acted": None, "lord_stance": None,
                "lord_subtype": None, "lord_is_leader": None,
                "lord_x": None, "lord_y": None, "lord_has_army": None,
-               "lord_hp": None, "lord_present": 0.0}
+               "lord_hp": None, "lord_present": 0.0, "lord_reach_max": None}
+
+
+def _reach_max(tiles):
+    got = [t.get("reach_max") for t in (tiles or ()) if t.get("reach_max") is not None]
+    return float(max(got)) if got else None
 
 
 def lord_block(state):
@@ -165,14 +171,14 @@ def lord_block(state):
             "lord_subtype": state.get("subtype"), "lord_is_leader": _f(state.get("is_leader")),
             "lord_x": _f(state.get("x")), "lord_y": _f(state.get("y")),
             "lord_has_army": (1.0 if state.get("units") is not None else 0.0),
-            "lord_hp": _f(state.get("hp")), "lord_present": 1.0}
+            "lord_hp": _f(state.get("hp")), "lord_present": 1.0,
+            "lord_reach_max": _reach_max(state.get("move_tiles"))}
 
 
 _EMPTY_STACK = {"lord_effective_men": None, "lord_stack_upkeep": None}
 
 
 def lord_stack_block(state):
-    """What the stack is made of, off unit_cards[] -- which neither model reads today."""
     cards = (state or {}).get("unit_cards") or []
     if not cards:
         return dict(_EMPTY_STACK)
@@ -193,7 +199,6 @@ def lord_stack_block(state):
 
 
 def _upkeep_ratio(upkeep, income):
-    """Upkeep as a share of income. abs() because a faction can run negative income and"""
     if upkeep is None or income is None:
         return None
     return upkeep / max(abs(income), 1.0)
@@ -217,7 +222,6 @@ _EMPTY_PROV = {"prov_province": None, "prov_complete": None, "prov_max_slots": N
 
 
 def _slot_feats(state):
-    """prov_free_slots is the wrong number, and prov_open_slots is the right one."""
     free = _f(state.get("free_slots"))
     locked = float(len(state.get("locked_slots") or []))
     return {"prov_locked_slots": locked,
@@ -225,7 +229,6 @@ def _slot_feats(state):
 
 
 def _income_feats(state):
-    """Per-province economy, and the game's own measured cost of holding the place."""
     gross, net = _f(state.get("gross_income")), _f(state.get("income"))
     drain = (gross - net) if (gross is not None and net is not None) else None
     return {"prov_income": net, "prov_gross_income": gross,
@@ -351,7 +354,6 @@ def carried_province_block(provinces, here):
            "own_buildings_total": float(sum(len(s.get("built") or {}) for s in owned)),
            "own_building_now": float(sum(len(s.get("building_now") or {}) for s in owned)),
            "own_free_slots": float(sum((_f(s.get("free_slots")) or 0.0) for s in owned)),
-           # the buildable-now total, against own_free_slots which counts locked slots too
            "own_open_slots": float(sum((_slot_feats(s)["prov_open_slots"] or 0.0)
                                        for s in owned)),
            "here_is_ours": 1.0 if here else 0.0}
@@ -463,12 +465,10 @@ _COST_FIELDS = ("create_cost", "recruitment_cost", "cost_per_round", "influence_
 
 
 def _visible(h):
-    """build.py:339 spells the same test -- absent means visible, only False hides."""
     return h.get("visible") is not False
 
 
 def _enemy_garrison(world, region_key):
-    """(units, hp) defending an enemy settlement, or (None, None) if not visible."""
     w = world or {}
     for h in (w.get("hostiles") or []):
         if h.get("kind") != "settlement" or str(h.get("region")) != str(region_key):
@@ -485,7 +485,6 @@ def _enemy_garrison(world, region_key):
 
 
 def _own_garrison(world):
-    """region -> (units, hp) of the armed citizenry holding it."""
     w = world or {}
     bycqi = {str(a.get("cqi")): a for a in (w.get("armies") or [])}
     out = {}
@@ -500,7 +499,6 @@ def _own_garrison(world):
 
 
 def own_garrison_block(world, here_region):
-    """What is holding my settlements, and the weakest one."""
     gar = _own_garrison(world)
     own = [s.get("region") for s in ((world or {}).get("settlements") or [])]
     vals = [gar.get(r, (0.0, 0.0))[0] for r in own]
@@ -514,7 +512,6 @@ def own_garrison_block(world, here_region):
 
 
 def _target_is_garrison(atype, params, world):
-    """Is this attack_army aimed at a settlement's garrison rather than a field army?"""
     if atype != "attack_army":
         return None
     cqi = (params or {}).get("target_cqi")
@@ -587,6 +584,7 @@ def _diplomacy_feats(atype, params, world=None):
     }
     for t in DIPLO_TERM_FEATS:
         out["dip_term_%s" % t] = 1.0 if t in terms else 0.0
+    out["dip_term"] = ("pair" if len(terms) > 1 else str(terms[0]) if terms else "none")
     gift = params.get("gift")
     gift = (gift.get("tier") if isinstance(gift, dict) else gift) or None
     out["dip_gift_tier"] = str(gift) if gift else "none"
@@ -659,8 +657,6 @@ def _recruit_hero_feats(atype, params):
 
 def _target_hp(atype, params, world, key=None):
     if atype == "attack_settlement":
-        # settlement hostiles carry no hp of their own; the defenders' hp is on the
-        # armed-citizenry rows, the same place their unit count lives.
         return _enemy_garrison(world, key)[1]
     if atype != "attack_army":
         return None
@@ -703,11 +699,28 @@ def _nearest_dist(items, x, y):
     return round(best, 2) if best is not None else None
 
 
+POINTER_KEYED = frozenset(("move", "attack_army", "diplomacy", "end_turn", "noop"))
+OPTION_KEY_TYPES = tuple(t for t in ACTION_TYPES if t not in POINTER_KEYED)
+
+
+def _option_key(atype, key):
+    if atype in POINTER_KEYED:
+        return None
+    if atype == "horde_building":
+        return key.partition("@")[2] or None
+    return key.partition("@")[0] or None
+
+
 def action_block(offer, locus, treasury, world=None, self_units=None, self_hp=None,
                  near_before=None, self_cqi=None, self_upkeep=None, income=None):
     atype, key = offer.get("action_type"), str(offer.get("key"))
     params = offer.get("params") or {}
-    out = {"opt_type": atype, "opt_key": key}
+    out = {"opt_type": atype}
+    for t in OPTION_KEY_TYPES:
+        out["optk_" + t] = "n/a"
+    sem = _option_key(atype, key)
+    if sem is not None and atype in OPTION_KEY_TYPES:
+        out["optk_" + atype] = sem
     out.update(_diplomacy_feats(atype, params, world))
     out.update(_hero_action_feats(atype, params, locus, world))
     out.update(_recruit_hero_feats(atype, params))
@@ -769,8 +782,6 @@ def action_block(offer, locus, treasury, world=None, self_units=None, self_hp=No
             cost = n
     out["opt_cost"] = cost
     out["opt_cost_vs_treasury"] = (cost / treasury) if (cost and treasury) else None
-    # what the income burden becomes if this recruit is taken -- the stack already held
-    # plus the marginal unit, against income. opt_db_upkeep_cost prices only the latter.
     marg = _f(out.get("opt_db_upkeep_cost"))
     out["opt_upkeep_after"] = (_upkeep_ratio((self_upkeep or 0.0) + marg, income)
                                if marg is not None else _upkeep_ratio(self_upkeep, income))
@@ -875,8 +886,8 @@ def decision_rows(record, base_sink=None):
     return out
 
 
-MODEL_COLUMNS = frozenset((
-    "opt_type", "opt_key", "opt_cost", "opt_cost_vs_treasury",
+MODEL_COLUMNS = frozenset(tuple("optk_" + _t for _t in OPTION_KEY_TYPES) + (
+    "opt_type", "opt_cost", "opt_cost_vs_treasury",
     "opt_hp_ratio", "opt_hp_diff", "opt_self_hp", "opt_self_units",
     "opt_strength_ratio", "opt_strength_diff",
     "opt_target_garrison_units", "opt_target_garrison_hp", "opt_target_is_garrison",
@@ -891,7 +902,7 @@ MODEL_COLUMNS = frozenset((
     "opt_delta_friend_dist", "opt_delta_enemy_dist", "opt_delta_enemysett_dist",
     "opt_delta_ownsett_dist", "opt_delta_neutral_dist",
     "lord_subtype", "lord_hp", "lord_stance", "lord_units", "lord_rank", "lord_skill_points",
-    "lord_ap_pct", "lord_acted", "lord_has_army",
+    "lord_ap_pct", "lord_acted", "lord_has_army", "lord_reach_max",
     "lord_pending_recruits", "lord_garrisoned", "lord_besieging", "lord_is_leader",
     "lord_in_own_territory",
     "near_friend_1_dist",
@@ -905,12 +916,16 @@ MODEL_COLUMNS = frozenset((
     "prov_public_order", "prov_settlement_level",
     "camp_faction", "camp_race", "camp_turn", "camp_lord_level", "camp_power_rank",
     "camp_settlements", "camp_enemy_settlements", "camp_income", "camp_treasury", "camp_armies",
-    "camp_is_researching",
+    "camp_is_researching", "camp_army_units", "camp_map",
+    "corr_total", "corr_max",
+    "corr_chaos", "corr_khorne", "corr_nurgle", "corr_skaven", "corr_slaanesh",
+    "corr_tzeentch", "corr_vampiric",
     "camp_taken_total", "camp_taken_diplomacy", "camp_act_index",
     "camp_prev_action_1", "camp_prev_action_2", "camp_prev_action_3",
     "camp_prev_action_4", "camp_prev_action_5",
     "dip_target", "dip_target_race", "dip_at_war", "dip_allied", "dip_has_any_tie",
     "dip_gift_tier", "dip_gift_rank", "dip_standing", "dip_trade", "dip_target_army_dist",
+    "dip_term",
     "pos_exposed", "pos_support_ratio", "agg_enemy_n", "agg_enemy_mean_dist",
     "isc_screen", "isc_n_options", "isc_option", "isc_fc_result", "isc_fc_casualties",
     "isc_dilemma_id", "isc_option_id", "isc_option_label", "isc_payload", "isc_n_payload",

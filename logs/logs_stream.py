@@ -22,7 +22,6 @@ except Exception as e:
 
 
 def _append_tail(ctx, base, data: bytes) -> str:
-    """Append to <run dir>/logs/<name>.tail."""
     d = os.path.join(ctx.out_dir, "logs")
     os.makedirs(d, exist_ok=True)
     dst = os.path.join(d, base + ".tail")

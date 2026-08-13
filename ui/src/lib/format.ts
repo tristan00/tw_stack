@@ -1,6 +1,6 @@
 import type { Rate, State } from '@/lib/api'
 
-/** Thousands separators, always. A six-digit corpus count is unreadable without them. */
+
 export function n(v: number | null | undefined, digits = 0): string {
   if (v === null || v === undefined || Number.isNaN(v)) return '—'
   return v.toLocaleString(undefined, {
@@ -9,13 +9,7 @@ export function n(v: number | null | undefined, digits = 0): string {
   })
 }
 
-/**
- * A rate as a percentage, or an em dash when nothing was attempted.
- *
- * `0%` and `nothing was attempted` are different facts. Rendering both as 0% reads as a
- * total failure where the truth is that the case never arose, so a zero denominator
- * returns null and the caller shows a dash.
- */
+
 export function pct(r: Rate | null | undefined, digits = 0): string | null {
   if (!r || !r.of) return null
   return `${((100 * r.n) / r.of).toFixed(digits)}%`
@@ -68,7 +62,7 @@ export const stateFill: Record<State, string> = {
   neutral: 'bg-dim',
 }
 
-/** An arrow in the header is where "lower is better" belongs -- not in a paragraph. */
+
 export function directionMark(dir?: 'up' | 'down'): string {
   return dir === 'down' ? ' ↓' : dir === 'up' ? ' ↑' : ''
 }

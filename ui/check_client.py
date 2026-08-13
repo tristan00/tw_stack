@@ -1,4 +1,3 @@
-"""Run the client's own gates from check.py."""
 
 from __future__ import annotations
 

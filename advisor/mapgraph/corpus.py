@@ -1,35 +1,5 @@
 from __future__ import annotations
 
-"""Persistent cache of tensorized decision graphs.
-
-A retrain rebuilds a graph for every decision ever recorded, and almost none of them
-changed since the last retrain. decision_points, entity_snapshots and action_offers are
-append-only (the only DELETE in store.py is on action_taken, for the decision currently
-being attached), so every decision at or below a frozen max(decision_id) is immutable,
-and its graph is a pure function of the record plus build.py/schema.py/the reference DB.
-Cache that, and a retrain's front half costs O(new decisions) instead of O(corpus).
-
-WHAT IS NOT CACHED, deliberately:
-
-  the label y      decision_deltas reads FUTURE turns (base_model.future_best_at), so the
-                   label of an already-stored decision changes as its campaign advances.
-                   Caching it would silently freeze stale targets. Recomputed every walk;
-                   the whole label pass is ~0.5s because target_series is ~2k rows.
-
-  the taken mask   store.attach_taken can rewrite which action was taken for a decision.
-                   What is cached is the resolved index plus a hash of the
-                   (kind, id, type, key) tuple it was resolved against; if the current
-                   row hashes differently that one graph is rebuilt. The hash only ever
-                   detects change, it never selects an action, so a collision cannot
-                   mislabel anything -- it can only fail to notice an edit.
-
-CACHE KEY. schema_hash() is NOT sufficient: it covers TYPE_FIELDS, RELATIONS and the
-vocabularies, but not KNN_K, not the normalisation scales, and not a single line of
-build.py. Change KNN_K from 4 to 6 and every graph changes while schema_hash does not.
-The fingerprint therefore hashes the source of the modules that construct a graph, plus
-the size and mtime of the reference DB whose contents become catalogue edges. A
-mismatch discards the whole cache and does a cold walk -- it never merges vintages.
-"""
 
 import hashlib
 import json
@@ -44,7 +14,6 @@ SHARD = 2000
 
 
 def _graph_sources():
-    """Every module in this package that a graph's contents can depend on."""
     import ast
     seen, stack = set(), ["build.py", "net.py"]
     while stack:
@@ -64,7 +33,6 @@ def _graph_sources():
             if isinstance(node, ast.Import):
                 names = [a.name for a in node.names]
             elif isinstance(node, ast.ImportFrom):
-                # covers both `import schema` and `from mapgraph import schema`
                 names = ([node.module] if node.module else []) + [a.name for a in node.names]
             for mod in names:
                 leaf = mod.split(".")[-1] + ".py"
@@ -82,8 +50,6 @@ def fingerprint():
         h.update(name.encode())
         with open(p, "rb") as fh:
             h.update(hashlib.sha1(fh.read()).digest())
-    # catalogue nodes and their edges come out of the reference DB, so a rebuilt
-    # reference changes graphs while every .py file stays byte-identical
     ref = getattr(S, "REFERENCE_DB", None)
     for db in [p for p in (ref,) if p]:
         st = os.stat(db) if os.path.exists(db) else None
@@ -101,12 +67,10 @@ def root(run_key, fp=None):
 
 
 def _shard_name(did):
-    """Shards are keyed by decision_id RANGE, not by position in the sorted list."""
     return "shard_%08d.pt" % (did // SHARD)
 
 
 def load(run_key, log=print):
-    """Return ({decision_id: slot}, cache_dir) for the current fingerprint."""
     d = root(run_key)
     man = os.path.join(d, "manifest.json")
     if not os.path.exists(man):
@@ -128,7 +92,6 @@ def load(run_key, log=print):
 
 
 def save(d, slots, dirty, log=print):
-    """Persist `slots`, rewriting only the shards containing `dirty` decision ids."""
     import torch
     os.makedirs(d, exist_ok=True)
     by_shard = {}
@@ -150,7 +113,6 @@ def save(d, slots, dirty, log=print):
 
 
 def ranges(ids, gap=64):
-    """Contiguous-ish (lo, hi) windows covering `ids`, for after=lo-1/before=hi reads."""
     out = []
     for i in sorted(ids):
         if out and i - out[-1][1] <= gap:

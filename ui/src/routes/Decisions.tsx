@@ -116,8 +116,8 @@ const logCols: Col<DecisionRow>[] = [
     label: 'rho',
     align: 'right',
     group: 'agree',
-    // Nulls sort last on an ascending sort, so one click on this header puts the biggest
-    // disagreements at the top -- which is the whole reason it is sortable.
+
+
     value: (r) => r.rho ?? undefined,
     sortUndefined: 'last',
     render: (r) =>
@@ -136,7 +136,7 @@ const logCols: Col<DecisionRow>[] = [
     unit: 'pct',
     align: 'right',
     group: 'agree',
-    // A percentile, so decisions with different offer counts compare. Sign is the point.
+
     value: (r) => r.delta_pct ?? 0,
     render: (r) =>
       r.delta_pct === null || r.delta_pct === undefined ? (
@@ -318,8 +318,8 @@ function Actions() {
       key: 'note',
       label: '',
       value: (r) => r.note ?? '',
-      // A number that would mislead is refused and the refusal is stated in the cell,
-      // rather than printed anyway and explained in a footnote.
+
+
       render: (r) => (r.note ? <span className="text-dim text-2xs">{r.note}</span> : null),
     },
   ]
@@ -347,8 +347,7 @@ function Actions() {
         <DataTable rows={data.policies} cols={polCols} rowId={(r) => r.policy.raw} dense emptyWhat="no pick recorded" />
       </Section>
 
-      {/* These three totals differ legitimately and were previously all printed as
-          "decisions" with no way to tell which was which. */}
+      {}
       <Section
         title="denominators on this page"
         scope={{ text: 'three counts of actions that are not the same count' }}
@@ -397,8 +396,8 @@ function Menus() {
     {
       key: 'options',
       label: 'options and their scores',
-      // Every per-option score used to exist only in hover text, and the heading admitted
-      // it. Cells make them selectable, searchable and present on touch.
+
+
       value: (r) => (r.options ?? []).length,
       render: (r) => (
         <div className="flex flex-wrap gap-1.5">
@@ -503,8 +502,7 @@ function Timeline() {
 
   return (
     <Section title="timeline" scope={data.scope}>
-      {/* The legend is on the page once. The old fragment repeated these six strings as a
-          title attribute on 846 bars, which was most of its 147 KB. */}
+      {}
       <div className="mb-3 flex flex-wrap gap-3">
         {data.phase_legend.map((l) => {
           const key = l.split(' ')[0]

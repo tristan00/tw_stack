@@ -1,27 +1,5 @@
 from __future__ import annotations
 
-"""Gates that would have caught the model this one replaced.
-
-That model shipped with a test suite that looked rigorous and verified nothing: `_overfit`
-asserted `impact_spread > 1e-4` on a quantity (q-v) that was non-zero purely because
-the two heads had different input widths. It passed every time and proved nothing.
-
-The gates here are built so a decorative graph FAILS them.
-
-  ablate    Degree-preserving rewiring, PER RELATION GROUP. A global shuffle is not a
-            test: it destroys act_actor and act_target too, so any action-node model
-            reacts and passes trivially. Rewiring the MAP edges alone, while leaving the
-            action wiring intact, asks the only question that matters: does the world
-            structure change the ranking, or is it decoration?
-
-  discrim   Held-out accuracy@1 and MRR of the taken action, against two baselines the
-            model must beat: uniform over the candidate set, and always-pick-the-most-
-            common-action-type. (Not top-k overlap, not RBO -- permanently banned.)
-
-  catboost  Assert no mapgraph source imports advisor/features.py. Checking sys.modules
-            is useless: base_model imports `features` to compute the label, so the module
-            is loaded no matter what this package does. The honest check is on OUR source.
-"""
 
 import glob
 import json
@@ -78,8 +56,7 @@ def _net():
         import net as N
     meta = json.load(open(os.path.join(S.MODEL_DIR, "meta.json"), encoding="utf-8"))
     cfg = meta.get("cfg") or {}
-    net = N.Net(cfg.get("hidden", N.HIDDEN), cfg.get("entity_layers", N.ENTITY_LAYERS),
-                cfg.get("action_rounds", N.ACTION_ROUNDS))
+    net = N.from_cfg(cfg)
     net.encoder.load_state_dict(torch.load(os.path.join(S.MODEL_DIR, "encoder.pt"),
                                            map_location="cpu"))
     net.head.load_state_dict(torch.load(os.path.join(S.MODEL_DIR, "head.pt"),
@@ -95,7 +72,6 @@ def _rank_of_taken(q, mask):
 
 
 def discrim(limit=120):
-    """Does it order the choice set better than trivial baselines?"""
     import torch
     net, meta, N = _net()
     data = _load(limit)
@@ -112,9 +88,8 @@ def discrim(limit=120):
         hits += 1.0 if r == 1 else 0.0
         mrr += 1.0 / r
         k = len(q)
-        base_hits += 1.0 / k                       # uniform pick
+        base_hits += 1.0 / k
         base_mrr += sum(1.0 / i for i in range(1, k + 1)) / k
-        # most-common-action-type baseline: rank by global type frequency
         types = [S.ACTION_TYPES[a - 1] if a else "?" for a in
                  [g.atype_idx[i] for i in g.action_nodes]]
         tt = types[mask.index(1.0)]
@@ -134,7 +109,6 @@ def discrim(limit=120):
 
 
 def ablate(limit=60, seed=0):
-    """Rewire one relation group at a time and measure how much the ranking moves."""
     import random
     import torch
     net, meta, N = _net()
@@ -175,7 +149,6 @@ def ablate(limit=60, seed=0):
 
 
 def _rewire(g, mode, rng, act):
-    """Degree-preserving shuffle of the destinations within one relation group."""
     import copy
     gg = copy.copy(g)
     gg.src, gg.dst, gg.rel = list(g.src), list(g.dst), list(g.rel)
@@ -200,7 +173,6 @@ def _rewire(g, mode, rng, act):
 
 
 def no_catboost():
-    """No mapgraph source may import the CatBoost feature module."""
     here = os.path.dirname(os.path.abspath(__file__))
     pat = re.compile(r"^\s*(?:import\s+features|from\s+features\s+import"
                      r"|from\s+advisor\.features\s+import|import\s+advisor\.features)",

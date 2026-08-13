@@ -1,7 +1,3 @@
-"""Report how every machine-dependent path resolved, and what is missing.
-
-    python -m common
-"""
 
 from __future__ import annotations
 

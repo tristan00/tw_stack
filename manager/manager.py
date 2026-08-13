@@ -171,9 +171,6 @@ class Recording:
         except Exception as e:
             sys.stderr.write("manager: tracker.observe failed -> %s\n" % repr(e)[:80])
             return False
-        # The boundary is worth knowing and is reported; it does NOT open a new run
-        # directory. One run dir is the contract, and decisions_stream already keys
-        # campaigns by campaign_uuid inside it.
         return False
 
 
@@ -224,8 +221,6 @@ def start(out_root, streams, *, recorder_version, meta_overrides=None,
         sdir = s.get("out_dir") or out
         w = get_writer(sdir, s.get("out_file", "events.jsonl"))
         out_file = s.get("out_file", "events.jsonl")
-        # No `swap` callable any more: a campaign boundary does not open a new run
-        # directory. observe_state stays so the boundary is still observed and reported.
         ctx = Ctx(sdir, t0, stop_event, shot_req, w, on_error,
                   on_state=rec.observe_state)
         rec._ctxs.append((ctx, out_file))

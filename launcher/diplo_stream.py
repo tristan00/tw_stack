@@ -60,7 +60,7 @@ def emit(kind, **fields):
         from decisions import journal
         journal.log_diplomacy(rd, row)
         return row
-    except Exception as e:                                      # noqa: BLE001
+    except Exception as e:
         sys.stderr.write("diplo_stream: emit failed -> %s\n" % repr(e)[:90])
         return None
 

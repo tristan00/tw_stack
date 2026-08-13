@@ -57,8 +57,6 @@ def _attack_army_snapshot(bus, ctx, pick):
                                   "return tostring(ok and v)" % (cqi, tgt), timeout=10.0)}
 
 
-
-
 def _attack_army_execute(bus, ctx, pick, before):
     tgt = (pick.get("params") or {})["target_cqi"]
     return _ev(bus, "local ok,e=pcall(function() cm:attack('%s','%s',false,true) end); "
@@ -107,8 +105,6 @@ def _attack_sett_snapshot(bus, ctx, pick):
                                   "return tostring(ok and v)" % (cqi, region), timeout=10.0)}
 
 
-
-
 def _attack_sett_execute(bus, ctx, pick, before):
     return _ev(bus, "local ok,e=pcall(function() cm:attack_region('%s','%s') end); "
                     "return 'ok='..tostring(ok)" % (_LOOKUP % ctx["entity_id"], pick["key"]),
@@ -149,8 +145,6 @@ register("colonize", {
 def _garrison_snapshot(bus, ctx, pick):
     return {"in_settlement": _char_scalar(bus, ctx["entity_id"], "c:in_settlement()"),
             "acted": _char_scalar(bus, ctx["entity_id"], "c:performed_action_this_turn()")}
-
-
 
 
 def _garrison_execute(bus, ctx, pick, before):
@@ -214,8 +208,6 @@ def _move_snapshot(bus, ctx, pick):
             "ap": _char_scalar(bus, cqi, "c:action_points_remaining_percent()"),
             "besieging": _char_scalar(bus, cqi, "c:is_besieging()"),
             "acted": _char_scalar(bus, cqi, "c:performed_action_this_turn()")}
-
-
 
 
 def _move_execute(bus, ctx, pick, before):

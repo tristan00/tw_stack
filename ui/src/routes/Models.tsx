@@ -39,15 +39,15 @@ const VIEWS = [
   { key: 'training', label: 'training', asks: 'what has been tried, and did the retrain help' },
 ]
 
-/** The arms a trial drew from, in a fixed order so trials compare by eye. */
-/** Must match advisor/session.py GROWTH_BASELINE. */
+
 const CURRENT_GROWTH_BASELINE = 'first_decision_snapshot->peak'
 
-const MIX_ARMS: { key: string; short: string; cls: string }[] = [
-  { key: 'greedy_catboost', short: 'GC', cls: 'bg-cat' },
-  { key: 'marwil_gnn', short: 'MG', cls: 'bg-gnn' },
-  { key: 'random', short: 'RD', cls: 'bg-dim' },
-  { key: 'ruleset', short: 'RS', cls: 'bg-warn' },
+
+const MIX_ARMS: { key: string; model: boolean; cls: string }[] = [
+  { key: 'greedy_catboost', model: true, cls: 'bg-cat' },
+  { key: 'marwil_gnn', model: true, cls: 'bg-gnn' },
+  { key: 'random', model: false, cls: 'bg-dim' },
+  { key: 'ruleset', model: false, cls: 'bg-warn' },
 ]
 
 function MixBar({ mix }: { mix: Record<string, unknown> | undefined }) {
@@ -143,9 +143,7 @@ function Forcing() {
       <Card className="mb-3 px-3 py-2">
         <CountText count={data.decisions} />
       </Card>
-      {/* A real empty state. The old panel rendered a bare em dash where a chart was
-          promised and left the reader to guess whether it was broken or simply had no
-          data yet. */}
+      {}
       {!data.tiles.length ? (
         <EmptyState what="no model arm has picked anything yet" why={data.empty_reason} />
       ) : (
@@ -169,8 +167,7 @@ function Forcing() {
                           className="bg-accent absolute inset-y-0 left-0 rounded"
                           style={{ width: `${pctv}%` }}
                         />
-                        {/* The interval is drawn so a 2-of-3 share cannot be read as
-                            confidently as a 200-of-300 share. */}
+                        {}
                         {b.ci_lo !== null && b.ci_hi !== null && (
                           <span
                             className="bg-fg/50 absolute inset-y-0"
@@ -259,16 +256,16 @@ function Agreement() {
       label: 'rho',
       align: 'right',
       group: 'agree',
-      // Nulls sort last on an ascending sort, so one click puts the biggest disagreements
-      // on top -- which is the reason the column is sortable at all.
+
+
       value: (r) => r.rho_median ?? undefined,
       sortUndefined: 'last',
       render: (r) =>
         r.rho_median === null || r.rho_median === undefined ? (
           <span className="text-dim">—</span>
         ) : (
-          // Not colour-graded. There is no threshold at which a rank correlation becomes
-          // good, so grading it would assert a judgement the server does not make.
+
+
           <span className="num">
             {r.rho_median >= 0 ? '+' : ''}
             {r.rho_median.toFixed(3)}
@@ -302,8 +299,8 @@ function Agreement() {
   ]
 
   const c = data.correlation
-  // The generated types mark defaulted lists optional, so they are normalised once here
-  // rather than guarded at every use.
+
+
   const bins = data.rho_bins ?? []
   const secondary = data.secondary ?? []
   const excluded = c?.excluded ?? []
@@ -447,7 +444,6 @@ function Agreement() {
   )
 }
 
-/** Says how current the precomputed numbers are, and never silently serves stale ones. */
 function Freshness({ f }: { f: Schemas['AnalyticsFreshness'] }) {
   if (f.state === 'ok') return null
   return (
@@ -529,13 +525,6 @@ const trendCols: Col<AgreementSeriesPoint>[] = [
   },
 ]
 
-/**
- * Has the agreement changed as the models retrained.
- *
- * The generation axis is an ALIGNMENT, and the caveat that says so is a card on the page
- * rather than a tooltip: it is the single most misreadable thing on this view, and a fact
- * reachable only by hovering is invisible on a dashboard you glance at.
- */
 function Drift() {
   const [axis, setAxis] = useState<'window' | 'generation'>('window')
   const { data, error, loading, reload } = useApi<AgreementSeriesPage>(
@@ -646,8 +635,6 @@ const corrCols: Col<CorrelationRow>[] = [
     key: 'setts_r',
     label: 'settlements r',
     align: 'right',
-    // A correlation over too few points is refused and says why, rather than being
-    // printed as though it were a finding.
     value: (r) => r.settlements_r ?? -2,
     render: (r) =>
       r.settlements_r === null || r.settlements_r === undefined ? (
@@ -676,9 +663,6 @@ function Correlations() {
   if (loading || !data) return <Skeleton rows={6} />
   return (
     <Section title="does an arm's share track how the campaign went" scope={data.scope}>
-      {/* Two tiles, each labelled and each checked against its OWN corpus counts. They
-          share arm names, so a single search over a merged page finds the action table
-          every time and never inspects the interrupt one. */}
       <div className="grid gap-4 xl:grid-cols-2">
         {data.tiles.map((t) => (
           <div key={t.label}>
@@ -785,9 +769,6 @@ function Training() {
       key: 'grew',
       label: 'grew',
       group: 'result',
-      // A Rate now, not "38 of 240" as a string: the denominator is carried by the type
-      // rather than by convention, which is what makes two trials over different campaign
-      // counts visibly different instead of silently different.
       value: (r) => r.grew?.n ?? undefined,
       sortUndefined: 'last',
       render: (r) => <Bar rate={r.grew ?? null} width={80} />,
@@ -796,8 +777,6 @@ function Training() {
       key: 'shrank',
       label: 'shrank',
       group: 'result',
-      // Off by default: growth is measured to the peak, so this is a separate question
-      // from how far a campaign got, and it is not what the run is judged on.
       optional: true,
       value: (r) => r.shrank?.n ?? undefined,
       sortUndefined: 'last',
@@ -809,8 +788,6 @@ function Training() {
       group: 'result',
       optional: true,
       value: (r) => r.growth_baseline ?? '',
-      // The current definition reads plainly; anything else is flagged, because rows on
-      // different definitions are different numbers over the same campaigns.
       render: (r) =>
         r.growth_baseline === CURRENT_GROWTH_BASELINE ? (
           <span className="text-dim text-2xs">snapshots → peak</span>
@@ -822,16 +799,14 @@ function Training() {
           <span className="text-dim">—</span>
         ),
     },
-    // One column per arm: across this trial's campaigns, does the arm's share of the picks
-    // move with what the campaign grew? A coefficient over a handful of campaigns is weak
-    // evidence, so the campaign count it was computed over is on the cell.
     ...MIX_ARMS.map(
       (a): Col<TrialRow> => ({
         key: `corr_${a.key}`,
-        label: a.short,
+        label: a.key,
         unit: 'r vs growth',
         align: 'right',
         group: 'share tracks growth',
+        optional: !a.model,
         value: (r) => r.growth_corr?.[a.key]?.r ?? undefined,
         sortUndefined: 'last',
         render: (r) => {
@@ -881,21 +856,10 @@ function Training() {
 
 type TrainingEvent = Schemas['TrainingEvent']
 
-/**
- * One row per retrain: what the corpus was, and what each model's fit produced.
- *
- * Columns are derived from the groups the data actually carries, so a new metric appears
- * without a code change and a metric that stopped being recorded stops occupying a
- * column. The old view hard-coded 27 columns across two header rows, which forced a
- * horizontal scrollbar and left half the numbers off screen; here the corpus and the
- * headline fit numbers are shown and the rest is one click away in the column picker.
- */
 function TrainingHistory({ data }: { data: TrainingPage }) {
   const history = data.history ?? []
   const groups = data.group_order ?? []
 
-  // Every metric present anywhere, in group order, so a row missing one renders a dash
-  // rather than shifting its neighbours.
   const metricCols: Col<TrainingEvent>[] = []
   for (const g of groups) {
     const keys: string[] = []
@@ -909,7 +873,6 @@ function TrainingHistory({ data }: { data: TrainingPage }) {
         label: k,
         group: g,
         align: 'right',
-        // Only the corpus size and the headline fit numbers are shown by default.
         optional: !(g === 'corpus' || k.includes('rmse') || k.includes('NLL')),
         value: (r) => {
           const v = ((r.groups ?? {})[g] as Record<string, unknown> | undefined)?.[k]

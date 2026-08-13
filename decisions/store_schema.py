@@ -1,52 +1,15 @@
 from __future__ import annotations
 
-"""The v2 decision store: interned actions, content-addressed blobs, clustered rows.
 
-Measured on the archived corpus (22,136 decisions / 9,013,360 offers / 4.78 GB), the v1
-layout projects to ~54 GB at the 250k-decision target and materialises 9.28 GB of RSS on a
-full read -- ~107 GB at target, which does not run. Three things cause it, and each has a
-fix that is pure storage, visible to nothing above the store:
-
-  1. The action payload repeats. There are 474,685 distinct
-     (context_kind, context_id, action_type, action_key, params) tuples among 9,013,360
-     offers -- 19x, growing to ~28x at target (vocabulary exponent 0.842, six points).
-     `actions` interns them; an offer row becomes an integer.
-  2. The JSON blobs repeat. `world` is 58.2% byte-identical to the previous decision of
-     the same campaign: 2.48x from content-addressing, 6.16x from zlib on top.
-  3. `interrupt_decisions.tree_json` was 886 MB, 18.5% of the file, and had zero readers.
-     It is not written.
-
-`entities` and `offers` are WITHOUT ROWID and clustered on (decision_id, seq), so the rows
-*are* the index -- that deletes ix_offer_dp and ix_offer_key outright, measured at 90 B a
-row, 8.5 GB at target.
-
-GATING IS A LAYOUT INVARIANT. offer_seq is assigned after gating: 0..n_available-1 are the
-candidates and gated offers follow, so the candidate set is a contiguous prefix and a
-training walk never touches the 64.6% of rows it must ignore. `available` survives as one
-byte purely so the invariant is checkable:
-
-    SELECT count(*) FROM offers WHERE (offer_seq < n_available) != (available = 1);  -- 0
-
-Gated offers are still stored verbatim. A gate reason is a diagnostic, and the whole point
-of keeping the payload is that an unprojected field is a re-derivation and not a wipe.
-
-auto_vacuum=INCREMENTAL must be set before the first table exists; it cannot be turned on
-afterwards without a full VACUUM.
-"""
-
-# Synthetic-id packing for the compatibility views. A decision may not exceed these, and
-# write_decision raises rather than let two rows collide on a fabricated id.
 MAX_ENTITIES_PER_DECISION = 1 << 16
 MAX_OFFERS_PER_DECISION = 1 << 20
 
-# score, exploit, rank, pct_global, pct_local, gnn_impact, gnn_rank
 SCORE_FIELDS = ("score", "exploit", "rank", "pct_global", "pct_local",
                 "gnn_impact", "gnn_rank")
 
 SCHEMA_VERSION = "2"
 
 PRAGMAS = (
-    # Irreversible after the first table. Ordered first for that reason.
     "PRAGMA auto_vacuum=INCREMENTAL",
     "PRAGMA journal_mode=WAL",
     "PRAGMA synchronous=NORMAL",
@@ -263,8 +226,6 @@ LEFT JOIN blobs bp ON bp.blob_id = i.panel_blob;
            NS=len(SCORE_FIELDS))
 
 
-# Every stored offer is a candidate, so the invariant is a count rather than a
-# partition: n_offers must equal the number of rows actually written.
 LAYOUT_INVARIANT = (
     "SELECT count(*) FROM decisions d WHERE d.n_offers != "
     "(SELECT count(*) FROM offers o WHERE o.decision_id = d.decision_id)")

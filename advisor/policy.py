@@ -47,20 +47,11 @@ def normalize_strategies(strategies):
     return {k: w / total for k, w in mix.items()}
 
 
-
-
-
-
-
-
-
 def _tally(values):
     out = {}
     for v in values:
         out[v] = out.get(v, 0) + 1
     return out
-
-
 
 
 class Policy:
@@ -84,9 +75,6 @@ class Policy:
         self.fallback = self.members.get("random") or S.build("random", rng=self.rng)
         self.max_actions_per_turn = max_actions_per_turn
         self.max_actions_per_entity = max_actions_per_entity
-        # ONE gate, and it is options.Gate. Policy used to carry a second, private
-        # copy of the same idea in `eligible()`, working on rows the collector had
-        # already marked available -- two components deciding the same question.
         self.gate = O.Gate(max_actions_per_entity=max_actions_per_entity)
         self.last_drops = []
         self.last_choice = {}
@@ -113,8 +101,6 @@ class Policy:
         gnn_scores = self._score_with_gnn(ranked, record)
         if "marwil_gnn" in self.members:
             self.members["marwil_gnn"].scored = gnn_scores
-        # Everything on the record is already a survivor -- the loop generated and
-        # gated before the recorder stored it -- so there is nothing left to filter.
         elig = ranked
         self.last_drops = list(self.gate.last_drops)
         self.last_choice = {"hot": bool(hot), "n_ranked": len(ranked), "n_eligible": len(elig),
@@ -146,7 +132,6 @@ class Policy:
         return pick, ranked
 
     def _score_with_gnn(self, ranked, record):
-        """The gnn's half of what `self.ranker.score()` does for catboost."""
         if self.gnn is None or not getattr(self.gnn, "ready", False) or not ranked:
             return None
         try:
@@ -161,7 +146,7 @@ class Policy:
             return None
         rank_of = {}
         for i, v in enumerate(sorted(scored.values(), reverse=True)):
-            rank_of.setdefault(v, i + 1)     # ties share the better rank
+            rank_of.setdefault(v, i + 1)
         for r in ranked:
             v = scored.get(S.offer_key(r))
             if v is not None:

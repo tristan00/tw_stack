@@ -30,11 +30,7 @@ export function CampaignDetail() {
   const row = data.row
   const constant = new Set(data.constant_columns)
 
-  // A column holding one distinct value across the whole series carries no signal, so it
-  // is hidden by default rather than shipped as a wall of zeroes. It is still in the data
-  // and still one click away -- allies and vassals are zero on every recorded turn today,
-  // and a check that only looked for blank cells never noticed, because a column full of
-  // real zeroes is full.
+
   const rewardCols: Col<RewardPoint>[] = [
     { key: 'turn', label: 'turn', align: 'right', value: (r) => r.turn, render: (r) => r.turn },
     {
@@ -86,8 +82,8 @@ export function CampaignDetail() {
       key: 'outcome',
       label: 'outcome',
       value: (r) => r.outcome?.label ?? '',
-      // The taxonomy separates their refusal from our failure to build the deal. Reading
-      // those as one number is how a refusal rate becomes meaningless.
+
+
       render: (r) =>
         r.outcome ? <Chip state={r.state ?? 'neutral'}>{r.outcome.label}</Chip> : '—',
     },
@@ -101,8 +97,8 @@ export function CampaignDetail() {
       key: 'score',
       label: 'deal score',
       align: 'right',
-      // Named success_chance by the game and not a percentage: it runs past -1000. The
-      // sign is what carries, so the sign is what gets the colour.
+
+
       value: (r) => r.deal_score ?? 0,
       render: (r) =>
         r.deal_score === null || r.deal_score === undefined ? (
@@ -164,9 +160,7 @@ export function CampaignDetail() {
           <span>decisions <b className="num text-fg">{n(row.decisions)}</b></span>
           {row.ended_when && <span>{row.ended_when}</span>}
         </div>
-        {/* Growth, from the turn series -- first to last over the turns this campaign
-            actually recorded. Separate from the gate's verdict below, which is a
-            run-control decision and can only ever read flat or down. */}
+        {}
         <div className="text-dim mt-1 flex flex-wrap gap-4 text-2xs">
           {row.growth_state === 'measured' ? (
             <>

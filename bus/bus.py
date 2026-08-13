@@ -24,8 +24,6 @@ except Exception as _stats_exc:
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import common
 
-# The lua mod inside the game writes these two and carries its own copies of the
-# literals -- see the note in bus/mod/twcontrol.lua. They have to stay in step.
 CMD_PATH = common.BUS_CMD_PATH
 OUT_PATH = common.BUS_OUT_PATH
 SEND_LOG_PATH = common.BUS_SEND_LOG
@@ -251,7 +249,6 @@ class Bus:
         raise TWError("bus timeout: no result for seq %d cmd %s" % (seq, channel))
 
     def send_batch(self, requests, timeout: float = DEFAULT_TIMEOUT) -> list:
-        """Send many commands as one append and wait for all their replies."""
         if not requests:
             return []
         _t0 = time.perf_counter()
@@ -304,9 +301,6 @@ class Bus:
                 if s in wanted and s not in found and obj.get("cmd") == wanted[s]:
                     found[s] = obj
             if len(found) == len(wanted):
-                # "hit", not "ok": record() coerces anything outside VALID_OUTCOMES to
-                # "error", so a wrong string here would have logged every successful batch
-                # as a failure and quietly inverted the statistic.
                 _note("hit")
                 return [found[s] for s in seqs]
             now = time.time()

@@ -1,35 +1,5 @@
 from __future__ import annotations
 
-"""Generate the move universe from a recorded decision, then gate it.
-
-THIS IS THE ADVISOR'S JOB, AND IT USED TO BE THE RECORDER'S. The collector fetched game
-state and, in the same pass, decided what the agent was allowed to do -- so an action the
-generator never emitted was indistinguishable from an action the game refused, and the
-only record of either was a row the collector had already made up its mind about.
-
-Now the split is:
-
-    recorder   collect game state  ->  store state
-    advisor    generate the move universe FROM THAT STORED STATE
-               gate it
-               -> surviving options handed back to the recorder to store
-               -> survivors passed to the strategies
-
-Everything here is a pure function of a decision record. Nothing in this module touches
-the bus, the database, or a file. That is checkable, and check.py checks it.
-
-ONE GATE LAYER. `gate()` is the only thing that decides whether a candidate survives. It
-absorbs both halves of what used to be two separate mechanisms: the ~40 inline
-availability tests that lived inside the collector's assemblers, and all of
-Policy.eligible -- per-turn caps, entity retirement, blacklists, attack/gift pair caps,
-FORBIDDEN_KEYS and the end_turn rule. There was never a principled line between them:
-`no_points` is `skill_points >= 1` and a per-turn cap is a count, and both decide the same
-question. The generators still compute their conditions where the data is, because that is
-where the data is, but they report a REASON and gate() is what acts on it.
-
-Gate state is intra-turn -- Policy resets it every turn and updates it after every result
--- so generation runs per decision, not once per turn.
-"""
 
 import collections
 import math
@@ -51,6 +21,12 @@ MOVEMENT_STANCES = frozenset((
     "MILITARY_FORCE_ACTIVE_STANCE_TYPE_MARCH",
     "MILITARY_FORCE_ACTIVE_STANCE_TYPE_DOUBLE_TIME",
     "MILITARY_FORCE_ACTIVE_STANCE_TYPE_SET_CAMP_RAIDING",
+))
+
+NO_ATTACK_STANCES = MOVEMENT_STANCES | frozenset((
+    "MILITARY_FORCE_ACTIVE_STANCE_TYPE_SET_CAMP",
+    "MILITARY_FORCE_ACTIVE_STANCE_TYPE_TUNNELING",
+    "MILITARY_FORCE_ACTIVE_STANCE_TYPE_SETTLE",
 ))
 
 
@@ -76,23 +52,23 @@ def _offer(atype, key, available, gate=None, **params):
 
 
 def _skill_offers(skills, has_pts):
-    """The skills block, shared by lords and heroes -- it was duplicated verbatim, so a"""
     offers, active = [], []
     for s in skills or ():
         key, status = s.get("key"), s.get("status")
         lvl, tot = s.get("level"), s.get("total_levels")
         if status == "active":
             active.append(key)
-        ok = (status == "active" and has_pts)
+        at_max = (None if lvl is None or tot is None else lvl >= tot)
+        ok = (status == "active" and has_pts and not at_max)
         offers.append(_offer("skills", key, ok,
-                             None if ok else ("no_points" if not has_pts else status),
+                             None if ok else ("at_max" if at_max else
+                                              "no_points" if not has_pts else status),
                              level=lvl, total_levels=tot, tier=s.get("tier"),
-                             at_max=(None if lvl is None or tot is None else lvl >= tot)))
+                             at_max=at_max))
     return offers, active
 
 
 def _move_offers(tiles):
-    """A validated destination becomes a candidate here, not in the recorder."""
     return [_offer("move", "xy:%s,%s" % (m["x"], m["y"]), True, None,
                    x=m["x"], y=m["y"], sample_index=m.get("sample_index"),
                    reach_rays=m.get("reach_rays"), reach_max=m.get("reach_max"))
@@ -100,7 +76,6 @@ def _move_offers(tiles):
 
 
 def _leave_garrison_offer(state, moves):
-    """The inverse of `garrison`, and it was never emitted once in 9,013,360 offers."""
     lx, ly = state.get("x"), state.get("y")
     tiles = [m["params"] for m in (moves or [])
              if (m.get("params") or {}).get("x") is not None]
@@ -115,7 +90,6 @@ def _leave_garrison_offer(state, moves):
 
 
 def _horde_building_offers(slots):
-    """ONE OFFER PER BUILDING, not per (slot, building)."""
     offers = []
     seen = set()
     for s in slots or []:
@@ -131,16 +105,24 @@ def _horde_building_offers(slots):
     return offers
 
 
+def _known_regions(world):
+    w = world or {}
+    known = {str(r["region"]) for r in (w.get("regions") or []) if r.get("region")}
+    known |= {str(s["region"]) for s in (w.get("settlements") or []) if s.get("region")}
+    return known
+
+
 def _lord_targets(world):
+    known = _known_regions(world)
     armies = [h for h in world["hostiles"] if h.get("kind") == "army" and h.get("cqi")]
-    esetts = [h for h in world["hostiles"] if h.get("kind") == "settlement" and h.get("region")]
+    esetts = [h for h in world["hostiles"] if h.get("kind") == "settlement"
+              and h.get("region") and str(h["region"]) in known]
     osetts = [s for s in world["settlements"] if s.get("region")]
     rsetts = [s for s in (world.get("ruins") or []) if s.get("region")]
     return armies, esetts, osetts, rsetts
 
 
 def _lord_options(cqi, state, world, campaign):
-    """Every action a lord could take, with a reason attached to the ones it could not."""
     offers = []
     stationed = (world or {}).get("stationed") or {}
     anc_pool = (campaign or {}).get("anc_pool")
@@ -166,18 +148,19 @@ def _lord_options(cqi, state, world, campaign):
     offers.extend(_skill_offers(state.get("skills"), has_pts)[0])
     armies, esetts, osetts, rsetts = _lord_targets(world)
     marching = str(state.get("stance") or "") in MOVEMENT_STANCES
+    no_attack = str(state.get("stance") or "") in NO_ATTACK_STANCES
     recruiting = (state.get("pending_recruits") or 0) > 0
     for a in armies:
-        ok = bool(reach_c.get(str(a["cqi"]))) and not marching
+        ok = bool(reach_c.get(str(a["cqi"]))) and not no_attack
         offers.append(_offer("attack_army", "cqi:%s" % a["cqi"], ok,
-                             None if ok else ("movement_stance" if marching else
+                             None if ok else ("stance_forbids_attack" if no_attack else
                                               "recruiting" if recruiting else "cannot_reach"),
                              target_cqi=a["cqi"], target_faction=a.get("faction"),
                              x=a.get("x"), y=a.get("y")))
     for s in esetts:
-        ok = bool(reach_s.get(s["region"])) and not marching and not recruiting
+        ok = bool(reach_s.get(s["region"])) and not no_attack and not recruiting
         offers.append(_offer("attack_settlement", s["region"], ok,
-                             None if ok else ("movement_stance" if marching else
+                             None if ok else ("stance_forbids_attack" if no_attack else
                                               "recruiting" if recruiting else "cannot_reach"),
                              target_faction=s.get("faction"), x=s.get("x"), y=s.get("y")))
     for s in rsetts:
@@ -271,8 +254,6 @@ HERO_ACTIONS = _build_hero_actions()
 _hero_matrix = {}
 
 
-
-
 _subtype_types = {}
 
 
@@ -312,7 +293,6 @@ def _hero_action_matrix(action):
 
 
 def _anc_id(a):
-    """Identity of an ancillary. The record key when we have it, the display name only as"""
     return a["key"] or a["name"]
 
 
@@ -384,10 +364,12 @@ def _hero_action_targets(world, kind, self_cqi):
         return [{"target_kind": "settlement", "region": t["region"], "x": t.get("x"),
                  "y": t.get("y")} for t in (w.get("ruins") or []) if t.get("region")]
     if kind == "enemy_settlements":
+        known = _known_regions(w)
         return [{"target_kind": "settlement", "region": h["region"], "x": h.get("x"),
                  "y": h.get("y"), "target_faction": h.get("faction")}
                 for h in (w.get("hostiles") or [])
-                if h.get("kind") == "settlement" and h.get("region")]
+                if h.get("kind") == "settlement" and h.get("region")
+                and str(h["region"]) in known]
     if kind == "enemy_armies":
         return [{"target_kind": "character", "target_cqi": h["cqi"], "x": h.get("x"),
                  "y": h.get("y"), "target_faction": h.get("faction")}
@@ -474,8 +456,6 @@ def _hero_action_offers(cqi, state, world, reach_c, reach_s, is_agent, type_key,
                 target_on_settlement=bool(in_sett), target_is_agent=bool(t.get("target_agent")),
                 x=t.get("x"), y=t.get("y")))
     return offers
-
-
 
 
 def _hero_options(cqi, state, world, campaign):
@@ -607,9 +587,6 @@ def _campaign_options(campaign, world):
                              cost=row.get("cost"), points_available=points,
                              current_research=current))
     for r in (campaign or {}).get("rites") or ():
-        # The real ritual key is the identity; the index is only the execution handle.
-        # An empty key means the CCO read failed -- recorded as None so a coverage check
-        # can see it, never silently backfilled with the ordinal.
         key = r.get("key")
         reason = r.get("invalid_reason")
         ok = bool(r.get("can_perform"))
@@ -637,7 +614,6 @@ DIPLO_GIFT_TIERS = ("small", "medium", "large")
 
 
 def _diplo_options(targets):
-    """Diplomacy candidates from the recorded relations."""
     if targets is None:
         sys.stderr.write("collect: DIPLOMACY TARGET READ FAILED -- no diplomacy will be offered this "
                          "snapshot. This is a broken read, NOT an empty world.\n")
@@ -679,10 +655,7 @@ def _diplo_options(targets):
     return offers
 
 
-# ---------------------------------------------------------------------------- generate
-
 def generate(record):
-    """The whole move universe for one recorded decision, ungated."""
     world = record.get("world") or {}
     campaign = record.get("campaign") or {}
     for _e in record.get("entities") or ():
@@ -704,31 +677,24 @@ def generate(record):
             raise CollectError("options.generate: unknown context_kind %r -- refusing to "
                                "silently skip an entity the recorder stored" % ck)
         for o in offers:
-            # The gate needs the acting entity's state -- action points, for one -- and
-            # only generate() knows which entity an offer came from. Carried under a
-            # private key and dropped before the option is handed to the recorder.
             o["_state"] = st
             yield ck, cid, o
 
-
-# -------------------------------------------------------------------------------- gate
 
 FORBIDDEN_KEYS = frozenset({"button_attack", "button_spectate"})
 MAX_ACTIONS_PER_ENTITY = 6
 END_TURN_AFTER = 5
 
 FACTION_WIDE_CAPS = frozenset(("recruit_lord", "recruit_hero", "research", "rites",
-                               "building_dismantle"))
+                               "building_dismantle", "colonize"))
 PER_TURN_CAPS = {"recruit_lord": 1, "recruit_hero": 1, "recruit_unit": 4, "edict": 1,
                  "research": 1, "rites": 1, "diplomacy": 1, "noop": 0, "stance": 1,
                  "hero_action": 3, "building_dismantle": 0, "raise_dead": 4,
-                 "recruit_ror": 1, "recruit_blessed": 4, "recruit_imperial": 1}
+                 "recruit_ror": 1, "recruit_blessed": 4, "recruit_imperial": 1,
+                 "colonize": 1, "item_unequip": 0}
 COSTS_MOVEMENT = frozenset(("move", "attack_army", "attack_settlement", "colonize",
                             "garrison", "leave_garrison", "hero_action"))
 
-# A force holds 20 units. The launcher refused a 21st with `army_full`, which is a fact
-# about the game the snapshot already carries as state.units -- so it is decided here.
-# The value matches launcher/click_actions.MAX_FORCE_UNITS; it is game data, not policy.
 MAX_FORCE_UNITS = 20
 FILLS_THE_ARMY = frozenset(("recruit_unit", "raise_dead", "recruit_ror",
                             "recruit_blessed", "recruit_imperial"))
@@ -756,7 +722,6 @@ def _cap_key(context_kind, context_id, action_type):
 
 
 class Gate:
-    """The only thing that decides whether a candidate survives."""
 
     def __init__(self, max_actions_per_entity=MAX_ACTIONS_PER_ENTITY):
         self.max_actions_per_entity = max_actions_per_entity
@@ -801,33 +766,27 @@ class Gate:
 
     @staticmethod
     def _no_movement_left(state, at):
-        """True when this action needs movement and the entity has none left."""
         if at not in COSTS_MOVEMENT:
             return False
         rem = (state or {}).get("ap_remaining")
         if rem is None:
-            return False          # unread is not "zero" -- say nothing rather than guess
+            return False
         try:
             return float(rem) <= 0.0
         except (TypeError, ValueError):
             return False
 
     def reason(self, ck, cid, o, actions_taken):
-        """Why this candidate cannot be taken right now, or None if it can."""
         at, key = o.get("action_type"), str(o.get("key"))
         k = (ck, str(cid))
         if not o.get("available"):
             return o.get("gate") or "no_gate_recorded"
         if self._no_movement_left(o.get("_state"), at):
             return "no_action_points"
-        # Walking away breaks the siege, so the launcher refused it. That was the one
-        # launcher check with no advisor equivalent, which is why it moves here rather
-        # than simply being deleted -- `besieging` is on every lord snapshot.
         if at == "move" and (o.get("_state") or {}).get("besieging"):
             return "besieging"
         if at in FILLS_THE_ARMY:
             units = (o.get("_state") or {}).get("units")
-            # unread is not "full" -- an absent count says nothing, so it says nothing
             if units is not None and float(units) >= MAX_FORCE_UNITS:
                 return "army_full"
         if at == "end_turn" and actions_taken < END_TURN_AFTER:
@@ -854,13 +813,12 @@ class Gate:
         return None
 
     def apply(self, record, actions_taken=0):
-        """Generate and gate in one pass. Returns the survivors, in emission order."""
         self.last_drops = []
         out = []
         for ck, cid, o in generate(record):
             row = {"context_kind": ck, "context_id": cid,
                    "action_type": o.get("action_type"), "key": o.get("key"),
-                   "params": o.get("params") or {}}          # note: no _state
+                   "params": o.get("params") or {}}
             why = self.reason(ck, cid, o, actions_taken)
             if why is None:
                 out.append(row)
@@ -870,7 +828,6 @@ class Gate:
 
 
 def attach(record, options):
-    """Put the surviving options back on the record, so everything downstream -- features,"""
     by_ent = {}
     for o in options:
         by_ent.setdefault((o["context_kind"], str(o["context_id"])), []).append(o)
