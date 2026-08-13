@@ -727,6 +727,9 @@ function Training() {
     {
       key: 'backend',
       label: 'backend',
+      // Off by default: it is the --model flag, which has read `catboost` on every trial
+      // ever recorded. The strategy mix is what distinguishes one trial from another.
+      optional: true,
       value: (r) => r.backend ?? '',
       render: (r) => r.backend ?? '—',
     },
