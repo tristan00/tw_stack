@@ -1,19 +1,5 @@
 from __future__ import annotations
 
-"""Materialised aggregates over `model_agreement`.
-
-The API serves these with a keyed read of a few dozen rows. It does not GROUP BY the fact
-table, and it does not compute a median. That is deliberate and it is not about today's
-timings -- a GROUP BY over 8,000 rows is fast, and would still be fast for a while. It is
-about where the work lives: an analytics surface that computes on the request path has to be
-rebuilt when the corpus outgrows it, and until then it is a second place where a number is
-defined. Everything here is built once per fold and read flat.
-
-Medians and quartiles are computed in Python rather than in SQL. SQLite has no median(),
-the OFFSET trick needs two index probes per group per column, and this is an offline
-builder with no latency budget -- the rule about aggregating in SQL is about the API, which
-this is not.
-"""
 
 import os
 import statistics
@@ -37,7 +23,6 @@ def _pct_at(sorted_vals, p):
 
 
 def _spread(vals):
-    """(median, mean, q1, q3) over the non-null values, or four Nones."""
     v = sorted(x for x in vals if x is not None)
     if not v:
         return None, None, None, None
@@ -55,12 +40,10 @@ def bucket_size(comparable: int) -> int:
 
 
 def min_decisions(size: int) -> int:
-    """Below this a bucket is not drawn. A median over a handful of decisions is noise"""
     return max(10, size // 2)
 
 
 class _Rollup:
-    """Recomputes wholesale whenever the facts it summarises have moved."""
     SOURCE = "analytics"
     FORMULA_VERSION = FORMULA_VERSION
     DEPENDS_ON = ("model_agreement",)
@@ -70,7 +53,6 @@ class _Rollup:
 
     def source_stats(self, src, hi):
         return None
-
 
 
 _SUMMARY_DDL = """
@@ -136,7 +118,6 @@ class _Summary(_Rollup):
 
 
 def _ambiguous(an) -> int:
-    """Decisions whose timestamp falls inside more than one RAW ledger window."""
     try:
         return int(an.execute(
             "SELECT COUNT(*) FROM (SELECT a.decision_id FROM model_agreement a"
@@ -145,7 +126,6 @@ def _ambiguous(an) -> int:
         ).fetchone()[0])
     except Exception:
         return 0
-
 
 
 _SERIES_DDL = """
@@ -218,7 +198,6 @@ def _point(axis, seq, label, chunk, gate) -> dict:
              tau_mean=_mean([r["tau_b"] for r in chunk]),
              rbo_mean=_mean([r["rbo"] for r in chunk]))
     return p
-
 
 
 _BREAKDOWN_DDL = """

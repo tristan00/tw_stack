@@ -21,7 +21,7 @@ STALL_S = 1200
 RELAUNCH_COOLDOWN_S = 1800
 
 RUN = {"campaigns": 500, "turns": 20, "model": "catboost",
-       "retrain": True, "retrain_every": 10,
+       "retrain": True, "retrain_every": 20, "retrain_first": True,
        "strategies": "marwil_gnn=0.3,greedy_catboost=0.3,random=0.3,ruleset=0.1",
        "ruleset": "probe_gaps",
        "factions": "all",
@@ -44,7 +44,6 @@ def newest_session_report():
 
 
 def session_complete():
-    """False when the report cannot be read, not an exception."""
     p = newest_session_report()
     if not p:
         return False
@@ -97,9 +96,9 @@ def main():
     note("DEAD/STALLED (alive=%s age=%s) -- relaunching" % (alive, age))
     with open(STAMP, "w", encoding="utf-8") as fh:
         fh.write(str(time.time()))
-    # a babysitter that quietly brings the run back in a different shape is worse than one
     for step in runctl.up(RUN["campaigns"], RUN["turns"], model=RUN["model"],
                           retrain=RUN["retrain"], retrain_every=RUN["retrain_every"],
+                          retrain_first=RUN.get("retrain_first", False),
                           dev=RUN.get("dev", False), with_ui=True,
                           strategies=RUN["strategies"], ruleset=RUN["ruleset"],
                           factions=RUN["factions"], campaign=RUN["campaign"]):
@@ -108,7 +107,6 @@ def main():
 
 
 def loop(every_s):
-    """Keep checking until the session finishes or BABYSIT_OFF appears."""
     note("babysit loop starting: every %.0fs" % every_s)
     while True:
         try:
@@ -119,7 +117,7 @@ def loop(every_s):
                 note("session complete -- loop exiting")
                 return 0
             main()
-        except Exception as e:                                  # noqa: BLE001
+        except Exception as e:
             note("check failed (continuing): %r" % (e,))
         time.sleep(every_s)
 

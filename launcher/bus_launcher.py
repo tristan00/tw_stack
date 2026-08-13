@@ -87,15 +87,6 @@ class BusLauncher:
                       "on a grown command file (the A/B-proven corruption state)" % last)
 
     def rotate_out_log(self):
-        """Archive the mod's output log and start the next campaign on a fresh file.
-
-        Only the OUT and SEND logs, never commands.txt: the mod tracks last_seq against
-        the command file, so truncating that mid-life would silently drop commands.
-
-        Safe with the game up because the mod opens/appends/closes per record rather than
-        holding the file, and because readers take a fresh offset per send -- truncating
-        between commands is fine, truncating during a wait is what would hang.
-        """
         import bus as _bus
         dst = common.ARCHIVE_BUS
         os.makedirs(dst, exist_ok=True)
@@ -356,7 +347,6 @@ class BusLauncher:
         return self.start_campaign(faction, campaign, load_timeout)
 
     def startable_factions(self, campaign_map):
-        """Every start playable on ONE campaign map."""
         import json
         key = self.CAMPAIGN_KEYS.get(campaign_map, campaign_map)
         if not key:
@@ -382,7 +372,6 @@ class BusLauncher:
 
     def harvest_startable_factions(self, campaign_map, timeout=30.0, poll_s=1.0,
                                    run_s=300.0, log=None):
-        """Collect a map's whole roster while someone cycles the race at campaign-select."""
         import json
         import re
         import time

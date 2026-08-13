@@ -1,19 +1,5 @@
 from __future__ import annotations
 
-"""Exercise the record/read path with no game attached.
-
-`_io_lock = threading.Lock()` was dropped by a refactor while `import threading` and both
-`with _io_lock:` blocks survived. Nothing imports-and-calls this module outside a live
-run, so the NameError sat latent until a campaign loaded, and then every campaign died on
-the first journal write with 0 decisions recorded. A five-campaign run and a game launch
-were spent finding a missing one-liner.
-
-This calls the append/read functions directly against a temp run dir, which is all it
-would have taken. It also name-checks the modules the run loop depends on, because a
-NameError in a rarely-taken branch is exactly what this class of refactor produces.
-
-    python -m decisions.test_journal
-"""
 
 import ast
 import builtins
@@ -24,7 +10,7 @@ import tempfile
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(_HERE))
-import common  # noqa: E402
+import common
 
 FAILED = []
 
@@ -36,7 +22,6 @@ def check(cond, what, detail=""):
 
 
 def _module_globals_defined(path):
-    """Names a module reads at module scope or inside its functions that are neither"""
     tree = ast.parse(open(path, encoding="utf-8").read())
     defined = set(dir(builtins)) | {"__file__", "__name__", "__doc__", "__package__",
                                     "__spec__", "__loader__", "__builtins__"}
@@ -112,7 +97,6 @@ def main():
         J.close(run)
         st.close()
 
-        # every public entry point the run loop touches must at least resolve its names
         for mod in ("decisions/journal.py", "decisions/collect.py",
                     "decisions/decisions_stream.py", "decisions/store.py",
                     "advisor/loop.py", "advisor/policy.py", "advisor/strategies.py"):

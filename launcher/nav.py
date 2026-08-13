@@ -143,7 +143,6 @@ _IN_CENSUS = [False]
 
 
 def census_roots(bus, roots=None):
-    """Dump the full tree of EVERY root the first time it is ever seen. No whitelist."""
     if not dev_mode() or _IN_CENSUS[0]:
         return []
     _IN_CENSUS[0] = True
@@ -253,12 +252,6 @@ def diplomacy_owned(root):
 
 
 def _insist(bus, root, btn, settle, tries=3):
-    """A story panel with a movie or revealing text takes the click and stays open.
-
-    The component reports clicked=True because it exists; the panel ignores it until the
-    reveal finishes. Skip the reveal, then click again, and stop as soon as the root is
-    actually gone rather than trusting the click result.
-    """
     out = []
     for _ in range(tries):
         for key in ("space", "escape"):
@@ -322,11 +315,6 @@ def close_popups(bus, max_rounds=8, settle=0.7):
     if protected:
         _warn("close_popups", "left decision surfaces open: %s" % sorted(protected))
     return clicked_paths
-
-
-
-
-
 
 
 UI_BASE_W, UI_BASE_H = 1984.0, 1116.0
@@ -410,16 +398,10 @@ def visible_roots(bus):
     return [k.get("id") for k in (r.get("kids") or []) if k.get("visible") and k.get("id")]
 
 
-
-
-
-
 def deselect(bus):
     r = ccmd(bus, CLOSE_AND_CLEAR)
     time.sleep(0.4)
     return r
-
-
 
 
 def capital_region(bus):

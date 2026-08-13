@@ -52,7 +52,6 @@ def game_dir(explicit: str | None = None) -> Path:
 
 
 def _pfh5_index(path: Path):
-    """[(internal_path, size)], and the offset the data blob starts at."""
     with open(path, "rb") as fh:
         head = fh.read(28)
         if head[:4] != b"PFH5":
@@ -97,7 +96,6 @@ def _standin_bytes(game: Path) -> bytes:
 
 
 def intro_movies(game: Path):
-    """Every campaign intro in the installed game. Scanned, not hardcoded, so a new DLC's"""
     out = set()
     for p in _movie_packs(game):
         ent, _ = _pfh5_index(p)

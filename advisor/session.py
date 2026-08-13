@@ -241,8 +241,6 @@ def _postmortem(runs_root, entry, ex, log):
         log("   !! post-mortem NOT written: %s" % repr(e)[:160])
 
 
-
-
 def _epsilon_mix(epsilon):
     e = float(epsilon)
     if not 0.0 <= e <= 1.0:
@@ -253,7 +251,7 @@ def _epsilon_mix(epsilon):
 def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                   log=print, runs_root=RUNS_ROOT, retrain=False, retrain_every=0, seed=None,
                   cold=False, backend=None, backend_cfg=None, epsilon=None, strategies=None,
-                  ruleset=None):
+                  ruleset=None, retrain_first=False):
     from bus import Bus
     from executor import Executor
 
@@ -323,7 +321,7 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                  "max_turns": this_turns}
         try:
             ex.mark_campaign_start()
-        except Exception as e:                                  # noqa: BLE001
+        except Exception as e:
             log("   could not mark the bus offset for this campaign: %s" % repr(e)[:100])
         if hard_restart_next:
             if prev_outcome == "defeated" and ex.leave_campaign_via_click():
@@ -337,23 +335,16 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
         entry["bus_files"] = _bus_sizes()
         log("   bus: %s" % ", ".join("%s %.1fMB" % (k, v)
                                      for k, v in sorted(entry["bus_files"].items())))
-        # Every campaign starts on a fresh out log. Rotation used to live only in spawn(),
-        # and a campaign boundary respawns the game only on a retrain window or after an
-        # error -- so on a normal ending nothing rotated and twcontrol.jsonl accumulated:
-        # 229MB over 9 campaigns, at which point the bus stopped answering and wedged one.
         try:
             ex.rotate_out_log()
         except Exception as e:
             log("   out-log rotation failed: %s" % repr(e)[:90])
-        if retrain_every and i and i % retrain_every == 0:
+        if retrain_every and (i or retrain_first) and i % retrain_every == 0:
             _flush_generation(stretch, backend, backend_cfg, generation, report, trained, log)
             stretch = []
             generation += 1
             log("taking the game down for retraining -- trainers get the whole box")
             ex.kill_game()
-            # kill_game() does not wait and swallows its own errors, so confirm the
-            # process is actually gone before a trainer touches the gpu -- otherwise
-            # the game and the trainer contend for VRAM through the whole window
             if ex.wait_game_down(log=log):
                 log("   game down, gpu is free")
             else:
@@ -375,7 +366,6 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                 log("   interrupt model: %s" % json.dumps(irep)[:200])
                 if "marwil_gnn" in mix:
                     try:
-                        # against this checkout, not a hardcoded one -- see policy.py
                         if common.ROOT not in sys.path:
                             sys.path.insert(0, common.ROOT)
                         from advisor.mapgraph import train as GT
@@ -424,7 +414,7 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                 r = MB.Ranker(B.NO_MODEL_DIR) if cold else MB.Ranker()
                 _models["ranker"] = r
                 _models["policy"] = P.Policy(r, strategies=mix, ruleset=ruleset)
-            except BaseException as e:                              # noqa: BLE001
+            except BaseException as e:
                 _models["error"] = e
 
         _preload = threading.Thread(target=_preload_models, name="model-preload", daemon=True)
@@ -458,9 +448,6 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                 entry["gnn_policy"] = ("trained(%d rows)" % (pol.gnn.meta or {}).get("rows", 0)
                                        if pol.gnn.ready else "unready->gnn_random_fallback")
                 log("gnn: %s" % entry["gnn_policy"])
-            # A generation owns a ledger row from the moment it starts playing, so a
-            # generation killed before its first campaign ends is still on the record and
-            # still names the model that was live.
             _checkpoint_trial(stretch + [entry], backend, backend_cfg, generation, report,
                               trained, log)
 
@@ -500,7 +487,7 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
             dead = False
             try:
                 dead = bool(ex.defeated_row_seen())
-            except Exception:                                   # noqa: BLE001
+            except Exception:
                 dead = False
             if dead:
                 entry.update(outcome="defeated", error=repr(e)[:300], **_played(e))
@@ -536,8 +523,6 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
         stretch.append(entry)
         log("campaign %d -> %s in %.0fs" % (i + 1, entry["outcome"], entry["seconds"]))
         _write(out_path, report)
-        # The ledger is written here, not only at the end: a run stopped by `runctl down`
-        # used to leave no trial row at all. See _checkpoint_trial.
         _checkpoint_trial(stretch, backend, backend_cfg, generation, report, trained, log)
 
     _flush_generation(stretch, backend, backend_cfg, generation, report, trained, log)
@@ -621,7 +606,6 @@ GROWTH_BASELINE = "first_decision_snapshot->peak"
 
 
 def _campaign_growth(con, uuid):
-    """One campaign's growth, from the definition the dashboard uses."""
     row = con.execute(CG.TRAJECTORY_SQL_ONE, (uuid,)).fetchone()
     if not row:
         return None
@@ -745,8 +729,6 @@ def _trial_row(stretch, backend, backend_cfg, gen_n, report, trained, log):
         return None
     stretch = _measure(stretch, log)
     first, last = stretch[0], stretch[-1]
-    # Every per-campaign figure counts campaigns that finished. A stretch can carry the
-    # campaign being played right now, and that one has no outcome to average over.
     played = [c for c in stretch
               if (c.get("outcome") or "in_progress") not in ("in_progress", "in_flight")]
     secs = sum(float(c.get("seconds") or 0.0) for c in played)
@@ -801,7 +783,6 @@ def _flush_generation(stretch, backend, backend_cfg, gen_n, report, trained, log
 
 
 def _checkpoint_trial(stretch, backend, backend_cfg, gen_n, report, trained, log):
-    """Persist the generation in progress after every campaign."""
     row = _trial_row(stretch, backend, backend_cfg, gen_n,
                      dict(report, running=True), trained, log)
     if row is not None:
@@ -810,12 +791,6 @@ def _checkpoint_trial(stretch, backend, backend_cfg, gen_n, report, trained, log
 
 
 def backfill_trials(runs_root=RUNS_ROOT, log=print, recompute=False):
-    """Rebuild ledger rows for sessions that ended before they could write one.
-
-    recompute=True also rewrites rows that are already there, which is how the ledger is
-    moved onto a changed growth definition: every row is rebuilt from the corpus by the
-    same code path, so the ledger cannot end up half on one definition and half on another.
-    """
     have = set() if recompute else metrics_db.trial_ids()
     written = 0
     for path, rep in _session_reports(runs_root):
@@ -839,7 +814,7 @@ def backfill_trials(runs_root=RUNS_ROOT, log=print, recompute=False):
 def _write_trial(row, log, quiet=False):
     try:
         metrics_db.write_trial(row)
-    except Exception as e:                                      # noqa: BLE001
+    except Exception as e:
         raise RuntimeError("trial %s NOT written to %s -- refusing to run unrecorded "
                            "experiments: %s"
                            % (row.get("trial"), metrics_db.DB_PATH, repr(e)[:120]))
@@ -892,10 +867,6 @@ def _stretch_context(path, rep, gen, stretch, extra):
             shadow, trained)
 
 
-
-
-
-
 IN_FLIGHT_S = 600
 LIVE_LOG_S = 1800
 CURRENT_SESSION_LOG = common.CURRENT_SESSION_LOG
@@ -912,7 +883,6 @@ def _live_log():
 
 
 def _read_report(path):
-    """A session report, or None if it is missing or half-written."""
     try:
         with open(path, encoding="utf-8") as fh:
             return json.load(fh)
@@ -1064,8 +1034,6 @@ def train_events(runs_root=RUNS_ROOT):
                            "sett_total": (trial.get("settlements") or {}).get("total"),
                            "grew": (trial.get("settlements") or {}).get("campaigns_that_gained"),
                            "measured": (trial.get("settlements") or {}).get("campaigns_measured"),
-                           # levels gained per campaign; the raw total just tracks how many
-                           # campaigns the trial happened to play
                            "lord_per_campaign": (trial.get("lord_level") or {}).get("mean"),
                            "turns_per_campaign": trial.get("turns_per_campaign"),
                            "running": trial.get("running")}})
@@ -1233,9 +1201,6 @@ def main():
         sys.path.insert(0, common.LAUNCHER)
         import bus_launcher
         import cutscene_starts
-        # Resolved for the map this session will actually play. A cutscene belongs to the
-        # (map, faction) pair: the Ice Court opens on an intro movie on Realm of Chaos and
-        # on nothing on Immortal Empires, so pooling the maps put it in both lists.
         _map = bus_launcher.BusLauncher.CAMPAIGN_KEYS.get(_name, _name)
         r = cutscene_starts.classify(campaign_map=_map)
         keys = [x["faction"] for x in r["clean"]]
@@ -1257,6 +1222,10 @@ def main():
         every = int(sys.argv[sys.argv.index("--retrain-every") + 1])
         if every < 0:
             raise SystemExit("--retrain-every must be >= 0")
+    retrain_first = "--retrain-first" in sys.argv
+    if retrain_first and not every:
+        raise SystemExit("--retrain-first sets the cadence's first window at campaign 1; it "
+                         "needs --retrain-every N to have a cadence at all")
     cold = "--cold" in sys.argv
     if "--dev" in sys.argv:
         os.environ["TW_DEV"] = "1"
@@ -1288,7 +1257,7 @@ def main():
     r = run_campaigns(n, turns, plan=keys, retrain="--retrain" in sys.argv,
                       retrain_every=every, cold=cold, backend=backend,
                       backend_cfg=backend_cfg, epsilon=epsilon, strategies=strategies,
-                      ruleset=ruleset, campaign=campaign)
+                      ruleset=ruleset, campaign=campaign, retrain_first=retrain_first)
     return 0 if r["totals"]["completed"] else 2
 
 

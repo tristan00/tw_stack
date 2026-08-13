@@ -1,4 +1,3 @@
-"""The quality gates for the dashboard."""
 
 from __future__ import annotations
 
@@ -17,8 +16,6 @@ import arms
 from advisor_api import analytics_db as adb, db, queries as q
 from advisor_api.app import app
 
-# Every endpoint must answer within this, at the corpus size on disk. It is a ceiling on
-# the SLOWEST call, not an average: the point is that no view is the one that hangs.
 BUDGET_MS = 400.0
 
 GET_ENDPOINTS = [
@@ -52,7 +49,6 @@ atexit.register(_client_cm.__exit__, None, None, None)
 
 
 def _await_first_probe(timeout=15.0):
-    """Block until the process probe has taken a sample, or give up."""
     from advisor_api import proc
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -67,7 +63,6 @@ _await_first_probe()
 
 
 def _walk(node, path="$"):
-    """Every dict AND every list in a response, with the path that reached it."""
     if isinstance(node, dict):
         yield path, node
         for k, v in node.items():
@@ -83,7 +78,6 @@ def _all_responses():
     for ep in GET_ENDPOINTS:
         r = _client.get(ep)
         out[ep] = r
-    # the two keyed views, resolved from live data rather than hardcoded
     camps = _client.get("/api/campaigns").json()
     if camps.get("rows"):
         key = camps["rows"][0]["campaign"]["raw"]
@@ -94,8 +88,6 @@ def _all_responses():
         out["/api/decisions/<id>"] = _client.get("/api/decisions/%d" % did)
     return out
 
-
-# ----------------------------------------------------------------------------------------
 
 def test_every_endpoint_answers():
     bad = []
@@ -127,7 +119,6 @@ def test_keyed_views_answer():
 
 
 def test_unknown_ids_404_rather_than_500():
-    """A missing object is a 404 with a sentence, never a stack trace."""
     for ep in ("/api/campaigns/no_such_campaign_key", "/api/decisions/999999999"):
         r = _client.get(ep)
         assert r.status_code == 404, "%s -> %s" % (ep, r.status_code)
@@ -135,7 +126,6 @@ def test_unknown_ids_404_rather_than_500():
 
 
 def test_every_count_names_its_population():
-    """A count without its population is the defect this rule exists to prevent."""
     bad = []
     for ep, r in _all_responses().items():
         if r.status_code != 200:
@@ -169,7 +159,6 @@ def test_every_rate_carries_its_denominator():
 
 
 def test_api_agrees_with_sql():
-    """Every headline number, re-derived straight from SQL."""
     con = db.connect()
     run = _client.get("/api/run").json()
     totals = {t["noun"]: t["value"] for t in run["totals"]}
@@ -186,17 +175,14 @@ def test_api_agrees_with_sql():
     assert totals["offers"] == sql_offers, (totals["offers"], sql_offers)
     assert totals["actions"] == sql_confirmed, (totals["actions"], sql_confirmed)
 
-    # the campaign list must cover exactly the campaigns that recorded a decision
     rows = _client.get("/api/campaigns").json()["rows"]
     assert len(rows) == sql_campaigns, (len(rows), sql_campaigns)
 
-    # and the log's unfiltered total must equal the action row count
     total = _client.get("/api/decisions").json()["total"]["value"]
     assert total == con.execute("SELECT COUNT(*) FROM action_taken").fetchone()[0]
 
 
 def test_campaign_id_join_trap():
-    """target_rows.campaign_id is a KEY STRING; campaigns.campaign_id is an integer."""
     con = db.connect()
     wrong = con.execute("SELECT COUNT(*) FROM target_rows t"
                         " JOIN campaigns c ON t.campaign_id = c.campaign_id").fetchone()[0]
@@ -209,12 +195,9 @@ def test_campaign_id_join_trap():
 
 
 def test_outcome_join_is_a_key():
-    """No campaign may be claimed by two endings. If it can be, it is not a key."""
     con = db.connect()
     claimed = q.join_outcomes(con)
     assert claimed, "no ending joined to any campaign -- the outcome column would be empty"
-    # join_outcomes is a dict keyed by campaign, so a collision cannot survive it; re-derive
-    # the multiplicity from the source to prove the mapping is genuinely one-to-one.
     seen = {}
     for ckey, pm in claimed.items():
         sig = (pm.get("faction"), pm.get("ts"))
@@ -224,7 +207,6 @@ def test_outcome_join_is_a_key():
 
 
 def test_outcome_coverage_is_reported_not_hidden():
-    """Endings that belong to earlier run dirs are counted, not quietly dropped."""
     page = _client.get("/api/campaigns").json()
     joined = sum(1 for r in page["rows"] if r.get("outcome"))
     assert joined > 0, "no campaign carries an outcome"
@@ -233,7 +215,6 @@ def test_outcome_coverage_is_reported_not_hidden():
 
 
 def test_constant_columns_are_reported():
-    """A column with one distinct value is named so the client can hide it."""
     con = db.connect()
     rows = q.campaign_rows(con)
     checked = 0
@@ -251,9 +232,7 @@ def test_constant_columns_are_reported():
     assert checked, "no campaign had enough turns to check"
 
 
-
 def test_no_signed_column_is_one_signed():
-    """A signed column that can only ever read one way is unreachable by construction."""
     SIGNED = [("/api/campaigns", "$.rows", "settlements_growth"),
               ("/api/campaigns", "$.rows", "lord_growth")]
     ONE_SIGNED_OK = {
@@ -285,7 +264,6 @@ def test_no_signed_column_is_one_signed():
 
 
 def test_growth_state_partitions_every_row():
-    """Every campaign says whether growth was measurable, and the states are exhaustive."""
     rows = _client.get("/api/campaigns").json()["rows"]
     states = {}
     for r in rows:
@@ -307,7 +285,6 @@ def test_growth_state_partitions_every_row():
 
 
 def test_growth_delta_equals_its_endpoints():
-    """A derived delta cannot drift from the numbers it claims to describe."""
     for r in _client.get("/api/campaigns").json()["rows"]:
         if r.get("growth_state") != "measured":
             continue
@@ -321,7 +298,6 @@ def test_growth_delta_equals_its_endpoints():
 
 
 def test_analytics_cannot_go_stale_silently():
-    """The staleness gate."""
     page = _client.get("/api/models/agreement").json()
     f = page["freshness"]
     assert f["behind"]["population"] and f["rows"]["population"]
@@ -347,7 +323,6 @@ def test_analytics_cannot_go_stale_silently():
 
 
 def test_rho_is_the_headline_not_a_secondary():
-    """RBO and top-k are additions, never replacements."""
     page = _client.get("/api/models/agreement").json()
     if page.get("empty_reason"):
         return
@@ -362,7 +337,6 @@ def test_rho_is_the_headline_not_a_secondary():
 
 
 def test_generation_view_is_labelled_an_alignment():
-    """The generation axis is inferred from timestamps, and must never imply otherwise."""
     page = _client.get("/api/models/agreement/series?axis=generation").json()
     assert page["is_alignment"] is True
     assert page["ambiguous"]["population"]
@@ -371,7 +345,6 @@ def test_generation_view_is_labelled_an_alignment():
 
 
 def test_strategies_aggregate_by_strategy():
-    """`ruleset(spread_out)` is the ruleset arm, not a strategy of its own."""
     seen = []
     for ep, jpath, key in (("/api/models/agreement", "$.rows", "picked_by"),
                            ("/api/decisions/actions", "$.policies", "policy")):
@@ -388,7 +361,6 @@ def test_strategies_aggregate_by_strategy():
 
 
 def test_no_column_is_empty_in_every_row():
-    """No field may be null on every row of a list that has rows to judge."""
     TABLES = [
         ("/api/run", "$.collect_timing"),
         ("/api/run", "$.cycle_timing"),
@@ -410,8 +382,6 @@ def test_no_column_is_empty_in_every_row():
         ("/api/models/training", "$.history"),
         ("/api/infra", "$.activity"),
     ]
-    # Genuinely absent right now, each with the reason it is absent. A row here is a
-    # statement about the data, not a licence to leave a column unwired.
     EXPECTED_EMPTY = {
         ("$.tenants", "last_error"):
             "no analytics tenant has failed a pass -- this is the field that would carry "
@@ -459,7 +429,6 @@ def test_no_column_is_empty_in_every_row():
 
 
 def test_correlation_tiles_are_separable():
-    """The two tiles share arm names, so they must be addressable separately."""
     page = _client.get("/api/models/correlations").json()
     labels = [t["label"] for t in page["tiles"]]
     assert labels == ["action ranker", "interrupt model"], labels
@@ -468,7 +437,6 @@ def test_correlation_tiles_are_separable():
 
 
 def test_arm_with_decisions_is_not_zero():
-    """An arm that played decisions may not render as zero campaigns and zero turns."""
     con = db.connect()
     page = _client.get("/api/models/correlations").json()
     def _played(table):
@@ -499,7 +467,6 @@ def test_arm_with_decisions_is_not_zero():
 
 
 def test_matrix_leads_with_totals_worst_first():
-    """The totals row is the finding; a grid without it hides its own headline."""
     page = _client.get("/api/campaigns/matrix?kind=action").json()
     tot = page["totals"]
     assert tot, "the crosstab shipped without a totals row"
@@ -519,7 +486,6 @@ def test_matrix_leads_with_totals_worst_first():
 
 
 def test_starts_marks_single_sample_rows():
-    """An average over one campaign is labelled as such rather than apologised for."""
     page = _client.get("/api/campaigns/starts").json()
     assert page["rows"], "no starts"
     for r in page["rows"]:
@@ -528,7 +494,6 @@ def test_starts_marks_single_sample_rows():
 
 
 def test_identifiers_carry_both_forms():
-    """Every identifier ships a readable label AND the raw id that gets grepped."""
     bad = []
     for ep, r in _all_responses().items():
         if r.status_code != 200:
@@ -541,7 +506,6 @@ def test_identifiers_carry_both_forms():
 
 
 def test_menu_option_scores_are_data_not_hover_text():
-    """Per-option model scores must be fields, so they can be sorted and searched."""
     page = _client.get("/api/decisions/menus").json()
     assert page["rows"], "no blocking-screen rows"
     with_opts = [r for r in page["rows"] if r["options"]]
@@ -552,7 +516,6 @@ def test_menu_option_scores_are_data_not_hover_text():
 
 
 def test_current_campaign_has_one_source():
-    """Header and body cannot disagree, because there is exactly one accessor."""
     con = db.connect()
     cur = q.current(con)
     row = con.execute("SELECT campaign_id, turn FROM target_rows"
@@ -577,7 +540,7 @@ if __name__ == "__main__":
         except AssertionError as e:
             fails += 1
             print("FAIL %s\n     %s" % (name, str(e)[:900]))
-        except Exception as e:                                   # noqa: BLE001
+        except Exception as e:
             fails += 1
             print("ERR  %s\n     %r" % (name, e))
     print("\n%d failure(s)" % fails)

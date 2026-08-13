@@ -1,21 +1,5 @@
 from __future__ import annotations
 
-"""Inference for blocking screens: one forward pass per screen, a score per option.
-
-The interrupt-path twin of mapgraph.rank. Same contract (`ready`, `score`), same reported
-number -- `q` centred within the screen, `q - mean(q)`, because a softmax logit's absolute
-shift is arbitrary and `q - v` would be subtracting a z-scored outcome from an
-unnormalised logit (see rank.py for the full account).
-
-Its weights are its own: <TWDATA>/models\\mapgraph_interrupt. Nothing here reads the
-action model.
-
-READINESS IS DELIBERATELY NOT AN ACCURACY GATE. A trained model loads even when it scores
-no better than guessing, and at 256 screens it very nearly does -- meta carries
-`uniform_nll` next to the fit so the models card can say so. Refusing to load it would
-mean the 10% arm never plays, never records a row, and the corpus never shows whether it
-is improving, which is the entire reason it is in the mix this early.
-"""
 
 import json
 import os
@@ -61,9 +45,7 @@ class Ranker:
             except ImportError:
                 import net as N
             cfg = meta.get("cfg") or {}
-            net = N.Net(cfg.get("hidden", N.HIDDEN),
-                        cfg.get("entity_layers", N.ENTITY_LAYERS),
-                        cfg.get("action_rounds", N.ACTION_ROUNDS))
+            net = N.from_cfg(cfg)
             net.encoder.load_state_dict(
                 torch.load(os.path.join(model_dir, "encoder.pt"), map_location="cpu"))
             net.head.load_state_dict(
@@ -75,7 +57,6 @@ class Ranker:
                              "draws on interrupts fall back to random\n" % repr(e)[:160])
 
     def score(self, screen, options, record, panel=None, meta=None):
-        """{option: centred q}, or {} if this screen cannot be scored."""
         opts = sorted(options)
         if not self.ready or not opts:
             return {}

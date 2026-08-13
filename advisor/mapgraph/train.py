@@ -1,57 +1,5 @@
 from __future__ import annotations
 
-"""Training.
-
-The target is `base_model.target(decision_deltas(...))` -- byte for byte the same
-quantity CatBoost is scored against. It is z-scored for the network output and
-otherwise untouched. Same target is also the only reason the two models are comparable.
-
-Two supervision channels, and they do different jobs:
-
-  MSE(v, y_z)        the state value. y is a property of the campaign and turn, which is
-                     exactly what a value head should predict.
-
-  listwise NLL       -log p(taken action) under a softmax over that decision's candidate
-                     set. This is the term the predecessor did not have at all: it
-                     broadcast one outcome scalar onto every candidate and regressed
-                     them all to it, so no loss term ever compared two candidates and
-                     the ranking was unsupervised.
-
-  advantage weight   exp((y_z - v)/tau), clipped. Upweights decisions from turns that
-                     went better than the state predicted, which is what turns plain
-                     imitation into a policy-improvement step (MARWIL / AWR).
-
-There is deliberately no `mse(q, y_z)`. That term is what made the predecessor's
-advantage a capacity artifact: q and v regressed to the same scalar, so q-v was zero by
-construction and non-zero only because v underfits.
-
-BUDGET. A retrain must fit in `time_budget_s` end to end, walk included, because it runs
-between campaigns with the game shut down. Measured on 20.4k graphs / RTX 5090:
-
-    corpus walk + tensorize   125s      <- now the dominant cost
-    fit                       130s      18 epochs at ~7.3s each
-    total                     256s
-
-Before this pass the same retrain got 4 epochs in 989s. What moved:
-  - the backward of `param[node_type]` in TypeNorm/TypeEncoders was 90% of all gpu time
-    (an atomic scatter from ~22k rows into 19); F.embedding's segment-reduced backward
-    is the same maths ~50x cheaper. 75s/epoch -> 10.9s at batch 64.
-  - collate once and keep batches resident instead of re-collating every epoch (the
-    predecessor knew this; this one had lost it), batch 16 -> 128, fused AdamW, one
-    val sync per epoch not 364.
-  - to_data splits edges with array masks instead of a python loop over 61M edges.
-
-CORPUS CACHE -- the next thing, and the one that matters at scale. The walk is now 49%
-of the budget and it is pure repetition: every retrain rebuilds graphs for decisions that
-have not changed. decision_points / entity_snapshots / action_offers are append-only, so
-everything at or below a frozen max(decision_id) is immutable and its graph is a pure
-function of the record plus build.py/schema.py/the reference DB. Cache the TENSORIZED
-graph keyed by a fingerprint over those sources -- but NOT the label (decision_deltas
-reads future turns, so y changes as a campaign advances) and NOT the taken mask
-(attach_taken can rewrite it; store a hash and rebuild that one graph if it moved).
-Steady-state cost then becomes O(new decisions), not O(corpus), which is what a 250k
-corpus needs. Sharded parallel reads are NOT the answer and were measured: see walk().
-"""
 
 import glob
 import json
@@ -72,19 +20,15 @@ sys.path.insert(0, common.DECISIONS)
 
 THREADS = max(1, os.cpu_count() or 8)
 
-CFG = {"hidden": 192, "entity_layers": 2, "action_rounds": 2,
-       "lr": 2e-3, "weight_decay": 1e-4, "batch": 128, "epochs": 200, "patience": 10,
-       "grad_clip": 5.0, "adv_tau": 1.0, "adv_clip": 20.0, "value_weight": 1.0, "bf16": True,
-       # TOTAL budget for a retrain -- corpus walk AND fit, not the fit alone. session.py
-       # retrains between campaigns with the game shut down, so every second here is a
-       # second the run is not collecting data. The fit gets whatever the walk leaves.
+CFG = {"hidden": 128, "entity_layers": 1, "action_rounds": 3,
+       "lr": 3.989e-4, "weight_decay": 9.892e-3, "batch": 256, "epochs": 24, "patience": 4,
+       "grad_clip": 5.0, "adv_tau": 1.0, "adv_clip": 20.0, "value_weight": 0.2642, "bf16": True,
        "seed": 0, "time_budget_s": 300, "device": "auto"}
 
 MIN_FIT_S = 30
 
 
 def _shard(args):
-    """Worker: read one decision_id range, build and tensorize its graphs."""
     db_path, lo, hi = args
     import os as _os
     import sys as _sys
@@ -107,9 +51,6 @@ def _shard(args):
 
     st = DecisionStore(_os.path.dirname(db_path), readonly=True)
     try:
-        # No snapshot_read: decision_points / entity_snapshots / action_offers are
-        # append-only and `hi` was frozen by the parent, so every worker sees exactly
-        # the same rows without needing a shared transaction.
         rows = st.labelled_decisions(after=lo, before=hi)
     finally:
         st.close()
@@ -134,10 +75,7 @@ def _shard(args):
     return out
 
 
-
-
 def walk(runs_root=None, limit=None, log=print, workers=None):
-    """Corpus -> (graph, y, taken-mask) examples."""
     import concurrent.futures as cf
     import torch
     from base_model import RUNS_ROOT, decision_deltas, target
@@ -150,8 +88,6 @@ def walk(runs_root=None, limit=None, log=print, workers=None):
     except ImportError:
         import corpus as CO
 
-    # pass 1: label series, the frozen watermark, and what each decision played. All
-    # small tables -- target_series is ~2k rows and action_taken ~22k, against 9M offers.
     series, skipped, live = {}, [], []
     for db in dbs:
         run_dir = os.path.dirname(db)
@@ -175,9 +111,6 @@ def walk(runs_root=None, limit=None, log=print, workers=None):
         run_key = os.path.basename(os.path.dirname(db))
         cached, cdir = ({}, None) if limit else CO.load(run_key, log=log)
 
-        # Rebuild a decision if it is not cached, or if what it played has changed since
-        # it was cached. Everything else is reused as-is: the tables it was built from
-        # are append-only, so its record cannot have moved.
         want = {}
         for did, (tup, _counted) in taken_now.items():
             th = CO.taken_hash(tup)
@@ -190,8 +123,6 @@ def walk(runs_root=None, limit=None, log=print, workers=None):
         jobs = []
         if want:
             if len(want) > 0.5 * max(1, len(taken_now)):
-                # most of the corpus is stale: one unbounded read beats thousands of
-                # indexed range lookups (measured -- see the note above)
                 jobs = [(db, None, None)]
             else:
                 jobs = [(db, lo - 1, hi2) for lo, hi2 in CO.ranges(want)]
@@ -226,8 +157,6 @@ def walk(runs_root=None, limit=None, log=print, workers=None):
     examples = []
     tally = {"no_graph": 0, "no_label": 0, "taken_missing": 0, "no_actions": 0}
     for did, camp_id, campaign, turn, drop, data, counts, _thash in slots:
-        # label first, exactly as the serial walk did, so a decision that is both
-        # unlabelled and ungraphable is still counted as no_label
         y = target(decision_deltas(campaign, series.get(camp_id) or {}, turn))
         if y is None:
             tally["no_label"] += 1
@@ -246,7 +175,6 @@ def walk(runs_root=None, limit=None, log=print, workers=None):
 
 
 def _tensorize(examples):
-    """Graphs are tensorized in the shard workers now, so this just collects them."""
     return [ex["data"] for ex in examples]
 
 
@@ -269,7 +197,6 @@ def _corpus_bytes(batches):
 
 
 def _collate(items, size, dev, log, tag):
-    """Collate ONCE, up front, and keep the batches on the training device."""
     import torch
     from torch_geometric.data import Batch
     batches = [Batch.from_data_list(items[k:k + size])
@@ -294,13 +221,18 @@ def _collate(items, size, dev, log, tag):
 
 
 def fit_net(datas, ys, groups, cfg, log=print):
-    """Fit a Net on (graphs, labels, campaign groups). Public: interrupt_train calls it"""
     import torch
     from base_model import stable_split
     try:
         from advisor.mapgraph import net as N
     except ImportError:
         import net as N
+
+    for k, v in (("map_aggr", N.MAP_AGGR), ("act_aggr", N.ACT_AGGR), ("attn", N.ATTN),
+                 ("conv", N.CONV), ("conv_map", N.CONV_MAP), ("conv_a2e", N.CONV_A2E),
+                 ("conv_e2a", N.CONV_E2A), ("dst_dim", N.DST_DIM),
+                 ("update", N.UPDATE), ("self_transform", N.SELF_TRANSFORM)):
+        cfg.setdefault(k, v)
 
     torch.set_num_threads(THREADS)
     torch.manual_seed(cfg["seed"])
@@ -313,7 +245,7 @@ def fit_net(datas, ys, groups, cfg, log=print):
     for d in datas:
         d.y_z = (d.y - y_mean) / y_sd
 
-    net = N.Net(cfg["hidden"], cfg["entity_layers"], cfg["action_rounds"]).to(dev)
+    net = N.from_cfg(cfg).to(dev)
     opt = torch.optim.AdamW(net.parameters(), lr=cfg["lr"],
                             weight_decay=cfg["weight_decay"],
                             fused=(dev.type == "cuda"))
@@ -328,7 +260,7 @@ def fit_net(datas, ys, groups, cfg, log=print):
     amp = (dev.type == "cuda") and bool(cfg.get("bf16", True))
 
     def step(b, train):
-        if b.x.device != dev:               # no-op when the batch is already resident
+        if b.x.device != dev:
             b = b.to(dev, non_blocking=True)
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=amp):
             out = net(b)
@@ -356,9 +288,6 @@ def fit_net(datas, ys, groups, cfg, log=print):
             loss.backward()
             torch.nn.utils.clip_grad_norm_(net.parameters(), cfg["grad_clip"])
             opt.step()
-            # Checked per step, not per epoch: an epoch that overshoots the budget by a
-            # whole epoch is fatal against a 300s target. Breaks to validation -- and
-            # leaves room for it -- so best_state still reflects a scored model.
             if time.time() - t0 > cfg["time_budget_s"] - (val_s or VAL_S_GUESS):
                 stopped = "time_budget"
                 out_of_time = True
@@ -366,22 +295,18 @@ def fit_net(datas, ys, groups, cfg, log=print):
         if vloader:
             net.eval()
             t_val = time.time()
-            # Accumulated on-device: float(nll) per batch forced a gpu->cpu sync on
-            # every validation batch and serialised the whole pass. One sync per epoch.
             tot_n = torch.zeros((), device=dev)
             tot_v = torch.zeros((), device=dev)
             n = 0
             with torch.no_grad():
                 for b in vloader:
                     _, nll, vl = step(b, False)
-                    k = int(b.n_actions.numel())    # metadata, not a sync
+                    k = int(b.n_actions.numel())
                     tot_n += nll.detach() * k
                     tot_v += vl.detach() * k
                     n += k
             score = float(tot_n) / max(n, 1)
             val_s = max(val_s or 0.0, time.time() - t_val)
-            # Kept in meta so "what does the time cap cost us" is answerable later from
-            # stored evidence instead of from a console log that is gone.
             curve.append([epoch + 1, round(time.time() - t0, 1), round(score, 5)])
             improved = best is None or score < best - 1e-5
             if improved:
@@ -398,9 +323,6 @@ def fit_net(datas, ys, groups, cfg, log=print):
             if bad >= cfg["patience"]:
                 stopped = "patience"
                 break
-        # The training loop broke for time; scoring it was the point of continuing this
-        # far, and now the fit is over. Without this the outer check waits for the FULL
-        # budget and the gap is spent on one-step epochs.
         if out_of_time:
             break
         if time.time() - t0 > cfg["time_budget_s"]:
@@ -414,7 +336,7 @@ def fit_net(datas, ys, groups, cfg, log=print):
            "epochs_run": epoch + 1, "stopped_by": stopped, "device": dev.type,
            "val_rows": len(val_idx), "train_rows": len(trn_idx),
            "resident": bool(resident and v_resident),
-           "curve": curve,          # [epoch, seconds, val_listwise_nll] per epoch
+           "curve": curve,
            "seconds": round(time.time() - t0, 1)}
     return net, fit, y_mean, y_sd
 
@@ -429,9 +351,6 @@ def train(runs_root=None, cfg=None, log=None):
         return {"trained": False, "rows": len(ex), "need": S.MIN_ROWS,
                 "tally": w["tally"], "n_decisions": w["n_decisions"]}
     datas = _tensorize(ex)
-    # The budget is for the whole retrain, so the fit gets what the walk left. MIN_FIT_S
-    # is a floor: a walk that overruns the budget should still produce a model rather
-    # than silently return an untrained one.
     walked = time.time() - t0
     fit_cfg = dict(cfg, time_budget_s=max(MIN_FIT_S, cfg["time_budget_s"] - walked))
     log("mapgraph.train: walk+tensorize %.1fs, %.1fs left of the %ds budget for the fit"
@@ -440,7 +359,9 @@ def train(runs_root=None, cfg=None, log=None):
                                   [e["campaign_id"] for e in ex], fit_cfg, log=log)
     import torch
     meta = {"backend": "mapgraph", "schema_version": S.SCHEMA_VERSION,
-            "schema_hash": S.schema_hash(), "cfg": cfg, "rows": len(datas),
+            "schema_hash": S.schema_hash(),
+            "cfg": dict(fit_cfg, time_budget_s=cfg["time_budget_s"]),
+            "rows": len(datas),
             "campaigns": sorted({e["campaign_id"] for e in ex}), "fit": fit,
             "y_mean": round(y_mean, 6), "y_sd": round(y_sd, 6),
             "n_scalars": S.N_SCALARS, "node_types": list(S.NODE_TYPES),
@@ -464,7 +385,6 @@ def train(runs_root=None, cfg=None, log=None):
 
 
 def _overfit(limit=8):
-    """Can it drive the listwise loss down on a handful of graphs?"""
     import torch
     from torch_geometric.data import Batch
     try:

@@ -18,37 +18,10 @@ import * as Popover from '@radix-ui/react-popover'
 import { Card, EmptyState, Help } from '@/components/primitives'
 import { cn } from '@/lib/utils'
 
-/**
- * One table component, used by every table in the app.
- *
- * A column is DECLARED, not hand-written: its label, unit, alignment, direction and
- * caveat travel with it, so the same column looks and behaves the same everywhere and
- * there is one place to fix it. The previous dashboard hand-wrote every `<tr><th>` at
- * its call site, which is why 27 columns could disagree about alignment and why "power
- * rank counts downwards" had to be explained in a paragraph on each page that showed it.
- *
- * Three rules the component enforces rather than documents:
- *
- *   `unit` and `direction` live in the HEADER. A column of milliseconds says so once, at
- *   the top, instead of repeating "ms" in every cell or omitting it entirely.
- *
- *   `help` renders a visible affordance, never a bare tooltip. A caveat reachable only by
- *   hover is invisible on a glanceable dashboard and absent on touch.
- *
- *   Long tables virtualize. Rendering 500 rows x 27 columns into the DOM is what made
- *   the old fragments 147 KB and made every refresh a full re-layout.
- */
 
-// Below this many rows a search box is noise -- every row is already on screen.
 const SEARCH_FROM = 12
 
-// In v9 one object registers the feature modules AND the row-model factories they need.
-// Sorting, filtering and visibility are opt-in, so the bundle carries only what this app
-// actually uses.
-//
-// globalFilteringFeature is built on columnFilteringFeature and the library encodes that
-// dependency in the type -- omitting it is a compile error rather than a search box that
-// silently does nothing.
+
 const features = tableFeatures({
   rowSortingFeature,
   columnFilteringFeature,
@@ -62,31 +35,24 @@ const features = tableFeatures({
 type Features = typeof features
 
 export interface Col<T extends RowData> {
-  /** Stable id; also the sort key. */
+
   key: string
   label: string
-  /** Rendered small and dim in the header, after the label. */
+
   unit?: string
   align?: 'left' | 'right'
-  /** `down` renders ↓, meaning a lower value is better. */
+
   direction?: 'up' | 'down'
-  /** A caveat, shown behind a visible ? in the header. */
+
   help?: ReactNode
-  /** Column group label; adjacent columns sharing one are bracketed together. */
+
   group?: string
-  /** Hidden until the reader turns it on. Density without deletion. */
+
   optional?: boolean
   width?: number
-  /** The value used for sorting and searching. Defaults to the rendered text. */
+
   value?: (row: T) => string | number | null | undefined
-  /**
-   * Where rows with no value sort. Return `undefined` from `value` to mean "no value".
-   *
-   * This exists because the campaign growth column mapped missing data to 0 and sorted
-   * 117 blank rows into the middle of the genuinely-flat ones -- and, when only one
-   * endpoint was present, ranked a row with no delta at all as the biggest grower on the
-   * page. "No data" and "no change" are different facts and must not sort as one.
-   */
+
   sortUndefined?: false | -1 | 1 | 'first' | 'last'
   render: (row: T) => ReactNode
 }
@@ -94,19 +60,19 @@ export interface Col<T extends RowData> {
 export interface DataTableProps<T extends RowData> {
   rows: T[]
   cols: Col<T>[]
-  /** Row identity, so React and the virtualizer keep rows stable across refreshes. */
+
   rowId: (row: T, index: number) => string
   onRowClick?: (row: T) => void
-  /** Sort key applied on first render. */
+
   initialSort?: { key: string; desc: boolean }
   searchPlaceholder?: string
   emptyWhat?: string
   emptyWhy?: string
-  /** Above this many rows the body virtualizes. */
+
   virtualizeOver?: number
   maxHeight?: number
   dense?: boolean
-  /** Rendered above the header row and never scrolled away -- e.g. a totals row. */
+
   pinnedTop?: ReactNode
 }
 
@@ -150,12 +116,7 @@ export function DataTable<T extends RowData>({
     [cols],
   )
 
-  // The two casts below are the entire cost of wrapping a generic component around
-  // useTable. Inside a generic function T is opaque, so the library cannot prove that
-  // ColumnDef<Features, T> is assignable to its own ColumnDef<TableFeatures, RowData>,
-  // even though `columns` was authored against the precise type on the line above --
-  // which is where the real checking happens and where a wrong field is caught.
-  // Confining the widening to this one call keeps every caller of DataTable fully typed.
+
   const table = useTable({
     features,
     columns: columns as never,
@@ -186,8 +147,7 @@ export function DataTable<T extends RowData>({
 
   const pad = dense ? 'px-2.5 py-1' : 'px-3 py-1.5'
 
-  // A search box over eight rows is chrome, not a feature: you can already see all of
-  // them. It appears once the table is long enough that finding a row is a real task.
+
   const searchable = rows.length >= SEARCH_FROM
   const hasControls = searchable || cols.some((c) => c.optional)
 
@@ -399,14 +359,7 @@ function VirtualBody<T extends RowData>({
   )
 }
 
-/**
- * Column groups, derived from adjacent columns sharing a `group`.
- *
- * Derived rather than declared separately, because a group row whose spans do not sum to
- * the column count silently shifts every vertical rule and labels the wrong columns --
- * a defect the previous dashboard needed a dedicated linter rule to catch. Here the sum
- * is correct by construction.
- */
+
 function buildGroups<T extends RowData>(cols: Col<T>[]): { label?: string; span: number }[] {
   const out: { label?: string; span: number }[] = []
   for (const c of cols) {

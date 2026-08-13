@@ -1,23 +1,5 @@
 from __future__ import annotations
 
-"""Drive the whole new pipeline with no game attached.
-
-generate -> gate -> store is the path that replaced "the collector decides", and until it
-runs end to end the only evidence it works is that it imports. This builds a recorded
-decision by hand, one entity of each kind, and puts it through the real store.
-
-What it actually pins down:
-
-  * every entity kind produces candidates from STATE alone -- if a generator still wanted
-    a raw blob the collector used to hand it, it comes back empty here
-  * a gated candidate is never returned by apply(), and so never reaches the store
-  * the store REFUSES a snapshot arriving with offers, which is what stops inference
-    leaking back into the collector
-  * options.py touches no bus, no database and no file -- checked against its import
-    graph rather than promised in a docstring
-
-    python -m advisor.test_options
-"""
 
 import ast
 import io
@@ -29,7 +11,7 @@ import tempfile
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.dirname(_HERE))
-import common  # noqa: E402
+import common
 
 sys.path.insert(0, common.DECISIONS)
 
@@ -43,10 +25,11 @@ def check(cond, what, detail=""):
 
 
 def _record():
-    """A decision as the recorder now stores it: state, and no offers anywhere."""
     world = {
         "regions": [{"region": "reg_a", "province": "prov_a", "owner": "me",
-                     "x": 10, "y": 10, "adjacent": []}],
+                     "x": 10, "y": 10, "adjacent": []},
+                    {"region": "reg_b", "province": "prov_b", "owner": "orcs",
+                     "x": 30, "y": 30, "adjacent": []}],
         "settlements": [{"region": "reg_a", "units": 4, "x": 10, "y": 10}],
         "armies": [{"cqi": "1", "faction": "me", "region": "reg_a", "x": 10, "y": 10,
                     "has_army": True, "rank": 2, "units": 6, "hp": 18},
@@ -68,7 +51,9 @@ def _record():
                         {"key": "st_ambush", "active": True, "can_activate": True,
                          "can_afford": True}],
             "skills": [{"key": "sk_a", "status": "active", "level": 0, "total_levels": 3},
-                       {"key": "sk_b", "status": "locked", "level": 0, "total_levels": 3}],
+                       {"key": "sk_b", "status": "locked", "level": 0, "total_levels": 3},
+                       {"key": "sk_mid", "status": "active", "level": 1, "total_levels": 3},
+                       {"key": "sk_max", "status": "active", "level": 1, "total_levels": 1}],
             "recruitable": [{"key": "unit_a", "state": "active", "cost": 100,
                              "disabled": False}],
             "reach_chars": {"9": True}, "reach_setts": {"reg_a": True, "reg_b": False},
@@ -113,7 +98,6 @@ def _record():
 
 
 def _io_names(path):
-    """What options.py must not reach for. Read off the import graph, not promised."""
     tree = ast.parse(io.open(path, encoding="utf-8").read())
     bad = set()
     for node in ast.walk(tree):
@@ -163,6 +147,48 @@ def main():
     st_drops = {d["key"] for d in gate.last_drops if d["action_type"] == "stance"}
     check("st_ambush" in st_drops, "the already-active stance is gated, not offered")
 
+    cap = O.Gate()
+    cap.new_turn()
+    col = {"action_type": "colonize", "key": "reg_z", "available": True, "gate": None,
+           "params": {}}
+    check(cap.reason("lord", "2", col, 9) is None,
+          "the first colonize of the turn is allowed")
+    cap.note_result({"context_kind": "lord", "context_id": "1",
+                     "action_type": "colonize", "key": "reg_y"}, True)
+    check(cap.reason("lord", "2", col, 9) == "per_turn_cap:1",
+          "a second colonize is capped faction-wide, not per lord",
+          str(cap.reason("lord", "2", col, 9)))
+
+    sk = {o["key"]: o for _ck, cid, o in cands
+          if cid == "1" and o["action_type"] == "skills"}
+    check(sk["sk_max"]["available"] is False and sk["sk_max"]["gate"] == "at_max",
+          "a skill at its last level is gated", str(sk["sk_max"]["gate"]))
+    check(sk["sk_mid"]["available"] is True,
+          "level 1 of 3 is still offered", str(sk["sk_mid"]["gate"]))
+    check(sk["sk_a"]["available"] is True, "an untaken skill is offered")
+
+    for stance, attackable in (("MILITARY_FORCE_ACTIVE_STANCE_TYPE_DEFAULT", True),
+                               ("MILITARY_FORCE_ACTIVE_STANCE_TYPE_AMBUSH", True),
+                               ("MILITARY_FORCE_ACTIVE_STANCE_TYPE_SET_CAMP", False),
+                               ("MILITARY_FORCE_ACTIVE_STANCE_TYPE_TUNNELING", False),
+                               ("MILITARY_FORCE_ACTIVE_STANCE_TYPE_SETTLE", False),
+                               ("MILITARY_FORCE_ACTIVE_STANCE_TYPE_MARCH", False)):
+        r = _record()
+        lord = r["entities"][0]["state"]
+        lord["stance"] = stance
+        lord["reach_setts"]["reg_b"] = True
+        atk = [o for _ck, cid, o in O.generate(r) if cid == "1"
+               and o["action_type"] in ("attack_army", "attack_settlement")]
+        short = stance.rsplit("_TYPE_", 1)[-1]
+        check(len(atk) == 2, "%s offers both attacks" % short, "%d offers" % len(atk))
+        check(all(o["available"] is attackable for o in atk),
+              "%s attack available is %s" % (short, attackable),
+              ",".join("%s=%s" % (o["action_type"], o["available"]) for o in atk))
+        if not attackable:
+            check(all(o["gate"] == "stance_forbids_attack" for o in atk),
+                  "%s attack carries the stance reason" % short,
+                  ",".join(str(o["gate"]) for o in atk))
+
     from store import DecisionStore
     d = tempfile.mkdtemp(prefix="optstore_")
     try:
@@ -191,9 +217,6 @@ def main():
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
-    # Names reached through a function's return value -- `_collect_mod()._reach` -- are
-    # invisible to a static import-graph scan, so the dead-code sweep deleted _reach and
-    # every hero action failed. Anything referenced that way is checked here by name.
     import re as _re
     import importlib
     cco = io.open(os.path.join(common.LAUNCHER, "cco_actions.py"), encoding="utf-8").read()

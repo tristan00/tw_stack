@@ -96,7 +96,6 @@ def set_chooser(fn):
 
 
 def set_snapshot(campaign, record=None):
-    """The last decision snapshot, kept whole."""
     _CAMPAIGN[0] = campaign
     _RECORD[0] = record
 
@@ -202,6 +201,21 @@ def _report_unhandled(bus, screen, unknown, offered, root=None, history=None):
     sys.stderr.write("UNHANDLED_OPTION %s %s offered=%s shot=%s\n"
                      % (screen, list(unknown), list(offered), rec.get("screenshot")))
     return rec
+
+
+_pending_seen = {}
+
+
+def _note_pending_unclaimed(bus, owned, watch, where):
+    sig = (owned[0], tuple(sorted(owned[1])))
+    n = _pending_seen[sig] = _pending_seen.get(sig, 0) + 1
+    if n == 1:
+        _report_unhandled(bus, "pending_surface", [owned[0]], owned[1],
+                          root=",".join(owned[1]), history=watch)
+    sys.stderr.write(
+        "interrupts: pending %s, %s unclaimed %s -- dismissing (occurrence %d; roots at "
+        "detection %s; still open %s)\n"
+        % (owned[0], owned[1], where, n, sorted(watch["at"] or ()), sorted(watch["now"])))
 
 
 class UnhandledScreen(BaseException):
@@ -340,8 +354,6 @@ def evidence(bus, why, shots_dir=None):
     return rep
 
 
-
-
 def _tree(bus, root, depth=22, nodes=4000):
     try:
         return (bus.send("tree", "%s %d %d" % (root, depth, nodes), timeout=20.0) or {}).get("nodes") or []
@@ -464,8 +476,6 @@ def pending(bus):
     return out
 
 
-
-
 def prebattle_forecast(bus):
     out = {}
     for n in _tree(bus, "popup_pre_battle", 30, 40000):
@@ -565,7 +575,6 @@ def _results_appeared(bus, offset, timeout=20.0):
 
 
 def _lone_acknowledge(bus, drivable):
-    """(id, path, root) when the whole screen offers exactly ONE clickable control."""
     flat = [(cid, path, root) for root, ctrls in drivable.items()
             for cid, path in (ctrls or {}).items() if path]
     return flat[0] if len(flat) == 1 else None
@@ -614,9 +623,6 @@ def handle_results(bus):
         decisions = sorted([i for i in ctrls if is_captive_option(i)]
                            + [i for i in ADVANCE_PREFERENCE if i in ctrls])
         opts_before = _options_of(bus, "popup_battle_results", decisions)
-        # Read the outcome BEFORE clicking: the click dismisses the panel, and every number
-        # on it exists only as UI text. 324 of 324 archived battle_results rows carry no
-        # screen detail at all, so the result of every battle ever fought was discarded.
         facts = battle_result_facts(bus)
         repeats = repeats + 1 if target == last else 0
         if repeats >= 2:
@@ -1061,7 +1067,6 @@ def _acknowledge_war_on_proposal(bus, tree, clickable):
 
 
 def _cancel_declare_on_proposal(bus, tree, clickable):
-    """Cancel a declare-war confirmation. Always cancel; never confirm."""
     target = clickable.get("button_cancel_declare")
     if not target:
         _report_unhandled(bus, "declare_war_confirm",
@@ -1210,8 +1215,6 @@ def answer_ally_attacked(bus):
 
 
 _stuck_sig = [None]
-
-
 
 
 def choose_dilemma(bus, open_roots):
@@ -1366,12 +1369,10 @@ def drain_interrupt_records():
 
 
 def battle_result_facts(bus):
-    """The battle-result screen as structured facts, not a 1284-node tree dump."""
     return battle_facts_from(_tree(bus, "popup_battle_results", depth=40, nodes=16000))
 
 
 def battle_facts_from(nodes):
-    """Pure extraction, split out so it can be tested against archived dumps without a game."""
     if not nodes:
         return None
 
@@ -1389,11 +1390,10 @@ def battle_facts_from(nodes):
 
         if pid == "tx_battle_results" and t:
             out["outcome"] = t
-        # locale-independent win/lose: both nodes always exist, visibility is the signal
         elif pid in ("win_animation", "lose_animation") and n.get("visible"):
             out["result_flag"] = "win" if pid == "win_animation" else "loss"
         elif pid == "button_dismiss" and n.get("visible"):
-            out["dismiss_visible"] = True          # visible <=> defeat in all 32 dumps
+            out["dismiss_visible"] = True
         elif pid == "button_accept" and "settlement_captured" in p and n.get("visible"):
             out["settlement_captured"] = True
         elif pid == "dy_faction_name" and t:
@@ -1416,8 +1416,6 @@ def battle_facts_from(nodes):
             key = p.split("resources_bar|", 1)[-1]
             out["resources"][key] = t
 
-    # the details table: two positional rows, never labelled ours/theirs here.
-    # dy_kills is visible:false in every dump but its TEXT is correct, so filter on text.
     cells = {}
     for n in nodes:
         p, pid = path(n), str(n.get("id") or "")
@@ -1450,9 +1448,6 @@ def _options_of(bus, root, ids):
 
 
 DILEMMA_LIST = "dilemma_list"
-
-
-
 
 
 def _read_tree_or_die(bus, root, tries=3, pause=0.4, timeout=2.0):
@@ -1515,8 +1510,6 @@ def _with_identity(found):
     return found
 
 
-
-
 def _is_dilemma(bus, root):
     tree = _read_tree_or_die(bus, root)
     return any(DILEMMA_LIST + "|" in str(n.get("path") or "") and n.get("visible")
@@ -1539,14 +1532,7 @@ def resolve(bus, max_rounds=6):
                 if watch["at"] is None:
                     watch["at"] = before
                     watch["seen"].update(before)
-                _report_unhandled(bus, "pending_surface", [owned[0]], owned[1],
-                                  root=",".join(owned[1]), history=watch)
-                raise UnhandledScreen(
-                    "engine pending %s on a stuck screen and no handler claimed it -- "
-                    "refusing to blind-dismiss a decision surface the interrupt model has "
-                    "not answered. roots at detection %s; seen since %s; still open %s"
-                    % (owned[0], sorted(watch["at"] or ()), sorted(watch["seen"]),
-                       sorted(watch["now"])))
+                _note_pending_unclaimed(bus, owned, watch, "on a stuck screen")
             try:
                 n = len(nav.close_popups(bus))
             except Exception as e:
@@ -1621,14 +1607,9 @@ def resolve(bus, max_rounds=6):
                 time.sleep(3.0)
                 watch["waited_s"] += 3.0
                 continue
-            _report_unhandled(bus, "pending_surface", [owned[0]], owned[1],
-                              root=",".join(owned[1]), history=watch)
-            raise UnhandledScreen(
-                "engine pending %s and no handler claimed it -- refusing to blind-dismiss a "
-                "decision surface the interrupt model has not answered. roots at detection "
-                "%s; seen since %s; still open %s (%.0fs, %d polls)"
-                % (owned[0], sorted(watch["at"] or ()), sorted(watch["seen"]),
-                   sorted(watch["now"]), watch["waited_s"], watch["polls"]))
+            _note_pending_unclaimed(bus, owned, watch,
+                                    "after %.0fs and %d polls" % (watch["waited_s"],
+                                                                  watch["polls"]))
         try:
             n = len(nav.close_popups(bus))
         except Exception as e:

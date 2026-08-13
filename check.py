@@ -1,23 +1,5 @@
 from __future__ import annotations
 
-"""Every check in this project, run one way.
-
-There were twenty-three harnesses and no way to run them. Worse, they disagreed about how
-they are invoked: `decisions.test_store` works as `python -m`, `bus/test_bus.py` only as a
-script -- because `bus/` is a package that shadows `bus/bus.py`, so `-m bus.test_bus` makes
-`from bus import Bus` resolve to the package and fail with AttributeError. That looks
-exactly like a broken test, and it is why a sweep reported nine failures that were all
-green when run correctly.
-
-So the invocation is recorded here, once, next to the check it belongs to. A harness that
-is not in this table is not part of the build.
-
-    python check.py              -- everything that runs with the game down
-    python check.py --with-game  -- also the ones needing a live WH3 + bus
-    python check.py --list
-
-Exit code 1 if any check that was supposed to pass did not.
-"""
 
 import os
 import subprocess
@@ -29,7 +11,6 @@ import common
 ROOT = common.ROOT
 PY = common.VENV_PY
 
-# name, argv (relative to ROOT), needs_game, what it proves
 CHECKS = [
     ("store", ["-m", "decisions.test_store"], False,
      "record/read round-trip, view compatibility, layout invariant"),
@@ -84,7 +65,6 @@ CHECKS = [
      "the dashboard client typechecks against the types generated from the API's own "
      "OpenAPI document, every colour token clears WCAG in BOTH themes, and it builds"),
 
-    # need a live game, a bus, or a populated corpus
     ("replay_options", ["-m", "advisor.replay_options", "--n", "200"], True,
      "every stored option regenerates from the stored state -- a miss means the record "
      "cannot explain its own contents"),

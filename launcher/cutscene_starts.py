@@ -1,4 +1,3 @@
-"""Which starts open on a cutscene, measured from the launcher's own logs."""
 
 from __future__ import annotations
 
@@ -15,7 +14,6 @@ import common
 
 OUT_PATH = os.path.join(common.REFERENCE_DIR, "cutscene_starts.json")
 
-# 9 vs 92 -- anywhere in that gap works, and nothing has ever landed in it.
 KEY_THRESHOLD = 20
 MIN_OBS = 2
 
@@ -25,7 +23,6 @@ _PLAYABLE = re.compile(
 
 
 def log_files(root=None):
-    """Every .log under TWDATA, not just the live advisor directory."""
     out = []
     for dirpath, _dirs, files in os.walk(root or common.TWDATA):
         for f in files:
@@ -35,7 +32,6 @@ def log_files(root=None):
 
 
 def observations(log_glob=None):
-    """(map, faction) -> [{hud, keys}] over every log on disk."""
     paths = sorted(glob.glob(log_glob)) if log_glob else log_files()
     out = collections.defaultdict(list)
     for path in paths:
@@ -59,7 +55,6 @@ def observations(log_glob=None):
 
 
 def classify(obs=None, campaign_map=None):
-    """Split the observed starts into cutscene / clean / unknown."""
     obs = observations() if obs is None else obs
     cutscene, clean, unknown = [], [], []
     for (cmap, faction), rows in sorted(obs.items()):
@@ -85,7 +80,7 @@ def classify(obs=None, campaign_map=None):
                                  if not campaign_map or k[0] == campaign_map)}
 
 
-DEFAULT_MAP = "wh3_main_combi"          # Immortal Empires, what the runs play
+DEFAULT_MAP = "wh3_main_combi"
 
 
 def main(argv):

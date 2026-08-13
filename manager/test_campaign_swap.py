@@ -104,7 +104,6 @@ def _run(log_bytes: bytes, reset_bus):
 
 
 def two_campaign():
-    """Two campaigns in one game log land in ONE run dir, byte for byte."""
     fails = []
     reset_bus = FakeBusReset()
     log_bytes = _campaign_a() + _campaign_b()

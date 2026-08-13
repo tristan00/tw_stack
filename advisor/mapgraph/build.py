@@ -1,15 +1,5 @@
 from __future__ import annotations
 
-"""Decision record -> graph.
-
-Every scalar goes through guard.Reader, so it arrives as a guard.Raw tagged with the one
-entity and record path it came from. Combining two entities raises. That is the mechanism
-that makes `strength_ratio`, ego-to-target distance, and reach envelopes unwritable rather
-than merely discouraged.
-
-The numeric budget is 22 values for the whole ontology (schema.TYPE_FIELDS). Everything
-else is an edge or an identity embedding.
-"""
 
 import math
 import sys
@@ -47,8 +37,6 @@ class Graph:
         self.id2idx = {}
         self.node_ids = []
         self.action_nodes = []
-        # (context_kind, context_id, action_type, key) per action node, in order --
-        # how the trainer locates the offer that was actually taken
         self.action_keys = []
         self.own_mask = []
         self.g_ctx = []
@@ -73,9 +61,6 @@ class Graph:
                                 "Every scalar must come through guard.Reader so its "
                                 "provenance can be checked." % (ntype, k))
             row[col] = float(v)
-            # Provenance is keyed by ENTITY, not by path: the same semantic field is
-            # legitimately read from two collections (own armies vs enemy hostiles).
-            # Cross-entity combination is prevented by guard.Raw raising, not here.
             self.provenance.setdefault("%s.%s" % (ntype, k), set()).add(v.eid.split(":")[0])
         idx = len(self._nodes)
         self.id2idx[nid] = idx
@@ -86,16 +71,12 @@ class Graph:
         return idx
 
     def edge(self, i, j, rel):
-        """Both directions, as distinct relations: 'A owns B' is not 'B owns A'."""
         if i is None or j is None:
             return
-        # One dict lookup and one extend. The reverse relation is the forward index plus
-        # the forward count, which is exactly what rel_index(rel, True) returns.
         r = S.REL_INDEX[rel]
         self._edges.extend((i, j, r, j, i, r + _NREL))
 
     def finalize(self):
-        """Transpose the buffers into the per-attribute lists the rest of the code reads."""
         if self._nodes:
             cols = list(zip(*self._nodes))
             (self.node_ids, self.x, self.node_type, self.race_idx, self.agent_idx,
@@ -124,9 +105,6 @@ def build_graph(record):
     g.player_faction = me
 
     citizenry = {str(c) for c in (world.get("citizenry") or [])}
-    # world.citizenry holds command-queue indices INTO world.armies, not army rows, so
-    # the garrison holding each of our regions is one lookup away. Keyed by region because
-    # that is how the settlement loop finds it.
     _armies_by_cqi = {str(a.get("cqi")): a for a in (world.get("armies") or [])}
     own_citizenry = {}
     for _c in citizenry:
@@ -145,7 +123,6 @@ def build_graph(record):
         elif kind in ("lord", "hero"):
             char_state[str(e.get("context_id"))] = (kind, st)
 
-    # ---------------- factions ------------------------------------------
     region_rows = {str(r.get("region")): r for r in (world.get("regions") or [])
                    if r.get("region")}
     fac_keys = {me} | set(relations)
@@ -160,13 +137,22 @@ def build_graph(record):
         vals = {"is_player": rd.flag("is_player")}
         if rel.get("standing") is not None:
             vals["standing"] = (rd.num("standing") / 100.0).clip(-1.0, 1.0)
+        if fk == me:
+            cd = G.Reader(campaign, "campaign", "campaign")
+            vals["treasury"] = (cd.num("treasury") / S.TREASURY_SCALE).clip(-5.0, 5.0)
+            vals["income"] = (cd.num("income") / S.TREASURY_SCALE).clip(-5.0, 5.0)
+            vals["turn"] = cd.num("turn") / 20.0
+            _m = str(campaign.get("campaign_map") or "")
+            if _m in ("wh3_main_combi", "wh3_main_chaos"):
+                md = G.Reader({"map": 1.0 if _m == "wh3_main_combi" else -1.0},
+                              "campaign", "campaign")
+                vals["campaign_map"] = md.num("map")
         fi = g.add("f:" + fk, "faction", vals,
                    race=S.race_index(fk), cat=S.cat_global("faction", fk),
                    own=(fk == me))
         rn = g.cat_node("race", (fk.split("_")[2] if len(fk.split("_")) > 2 else ""))
         g.edge(fi, rn, "of_race")
 
-    # diplomacy: one relation per treaty state, not five columns on a node
     mi = g.id2idx.get("f:" + me)
     for fk, rel in sorted(relations.items()):
         fj = g.id2idx.get("f:" + fk)
@@ -189,27 +175,28 @@ def build_graph(record):
             if bi is not None and bi != ai:
                 g.edge(ai, bi, "dip_war")
 
-    # ---------------- regions, provinces, settlements ---------------------
-    # public_order is read off the REGION interface; corruption off the PROVINCE
-    # pooled-resource manager. Different owners, so different nodes.
     prov_of_region = {}
+    region_xy = []
     for key, r in sorted(region_rows.items()):
         rd = G.Reader(r, "region:" + key, "world.regions[]")
         vals = {}
         if _pos_ok(r.get("x"), r.get("y")):
             vals["x"] = rd.num("x") / S.COORD_SCALE
             vals["y"] = rd.num("y") / S.COORD_SCALE
+        vals["is_capital"] = rd.flag("capital")
+        vals["is_ruin"] = rd.flag("abandoned")
         st = prov_state.get(key)
         if st is not None:
             pd = G.Reader(st, "region:" + key, "entities.province.state")
             vals["public_order"] = (pd.num("public_order") / S.ORDER_SCALE).clip(-1.0, 1.0)
             vals["income"] = (pd.num("income") / S.INCOME_SCALE).clip(-1.0, 2.0)
         ri = g.add("r:" + key, "region", vals, own=(str(r.get("owner") or "") == me))
+        if _pos_ok(r.get("x"), r.get("y")):
+            region_xy.append((float(r["x"]), float(r["y"]), ri))
         prov_of_region[key] = str(r.get("province") or "")
         fj = g.id2idx.get("f:" + str(r.get("owner") or ""))
         g.edge(fj, ri, "owns_region")
 
-    # regions the record did not enumerate: referenced by a character or a province
     for key in list(prov_state) + [str(a.get("region") or "")
                                    for a in (world.get("armies") or [])]:
         if key and ("r:" + key) not in g.id2idx:
@@ -219,9 +206,6 @@ def build_graph(record):
                 pd = G.Reader(st, "region:" + key, "entities.province.state")
                 vals["public_order"] = (pd.num("public_order") /
                                         S.ORDER_SCALE).clip(-1.0, 1.0)
-                # the second build site: a region reached only through a character or a
-                # province. Omitting income here leaves it a silent 0 on exactly the
-                # regions the record did not enumerate.
                 vals["income"] = (pd.num("income") / S.INCOME_SCALE).clip(-1.0, 2.0)
             g.add("r:" + key, "region", vals)
             prov_of_region.setdefault(key, str((st or {}).get("province") or ""))
@@ -244,6 +228,18 @@ def build_graph(record):
             pd = G.Reader({"corruption": max([float(v) for v in corr.values()] or [0.0])},
                           "province:" + prov, "entities.province.state.corruption")
             vals["corruption"] = (pd.num("corruption") / S.CORRUPT_SCALE).clip(0.0, 1.0)
+            sd = G.Reader(st, "province:" + prov, "entities.province.state")
+            if st.get("growth_per_turn") is not None:
+                vals["growth_per_turn"] = (sd.num("growth_per_turn")
+                                           / S.GROWTH_SCALE).clip(-1.0, 3.0)
+            if st.get("free_slots") is not None:
+                vals["free_slots"] = sd.num("free_slots") / S.SLOTS_SCALE
+            if st.get("max_slots") is not None:
+                vals["max_slots"] = sd.num("max_slots") / S.SLOTS_SCALE
+            if st.get("settlement_level") is not None:
+                vals["settlement_level"] = sd.num("settlement_level") / S.LEVEL_SCALE
+            if st.get("can_set_edict") is not None:
+                vals["can_set_edict"] = sd.flag("can_set_edict")
         pi = g.add("p:" + prov, "province", vals)
         g.edge(ri, pi, "in_prov")
 
@@ -251,7 +247,6 @@ def build_graph(record):
         key = str(s.get("region") or "")
         if not key:
             continue
-        # garrison_units comes off the citizenry stack, not world.settlements[].units.
         gar = own_citizenry.get(key)
         sd = G.Reader(s, "settlement:" + key, "world.settlements[]")
         if gar is not None:
@@ -300,8 +295,8 @@ def build_graph(record):
             if nk:
                 g.edge(si, g.cat_node("building", str(nk)), "slot_building")
 
-    # ---------------- characters ------------------------------------------
     char_faction = {}
+    reach_pending = []
     for a in world.get("armies") or []:
         cqi = str(a.get("cqi") or "")
         if not cqi or cqi in citizenry:
@@ -314,6 +309,11 @@ def build_graph(record):
         ntype = "hero" if is_hero else "lord"
         vals = {"rank": rd.num("rank") / S.RANK_SCALE,
                 "ap_pct": rd.num("ap_pct").clip(0.0, 1.0)}
+        for _f in ("acted", "is_leader", "in_own_territory"):
+            if row.get(_f) is not None:
+                vals[_f] = rd.flag(_f)
+        if row.get("skill_points") is not None:
+            vals["skill_points"] = rd.num("skill_points") / S.SKILL_POINTS_SCALE
         if _pos_ok(row.get("x"), row.get("y")):
             vals["x"] = rd.num("x") / S.COORD_SCALE
             vals["y"] = rd.num("y") / S.COORD_SCALE
@@ -326,6 +326,12 @@ def build_graph(record):
                    subtype=S.subtype_index(a.get("subtype")), own=True)
         char_faction[cqi] = me
         _wire_char(g, ci, cqi, row, me, prov_of_region, st)
+        for tc, hit in ((st or {}).get("reach_chars") or {}).items():
+            if hit:
+                reach_pending.append((ci, "c:" + str(tc)))
+        for tr, hit in ((st or {}).get("reach_setts") or {}).items():
+            if hit:
+                reach_pending.append((ci, "s:" + str(tr), "r:" + str(tr)))
 
     for h in world.get("hostiles") or []:
         hk = str(h.get("kind") or "")
@@ -336,8 +342,6 @@ def build_graph(record):
             continue
         rd = G.Reader(h, "char:" + cqi, "world.hostiles[]")
         ntype = "lord" if MOBILE_KINDS[hk] else "hero"
-        # enemy characters carry no ap_pct in the record; leave it absent rather than
-        # inventing a 0.0 and tagging it as if it had been read
         vals = {"rank": rd.num("rank") / S.RANK_SCALE}
         if _pos_ok(h.get("x"), h.get("y")):
             vals["x"] = rd.num("x") / S.COORD_SCALE
@@ -358,19 +362,25 @@ def build_graph(record):
         rkey = str(h.get("region") or "")
         if not rkey or ("s:" + rkey) in g.id2idx:
             continue
+        ri = g.id2idx.get("r:" + rkey)
+        if ri is None:
+            continue
         hd = G.Reader(h, "settlement:" + rkey, "world.hostiles[kind=settlement]")
-        vals = {"garrison_units": hd.num("units") / S.UNITS_SCALE}
+        vals = {}
         if _pos_ok(h.get("x"), h.get("y")):
             vals["x"] = hd.num("x") / S.COORD_SCALE
             vals["y"] = hd.num("y") / S.COORD_SCALE
         si = g.add("s:" + rkey, "settlement", vals, own=False)
-        ri = g.id2idx.get("r:" + rkey)
-        if ri is None:
-            ri = g.add("r:" + rkey, "region", {}, own=False)
         g.edge(ri, si, "sett_of")
         fj = g.id2idx.get("f:" + str(h.get("faction") or ""))
         if fj is not None:
             g.edge(fj, si, "owns_sett")
+
+    for want in reach_pending:
+        ci, ids = want[0], want[1:]
+        ti = next((g.id2idx[i] for i in ids if i in g.id2idx), None)
+        if ti is not None and ti != ci:
+            g.edge(ci, ti, "can_reach")
 
     _enemy_setts = {(h.get("x"), h.get("y")): str(h.get("region") or "")
                     for h in (world.get("hostiles") or [])
@@ -386,13 +396,9 @@ def build_graph(record):
         if sj is not None:
             g.edge(ci, sj, "garrisons")
 
-    # _wire_knn reads node_type and x to find characters, so the node buffers have to be
-    # materialised before it runs. It only ADDS edges, so the final finalize() below
-    # picks those up; finalize is idempotent.
     g.finalize()
     _wire_knn(g)
 
-    # ---------------- actions ---------------------------------------------
     n_offers = 0
     groups = {}
     for e in record.get("entities") or []:
@@ -400,7 +406,8 @@ def build_graph(record):
         ego = _ego_of(g, ck, cid, prov_of_region, me)
         for o in e.get("offers") or []:
             n_offers += 1
-            _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me)
+            _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me,
+                        region_xy)
 
     g.finalize()
     if not g.src:
@@ -433,7 +440,7 @@ def _wire_char(g, ci, cqi, row, faction, prov_of_region, st):
     prov = str(row.get("province") or "") or prov_of_region.get(rkey, "")
     pi = g.id2idx.get("p:" + prov)
     if pi is not None:
-        g.edge(ci, pi, "in_province")          # province-wide lord modifiers
+        g.edge(ci, pi, "in_province")
     si = g.id2idx.get("s:" + rkey)
     if si is not None:
         if row.get("garrisoned"):
@@ -480,9 +487,6 @@ def _ego_of(g, ck, cid, prov_of_region, me):
 
 _CAT_OF_TYPE = {"recruit_unit": "unit", "recruit_ror": "unit", "recruit_blessed": "unit",
                 "recruit_imperial": "unit", "raise_dead": "unit",
-                # recruit_lord/_hero key a character SUBTYPE, which is not a unit key and
-                # was in no catalogue, so 560 of the offers in a 40-graph sample linked to
-                # nothing at all. 565 subtypes in reference.agent_permitted_subtypes.
                 "recruit_lord": "agent_subtype", "recruit_hero": "agent_subtype",
                 "research": "tech", "skills": "skill", "rites": "ritual",
                 "edict": "edict", "items": "item", "item_unequip": "item",
@@ -490,7 +494,8 @@ _CAT_OF_TYPE = {"recruit_unit": "unit", "recruit_ror": "unit", "recruit_blessed"
                 "building_dismantle": "building", "horde_building": "building"}
 
 
-def _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me):
+def _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me,
+                region_xy=()):
     at = str(o.get("action_type") or "")
     key = str(o.get("key") or "")
     params = o.get("params") or {}
@@ -516,24 +521,19 @@ def _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me):
         g.edge(gi, ego, "of_ego")
     g.edge(ai, gi, "in_group")
 
-    # what it instantiates -- the shared catalogue node
     kind = _CAT_OF_TYPE.get(at)
     if kind:
         ck_key = key.split("@", 1)[0] if at.startswith("recruit") else key
         if at in ("building_repair", "building_dismantle", "horde_building"):
-            # These are keyed by the slot they act on, so the building is in params.
             ck_key = str(params.get("building_key") or "") or None
         elif at == "building":
-            # `building` has no params.building_key -- its action_key IS the building key,
-            # and it joins the catalogue 912/912. Reading a field that does not exist for
-            # this type meant every construction offer built no act_on edge at all.
             ck_key = key or None
         if at in ("items", "item_unequip"):
             ck_key = str(params.get("item_key") or "") or None
         if ck_key:
             g.edge(ai, g.cat_node(kind, ck_key), "act_on")
 
-    tgt = _target_of(g, at, key, params)
+    tgt = _target_of(g, at, key, params, region_xy)
 
     if at == "hero_action":
         akey = str(params.get("action_key") or "")
@@ -567,7 +567,20 @@ def _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me):
         g.edge(ai, si, "act_slot")
 
 
-def _target_of(g, at, key, params):
+def _nearest_region(region_xy, x, y):
+    if not region_xy or not _pos_ok(x, y):
+        return None
+    best, bd = None, None
+    for rx, ry, idx in region_xy:
+        d = (rx - x) ** 2 + (ry - y) ** 2
+        if bd is None or d < bd:
+            best, bd = idx, d
+    return best
+
+
+def _target_of(g, at, key, params, region_xy=()):
+    if at == "move":
+        return _nearest_region(region_xy, params.get("x"), params.get("y"))
     if params.get("target_cqi") is not None:
         return g.id2idx.get("c:" + str(params["target_cqi"]))
     if at in ("attack_settlement", "colonize", "garrison"):

@@ -1,23 +1,5 @@
 from __future__ import annotations
 
-"""Fail when a recorded field carries no information.
-
-The instruction that produced the previous corpus was "be complete". It failed, and it
-failed silently, because a field that is empty because nobody populated it looks exactly
-like a field that is empty because the game has nothing to say. `campaign.defeated` was
-the hardcoded literal False in 22,136 of 22,136 decisions while the harness independently
-recorded 18 defeated campaigns -- and it is the ground truth for the survival term in the
-label. Nothing complained for the life of the corpus.
-
-So: any recorded field that is constant, null or empty across the sample FAILS, and the
-only way to make it pass is an entry in JUSTIFIED naming a reason. That converts
-"did we collect everything?" from a claim into a test, and it puts the burden on the
-person who wants to keep writing a dead field.
-
-    python -m decisions.coverage [db_path] [--sample N] [--min-rows N]
-
-Exit code 1 means at least one field carries no information and nobody has said why.
-"""
 
 import json
 import os
@@ -26,11 +8,9 @@ from collections import Counter, defaultdict
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(_HERE))
-import common  # noqa: E402
-from decisions import dbopen  # noqa: E402
+import common
+from decisions import dbopen
 
-# A field may only be exempt for a reason that is about the GAME, never about the
-# collector. "The recorder does not populate it" is the bug this file exists to catch.
 JUSTIFIED = {
     ("state:hero", "stance"):
         "heroes command no army, so they have no army stance -- verified 'none' in "
@@ -90,12 +70,10 @@ def _blank():
 
 
 def _norm(scope):
-    """decision_points.campaign and entity_snapshots[campaign].features are the same"""
     return "campaign" if scope == "state:campaign" else scope
 
 
 def _rows(con, col, table, where=(), args=(), sample=None):
-    """A sample spread over the whole corpus, not the first N."""
     sql = "SELECT %s FROM %s" % (col, table)
     cond = list(where)
     if sample:
@@ -111,7 +89,6 @@ def _rows(con, col, table, where=(), args=(), sample=None):
 
 
 def declared_types():
-    """The action types this project claims to support, from the three places that"""
     import importlib
     sys.path.insert(0, os.path.join(common.ADVISOR, "mapgraph"))
     sys.path.insert(0, common.ADVISOR)
@@ -131,7 +108,6 @@ def declared_types():
 
 
 def survivor_report(con):
-    """Declared types against what actually survived the gate."""
     have = {r[0]: r[1] for r in con.execute(
         "SELECT action_type, COUNT(*) FROM action_offers GROUP BY action_type")}
     return [(at, have.get(at, 0)) for at in declared_types()]
@@ -153,7 +129,6 @@ def check(db=None, sample=None, min_rows=200, verbose=True):
         _scan(_rows(con, "params", "action_offers", ["action_type=?"], (at,), sample),
               "offer:%s" % at, out)
 
-    # world holds lists of dicts, one level in
     wrows = defaultdict(_blank)
     for w in _rows(con, "world", "decision_points", sample=sample):
         try:
@@ -167,8 +142,6 @@ def check(db=None, sample=None, min_rows=200, verbose=True):
     out.update(wrows)
     con.close()
 
-    # decision_points.campaign and entity_snapshots[campaign].features are the same blob
-    # written twice, so the same field arrives under two scopes and was reported twice.
     merged = defaultdict(_blank)
     for (scope0, field), s in out.items():
         m = merged[(_norm(scope0), field)]
@@ -213,7 +186,6 @@ def check(db=None, sample=None, min_rows=200, verbose=True):
 
 
 def selftest():
-    """The acceptance gate has to be seen failing before a green run means anything."""
     import shutil
     import tempfile
     sys.path.insert(0, common.DECISIONS)
@@ -244,8 +216,6 @@ def selftest():
         _build(good_dir, False)
         bad = check(os.path.join(bad_dir, "decisions.sqlite"), min_rows=1, verbose=False)
         good = check(os.path.join(good_dir, "decisions.sqlite"), min_rows=1, verbose=False)
-        # only the FIELD findings; the declared-type rows are a different check and a
-        # fixture this small never exercises them
         bad_fields = {f for s, f, _n, _o, _w in bad if s != "declared"}
         good_fields = {f for s, f, _n, _o, _w in good if s != "declared"}
         ok1 = "treasury" in bad_fields and "rank" in bad_fields

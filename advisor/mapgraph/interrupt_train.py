@@ -1,27 +1,5 @@
 from __future__ import annotations
 
-"""Training, for blocking screens.
-
-Same architecture, same MARWIL/AWR loss, same target, same holdout rule as the action
-model -- `train.fit_net` is called unchanged and knows nothing about which corpus it got.
-What differs is the corpus and the weights, and that is the whole point: this is a
-separate model for a separate decision family, exactly as advisor/interrupt_model.py is a
-separate CatBoost from advisor/model.py. Nothing here loads the action model's encoder.
-
-    <TWDATA>/models\\mapgraph_interrupt\\{encoder.pt, head.pt, meta.json}
-
-WHAT TO EXPECT. There are 255 trainable screens in the corpus at the time of writing
-(pre_battle 172, occupation 40, battle_results 31, dilemma 8, diplomacy_proposal 4) across
-69 campaigns, against 3,435 map decisions. That is not enough to be good and it is not
-supposed to be yet -- the arm plays 10% so that it produces rows to measure while the
-corpus grows. So `uniform_nll` is computed and stored beside the fit, the fit is reported
-against it, and NOTHING here refuses to load a weak model: refusing would produce no
-gnn_marwil interrupt rows, and those rows are the reason this exists.
-
-Single-option screens (86 of 347) are dropped: a softmax over one candidate is 1.0, its
-NLL is 0, and it contributes no gradient to the ranking. They are still answered live --
-there is simply nothing to learn from them.
-"""
 
 import json
 import math
@@ -43,19 +21,12 @@ sys.path.insert(0, common.DECISIONS)
 
 MODEL_DIR = common.MODEL_MAPGRAPH_INTERRUPT
 
-# Below this, do not fit at all and leave whatever is on disk alone. The action model's
-# floor is 40 over ~376 candidates; a screen offers 2-4, so a fit needs more decisions to
-# say anything, not fewer.
 MIN_ROWS = 120
 
-# The corpus is a few hundred graphs, so the walk is seconds and the fit is short. This
-# runs in the same between-campaign window as everything else and must not eat the action
-# model's 300s.
 CFG = dict(T.CFG, time_budget_s=60, batch=64, patience=15)
 
 
 def context_for(store, rows):
-    """{interrupt_id: {record, decision_id, age_s, interrupts_since}} for each interrupt."""
     by_camp = {}
     for did, ckey, ts in store.decision_index():
         by_camp.setdefault(ckey, []).append((ts, did))
@@ -85,7 +56,6 @@ def context_for(store, rows):
 
 
 def walk(runs_root=None, limit=None, log=print):
-    """Corpus -> (graph, y, taken-mask) examples, one per multi-option screen."""
     import torch
     from base_model import RUNS_ROOT, decision_deltas, target
     from store import DecisionStore, IncompatibleStore
@@ -140,9 +110,6 @@ def walk(runs_root=None, limit=None, log=print):
                 g = IB.build_screen_graph(c["record"], r["screen"], opts,
                                           meta=r.get("options"), panel=r.get("panel"))
             except ValueError as e:
-                # An unknown screen is a real defect -- launcher/interrupts.py answers a
-                # panel this schema has never heard of -- and mapgraph.invariants fails
-                # the build on it. Here it must not take the retrain down with it.
                 tally["unknown_screen" if "not a known interrupt screen" in str(e)
                       else "build_failed"] += 1
                 log("interrupt_train: %s -> %s" % (r["screen"], str(e)[:160]))
@@ -173,7 +140,6 @@ def walk(runs_root=None, limit=None, log=print):
 
 
 def uniform_nll(examples, idx=None):
-    """Mean -log(1/k) over the candidate sets: what guessing scores."""
     picks = examples if idx is None else [examples[i] for i in idx]
     if not picks:
         return None
@@ -206,9 +172,6 @@ def train(runs_root=None, cfg=None, log=None):
             "screens": w["screens"], "tally": w["tally"], "context": w["context"],
             "n_scalars": S.N_SCALARS, "node_types": list(S.NODE_TYPES),
             "relations": list(S.RELATIONS),
-            # What guessing scores on the same held-out screens. Reported, never enforced:
-            # a near-random arm is the intended state while the corpus is this small, and
-            # refusing to load it would produce no rows to measure.
             "uniform_nll": uniform_nll(ex, val_idx),
             "uniform_nll_all": uniform_nll(ex),
             "target": "base_model.target(decision_deltas(...)), z-scored -- identical to "

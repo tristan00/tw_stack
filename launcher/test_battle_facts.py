@@ -1,17 +1,5 @@
 from __future__ import annotations
 
-"""Battle-result extraction, checked against every archived dump we have.
-
-The battle screen is the one place UI scraping is unavoidable -- all ten table cells and
-both faction-name nodes carry `context: null` in every archived dump, so no structured read
-exists. That makes the parse itself the thing that can silently rot, and it rots per RACE:
-the resources bar differs for every race, and even the treasury path moves.
-
-So this runs the real extractor over real dumps from 10 races and asserts the parts that
-must hold everywhere. It needs no game.
-
-    python -m launcher.test_battle_facts
-"""
 
 import glob
 import json
@@ -33,7 +21,6 @@ DUMP_GLOBS = tuple(os.path.join(_TD, p) for p in (
 
 
 def _nodes_of(path):
-    """Three wrapper shapes exist in the archive; normalise before parsing."""
     with open(path, encoding="utf-8", errors="replace") as fh:
         doc = json.load(fh)
     if isinstance(doc, list):
@@ -62,7 +49,7 @@ def main():
     for f in files:
         nodes = _nodes_of(f)
         if len(nodes) < 50:
-            continue                      # tooltip fragments, not a battle screen
+            continue
         facts = battle_facts_from(nodes)
         base = os.path.basename(f)
         if not facts:
@@ -75,7 +62,6 @@ def main():
         else:
             outcomes[facts["outcome"]] = outcomes.get(facts["outcome"], 0) + 1
 
-        # exactly two positional rows, and never labelled ours/theirs
         if len(facts.get("rows") or []) != 2:
             fails.append("%s: %d table rows, expected 2"
                          % (base, len(facts.get("rows") or [])))

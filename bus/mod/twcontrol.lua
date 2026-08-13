@@ -1,29 +1,9 @@
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 local CMD_PATH = "@@BUS_CMD_PATH@@"
 local OUT_PATH = "@@BUS_OUT_PATH@@"
 local POLL_SECONDS = 0.1
-
-
-
 
 
 local NULL = setmetatable({}, {})
@@ -68,7 +48,7 @@ local function now_clock()
   return nil
 end
 local TRY_FAILS, TRY_FAIL_N = {}, 0
-local TRY_FAIL_CAP = 24            -- a failing loop must not flood the log
+local TRY_FAIL_CAP = 24
 
 local function drain_try_fails()
   if TRY_FAIL_N == 0 then return nil end
@@ -117,31 +97,7 @@ end
 local function root() return try(function() return core:get_ui_root() end) end
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 local function descend(parent, name)
-
-
 
 
   local idx = string.match(name, "^#(%d+)$")
@@ -189,36 +145,11 @@ local function describe(uic)
     h = or_null(try(function() return uic:Height() end)),
 
 
-
-
-
     text = or_null(try(function() return uic:GetStateText() end)),
     text_label = or_null(try(function() return uic:GetStateTextLabel() end)),
     tooltip = or_null(try(function() return uic:GetTooltipText() end)),
   }
 end
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 local CCO_TYPES = {
@@ -227,7 +158,6 @@ local CCO_TYPES = {
   "CcoCampaignRitual", "CcoBuildingChainRecord", "CcoCampaignFaction",
   "CcoCampaignProvince",
 }
-
 
 
 local function context_id(uic)
@@ -280,14 +210,6 @@ function handlers.find(seq, rest)
   log({ seq = seq, cmd = "find", path = rest, result = res, child_ids = kids,
         child_contexts = kctx })
 end
-
-
-
-
-
-
-
-
 
 
 function handlers.tree(seq, rest)
@@ -343,12 +265,6 @@ local function root_names()
 end
 
 
-
-
-
-
-
-
 function handlers.click(seq, rest)
   local uic = resolve(rest)
   local info = { seq = seq, cmd = "click", path = rest, found = (uic ~= nil), turn = turn() }
@@ -381,19 +297,6 @@ function handlers.click(seq, rest)
   end
   log(info)
 end
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 function handlers.show(seq, rest)
@@ -548,13 +451,6 @@ end
 function handlers.autoresolve(seq)
 
 
-
-
-
-
-
-
-
   local docker = "popup_pre_battle|mid|battle_deployment|pre_battle_deployment_panel|" ..
                  "regular_deployment|button_docker|button_parent_when_no_countdown_active"
   local paths = {
@@ -567,9 +463,6 @@ function handlers.autoresolve(seq)
   local clicked, used, rejected = false, nil, nil
   for _, p in ipairs(paths) do
     local uic = resolve(p)
-
-
-
 
 
     if uic then
@@ -597,10 +490,6 @@ function handlers.autoresolve(seq)
   log({ seq = seq, cmd = "autoresolve", path = or_null(used), clicked = clicked,
         rejected = or_null(rejected), turn = turn() })
 end
-
-
-
-
 
 
 function handlers.eval(seq, rest)
@@ -636,20 +525,6 @@ function handlers.modeval(seq, rest)
 end
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 function handlers.roots(seq)
   local r = root()
   local out, n = {}, 0
@@ -670,15 +545,9 @@ function handlers.roots(seq)
 end
 
 
-
-
 function handlers.children(seq, rest)
   handlers.find(seq, rest)
 end
-
-
-
-
 
 
 function handlers.dclick(seq, rest)
@@ -778,7 +647,6 @@ function handlers.clickidx(seq, rest)
 end
 
 
-
 function handlers.chars(seq)
   local f = human_faction()
   local out = {}
@@ -792,8 +660,6 @@ function handlers.chars(seq)
         local region_owner = try(function()
           local r = c:region(); if r and not r:is_null_interface() then return r:owning_faction():name() end
         end)
-
-
 
 
         local region_key = try(function()
@@ -852,10 +718,6 @@ function handlers.setts(seq)
           capital = or_null(try(function() return r:is_province_capital() end)),
 
 
-
-
-
-
           units = or_null(try(function() return r:garrison_residence():unit_count() end)),
           x = or_null(s and try(function() return s:logical_position_x() end)),
           y = or_null(s and try(function() return s:logical_position_y() end)),
@@ -865,7 +727,6 @@ function handlers.setts(seq)
   end
   log({ seq = seq, cmd = "setts", count = #out, setts = out })
 end
-
 
 
 function handlers.hostiles(seq)
@@ -902,9 +763,8 @@ function handlers.hostiles(seq)
             if hvis == true then
               local hx = try(function() return c:logical_position_x() end)
               local hy = try(function() return c:logical_position_y() end)
-              -- visible was COMPUTED and then thrown away: it filtered the row in and
-              -- never reached the record, so mapgraph/build.py has always filtered on
-              -- h.get("visible") is False against a key that does not exist.
+
+
               out[#out + 1] = { kind = (at_war and "hero" or "neutral_hero"), faction = or_null(fname),
                 visible = or_null(hvis),
                 cqi = or_null(try(function() return c:command_queue_index() end)),
@@ -919,12 +779,6 @@ function handlers.hostiles(seq)
           if c and hasforce == true then
 
 
-
-
-
-
-
-
             local vis = try(function() return c:is_visible_to_faction(myname) end)
             if vis == true then
               local x = try(function() return c:logical_position_x() end)
@@ -933,8 +787,6 @@ function handlers.hostiles(seq)
                 visible = or_null(vis),
                 cqi = or_null(try(function() return c:command_queue_index() end)),
                 is_armed_citizenry = (try(function() return c:military_force():is_armed_citizenry() end) == true),
-
-
 
 
                 units = or_null(try(function() return c:military_force():unit_list():num_items() end)),
@@ -958,7 +810,6 @@ function handlers.hostiles(seq)
         end
 
 
-
         local rl = at_war and try(function() return fac:region_list() end) or nil
         local nr = rl and try(function() return rl:num_items() end) or 0
         for j = 0, nr - 1 do
@@ -972,10 +823,6 @@ function handlers.hostiles(seq)
               region = or_null(try(function() return r:name() end)),
 
 
-
-
-
-
               units = or_null(try(function() return r:garrison_residence():unit_count() end)),
               x = or_null(x), y = or_null(y), dist = or_null(dist(x, y)) }
           end
@@ -985,8 +832,6 @@ function handlers.hostiles(seq)
   end
   log({ seq = seq, cmd = "hostiles", count = #out, hostiles = out })
 end
-
-
 
 
 function handlers.forces(seq)
@@ -999,8 +844,6 @@ function handlers.forces(seq)
     if lx and ly and x and y then local dx, dy = x - lx, y - ly; return math.floor(math.sqrt(dx * dx + dy * dy)) end
     return nil
   end
-
-
 
 
   local MAX_DIST = 200
@@ -1071,8 +914,6 @@ local function process()
   if not f then return end
 
 
-
-
   local size = f:seek("end")
   if size < last_pos then last_pos = 0 end
   if size == last_pos then f:close(); return end
@@ -1086,11 +927,6 @@ local function process()
   end
   last_pos = f:seek("cur")
   f:close()
-
-
-
-
-
 
 
   if #lines > 0 and file_max < last_seq then
@@ -1118,17 +954,12 @@ local function poll()
   if cm and #assist_watch > 0 then pcall(assist_cleanup) end
 
 
-
   if cm then
     pcall(function() cm:callback(poll, POLL_SECONDS) end)
   else
     pcall(function() core:get_tm():real_callback(poll, POLL_MS, "twfrontend_poll") end)
   end
 end
-
-
-
-
 
 
 local function max_seq_in_file()
@@ -1142,13 +973,6 @@ local function max_seq_in_file()
   f:close()
   return m
 end
-
-
-
-
-
-
-
 
 
 local quit_on_defeat_sent = false
@@ -1201,12 +1025,6 @@ local function arm_defeat_listener()
 end
 
 
-
-
-
-
-
-
 local function arm_event_recorder()
   if not (core and core.add_listener) then
     log({ cmd = "event_recorder", armed = false, reason = "core:add_listener unavailable" })
@@ -1248,7 +1066,6 @@ local function arm_event_recorder()
               autoresolved = or_null(try(function()
                 return context:model():pending_battle():has_been_autoresolved() end)) })
       end, true)
-
 
 
     for _, ev in ipairs({
@@ -1322,7 +1139,6 @@ local function arm_event_recorder()
 end
 
 
-
 local started = false
 local function start(hook)
   local saved = try(function() return cm:get_saved_value("twcontrol_last_seq") end)
@@ -1348,8 +1164,6 @@ local function start(hook)
   log({ cmd = "started", hook = hook, turn = turn(), last_seq = last_seq,
         fresh = (saved == nil), ui = (find_uicomponent ~= nil), cmd_path = CMD_PATH })
 end
-
-
 
 
 local function start_frontend()

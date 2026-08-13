@@ -1,22 +1,5 @@
 from __future__ import annotations
 
-"""Build graphs from real recorded decisions and check the structure that was wrong.
-
-build.py needs no torch, so the graph fixes can be checked directly against the corpus
-rather than argued about. Each check below corresponds to a defect that was measured:
-
-  - slot nodes were named by PROVINCE while being populated per REGION, so 341 of 558
-    shared (province, slot) pairs held two different built buildings.
-  - MOBILE_KINDS dropped every hostile settlement, so attack_settlement had no target
-    node (the target was never missing from the snapshot -- 0 of 2,571 were).
-  - `garrison` keys are "settlement:<region>" and _target_of looked up "s:settlement:..",
-    so all 1,973 garrison offers had no target edge.
-  - `building` read params.building_key, which that action type does not have, so no
-    construction offer ever linked to the building it constructs.
-  - `move` recorded x,y that no node carried.
-
-    python -m advisor.mapgraph.test_build [run_dir_or_db] [--n 40]
-"""
 
 import collections
 import os
@@ -25,9 +8,9 @@ import sys
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(os.path.dirname(_HERE)))
 
-import common  # noqa: E402
-from advisor.mapgraph import build as B      # noqa: E402
-from advisor.mapgraph import schema as S     # noqa: E402
+import common
+from advisor.mapgraph import build as B
+from advisor.mapgraph import schema as S
 
 FAILED = []
 
@@ -60,7 +43,6 @@ def main(argv):
     if not graphs:
         return 1
 
-    # 1. every slot node belongs to exactly one region
     dup = 0
     for g in graphs:
         by_slot = collections.defaultdict(set)
@@ -71,11 +53,9 @@ def main(argv):
         dup += sum(1 for v in by_slot.values() if len(v) > 1)
     check(dup == 0, "slot nodes are per-region, not per-province")
 
-    # the same building may now legitimately appear in two slots of one region
     n_slots = sum(1 for g in graphs for nid in g.node_ids if nid.startswith("slot:"))
     check(n_slots > 0, "slot nodes exist", "%d over %d graphs" % (n_slots, len(graphs)))
 
-    # 2/3/4/5. action structure, counted over every action node
     tgt_rel = S.REL_INDEX["act_target"]
     on_rel = S.REL_INDEX["act_on"]
     per_type = collections.defaultdict(lambda: collections.Counter())
@@ -111,13 +91,11 @@ def main(argv):
     if mtot:
         check(mv > 0, "move actions carry their destination x,y", "%d/%d" % (mv, mtot))
 
-    # enemy settlements became nodes
     enemy = sum(1 for g in graphs for i, nid in enumerate(g.node_ids)
                 if nid.startswith("s:") and g.own_mask[i] == 0.0)
     check(enemy > 0, "enemy settlements have nodes", "%d over %d graphs"
           % (enemy, len(graphs)))
 
-    # the encoder input width must not have moved
     check(S.MAX_FIELDS == 6, "MAX_FIELDS unchanged by the new action fields",
           "MAX_FIELDS=%d, action=%s" % (S.MAX_FIELDS, list(S.TYPE_FIELDS["action"])))
 

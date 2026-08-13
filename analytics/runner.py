@@ -1,37 +1,5 @@
 from __future__ import annotations
 
-"""The analytics process: fold new corpus rows into the precomputed tables.
-
-    python -m analytics.runner                 poll forever (what runctl starts)
-    python -m analytics.runner --once          one pass over every tenant, then exit
-    python -m analytics.runner --rebuild       wipe every tenant first
-    python -m analytics.runner --run-dir PATH  a corpus other than the live one
-
-WHY A SEPARATE PROCESS.
-
-  Not a thread in advisor_api: `runctl up` kills the UI on every launch and the dashboard is
-  the process people restart when it misbehaves, so analytics would stop precisely when
-  someone is looking at it. It would also make the API a WRITER to a sqlite file, turning
-  `database is locked` into a latency defect inside the request path -- and `advisor_api/db.py`
-  is read-only by construction, which is a property worth keeping.
-
-  Not a step in the session loop: analytics would be as current as the last CAMPAIGN, would
-  never run on a collection run started with --no-retrain, would spend the game's latency
-  budget, and would die with a training crash. It also inverts the dependency, since the
-  thing being measured would be computing its own scorecard.
-
-  Not lazy-on-read: that puts variable-cost work back on the request path, which is the
-  pattern this whole layer exists to replace.
-
-SAFETY AGAINST THE COLLECTOR. The corpus is opened read-only, so this can never block the
-collector's writer and can never corrupt the corpus. Each fact tenant holds back the newest
-row so it never reads a decision whose scores have not landed yet. A busy or locked
-analytics database is caught, recorded, backed off and retried; it does not advance a
-watermark and it does not kill the process.
-
-A pass that does nothing logs nothing except a heartbeat, so a log that has stopped growing
-means a dead runner -- which is a fact you can see.
-"""
 
 import os
 import sqlite3
@@ -62,7 +30,6 @@ def corpus(run_dir):
 
 
 def one_pass(src, an, tenants, log=_log) -> dict:
-    """Every tenant, dependencies first. One tenant's failure does not stop the others."""
     done, failed = [], []
     for t in store.order_tenants(list(tenants)):
         try:
@@ -83,7 +50,6 @@ def one_pass(src, an, tenants, log=_log) -> dict:
 
 
 def rebuild(an, tenants, log=_log):
-    """Force every tenant to recompute from scratch on the next pass."""
     for t in tenants:
         try:
             an.executescript(t.DDL)

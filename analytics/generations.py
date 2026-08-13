@@ -1,23 +1,5 @@
 from __future__ import annotations
 
-"""Which model generation was playing when, as an ALIGNMENT -- never as a recorded fact.
-
-Nothing in the corpus joins a stored ranking to the weights that produced it. There is no
-such column, and the two candidates that look like one are empty: `collector_versions` has
-zero rows and `decisions.version_id` is NULL on every decision. So "how has agreement
-tracked by model version" cannot be answered by a join. It can only be answered by matching
-decision timestamps against when each retrain happened, and saying so.
-
-The training ledger records what is needed for that. `advisor/session.py:_flush_generation`
-writes a trial for generation N and THEN retrains, so a trial describes the stretch played
-under the fit recorded in its own `fit` key, spanning [started, ts].
-
-Those windows do not always tile cleanly -- two of them genuinely overlap on the current
-ledger. Rather than hide that, each window is clipped to the next one's start so the join
-becomes a partition (a decision lands in exactly one generation, never two), and the trial
-that did the clipping is recorded in `overlapped_by`. A view built on this is required to
-carry the caveat; `advisor_api` enforces that with a non-optional field.
-"""
 
 import os
 import sys
@@ -67,7 +49,6 @@ def _mine(row, run_dir) -> bool:
 
 
 def _windows(run_dir):
-    """[(trial, started, ended, ...)] for this run dir, sorted, clipped to a partition."""
     ledger = metrics_db.trials() or []
     now = time.time()
     live = metrics_db.live_trials(ledger, now)
@@ -81,9 +62,6 @@ def _windows(run_dir):
         started, ended = float(started), float(ended)
         if ended < started:
             started, ended = ended, started
-        # The generation playing now is still producing decisions. Ending its window at its
-        # last ledger write would leave every decision made since outside every window, and
-        # a join over them would answer for the previous model.
         if str(r.get("trial") or "") in live:
             ended = max(ended, now)
         rows.append({
@@ -110,7 +88,6 @@ def _windows(run_dir):
 
 
 def safe_hi(src, an=None) -> int:
-    """The ledger has no row id. Its size stands in: a changed ledger means a new pass."""
     try:
         return len(metrics_db.trials() or [])
     except Exception:
@@ -118,7 +95,6 @@ def safe_hi(src, an=None) -> int:
 
 
 def source_stats(src, hi):
-    """No count check: this table holds only the trials that touched THIS run dir, which is"""
     return None
 
 

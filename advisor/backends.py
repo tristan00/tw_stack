@@ -33,5 +33,4 @@ def label(name):
 
 
 def parse_cfg(argv):
-    """No backend takes hyperparameters from the command line any more."""
     return {}

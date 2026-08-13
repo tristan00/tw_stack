@@ -1,4 +1,3 @@
-"""Corpus access for the API."""
 
 from __future__ import annotations
 
@@ -18,7 +17,6 @@ _MISS = object()
 
 
 def run_dir() -> str:
-    """Re-resolved per call. The run dir pointer moves when a new run starts, and an API"""
     return common.RUN_DIR
 
 
@@ -27,7 +25,6 @@ def db_path(run: str | None = None) -> str:
 
 
 def connect(run: str | None = None) -> sqlite3.Connection:
-    """One connection per (thread, path). uvicorn runs sync handlers on a thread pool and"""
     path = db_path(run)
     cache = getattr(_local, "cons", None)
     if cache is None:
@@ -47,7 +44,6 @@ _STAMP_SQL = (
 
 
 def stamp(run: str | None = None) -> tuple:
-    """A cheap value that changes exactly when the corpus gains rows."""
     con = connect(run)
     out = []
     for sql in _STAMP_SQL:
@@ -66,7 +62,6 @@ def stamp(run: str | None = None) -> tuple:
 
 
 def cached_on(key_fn):
-    """Memoize fn(*args) on a cheap key recomputed per call."""
     def deco(fn):
         state: dict = {"key": None, "vals": {}}
         lock = threading.Lock()
@@ -93,12 +88,10 @@ def cached_on(key_fn):
 
 
 def cached(fn):
-    """Memoize a query fn(con, *args) on the corpus stamp."""
     return cached_on(lambda: stamp())(fn)
 
 
 def file_stamp(*paths) -> tuple:
-    """(size, mtime) per path -- the change marker for file-backed sources."""
     out = []
     for p in paths:
         try:
@@ -110,12 +103,10 @@ def file_stamp(*paths) -> tuple:
 
 
 def cached_files(*paths):
-    """Memoize a zero-or-more-arg function on the stamp of the files it reads."""
     return cached_on(lambda: file_stamp(*paths))
 
 
 def columns(con, name: str) -> set:
-    """Long-lived run dbs drift -- gnn_impact, gnn_rank and policy were all added after"""
     try:
         return {c[0] for c in con.execute("SELECT * FROM %s LIMIT 0" % name).description}
     except sqlite3.Error:

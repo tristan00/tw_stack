@@ -1,4 +1,3 @@
-"""Assert two things about the game's own settings file, preferences.script.txt."""
 
 from __future__ import annotations
 
@@ -10,7 +9,6 @@ import common
 
 
 def prefs_path():
-    """Where the game keeps its settings. APPDATA is the only machine-dependent part."""
     appdata = os.environ.get("APPDATA")
     if not appdata:
         return None
@@ -19,7 +17,6 @@ def prefs_path():
 
 
 def line_endings(raw):
-    """(crlf, bare_lf) counts for a file read in binary."""
     crlf = raw.count(b"\r\n")
     return crlf, raw.count(b"\n") - crlf
 
@@ -28,8 +25,6 @@ def main():
     p = prefs_path()
     fails = []
     if not p or not os.path.isfile(p):
-        # Not a failure: a checkout on a machine with no game installed still runs the
-        # rest of check.py, and inventing a pass here would be worse than saying so.
         print("SKIP: no preferences.script.txt at %s" % (p or "<no APPDATA>"))
         return 0
 
@@ -44,9 +39,6 @@ def main():
             "%d line(s) end in bare LF; every copy the game has written is CRLF. "
             "Restore a CRLF copy rather than re-saving this one." % bare_lf)
 
-    # The throughput profile the run is tuned around. If these are not what the run
-    # expects, campaign load and per-turn cost both move, so say which one drifted
-    # rather than only reporting the line endings.
     want = {"gfx_resolution_scale": "0.5", "gfx_fullscreen": "false"}
     seen = {}
     for line in raw.decode("utf-8", "replace").splitlines():

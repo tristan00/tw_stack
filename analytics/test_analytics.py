@@ -1,23 +1,5 @@
 from __future__ import annotations
 
-"""The analytics layer's gates.
-
-Two kinds of thing are checked here, and they fail for different reasons.
-
-THE METRICS are checked against an independent oracle and against hand-computed constants.
-The Spearman implementation is a RESTORATION -- the original was deleted with the old
-dashboard in 7a2d3d0 -- so it is checked against a verbatim copy of that original, kept
-below. Checking a restoration against itself proves nothing.
-
-THE STORE is checked for the failure that precomputation introduces and querying does not:
-serving a number derived from a corpus that has since changed. A cache that cannot expire
-is worse than no cache, and a precomputed table that cannot notice its source moved is the
-same defect with a longer memory. So: a formula-version bump must WIPE, source drift must
-force a rebuild, the watermark must never step over a hole, and it must never commit ahead
-of the rows it describes.
-
-Offline. Builds its own temporary databases and needs no corpus and no game.
-"""
 
 import os
 import random
@@ -32,9 +14,7 @@ from analytics import metrics as M
 from analytics import store as S
 
 
-
 def reference_spearman(xs, ys):
-    """Verbatim from `git show 7a2d3d0^:advisor_ui/ui.py`, lines 152-176."""
     n = len(xs)
     if n < 3:
         return None
@@ -61,9 +41,7 @@ def reference_spearman(xs, ys):
     return (num / (dx * dy)) if dx and dy else None
 
 
-
 def test_spearman_matches_the_reference(fail):
-    """500 vectors, deliberately tie-heavy, against the deleted implementation."""
     rng = random.Random(20260812)
     worst = 0.0
     for case in range(500):
@@ -85,7 +63,6 @@ def test_spearman_matches_the_reference(fail):
 
 
 def test_reference_case_is_exact(fail):
-    """One hand-computed decision. Every constant below was worked out on paper."""
     cat = [1, 2, 3, 4, 5]
     gnn = [2, 1, 4, 3, 5]
     checks = (
@@ -107,7 +84,6 @@ def test_reference_case_is_exact(fail):
 
 
 def test_too_few_returns_none_not_one(fail):
-    """Over two offers every correlation is +-1 by construction. Reporting that as"""
     for n in (0, 1, 2):
         xs, ys = list(range(1, n + 1)), list(range(n, 0, -1))
         for name, got in (("spearman", M.spearman(xs, ys)),
@@ -135,7 +111,6 @@ def test_ties_are_averaged(fail):
 
 
 def test_top_measures_are_tie_safe(fail):
-    """A tied top must not depend on which index happened to sort first."""
     if not M.same_best([1, 1, 3], [1, 2, 3]):
         fail("both models rated offer 0 best, but same_best said no -- it is reporting a "
              "tiebreak instead of the models")
@@ -144,9 +119,7 @@ def test_top_measures_are_tie_safe(fail):
     return "tied tops compare as sets"
 
 
-
 class _Tenant:
-    """A minimal tenant, used to exercise the contract without a corpus."""
     NAME = "probe"
     FORMULA_VERSION = 1
     SOURCE = "decisions"
@@ -176,7 +149,7 @@ class _Tenant:
             if self.boom_at is not None and did == self.boom_at:
                 raise RuntimeError("injected failure at %d" % did)
             if self.drop is not None and did == self.drop:
-                continue          # simulate a tenant that silently loses a row
+                continue
             an.execute("INSERT INTO probe(decision_id, doubled) VALUES(?, ?)"
                        " ON CONFLICT(decision_id) DO UPDATE SET doubled=excluded.doubled",
                        (did, did * 2))
@@ -193,7 +166,6 @@ def _corpus(path, ids):
 
 
 class _Sandbox:
-    """A temp directory whose connections are closed before it is removed."""
 
     def __enter__(self):
         self._d = tempfile.TemporaryDirectory()
@@ -258,7 +230,6 @@ def test_source_drift_forces_rebuild(fail):
 
 
 def test_no_source_row_below_the_watermark_is_uncomputed(fail):
-    """The completeness invariant, and the reason it is counted rather than assumed."""
     with _Sandbox() as box:
         src = box.corpus("src.sqlite", [91, 92, 93, 97, 98])
         an = box.analytics()

@@ -160,8 +160,6 @@ def success_chance(bus):
         return None
 
 
-
-
 def _is_selected(state):
     return str(state or "").startswith("selected")
 
@@ -472,8 +470,6 @@ def prepare(bus, faction_key, terms, gift=None):
 def _sendable(bus):
     n = _node(bus, "button_send")
     return bool(n and n.get("visible") and str(n.get("state")) in _CLICKABLE)
-
-
 
 
 def offer_response(bus):

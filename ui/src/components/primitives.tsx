@@ -5,20 +5,7 @@ import type { Count, Ident, Metric, Rate, Scope, State } from '@/lib/api'
 import { n, pct, pctValue, stateBg, stateFill, stateText } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
-/* ------------------------------------------------------------------------------------
-   The component layer. Every view is built from these, so a table on one page cannot
-   drift from a table on another, and a rule enforced here is enforced everywhere.
-   ------------------------------------------------------------------------------------ */
 
-/**
- * A count, with the population it counted.
- *
- * The population is a required field on the type, so this renders it unconditionally.
- * The dashboard once showed campaigns as 117, 118, 124 and 126 on adjacent tabs -- each
- * correct for a different population, every one labelled just "campaigns" -- and read as
- * contradicting itself. Saying which population is what makes four different numbers
- * legible instead of alarming.
- */
 export function CountText({ count, className }: { count: Count; className?: string }) {
   return (
     <span className={cn('inline-flex items-baseline gap-1.5', className)}>
@@ -29,18 +16,12 @@ export function CountText({ count, className }: { count: Count; className?: stri
   )
 }
 
-/**
- * A proportion that always shows its denominator.
- *
- * Two rates over different populations look different on their face this way, instead of
- * requiring the reader to carry the denominators in their head -- which is how three
- * different decision totals coexisted on one screen with none of them printed.
- */
+
 export function RateText({ rate, digits = 0 }: { rate: Rate | null; digits?: number }) {
   if (!rate) return <span className="text-dim">—</span>
   const p = pct(rate, digits)
   if (p === null) {
-    // Nothing was attempted. Not the same as attempted-and-none-succeeded, so not 0%.
+
     return (
       <span className="text-dim" title={`nothing ${rate.population} yet`}>
         —
@@ -83,12 +64,7 @@ export function Dot({ state = 'neutral' }: { state?: State }) {
   return <span className={cn('inline-block size-2 rounded-full align-middle', stateFill[state])} />
 }
 
-/**
- * An identifier: the readable form, with the raw id one click away.
- *
- * The raw id is what gets grepped, logged and pasted into a query, so it is never thrown
- * away -- only demoted. Clicking copies it.
- */
+
 export function IdentLabel({
   ident,
   className,
@@ -118,13 +94,7 @@ export function IdentLabel({
   )
 }
 
-/**
- * A caveat, behind a visible affordance.
- *
- * Never a bare `title=`: a fact reachable only by hovering is invisible on a dashboard
- * you glance at, unreachable on touch, and absent from Ctrl-F. One view previously kept
- * 5,304 words in tooltips and another kept every per-option model score there.
- */
+
 export function Help({ children }: { children: ReactNode }) {
   return (
     <Popover.Root>
@@ -150,7 +120,7 @@ export function Help({ children }: { children: ReactNode }) {
   )
 }
 
-/** One line under a heading saying exactly what the section covers. Every section has one. */
+
 export function ScopeLine({ scope }: { scope: Scope | undefined }) {
   if (!scope) return null
   return (
@@ -235,12 +205,7 @@ export function Sparkline({
   )
 }
 
-/**
- * A proportion drawn as a bar, with its numbers beside it.
- *
- * The bar is a second encoding of the number, never a replacement: a bar alone cannot be
- * copied, sorted by eye, or read precisely.
- */
+
 export function Bar({ rate, width = 92 }: { rate: Rate | null; width?: number }) {
   const p = pctValue(rate)
   if (p === null) {
@@ -250,10 +215,8 @@ export function Bar({ rate, width = 92 }: { rate: Rate | null; width?: number })
       </span>
     )
   }
-  // The bar shows the proportion; it does not grade it. This used to colour itself
-  // ok/warn/bad on 70/40 cutoffs -- a second, duplicated copy of a rule the server also
-  // held -- which asserted that a low confirm rate is a fault for every action type. It
-  // is not: a diplomacy offer the AI declines is the game answering.
+
+
   return (
     <span className="flex items-center gap-2">
       <span className="bg-raised relative inline-block h-2 rounded" style={{ width }}>
@@ -269,12 +232,7 @@ export function Bar({ rate, width = 92 }: { rate: Rate | null; width?: number })
   )
 }
 
-/**
- * An empty state that says why it is empty.
- *
- * The old metrics panel rendered a bare em dash where a chart was promised and left the
- * reader to work out whether it was broken, still loading, or genuinely without data.
- */
+
 export function EmptyState({ what, why }: { what: string; why?: string | null }) {
   return (
     <Card className="text-dim px-4 py-8 text-center">
@@ -310,19 +268,7 @@ export function Skeleton({ rows = 6 }: { rows?: number }) {
   )
 }
 
-/**
- * A value on a fixed scale, with the spread it came from.
- *
- * The meter is a second encoding of the number, never a replacement -- the same rule Bar
- * carries, for the same reason: a mark alone cannot be copied, sorted by eye, or read
- * precisely.
- *
- * And like Bar it does not grade what it draws. There is no threshold at which a rank
- * correlation becomes good: two models that agree perfectly are redundant, two that agree
- * not at all may each be right about different things, and which of those is a fault is a
- * question about the run rather than about the number. Severity is a server decision
- * delivered as `state`, and the server makes no such claim about rho.
- */
+
 export function RangeMeter({
   value,
   lo = -1,
@@ -335,9 +281,9 @@ export function RangeMeter({
   value: number | null | undefined
   lo?: number
   hi?: number
-  /** An interquartile range, drawn as a wash behind the value. */
+
   band?: [number | null | undefined, number | null | undefined] | null
-  /** A reference tick, or null for none. */
+
   zero?: number | null
   digits?: number
   width?: number
@@ -372,15 +318,7 @@ export function RangeMeter({
   )
 }
 
-/**
- * A model's identity as a MARK beside a word, never as coloured text.
- *
- * Measured, not assumed: --cat and --gnn sit about 6 apart in OKLab under simulated
- * protanopia, inside the band where colour alone is not enough to tell two marks apart. So
- * the colour never carries identity on its own here -- it rides next to the name, and the
- * name is what is read. This is also why no chart in this app plots the two models as two
- * series on one axis.
- */
+
 export function ModelKey({ model, children }: { model: 'cat' | 'gnn'; children: ReactNode }) {
   return (
     <span className="inline-flex items-center gap-1.5 whitespace-nowrap">

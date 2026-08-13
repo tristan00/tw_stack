@@ -148,8 +148,10 @@ def train(runs_root=RUNS_ROOT):
     impacts = [a - b for a, b in zip(preds, e2preds)]
     data["_impacts"] = impacts
     sd_global = _sd(impacts)
+    mae = sum(abs(a - b) for a, b in zip(preds, y)) / len(y)
     meta = {"num": num, "cat": cat, "state_num": snum, "state_cat": scat,
             "exp_lo": min(impacts), "exp_hi": max(impacts), "sd_global": sd_global,
+            "mae_in_sample": round(mae, 5), "fit": fit_report,
             "w_local": W_LOCAL, "rows": len(rows),
             "campaigns": sorted(set(data["groups"])),
             "short_horizon": SHORT_HORIZON, "short_weight": SHORT_WEIGHT,
@@ -164,7 +166,6 @@ def train(runs_root=RUNS_ROOT):
     for name in ("e1.cbm", "e2.cbm", "meta.json"):
         os.replace(os.path.join(stage, name), os.path.join(MODEL_DIR, name))
     shutil.rmtree(stage, ignore_errors=True)
-    mae = sum(abs(a - b) for a, b in zip(preds, y)) / len(y)
     local = _train_local(data, num, cat, snum, scat, sd_global)
     return {"trained": True, "rows": len(rows), "mae_in_sample": round(mae, 5),
             "fit": fit_report, "local": local, "params": params(), **_counts(data)}
@@ -190,7 +191,7 @@ def _train_local(data, num, cat, snum, scat, sd_global):
                                 e2.predict(Pool(Xs, cat_features=scat_idx)))]
     sd_local = _sd(li)
     meta = {"num": num, "cat": cat, "state_num": snum, "state_cat": scat,
-            "sd_local": sd_local, "rows": len(idx),
+            "sd_local": sd_local, "rows": len(idx), "fit": lfit,
             "kinds": sorted({r.get("ctx_kind") or r.get("context_kind") or "?" for r in rows})}
     stage = LOCAL_MODEL_DIR + ".staging"
     shutil.rmtree(stage, ignore_errors=True)

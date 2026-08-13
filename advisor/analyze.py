@@ -10,20 +10,15 @@ import common
 from decisions import dbopen
 
 
-
 def live_run():
     return common.RUN_DIR
 
 
 def _con(run_dir):
-    # dbopen, not sqlite3: decision_points/entity_snapshots/action_offers/action_taken are
-    # views over the interned store now, and they call unz()/f32(), which exist only on a
-    # connection that registered them.
     return dbopen.connect(os.path.join(run_dir, "decisions.sqlite"))
 
 
 def refusal_report(con):
-    """What actually happened to the actions the agent took."""
     rows = []
     for at, in con.execute("SELECT DISTINCT action_type FROM action_taken"):
         n, ok, pre = con.execute(

@@ -1,22 +1,5 @@
 from __future__ import annotations
 
-"""Read access to the precomputed analytics tables.
-
-The mirror of `db.py`, for the sidecar the analytics runner writes. Two differences, both
-deliberate:
-
-1. The file may not exist. A fresh run dir has no analytics until the runner has run once,
-   and that is a state the dashboard must be able to describe -- "nobody has built this
-   yet" is not the same as "there is nothing to show". `connect()` returns None rather than
-   creating an empty database, so the two cannot be confused.
-
-2. The stamp is over `analytics_state`, not over the corpus. These tables change when the
-   RUNNER folds, which is a different moment from when the corpus gains a row -- and the
-   gap between the two is exactly the staleness the freshness block reports.
-
-Note this connection is read-only from the API's side, the same as the corpus. Nothing in
-`advisor_api` writes anything, anywhere; the rebuild control asks the runner to do it.
-"""
 
 import os
 import sqlite3
@@ -42,7 +25,6 @@ def path(run: str | None = None) -> str:
 
 
 def connect(run: str | None = None):
-    """One read-only connection per (thread, path), or None when nothing is built yet."""
     p = path(run)
     cache = getattr(_local, "cons", None)
     if cache is None:
@@ -57,7 +39,6 @@ def connect(run: str | None = None):
 
 
 def stamp(run: str | None = None) -> tuple:
-    """Changes exactly when the runner folds. Same per-probe guard as `db.stamp`: a probe"""
     con = connect(run)
     out = []
     if con is None:
@@ -79,7 +60,6 @@ def stamp(run: str | None = None) -> tuple:
 
 
 def cached(fn):
-    """Memoize on the analytics stamp. Late-bound, for the reason `db.cached` documents."""
     return _db.cached_on(lambda: stamp())(fn)
 
 
@@ -104,7 +84,6 @@ def all_state(run: str | None = None) -> list:
 
 
 def rows(sql: str, args=(), run: str | None = None) -> list:
-    """Every read goes through here so a missing analytics db is one branch, not many."""
     con = connect(run)
     if con is None:
         return []

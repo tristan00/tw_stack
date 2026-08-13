@@ -129,12 +129,6 @@ def _move_dist_to_smaller_enemy(row, ctx):
 
 
 def _move_dist_to_enemy(row, ctx):
-    """Distance from a move's destination to the nearest KNOWN enemy army or settlement.
-
-    `world.hostiles` is already shroud-clipped, so this only ever sees what the faction
-    can see -- a move is never scored against a settlement nobody has found. neutral_army
-    is excluded: it is not an enemy.
-    """
     if row.get("action_type") != "move":
         return None
     p = row.get("params") or {}
@@ -202,7 +196,6 @@ def _target_army_rank(row, ctx):
 
 
 def _target_faction_standing(row, ctx):
-    """Standing of the faction a diplomacy offer is aimed at, from world.relations."""
     if row.get("action_type") != "diplomacy":
         return None
     target = str(row.get("key") or "").split(":", 1)[0]
@@ -212,7 +205,6 @@ def _target_faction_standing(row, ctx):
 
 
 def _diplomacy_term(row, ctx):
-    """The term half of a diplomacy offer key, as a scalar."""
     if row.get("action_type") != "diplomacy":
         return None
     key = str(row.get("key") or "")

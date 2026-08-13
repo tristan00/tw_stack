@@ -1,43 +1,11 @@
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 local function q(s) return '"' .. tostring(s or ""):gsub('"', '\\"') .. '"' end
 
 
-
 local TRY_FAILS, TRY_FAIL_N = {}, 0
-local TRY_FAIL_CAP = 24            -- a failing loop must not flood the stream
+local TRY_FAIL_CAP = 24
 
 local function try(f)
   local ok, v = pcall(f)
@@ -54,28 +22,12 @@ local function try(f)
 end
 
 
-
-
-
-
-
-
-
-
-
-
-
 local function nn(x)
   if x == nil then return nil end
   local ok, isnull = pcall(function() return x:is_null_interface() end)
   if ok and isnull == false then return x end
   return nil
 end
-
-
-
-
-
 
 
 local function is_horde_force(mf)
@@ -107,15 +59,6 @@ local function flush_try_fails(turn, where)
 end
 
 
-
-
-
-
-
-
-
-
-
 local TWSTATE_VERSION = "v5"
 
 
@@ -137,28 +80,10 @@ local function dump_char(turn, fkey, c, role, mf_cqi)
     '"embedded":' .. jv(try(function() return c:is_embedded_in_military_force() end)),
 
 
-
     '"garrisoned":' .. jv(try(function() return c:has_garrison_residence() end)),
     '"is_governor":' .. jv(try(function() return c:is_governor() end)),
     '"garrisoned_old":' .. jv(try(function() return c:is_garrison_commander() end)),
     '"region":' .. jv(try(function() return c:region():name() end)),
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
     '"action_points_pct":' .. jv(try(function() return c:action_points_remaining_percent() end)),
@@ -175,10 +100,6 @@ local function dump_char(turn, fkey, c, role, mf_cqi)
   }
 
 
-
-
-
-
   local sk = {}
   try(function()
     local l = c:character_skill_points_list()
@@ -186,10 +107,6 @@ local function dump_char(turn, fkey, c, role, mf_cqi)
   end)
   parts[#parts + 1] = '"skills":[' .. table.concat(sk, ",") .. "]"
   parts[#parts + 1] = '"background_skill":' .. jv(try(function() return c:background_skill() end))
-
-
-
-
 
 
   local anc = {}
@@ -210,7 +127,6 @@ local function dump_char(turn, fkey, c, role, mf_cqi)
   parts[#parts + 1] = '"ancillaries":[' .. table.concat(anc, ",") .. "]"
 
 
-
   local eb = {}
   try(function()
     local l = c:effect_bundles(); if not l then return end
@@ -219,7 +135,6 @@ local function dump_char(turn, fkey, c, role, mf_cqi)
   parts[#parts + 1] = '"effect_bundles":[' .. table.concat(eb, ",") .. "]"
   local tr = {}
   try(function()
-
 
 
     local l = c:all_traits()
@@ -239,7 +154,6 @@ local function dump_force(turn, fkey, mf)
   if mf_cqi == nil then return end
 
 
-
   local is_horde = is_horde_force(mf)
   emit("{" .. table.concat({
     '"kind":"force"', '"turn":' .. turn, '"faction":' .. q(fkey),
@@ -249,7 +163,6 @@ local function dump_force(turn, fkey, mf)
     '"is_army":' .. jv(try(function() return mf:is_army() end)),
     '"upkeep":' .. jv(try(function() return mf:upkeep() end)),
     '"units":' .. jv(try(function() return mf:unit_list():num_items() end)),
-
 
 
     '"is_navy":' .. jv(try(function() return mf:is_navy() end)),
@@ -274,19 +187,6 @@ local function dump_force(turn, fkey, mf)
   }, ",") .. "}")
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
   try(function()
     local prm = nn(mf:pooled_resource_manager()); if not prm then return end
     local pl = prm:resources(); if not pl then return end
@@ -301,9 +201,6 @@ local function dump_force(turn, fkey, mf)
       }, ",") .. "}")
     end
   end)
-
-
-
 
 
   try(function()
@@ -336,7 +233,6 @@ local function dump_force(turn, fkey, mf)
         '"category":' .. jv(try(function() return u:unit_category() end)),
 
 
-
         '"rank":' .. jv(try(function() return u:rank() end)),
         '"health":' .. jv(try(function() return u:percentage_proportion_of_full_strength() end)),
       }, ",") .. "}")
@@ -354,13 +250,10 @@ local function dump_region(turn, r)
   if rname == nil then return end
 
 
-
-
   local v_growth   = try(function() return r:faction_province_growth() end)
   local v_growthpt = try(function() return r:faction_province_growth_per_turn() end)
   local v_numb     = try(function() return r:num_buildings() end)
   local v_gdp      = try(function() return r:gdp() end)
-
 
 
   local v_aedict   = try(function() return r:get_active_edict_key() end)
@@ -395,12 +288,10 @@ local function dump_region(turn, r)
         '"kind":"slot"', '"turn":' .. turn, '"region":' .. q(rname),
 
 
-
         '"slot_index":' .. i,
         '"slot_key":' .. jv(try(function() return s:key() end)),
         '"slot_id":' .. jv(try(function() return s:slot_id() end)),
         '"slot_cqi":' .. jv(try(function() return s:command_queue_index() end)),
-
 
 
         '"slot_type":' .. jv(try(function() return s:template_key() end)),
@@ -411,7 +302,6 @@ local function dump_region(turn, r)
       }, ",") .. "}")
     end
   end)
-
 
 
   try(function()
@@ -425,15 +315,10 @@ local function dump_region(turn, r)
         '"value":' .. jv(try(function() return pr:value() end)),
 
 
-
         '"max":' .. jv(try(function() return pr:maximum_value() end)),
       }, ",") .. "}")
     end
   end)
-
-
-
-
 
 
   try(function()
@@ -445,13 +330,6 @@ local function dump_region(turn, r)
       }, ",") .. "}")
     end
   end)
-
-
-
-
-
-
-
 
 
   try(function()
@@ -471,8 +349,6 @@ local function dump_region(turn, r)
       }, ",") .. "}")
     end
   end)
-
-
 
 
   try(function()
@@ -508,13 +384,6 @@ local function dump_faction(turn, f)
     '"dead":' .. jv(try(function() return f:is_dead() end)),
 
 
-
-
-
-
-
-
-
     '"income":' .. jv(try(function() return f:income() end)),
     '"net_income":' .. jv(try(function() return f:net_income() end)),
     '"expenditure":' .. jv(try(function() return f:expenditure() end)),
@@ -524,7 +393,6 @@ local function dump_faction(turn, f)
     '"rank_old":' .. jv(try(function() return f:rank() end)),
     '"leader_cqi":' .. jv(try(function() return f:faction_leader():command_queue_index() end)),
     '"has_home_region":' .. jv(try(function() return f:has_home_region() end)),
-
 
 
     '"is_researching":' .. jv(try(function() return f:is_currently_researching() end)),
@@ -539,20 +407,9 @@ local function dump_faction(turn, f)
     '"tax_level":' .. jv(try(function() return f:tax_level() end)),
 
 
-
     '"trade_value":' .. jv(try(function() return f:trade_value() end)),
     '"trade_value_pct":' .. jv(try(function() return f:trade_value_percent() end)),
   }, ",") .. "}")
-
-
-
-
-
-
-
-
-
-
 
 
   try(function()
@@ -586,10 +443,6 @@ local function dump_faction(turn, f)
   end)
 
 
-
-
-
-
   try(function()
     local fp = nn(f:plagues()); if not fp then return end
     local cl = fp:plague_component_list(); if not cl then return end
@@ -604,7 +457,6 @@ local function dump_faction(turn, f)
   end)
 
 
-
   try(function()
     local l = f:effect_bundles(); if not l then return end
     for i = 0, l:num_items() - 1 do
@@ -614,17 +466,6 @@ local function dump_faction(turn, f)
       }, ",") .. "}")
     end
   end)
-
-
-
-
-
-
-
-
-
-
-
 
 
   try(function()
@@ -648,24 +489,10 @@ local function dump_faction(turn, f)
   end)
 
 
-
-
-
-
-
-
-
-
-
-
   emit("{" .. table.concat({
     '"kind":"tech_count"', '"turn":' .. turn, '"faction":' .. q(fkey),
     '"completed":' .. jv(try(function() return f:num_completed_technologies() end)),
   }, ",") .. "}")
-
-
-
-
 
 
   try(function()
@@ -678,26 +505,10 @@ local function dump_faction(turn, f)
         '"value":' .. jv(try(function() return pr:value() end)),
 
 
-
         '"max":' .. jv(try(function() return pr:maximum_value() end)),
       }, ",") .. "}")
     end
   end)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
   try(function()
@@ -714,11 +525,6 @@ local function dump_faction(turn, f)
   end)
 
 
-
-
-
-
-
   if try(function() return f:is_human() end) == true then
     try(function()
       local wl = cm:model():world():faction_list()
@@ -729,9 +535,6 @@ local function dump_faction(turn, f)
           emit("{" .. table.concat({
             '"kind":"diplo"', '"turn":' .. turn, '"faction":' .. q(fkey), '"toward":' .. q(okey),
             '"at_war":' .. jv(try(function() return f:at_war_with(o) end)),
-
-
-
 
 
             '"trade":' .. jv(try(function() return f:trade_agreement_with(o) end)),
@@ -752,23 +555,8 @@ local function dump_faction(turn, f)
 end
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 local function scrape_all_factions(turn)
   local world = cm:model():world()
-
 
 
   local fl = world:faction_list()
@@ -795,18 +583,11 @@ local function scrape_all_factions(turn)
   end
 
 
-
-
-
-
-
-
   try(function()
     local rl = world:region_manager():region_list()
     for i = 0, rl:num_items() - 1 do dump_region(turn, rl:item_at(i)) end
   end)
 end
-
 
 
 local last_turn = -1
@@ -825,11 +606,6 @@ local function dump_round()
 end
 
 
-
-
-
-
-
 local last_end_turn = -1
 
 local function dump_round_end()
@@ -845,14 +621,7 @@ local function dump_round_end()
 end
 
 
-
-
-
 local in_player_turn = false
-
-
-
-
 
 
 local SIGNIFICANT = {}
@@ -873,12 +642,6 @@ for _, ev in ipairs({
 
   "CharacterRazedSettlement", "CharacterSackedSettlement", "CharacterLootedSettlement",
 }) do SIGNIFICANT[ev] = true end
-
-
-
-
-
-
 
 
 local function dump_player(turn, reason)
@@ -913,29 +676,6 @@ local function dump_player(turn, reason)
   end)
   if not ok then emit('{"kind":"error","msg":' .. q(tostring(err)) .. "}") end
 end
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 local EVENTS = {
@@ -1133,13 +873,9 @@ local EVENTS = {
 }
 
 
-
 local function ctx(context)
   local p = {}
   local function add(k, f) p[#p + 1] = '"' .. k .. '":' .. jv(try(f)) end
-
-
-
 
 
   add("component", function() return context.string end)
@@ -1156,8 +892,6 @@ local function ctx(context)
   add("unit", function() return context:unit():unit_key() end)
 
 
-
-
   add("unit_faction", function() return context:unit():faction():name() end)
   add("unit_force_faction", function() return context:unit():military_force():faction():name() end)
   add("tech", function() return context:technology() end)
@@ -1166,10 +900,6 @@ local function ctx(context)
   add("dilemma", function() return context:dilemma() end)
   add("choice", function() return context:choice() end)
   add("autoresolved", function() return context:is_autoresolved() end)
-
-
-
-
 
 
   add("skill", function() return context:skill_point_spent_on() end)
@@ -1193,10 +923,6 @@ local function ctx(context)
   add("mission_key", function() return context:mission():mission_record_key() end)
 
 
-
-
-
-
   add("initiative_key", function() return context:initiative_key() end)
   add("edict_province", function() return context:province():key() end)
 
@@ -1206,12 +932,8 @@ local function ctx(context)
   add("ritual_category", function() return context:ritual():ritual_category() end)
 
 
-
-
   add("captive_outcome_key", function() return context:get_outcome_key() end)
   add("captive_record_key", function() return context:get_record_key() end)
-
-
 
 
   add("ability", function() return context:ability() end)
@@ -1224,12 +946,6 @@ local function ctx(context)
   add("mr_crit_failure", function() return context:mission_result_critial_failure() end)
   add("mr_critical_success", function() return context:mission_result_critical_success() end)
   add("mr_critical_failure", function() return context:mission_result_critical_failure() end)
-
-
-
-
-
-
 
 
   add("pr_resource_key", function() return context:resource():key() end)
@@ -1255,27 +971,13 @@ local function ctx(context)
   add("blessing_key", function() return context:blessing_key() end)
 
 
-
-
-
-
-
-
-
-
-
-
-
   add("recruit_unit_key", function() return context:unit_record():key() end)
   add("recruit_main_unit_key", function() return context:main_unit_record():key() end)
   add("recruit_unit_key2", function() return context:unit_record():unit_key() end)
 
 
-
-
   add("build_key", function() return context:building():key() end)
   add("build_record_key", function() return context:building_record():key() end)
-
 
 
   add("occupation_decision", function() return context:occupation_decision() end)
@@ -1283,14 +985,9 @@ local function ctx(context)
   add("settlement_option", function() return context:settlement_occupation_decision() end)
 
 
-
-
-
   add("compass_direction", function() return context:direction() end)
   add("compass_direction_key", function() return context:direction():key() end)
   add("compass_wom_direction", function() return context:wind_of_magic_direction() end)
-
-
 
 
   add("caravan_dest", function() return context:caravan():final_destination_region():name() end)
@@ -1301,27 +998,10 @@ local function ctx(context)
 end
 
 
-
-
-
-
-
-
 function twstate()
 
 
-
-
   emit('{"kind":"version","twstate":' .. jv(TWSTATE_VERSION) .. '}')
-
-
-
-
-
-
-
-
-
 
 
   pcall(function() dump_round() end)
@@ -1330,8 +1010,6 @@ function twstate()
 
 
   core:add_listener("twstate_fts", "FactionTurnStart", true, function() dump_round() end, true)
-
-
 
 
   core:add_listener("twstate_player_ts", "FactionTurnStart", true, function(context)
@@ -1353,8 +1031,6 @@ function twstate()
   end, true)
 
 
-
-
   local armed = 0
   for _, ev in ipairs(EVENTS) do
     local ok = pcall(function()
@@ -1365,11 +1041,9 @@ function twstate()
             local turn = try(function() return cm:model():turn_number() end) or -1
 
 
-
             emit('{"kind":"event","event":' .. q(ev) .. ',"turn":' .. turn ..
                  ',"in_player_turn":' .. tostring(in_player_turn) ..
                  "," .. ctx(context) .. "}")
-
 
 
             if in_player_turn and SIGNIFICANT[ev] then

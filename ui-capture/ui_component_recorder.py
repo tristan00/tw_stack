@@ -818,11 +818,10 @@ UNMAPPED_CAP = 400
 
 
 def capture_unmapped(bus: Bus, component: str) -> dict | None:
-    """Whatever this panel is, write it down."""
     try:
         r = bus.send("tree", "%s %d %d" % (component, UNMAPPED_DEPTH, UNMAPPED_NODES),
                      timeout=20.0) or {}
-    except Exception as e:                                      # noqa: BLE001
+    except Exception as e:
         sys.stderr.write("ui-capture: unmapped tree(%s) -> %s\n" % (component, repr(e)[:80]))
         return None
     if not r.get("found"):
@@ -932,8 +931,6 @@ def _newest_script_log() -> str | None:
         except OSError:
             continue
     return best
-
-
 
 
 def _opened_components(chunk: str) -> list:
@@ -1051,7 +1048,7 @@ def watch(bus: Bus, emit, panels: dict | None = None, is_running=lambda: True) -
                         sys.stderr.write("ui-capture: capturing unmapped panel %r generically\n" % c)
                     try:
                         row = capture_unmapped(bus, c)
-                    except Exception as e:                      # noqa: BLE001
+                    except Exception as e:
                         sys.stderr.write("ui-capture: capture_unmapped(%s) skipped -> %s\n"
                                          % (c, repr(e)[:80]))
                         row = None

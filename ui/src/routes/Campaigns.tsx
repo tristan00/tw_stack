@@ -28,19 +28,7 @@ const VIEWS = [
   { key: 'matrix', label: 'action types', asks: 'which action types fail' },
 ]
 
-/**
- * Growth on one metric: first → last over the turns this campaign recorded.
- *
- * Signed, and reachable in BOTH directions -- 39 campaigns gained a settlement and 6 lost
- * one. The column this replaces was copied out of the abandonment verdict, which is only
- * written when the gate fires, and the gate fires exactly when the gain is below its
- * threshold: 147 of 152 filled cells read `N → N`, none could ever read up, and the green
- * branch was unreachable code.
- *
- * A campaign with no span says so BY NAME. It never renders as a delta of zero, because
- * "no data" and "no change" are different facts and rendering both as a dash is what made
- * 117 of 265 rows unreadable.
- */
+
 function Growth({
   row,
   first,
@@ -79,8 +67,8 @@ const campaignCols: Col<CampaignRow>[] = [
     label: 'outcome',
     group: 'campaign',
     value: (r) => r.outcome?.label ?? '',
-    // Outcome and the metrics are one table. They were previously two tables sharing no
-    // key, so the question this page exists to answer could not be answered from it.
+
+
     render: (r) =>
       r.outcome ? (
         <span className="flex items-center gap-1.5">
@@ -101,10 +89,8 @@ const campaignCols: Col<CampaignRow>[] = [
     unit: 'reached',
     align: 'right',
     group: 'campaign',
-    // The last turn the campaign decided on. `ended at` used to sit here reading the
-    // abandonment verdict, was null for 42 campaigns, and became equal to this field by
-    // construction once both came from the decision series -- so it is gone rather than
-    // repaired. Two fields equal by construction is the same defect at a smaller scale.
+
+
     value: (r) => r.turns ?? undefined,
     sortUndefined: 'last',
     render: (r) => n(r.turns),
@@ -126,9 +112,8 @@ const campaignCols: Col<CampaignRow>[] = [
     key: 'settlements_growth',
     label: 'settlements',
     group: 'growth (first → best)',
-    // undefined, NOT 0 and NOT null: TanStack tests `=== undefined` strictly. The old key
-    // was `(to ?? 0) - (from ?? 0)`, which sorted every blank row into the middle of the
-    // genuinely-flat ones and ranked a row with one endpoint as the biggest grower.
+
+
     value: (r) => r.settlements_growth ?? undefined,
     sortUndefined: 'last',
     render: (r) => (
@@ -146,10 +131,8 @@ const campaignCols: Col<CampaignRow>[] = [
     unit: 'per turn',
     align: 'right',
     group: 'growth (first → best)',
-    // Its own column rather than a parenthetical inside the delta, so the table can be
-    // sorted on the RATE as well as on the total. A campaign that gained one settlement
-    // over three turns and one that gained it over twelve are not the same result, and
-    // the rate is the number that separates them once campaigns run to different lengths.
+
+
     value: (r) => r.settlements_per_turn ?? undefined,
     sortUndefined: 'last',
     render: (r) =>
@@ -183,10 +166,8 @@ const campaignCols: Col<CampaignRow>[] = [
     unit: 'per turn',
     align: 'right',
     group: 'growth (first → best)',
-    // Its own column rather than a parenthetical inside the delta, so the table can be
-    // sorted on the RATE as well as on the total. A campaign that gained one settlement
-    // over three turns and one that gained it over twelve are not the same result, and
-    // the rate is the number that separates them once campaigns run to different lengths.
+
+
     value: (r) => r.lord_per_turn ?? undefined,
     sortUndefined: 'last',
     render: (r) =>
@@ -296,8 +277,7 @@ function AllCampaigns() {
         <Card className="px-3 py-2">
           <CountText count={data.unjoined} />
         </Card>
-        {/* How many campaigns a growth number exists for at all. The column this replaces
-            rendered a dash for 117 of 265 rows and said nothing about why. */}
+        {}
         <Card className="px-3 py-2">
           <div className="text-dim text-2xs">growth measurable</div>
           <Bar rate={data.growth_coverage} />
@@ -329,9 +309,8 @@ const startCols: Col<StartRow>[] = [
     key: 'n',
     label: 'campaigns',
     align: 'right',
-    // `n` leads because most starts have one campaign, so every aggregate beside it is
-    // one observation wearing an average's name. Marking that beats a paragraph
-    // apologising for it underneath.
+
+
     value: (r) => r.n,
     render: (r) => (
       <span className="flex items-center justify-end gap-1.5">
@@ -467,9 +446,7 @@ function Matrix() {
   if (loading || !data) return <Skeleton rows={10} />
   return (
     <div className="space-y-6">
-      {/* No callout above the table. The table is sorted worst-first and carries the rate
-          and its denominator on every row, so a banner repeating the first row said
-          nothing the reader could not already see -- it just shouted it. */}
+      {}
       <Section title="by action type" scope={data.scope}>
         <DataTable
           rows={data.totals}

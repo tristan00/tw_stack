@@ -1,35 +1,16 @@
 @import "tailwindcss";
 
-/* ----------------------------------------------------------------------------------
-   Tokens.
-
-   Two rules govern this block and both come from defects that shipped.
-
-   1. Every role is defined in BOTH themes. The previous stylesheet overrode five of its
-      eight tokens for light mode and left green, amber and red at their dark-tuned
-      values, so on the theme actually in use they measured 2.54:1, 2.52:1 and 3.35:1
-      against white -- every semantic colour failing WCAG AA on the page the developer
-      looked at all day. A partial theme is the failure mode, so the dark block below
-      redefines every role, not the ones that looked wrong.
-
-   2. Contrast is verified, not eyeballed. `npm run check:contrast` recomputes every
-      pair in this file and fails the build under 4.5:1 for text roles and 3:1 for marks
-      (WCAG 1.4.11). The numbers in the comments are that script's output.
-
-   Type: one proportional face for language, one monospace face with tabular figures for
-   every number and identifier, so digits line up in a column and an id is visibly an id.
-   ---------------------------------------------------------------------------------- */
 
 @theme {
   --font-ui: system-ui, "Segoe UI Variable Text", "Segoe UI", -apple-system, sans-serif;
   --font-mono: ui-monospace, "Cascadia Code", "Cascadia Mono", SFMono-Regular, Consolas, monospace;
 
-  --text-2xs: 0.6875rem;  /* 11px -- scope lines, units, table meta */
-  --text-xs: 0.75rem;     /* 12px -- table body */
-  --text-sm: 0.8125rem;   /* 13px -- default */
-  --text-base: 0.9375rem; /* 15px -- section headings */
-  --text-lg: 1.1875rem;   /* 19px -- the current campaign */
-  --text-xl: 1.5rem;      /* 24px -- metric values */
+  --text-2xs: 0.6875rem;
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-base: 0.9375rem;
+  --text-lg: 1.1875rem;
+  --text-xl: 1.5rem;
 }
 
 :root {
@@ -37,33 +18,33 @@
   --surface: #ffffff;
   --raised: #f2f4f7;
   --line: #d7dbe2;
-  --fg: #1a1d23;          /* 16.88:1 on surface */
-  --dim: #596273;         /*  6.14:1 */
-  --ok: #1a7f37;          /*  5.08:1 */
-  --warn: #8a6100;        /*  5.54:1 */
-  --bad: #cf222e;         /*  5.36:1 */
-  --accent: #0550ae;      /*  7.59:1 */
-  --cat: #0550ae;         /* the tree model */
-  --gnn: #a4288a;         /* the graph model */
+  --fg: #1a1d23;
+  --dim: #596273;
+  --ok: #1a7f37;
+  --warn: #8a6100;
+  --bad: #cf222e;
+  --accent: #0550ae;
+  --cat: #0550ae;
+  --gnn: #a4288a;
   --ok-soft: #dcfce7;
   --warn-soft: #fef3c7;
   --bad-soft: #fee2e2;
   --accent-soft: #dbeafe;
 }
 
-/* Follows the OS by default, and an explicit choice always wins over it. */
+
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #12141a;
     --surface: #181b23;
     --raised: #1f232d;
     --line: #2a2f3a;
-    --fg: #e6e8ee;        /* 14.05:1 on surface */
-    --dim: #9aa3b6;       /*  6.79:1 */
-    --ok: #4ac25c;        /*  7.51:1 */
-    --warn: #e0a72c;      /*  7.98:1 */
-    --bad: #ff6b62;       /*  6.17:1 */
-    --accent: #6ea8ff;    /*  7.14:1 */
+    --fg: #e6e8ee;
+    --dim: #9aa3b6;
+    --ok: #4ac25c;
+    --warn: #e0a72c;
+    --bad: #ff6b62;
+    --accent: #6ea8ff;
     --cat: #6ea8ff;
     --gnn: #f07ab8;
     --ok-soft: #15321d;
@@ -127,9 +108,7 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* Every number and identifier is monospace with tabular figures. Proportional digits in
-   a column of numbers are unreadable at a glance, which is the only way this page is
-   ever read. */
+
 .num,
 code,
 kbd,
@@ -143,10 +122,7 @@ pre {
   background: var(--accent-soft);
 }
 
-/* A wide table scrolls inside its own box. The page itself never scrolls sideways --
-   the previous dashboard put 1833px of table in a 1612px box and the sticky header lost
-   its containing block to the scroller, so past a few hundred pixels you were reading
-   two unlabelled columns both called "rank". */
+
 .tablewrap {
   overflow: auto;
   max-width: 100%;

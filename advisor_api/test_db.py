@@ -1,4 +1,3 @@
-"""Tests for the corpus access layer."""
 
 from __future__ import annotations
 
@@ -16,7 +15,7 @@ def test_every_stamp_probe_executes():
     for sql in db._STAMP_SQL:
         try:
             row = con.execute(sql).fetchone()
-        except Exception as e:                                   # noqa: BLE001
+        except Exception as e:
             bad.append("%s -> %s" % (sql, e))
             continue
         if row is None or not isinstance(row[0], (int, float, type(None))):
@@ -31,7 +30,6 @@ def test_stamp_carries_no_error_markers():
 
 
 def test_stamp_is_not_constant_zero():
-    """A stamp of all zeros pins every cache entry forever."""
     st = db.stamp()
     assert any(p for p in st), "stamp is all zeros -- cache would never invalidate: %r" % (st,)
 
@@ -87,7 +85,7 @@ if __name__ == "__main__":
         except AssertionError as e:
             fails += 1
             print("FAIL %s\n     %s" % (name, e))
-        except Exception as e:                                   # noqa: BLE001
+        except Exception as e:
             fails += 1
             print("ERR  %s\n     %r" % (name, e))
     print("\n%d failure(s)" % fails)

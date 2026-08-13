@@ -1,32 +1,5 @@
 from __future__ import annotations
 
-r"""Gates for the blocking-screen model.
-
-  build     THE HARD ONE. Every stored screen must build a graph whose action nodes are
-            exactly its options, with the taken one present and no map action leaking in,
-            off a context that is a real DECISION snapshot. Two specific regressions it
-            exists to catch, both of which are silent and both of which produce a model
-            that trains fine and means nothing:
-
-              - the context falling back to the interrupt's own world blob, which carries
-                no relations, no citizenry and no war_graph (0 of 347 archived rows carry
-                any of the three), so garrisons become field armies and diplomacy vanishes
-              - the borrowed record keeping its offers, which would put ~376 map actions
-                into a 3-option screen's candidate set
-
-  discrim   Held-out acc@1 / MRR against uniform, PER SCREEN as well as overall -- uniform
-            on a 2-option pre-battle is 0.5, and an aggregate number over screens with 2
-            and 4 options hides which one moved. REPORTS, does not fail: at 256 screens a
-            failure would tell us only what we already know.
-
-  ablate    Rewire one edge group at a time and see what moves the ranking. The split that
-            matters here is MAP against PANEL: the panel facts (the battle forecast, the
-            attitude, the deal) are strong and easy, and a model that reads only those is
-            the decorative graph this package's gates exist to detect. Reporting them side
-            by side means nobody has to take it on trust. REPORTS, does not fail, yet.
-
-    python -m advisor.mapgraph.interrupt_eval build|discrim|ablate
-"""
 
 import copy
 import json
@@ -125,7 +98,6 @@ def build():
 
 
 def _held_out():
-    """(ranker, [(example, graph-inputs)]) over the campaigns the fit held out."""
     from base_model import stable_split
     from advisor.mapgraph import interrupt_rank as IR
     r = IR.Ranker()
@@ -179,14 +151,10 @@ def discrim():
                   "uniform_acc@1": round(tot["uni"] / tot["n"], 4)}
     out["beats_uniform"] = out["ALL"]["acc@1"] > out["ALL"]["uniform_acc@1"]
     print(json.dumps(out, indent=2))
-    # Reports. 256 screens over 2-4 options cannot separate a real edge from noise, and a
-    # hard gate here would only ever fail for that reason. Make it fail once the corpus
-    # can carry it.
     print("discrim OK (reported, not gated -- %d held-out screens)" % out["ALL"]["n"])
 
 
 def _rewire(g, group, rng):
-    """Degree-preserving shuffle of the destinations within one edge group."""
     act = S.ACTION_TYPE_INDEX
     scr = S.NODE_TYPES.index("screen")
     gg = copy.copy(g)

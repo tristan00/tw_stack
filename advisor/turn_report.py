@@ -12,7 +12,6 @@ import common
 from decisions import dbopen
 
 
-
 def current_run():
     return common.RUN_DIR
 

@@ -5,30 +5,6 @@ import { n } from '@/lib/format'
 import { Card } from '@/components/primitives'
 import { cn } from '@/lib/utils'
 
-/**
- * The charts.
- *
- * Hand-rolled SVG, for the reason the rest of this client is assembled from a dozen small
- * primitives: a chart library brings its own colour scale, its own type ramp and its own
- * tooltip DOM, and each one would have to be overridden token by token to stop these pages
- * speaking two visual languages. What is actually needed is a polyline, a set of columns
- * and a scatter -- against roughly 450 KB of library on a bundle the build caps at 900 KB
- * and a client that ships from disk with no network.
- *
- * Three rules hold across all of them.
- *
- *   The y domain of a rho chart is [-1, +1], ALWAYS. Auto-scaling it to the values present
- *   makes a wobble of 0.03 fill the card and read as a trend. rho has a natural range; the
- *   chart shows it.
- *
- *   A bucket the server gated is NOT DRAWN. The line breaks and the bucket appears in the
- *   table view with the reason -- the same refusal the correlation tables make when they
- *   decline an r over eight points rather than print noise wearing a number.
- *
- *   ONE plotted series per chart, in --accent. The two models are never two lines: they
- *   measure about 6 apart in OKLab under protanopia, inside the band where colour alone
- *   cannot separate two marks. Their identity is carried by ModelKey, beside a word.
- */
 
 function useMeasure<T extends HTMLElement>() {
   const ref = useRef<T>(null)
@@ -43,12 +19,7 @@ function useMeasure<T extends HTMLElement>() {
   return [ref, w] as const
 }
 
-/**
- * The card, the chart/table toggle, and a note that belongs to the drawing.
- *
- * Every chart has a table twin. A value reachable only by hovering a shape is invisible to
- * anyone reading with a keyboard, and invisible to anyone who wants to copy it.
- */
+
 export function ChartFrame({
   children,
   table,
@@ -91,7 +62,7 @@ function fmt(v: number | null | undefined, d = 3) {
   return `${v >= 0 ? '+' : ''}${v.toFixed(d)}`
 }
 
-/** Correlation over time, with the retrain boundaries drawn on a rail above the plot. */
+
 export function RhoTrend({
   points,
   marks,
@@ -109,8 +80,7 @@ export function RhoTrend({
   const sx = (x: number) => PAD.l + (iw * (x - x0)) / (x1 - x0 || 1)
   const sy = (v: number) => PAD.t + RAIL + PLOT_H * (1 - (v + 1) / 2)
 
-  // A gated bucket breaks the line rather than being interpolated across. Joining two
-  // measured points through a gap draws a value nobody computed.
+
   const segs: AgreementSeriesPoint[][] = []
   let cur: AgreementSeriesPoint[] = []
   for (const p of points) {
@@ -153,8 +123,7 @@ export function RhoTrend({
       className="focus:outline-accent min-w-0 focus:outline-1"
     >
       <svg width={width} height={HEIGHT} className="block">
-        {/* Solid hairlines, one shade off the surface, never dashed. Zero is the reference
-            the reader actually looks for, so it is one step stronger. */}
+        {}
         {[-1, -0.5, 0, 0.5, 1].map((v) => (
           <g key={v}>
             <line
@@ -179,7 +148,7 @@ export function RhoTrend({
           </g>
         ))}
 
-        {/* The retrain rail sits ABOVE the plot so its labels can never collide with data. */}
+        {}
         {retrains.map((m, i) => {
           const x = sx(m.from_ts!)
           const label = x - lastLabelX > 20
@@ -229,7 +198,7 @@ export function RhoTrend({
           />
         ))}
 
-        {/* One direct label, at the end, on the one series. Never a number per point. */}
+        {}
         {last && (
           <>
             <circle
@@ -288,7 +257,7 @@ export function RhoTrend({
             </text>
           ))}
 
-        {/* The crosshair finds the X: the reader aims at a time, never at a 2px line. */}
+        {}
         <rect
           x={PAD.l}
           y={PAD.t}
@@ -310,8 +279,7 @@ export function RhoTrend({
         />
       </svg>
 
-      {/* A pinned readout, not a floating tooltip: keyboard-reachable, unclippable by the
-          card, and it needs no portal. Values lead; labels follow. */}
+      {}
       <div
         aria-live="polite"
         className="border-line flex flex-wrap items-baseline gap-x-4 gap-y-1 border-t px-3 py-1.5 text-2xs"
@@ -343,7 +311,7 @@ export function RhoTrend({
   )
 }
 
-/** 4px rounded data-end, square at the baseline. Never `rx` on all four corners. */
+
 function column(x: number, y: number, w: number, h: number, r = 4) {
   const rr = Math.max(0, Math.min(r, w / 2, h))
   return (
@@ -355,15 +323,7 @@ function column(x: number, y: number, w: number, h: number, r = 4) {
 const GAP = 2
 const CAP = 26
 
-/**
- * The distribution of per-decision rho.
- *
- * One hue, and position carries the sign. Deliberately not diverging and deliberately not
- * status-coloured: a negative rho is not "bad" -- near +1 means the second model is
- * redundant, near 0 means unrelated criteria, and neither is a fault -- and status tokens
- * are reserved for severity the server decided. Colouring bins by their own value would
- * also spend the identity channel re-encoding what bar height already shows.
- */
+
 export function RhoHistogram({ bins, median }: { bins: RhoBin[]; median: number | null }) {
   const [ref, w] = useMeasure<HTMLDivElement>()
   const [hover, setHover] = useState<number | null>(null)
@@ -409,7 +369,7 @@ export function RhoHistogram({ bins, median }: { bins: RhoBin[]; median: number 
                 fill="var(--accent)"
                 opacity={hover === null || hover === i ? 1 : 0.55}
               />
-              {/* The hit target is the whole column slot, never the painted pixels. */}
+              {}
               <rect
                 x={P.l + i * slot}
                 y={P.t}
@@ -486,13 +446,7 @@ export interface RankPair {
   label: string
 }
 
-/**
- * One decision's two rankings, as a scatter.
- *
- * This is the honest visual definition of rho: a cloud along the diagonal IS rho near +1.
- * y grows downward so rank 1 is top-left on both axes and perfect agreement is the
- * top-left to bottom-right diagonal.
- */
+
 export function RankScatter({ pairs, size = 236 }: { pairs: RankPair[]; size?: number }) {
   const [hover, setHover] = useState<number | null>(null)
   if (!pairs.length) return null
@@ -512,7 +466,7 @@ export function RankScatter({ pairs, size = 236 }: { pairs: RankPair[]; size?: n
           strokeWidth="1"
           shapeRendering="crispEdges"
         />
-        {/* Perfect agreement. A reference, not data -- hairline, solid, recessive. */}
+        {}
         <line x1={P} y1={P} x2={size - P} y2={size - P} stroke="var(--line)" strokeWidth="1" />
         {pairs.map((p, i) => (
           <g key={p.label}>

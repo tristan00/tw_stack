@@ -1,4 +1,3 @@
-"""The dashboard's HTTP surface: a typed JSON API, a change stream, and the built client."""
 
 from __future__ import annotations
 
@@ -28,7 +27,6 @@ UI_DIST = os.path.join(common.ROOT, "ui", "dist")
 
 @contextlib.asynccontextmanager
 async def _lifespan(_app):
-    # The process probe runs for the life of the server, not per request -- see proc.py.
     proc.start()
     try:
         yield
@@ -48,10 +46,6 @@ def _scope(text, detail=None) -> Scope:
     return Scope(text=text, detail=detail)
 
 
-# ----------------------------------------------------------------------------------------
-# run
-# ----------------------------------------------------------------------------------------
-
 @app.get("/api/run", response_model=RunPage, tags=["run"])
 def get_run() -> RunPage:
     con = _con()
@@ -67,10 +61,6 @@ def get_run() -> RunPage:
         log_tail=tail,
         log_name=os.path.basename(log_path) if log_path else None)
 
-
-# ----------------------------------------------------------------------------------------
-# campaigns
-# ----------------------------------------------------------------------------------------
 
 @app.get("/api/campaigns/starts", response_model=StartsPage, tags=["campaigns"])
 def get_starts() -> StartsPage:
@@ -99,9 +89,6 @@ def get_matrix(kind: str = Query("action", pattern="^(action|interrupt)$")) -> M
             action_type=q._phrase(atype), rate=rate,
             total_ms=round(ms, 0) or None,
             per_try_ms=round(ms / tried, 0) if tried else None))
-    # Worst first. This ordering IS the finding: aggregated across every faction one
-    # action type confirms far below the rest, and in an alphabetical grid of a thousand
-    # cells that fact has nowhere to appear.
     tot_rows.sort(key=lambda t: (t.rate.pct if t.rate.pct is not None else 999, -t.rate.of))
     columns = [q._phrase(a) for a, _ in sorted(totals_.items())]
     rows = []
@@ -156,10 +143,6 @@ def get_campaign(campaign_key: str) -> CampaignDetail:
         row=row, reward=reward, constant_columns=constant,
         diplomacy=q.diplomacy_tail(con, campaign_key), decisions=decisions)
 
-
-# ----------------------------------------------------------------------------------------
-# decisions
-# ----------------------------------------------------------------------------------------
 
 @app.get("/api/decisions/actions", response_model=ActionsPage, tags=["decisions"])
 def get_actions() -> ActionsPage:
@@ -228,10 +211,6 @@ def get_decisions(offset: int = 0, limit: int = Query(q.DECISIONS_PAGE, ge=1, le
         results=facets["results"])
 
 
-# ----------------------------------------------------------------------------------------
-# models
-# ----------------------------------------------------------------------------------------
-
 @app.get("/api/models/forcing", response_model=ForcingPage, tags=["models"])
 def get_forcing() -> ForcingPage:
     con = _con()
@@ -253,7 +232,6 @@ def get_agreement() -> AgreementPage:
 @app.get("/api/models/agreement/series", response_model=AgreementSeriesPage,
          tags=["models"])
 def get_agreement_series(axis: str = "window") -> AgreementSeriesPage:
-    """How agreement has tracked over the run, or by model generation."""
     return q.agreement_series(axis)
 
 
@@ -265,13 +243,11 @@ def get_agreement_breakdown(dim: str = "action_type") -> AgreementBreakdownPage:
 
 @app.get("/api/analytics", response_model=AnalyticsPage, tags=["infra"])
 def get_analytics() -> AnalyticsPage:
-    """What the analytics service has precomputed, and how far behind it is."""
     return q.analytics_status()
 
 
 @app.post("/api/analytics/rebuild", response_model=ControlResult, tags=["infra"])
 def post_analytics_rebuild() -> ControlResult:
-    """Ask the analytics service to rebuild from scratch."""
     return ControlResult(ok=True, steps=proc.rebuild_analytics())
 
 
@@ -287,8 +263,6 @@ def get_correlations() -> CorrelationsPage:
 @app.get("/api/models/training", response_model=TrainingPage, tags=["models"])
 def get_training() -> TrainingPage:
     history = q.training_history()
-    # Group order is decided here, once, so the client renders whatever groups exist
-    # without hard-coding a column list that drifts from the data.
     seen: list = []
     for ev in history:
         for name in ev.groups:
@@ -306,10 +280,6 @@ def get_models() -> ModelsPage:
     return ModelsPage(scope=_scope("the models on disk right now", common.MODELS),
                       cards=q.model_cards(), fit=q.fit_config())
 
-
-# ----------------------------------------------------------------------------------------
-# infra
-# ----------------------------------------------------------------------------------------
 
 @app.get("/api/infra", response_model=InfraPage, tags=["infra"])
 def get_infra() -> InfraPage:
@@ -341,20 +311,15 @@ def post_coldstart(params: LaunchDefaults) -> ControlResult:
     return ControlResult(ok=True, steps=proc.launch("cold", params.model_dump()))
 
 
-# ----------------------------------------------------------------------------------------
-# change stream
-# ----------------------------------------------------------------------------------------
-
 @app.get("/api/events", tags=["run"])
 async def events():
-    """Server-sent events: one message whenever the corpus gains rows."""
     async def gen():
         last = None
         beat = 0
         while True:
             try:
                 cur = db.stamp()
-            except Exception:                                   # noqa: BLE001
+            except Exception:
                 cur = last
             if cur != last:
                 last = cur
@@ -374,20 +339,13 @@ def health():
     return {"ok": True, "run_dir": common.RUN_DIR, "stamp": list(db.stamp())}
 
 
-# ----------------------------------------------------------------------------------------
-# the built client
-# ----------------------------------------------------------------------------------------
-
 @app.get("/{full_path:path}", include_in_schema=False)
 def spa(full_path: str):
-    """Serve the built client."""
     index = os.path.join(UI_DIST, "index.html")
     if not os.path.isfile(index):
         return {"error": "the client is not built",
                 "fix": "cd ui && npm install && npm run build",
                 "expected": UI_DIST}
-    # Only ever serve files from inside the build directory: a path that escapes it after
-    # normalisation is a traversal attempt, not a client route.
     candidate = os.path.normpath(os.path.join(UI_DIST, full_path))
     if (full_path and os.path.isfile(candidate)
             and os.path.commonpath([os.path.abspath(candidate),

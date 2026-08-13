@@ -1,30 +1,5 @@
 from __future__ import annotations
 
-"""The abandonment gate, pinned.
-
-`_growth_verdict` is RUN CONTROL: it decides whether to stop playing a campaign. It is not
-a measurement of how a campaign went, and the two were confused for a long time -- the
-dashboard rendered this verdict AS the campaign's growth, which is why 147 of 152 filled
-cells read `N -> N` and not one could ever read up. The verdict is only recorded when the
-gate FIRED, and the gate fires exactly when the gain is below `GROWTH_MIN_GAIN`.
-
-The reporting fix separates the two. This file exists so that separation cannot quietly
-change what the gate does. Every campaign the run abandons, and at which turn, is decided
-here; a reporting change that shifted a threshold or reordered a branch would alter the
-corpus itself and would be invisible in any dashboard test.
-
-So: nothing below asserts that the gate is CORRECT. It asserts that the gate is UNCHANGED.
-Two behaviours pinned here are known to be arguable and are deliberately pinned anyway:
-
-  the wounded check runs BEFORE the first-check guard, so a lord wounded on turn 1 ends the
-  campaign before the growth bar is legal (62 campaigns, 30 of them at turns 1-3), and
-
-  the first evaluation compares turn 4 against turn 1 for both metrics, demanding a
-  settlement or a lord level in three turns.
-
-If either is changed on purpose, this file is the thing that is supposed to fail. Edit it
-in the same commit as the change, and not before.
-"""
 
 import os
 import sys
@@ -36,7 +11,6 @@ from advisor import loop as L
 
 
 def _h(**turns):
-    """growth_hist as loop.py builds it: {turn: {metric: value}}."""
     return {int(t.lstrip("t")): v for t, v in turns.items()}
 
 
@@ -79,7 +53,6 @@ CASES = [
 
 
 def check_constants(fail):
-    """The thresholds are the gate. A silent edit here changes the whole corpus."""
     for name, want in (("GROWTH_WINDOW", 4), ("GROWTH_LORD_WINDOW", 3),
                        ("GROWTH_MIN_GAIN", 1), ("GROWTH_FIRST_CHECK_TURN", 4)):
         got = getattr(L, name)
@@ -101,7 +74,6 @@ def check_cases(fail):
 
 
 def check_wounded_carries_no_measurement(fail):
-    """The wounded branch returns empty metrics, which is why those campaigns render with"""
     done, detail = L._growth_verdict(
         _h(t1={"settlements": 1, "lord_level": 1, "ll_wounded": True}), 1)
     if detail.get("metrics") != {}:
@@ -113,7 +85,6 @@ def check_wounded_carries_no_measurement(fail):
 
 
 def check_window_is_variable(fail):
-    """then_turn = max(t - window, first_turn), so the window is 3 at turn 4 and 4 at turn"""
     _, at4 = L._growth_verdict(
         _h(t1={"settlements": 1, "lord_level": 1}, t4={"settlements": 1, "lord_level": 1}), 4)
     _, at5 = L._growth_verdict(
@@ -128,7 +99,6 @@ def check_window_is_variable(fail):
 
 
 def check_done_is_not_grew(fail):
-    """`done` means ABANDON. It is `not grew` on every path that evaluated anything."""
     for hist, turn in ((_h(t1={"settlements": 1, "lord_level": 1},
                            t4={"settlements": 2, "lord_level": 1}), 4),
                        (_h(t1={"settlements": 1, "lord_level": 1},

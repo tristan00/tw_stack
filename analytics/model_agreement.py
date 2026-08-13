@@ -1,24 +1,5 @@
 from __future__ import annotations
 
-"""How alike the two models ranked each decision. One row per decision.
-
-This is the restoration of a metric that was deleted with the old dashboard in 7a2d3d0.
-The rewrite kept the agreement panel but dropped every rank correlation, leaving only where
-each model ranked the single action that was taken -- which cannot answer whether the two
-models are ranking on the same thing at all.
-
-WHY IT READS BLOBS AND NOT THE VIEW. `action_offers` unpacks `scores.packed` with seven
-correlated `f32()` subqueries per row, each re-reading the whole blob (store_schema.py says
-so out loud). Over this corpus that path costs 7.6 seconds. Reading the blobs directly and
-reshaping with numpy costs about 1.2 seconds for every metric on every decision -- roughly
-0.2 ms each. The view is the right tool for reading a handful of offers; it is the wrong
-tool for touching every offer in the corpus.
-
-EVERY DECISION GETS A ROW. A decision that cannot be compared gets one whose `status` says
-why. "Computed" and "comparable" are then separate facts, and neither has to be inferred
-from the other's absence -- the mistake that made the old campaign growth column
-unreadable, where a blank meant four different things.
-"""
 
 import os
 import sys
@@ -109,7 +90,6 @@ _BATCH = 2000
 
 
 def safe_hi(src, an=None) -> int:
-    """The newest decision is held back by one."""
     row = src.execute("SELECT MAX(decision_id) FROM decisions").fetchone()
     return max(0, int(row[0] or 0) - 1)
 
@@ -121,14 +101,12 @@ def source_stats(src, hi):
 
 
 def _pct(rank, n):
-    """Where a rank sits as a percentile, so decisions of different sizes compare."""
     if rank is None or n is None or n < 2:
         return None
     return round(100.0 * (float(rank) - 1.0) / (float(n) - 1.0), 3)
 
 
 def _one(row) -> dict:
-    """The full fact row for one decision. Pure apart from the clock."""
     out = {c: None for c in _COLUMNS}
     out.update(decision_id=int(row["decision_id"]), computed_ts=time.time(),
                ts=row["ts"], turn=row["turn"], campaign_id=row["campaign_id"],
@@ -175,7 +153,6 @@ def _one(row) -> dict:
 
 
 def step(src, an, lo, hi):
-    """Fold every decision in (lo, hi] into the table. Streams; never loads the corpus."""
     cur = src.execute(_SELECT, (lo, hi))
     batch, written = [], 0
     for row in cur:

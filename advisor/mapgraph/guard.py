@@ -1,40 +1,14 @@
 from __future__ import annotations
 
-"""Runtime enforcement of the no-derived-features rule.
-
-The model this replaced was a CatBoost feature block wearing a graph. When told to remove the
-CatBoost features, my first rebuild attempt kept `reach_max`, the eight reach rays and
-the ego->target bearing by *relocating* them onto a node and an edge, and wrote a comment
-explaining why that was principled. It was not. The rule is about the information, not
-the variable name.
-
-So the rule is a type here, not a promise.
-
-Every scalar that enters the graph must be a `Raw`, and a `Raw` carries the id of the
-entity it was read from. Arithmetic between two `Raw`s that came from *different*
-entities raises `CrossEntityError`. Scaling, clipping and offsetting by plain numbers is
-fine -- that is normalisation, not feature engineering.
-
-    units  = Raw(8.0,  "char:17", "world.armies[].units")
-    tunits = Raw(12.0, "char:99", "world.hostiles[].units")
-    units / (tunits + 1.0)     -> CrossEntityError
-    units / 20.0               -> Raw(0.4, "char:17", ...)
-
-`strength_ratio` is therefore unwritable. So is a distance between two positions, and so
-is a reachability envelope compared against a target. If the network wants those it can
-derive them: the attacker's units sit on one node, the defender's on another, and there
-is an edge between them.
-"""
 
 import math
 
 
 class CrossEntityError(Exception):
-    """Raised when a value combines two entities. That value is a banned feature."""
+    pass
 
 
 class Raw:
-    """A scalar tagged with the single entity and record path it was read from."""
 
     __slots__ = ("v", "eid", "path")
 
@@ -43,7 +17,6 @@ class Raw:
         self.eid = eid
         self.path = path
 
-    # -- combination rules -------------------------------------------------
     def _merge(self, other, op):
         if isinstance(other, Raw):
             if other.eid != self.eid:
@@ -89,7 +62,6 @@ class Raw:
         return Raw(max(lo, min(hi, self.v)), self.eid, self.path)
 
     def slog(self):
-        """Signed log compression. Monotone in one value -- not a combination."""
         return Raw(math.copysign(math.log1p(abs(self.v)), self.v), self.eid, self.path)
 
     def __float__(self):
@@ -100,7 +72,6 @@ class Raw:
 
 
 class Reader:
-    """Reads fields off one record object, tagging everything with that entity's id."""
 
     __slots__ = ("row", "eid", "base")
 
@@ -131,7 +102,6 @@ class Reader:
                    self.eid, "%s.%s?" % (self.base, key))
 
     def const(self, value, name):
-        """A value decided by the builder, not read from the record (e.g. a type flag)."""
         return Raw(value, self.eid, "%s#%s" % (self.base, name))
 
     def raw(self, key):
@@ -155,12 +125,9 @@ def _selftest():
         raise AssertionError("selftest FAILED: a cross-entity distance was writable")
     except CrossEntityError:
         pass
-    # geometry within one entity is fine -- it is that entity's own state
     assert abs(float((x0 * 1.0) + (y0 * 0.0)) - 561.0) < 1e-9
     print("guard selftest OK: cross-entity arithmetic raises, scaling does not")
 
 
 if __name__ == "__main__":
-    # No interpreter guard here on purpose: this file imports nothing but `math`, so it
-    # behaves identically under any python and has no half to silently skip.
     _selftest()

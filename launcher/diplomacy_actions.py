@@ -76,7 +76,6 @@ def _snapshot(bus, ctx, pick):
 
 
 def _validate_pick(bus, ctx, pick, before):
-    """Validation of the PICK, not of the game."""
     if not _target(pick):
         return False, "no_target_faction"
     terms = _terms(pick)

@@ -1,4 +1,3 @@
-"""The API contract."""
 
 from __future__ import annotations
 
@@ -10,7 +9,6 @@ State = Literal["ok", "warn", "bad", "neutral"]
 
 
 class Ident(BaseModel):
-    """A game identifier in both forms. `raw` is what you grep; `label` is what you read."""
     raw: str
     label: str
     culture: str | None = None
@@ -18,7 +16,6 @@ class Ident(BaseModel):
 
 
 class Count(BaseModel):
-    """A number of things, plus the population it counted."""
     value: int
     noun: str = Field(min_length=1, description="what is being counted, e.g. 'campaigns'")
     population: str = Field(
@@ -28,7 +25,6 @@ class Count(BaseModel):
 
 
 class Rate(BaseModel):
-    """A proportion that carries its own denominator."""
     n: int
     of: int
     noun: str = Field(min_length=1)
@@ -36,13 +32,10 @@ class Rate(BaseModel):
 
     @property
     def pct(self) -> float | None:
-        # None, not 0.0. "nothing was attempted" and "attempted and none succeeded" are
-        # different facts and must not both render as 0%.
         return (100.0 * self.n / self.of) if self.of else None
 
 
 class Scope(BaseModel):
-    """One line stating exactly what a section covers. Every section has one."""
     text: str = Field(min_length=1)
     detail: str | None = None
 
@@ -51,10 +44,6 @@ class SeriesPoint(BaseModel):
     x: float
     y: float | None = None
 
-
-# ----------------------------------------------------------------------------------------
-# run -- is it healthy right now
-# ----------------------------------------------------------------------------------------
 
 class Service(BaseModel):
     name: str
@@ -74,7 +63,6 @@ class Metric(BaseModel):
 
 
 class Current(BaseModel):
-    """The campaign being played right now."""
     campaign: Ident | None = None
     turn: int | None = None
     settlements: float | None = None
@@ -102,12 +90,7 @@ class RunPage(BaseModel):
     log_name: str | None = None
 
 
-# ----------------------------------------------------------------------------------------
-# campaigns -- how are campaigns going
-# ----------------------------------------------------------------------------------------
-
 class CampaignRow(BaseModel):
-    """One campaign, with its outcome joined on."""
     campaign_id: int
     campaign: Ident
     campaign_map: Ident | None = None
@@ -138,7 +121,6 @@ class CampaignRow(BaseModel):
     lord_per_turn: float | None = None
     growth_state: Literal["measured", "single_turn", "no_turn_rows"] = "no_turn_rows"
 
-    # joined from the postmortem log
     outcome: Ident | None = None
     outcome_state: State = "neutral"
     ended_because: str | None = None
@@ -162,7 +144,6 @@ class CampaignsPage(BaseModel):
 
 
 class StartRow(BaseModel):
-    """One playable start. `n` leads, because most starts have n=1."""
     faction: Ident
     n: int
     single_sample: bool = False
@@ -191,7 +172,6 @@ class MatrixCell(BaseModel):
 
 
 class MatrixTotal(BaseModel):
-    """One row per action type, aggregated across every faction."""
     action_type: Ident
     rate: Rate
     total_ms: float | None = None
@@ -243,10 +223,6 @@ class CampaignDetail(BaseModel):
     diplomacy: list[DiploEvent]
     decisions: list["DecisionRow"]
 
-
-# ----------------------------------------------------------------------------------------
-# decisions -- what did it choose and why
-# ----------------------------------------------------------------------------------------
 
 class DecisionRow(BaseModel):
     decision_id: int
@@ -339,7 +315,6 @@ class ActionsPage(BaseModel):
 
 
 class InterruptOption(BaseModel):
-    """One option on a blocking screen, with its per-model scores as data."""
     label: Ident
     exploit: float | None = None
     gnn: float | None = None
@@ -381,7 +356,6 @@ class MenusPage(BaseModel):
 
 
 class PhaseSpan(BaseModel):
-    """One phase of one action, in ms."""
     phase: Literal["collect", "queue", "score", "verify"]
     ms: float
 
@@ -411,10 +385,6 @@ class TimelinePage(BaseModel):
     phase_legend: list[str]
     lanes: list[TimelineLane]
 
-
-# ----------------------------------------------------------------------------------------
-# models -- are the models learning
-# ----------------------------------------------------------------------------------------
 
 class ModelCard(BaseModel):
     name: str
@@ -469,7 +439,6 @@ class AgreementSummary(BaseModel):
 
 
 class AgreementRankRow(BaseModel):
-    """Where each model ranked the action that was taken, per deciding strategy."""
     picked_by: Ident
     decisions: int
     cat_rank: float | None = None
@@ -482,7 +451,6 @@ class AgreementRankRow(BaseModel):
 
 
 class AnalyticsFreshness(BaseModel):
-    """How current the precomputed numbers on this page are."""
     tenant: str
     behind: Count
     rows: Count
@@ -500,14 +468,12 @@ class RhoBin(BaseModel):
 
 
 class SecondaryMeasure(BaseModel):
-    """A supplement to the rank correlation, never a substitute for it."""
     measure: str = Field(min_length=1)
     value: str
     rate: Rate | None = None
 
 
 class CorrelationSummary(BaseModel):
-    """The headline: how alike the two models' whole orderings are."""
     compared: Count
     coverage: Rate
     rho_median: float | None = None
@@ -524,7 +490,6 @@ class CorrelationSummary(BaseModel):
 
 
 class DecisionAgreement(BaseModel):
-    """One decision's agreement, for the detail page."""
     n: Count
     status: str
     rho: float | None = None
@@ -571,7 +536,6 @@ class GenerationRow(BaseModel):
 
 
 class AgreementSeriesPage(BaseModel):
-    """Agreement over time, and by model generation."""
     scope: Scope
     freshness: AnalyticsFreshness
     axis: Literal["window", "generation"]
@@ -648,7 +612,6 @@ class CorrelationRow(BaseModel):
 
 
 class CorrelationTile(BaseModel):
-    """`label` is the tile's identity: "action ranker" or "interrupt model"."""
     label: Literal["action ranker", "interrupt model"]
     rows: list[CorrelationRow]
 
@@ -659,7 +622,6 @@ class CorrelationsPage(BaseModel):
 
 
 class TrialCorr(BaseModel):
-    """Whether a strategy's share of a campaign's picks tracks that campaign's growth."""
     r: float | None = None
     gate: str | None = Field(
         default=None,
@@ -716,10 +678,6 @@ class TrainingPage(BaseModel):
     history: list[TrainingEvent]
     group_order: list[str]
 
-
-# ----------------------------------------------------------------------------------------
-# infra -- services and controls
-# ----------------------------------------------------------------------------------------
 
 class ActivityRow(BaseModel):
     stream: str

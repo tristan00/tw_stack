@@ -1,15 +1,5 @@
 from __future__ import annotations
 
-"""Round-trip the v2 store, and check the invariants the layout is supposed to guarantee.
-
-The schema change is only safe if it is invisible: the API must return what it returned
-before, and the compatibility views must return what the 88 raw-SQL SELECTs across 13
-files expect. So this writes decisions, reads them back both ways, and asserts equality --
-plus the two properties the layout exists to provide (the gating prefix, and one score
-landing on exactly one offer even when two offers share an identity tuple).
-
-    python -m decisions.test_store
-"""
 
 import json
 import os
@@ -21,10 +11,10 @@ import tempfile
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(_HERE))
 
-import common  # noqa: E402
-from decisions import dbopen                       # noqa: E402
-from decisions import store_schema as S               # noqa: E402
-from decisions.store import DecisionStore, IncompatibleStore   # noqa: E402
+import common
+from decisions import dbopen
+from decisions import store_schema as S
+from decisions.store import DecisionStore, IncompatibleStore
 
 FAILED = []
 
@@ -47,7 +37,6 @@ def _snapshot(turn, faction="wh_main_emp", uuid="camp-1", n_lords=2):
                  "params": {"x": 1, "y": i}},
                 {"action_type": "building", "key": "b_a",
                  "params": {"slot_index": 0, "cost": 100}},
-                # same action_key, different params -- the v1 collision case
                 {"action_type": "building", "key": "b_a",
                  "params": {"slot_index": 1, "cost": 120}},
                 {"action_type": "noop", "key": "noop", "params": {}},
@@ -72,7 +61,6 @@ def main():
         st.register_collector("sha-abc", git_sha="deadbeef", note="test")
 
         def _write(snap, decision_seq, policy):
-            """State in, then the gated survivors -- the two halves the pipeline has."""
             opts = [dict(o, context_kind=e["context_kind"], context_id=e["context_id"])
                     for e in snap["entities"] for o in e.pop("offers", [])]
             did = st.write_decision(snap, decision_seq=decision_seq, policy=policy)
@@ -83,7 +71,6 @@ def main():
                 for t in range(1, 6)]
         check(len(dids) == 5 and all(dids), "write_decision returns ids")
 
-        # ---- the layout invariant -------------------------------------------------
         check(st.layout_violations() == 0, "n_offers equals the rows actually stored")
         n_off, = st.con.execute(
             "SELECT n_offers FROM decisions WHERE decision_id=?",
@@ -93,7 +80,6 @@ def main():
                              (dids[0],)).fetchone()[0] == n_off,
               "every stored option is a candidate -- nothing gated reaches the database")
 
-        # ---- read_decision round-trips --------------------------------------------
         rec = st.read_decision(dids[0])
         check(rec["campaign"]["treasury"] == 2501, "campaign blob round-trips")
         check(rec["world"]["hostiles"][0]["faction"] == "orcs", "world blob round-trips")
@@ -108,27 +94,20 @@ def main():
         check(len(bs) == 2 and {o["params"]["slot_index"] for o in bs} == {0, 1},
               "two offers sharing action_key keep their distinct params")
 
-        # ---- interning actually interned -------------------------------------------
         n_actions = st.con.execute("SELECT count(*) FROM actions").fetchone()[0]
         n_offers = st.con.execute("SELECT count(*) FROM offers").fetchone()[0]
         check(n_offers == 45 and n_actions == 9,
               "%d options interned to %d actions" % (n_offers, n_actions))
-        # 5 decisions x (campaign + world + 3 entity states) = 25 payloads written.
-        # Distinct: 5 campaigns and 5 campaign-entity states vary by turn; the world and
-        # the two lord states are byte-identical every time. 25 -> 13.
         n_blobs = st.con.execute("SELECT count(*) FROM blobs").fetchone()[0]
         check(n_blobs == 13, "25 payloads content-addressed to %d blobs" % n_blobs)
         n_world = st.con.execute(
             "SELECT count(DISTINCT world_blob) FROM decisions").fetchone()[0]
         check(n_world == 1, "an unchanged world is stored once, not 5 times")
         raw, stored = st.con.execute("SELECT SUM(n), SUM(length(z)) FROM blobs").fetchone()
-        # Never bigger than the text: compression is used only where it pays, so a small
-        # entity state costs one tag byte rather than a zlib header.
         check(stored <= raw + n_blobs,
               "stored bytes never exceed the text (%d -> %d over %d blobs)"
               % (raw, stored, n_blobs))
 
-        # ---- taken -----------------------------------------------------------------
         st.attach_taken(dids[0], {"context_kind": "lord", "context_id": 100,
                                   "action_type": "building", "key": "b_a",
                                   "executed": True, "confirmed": True, "counted": True,
@@ -146,7 +125,6 @@ def main():
         check(len(st.taken_map()) == 2 and st.taken_map()[dids[1]][1] is True,
               "re-attaching replaces rather than duplicates")
 
-        # ---- scores land on one offer, not on every colliding one -------------------
         st.attach_scores(dids[0], [
             {"context_kind": "lord", "context_id": 100, "action_type": "building",
              "key": "b_a", "score": 0.75, "rank": 1, "gnn_impact": 0.5},
@@ -164,7 +142,6 @@ def main():
         check(abs(scored[0][2] - 0.75) < 1e-6 and scored[0][3] == 1.0,
               "score and rank survive the float32 packing")
 
-        # ---- labelled_decisions -----------------------------------------------------
         lab = st.labelled_decisions()
         check(len(lab) == 2, "labelled_decisions returns the labelled ones")
         check([r[0]["decision_id"] for r in lab] == sorted(r[0]["decision_id"] for r in lab),
@@ -182,7 +159,6 @@ def main():
         check(lab[0][1] == ("lord", "100", "building", "b_a") and lab[0][2] is True,
               "labelled_decisions carries the label")
 
-        # ---- compatibility views ----------------------------------------------------
         dp = con.execute("SELECT decision_id,campaign_id,turn,n_entities,n_offers,campaign,"
                          "world FROM decision_points ORDER BY decision_id").fetchall()
         check(len(dp) == 5 and dp[0][1] == "camp-1", "decision_points view")
@@ -216,7 +192,6 @@ def main():
         check(con.execute("SELECT tree_json FROM interrupt_decisions").fetchone()[0] is None,
               "tree_json is accepted and not stored")
 
-        # ---- other reads ------------------------------------------------------------
         st.write_target_row({"campaign_id": "wh_main_emp", "campaign_uuid": "camp-1",
                              "turn": 1, "income": 100.0, "settlements": 2.0, "allies": 0.0,
                              "vassals": 0.0, "power_rank": 40.0, "lord_level": 3.0})
@@ -232,14 +207,12 @@ def main():
         check(s["decisions"] == 5 and s["offers"] == 45 and s["taken"] == 2, "summary")
         check(st.max_decision_id() == dids[-1], "max_decision_id")
 
-        # ---- pragmas ------------------------------------------------------------------
         av = st.con.execute("PRAGMA auto_vacuum").fetchone()[0]
         check(av == 2, "auto_vacuum is INCREMENTAL (2), got %s" % av)
 
         st.close()
         con.close()
 
-        # ---- a v1 database is refused, not silently misread ----------------------------
         old = os.path.join(d, "v1")
         os.makedirs(old)
         c = sqlite3.connect(os.path.join(old, "decisions.sqlite"))
@@ -252,7 +225,6 @@ def main():
         except IncompatibleStore:
             check(True, "a v1 store raises IncompatibleStore")
 
-        # ---- reopening an existing v2 store works --------------------------------------
         st2 = DecisionStore(run)
         check(st2.summary()["decisions"] == 5, "reopen keeps the rows")
         check(st2.layout_violations() == 0, "reopen: layout invariant still holds")

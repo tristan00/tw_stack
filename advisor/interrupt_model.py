@@ -180,8 +180,6 @@ class InterruptRanker:
         self.rng = random.Random(seed)
         self.strategies = P.normalize_strategies(strategies)
         self.ruleset = ruleset
-        # The graph arm. Its own model in its own directory -- this is not the action
-        # model's encoder, exactly as e1/e2 here are not model.py's e1/e2.
         self.gnn = None
         self.gnn_score_errors = 0
         if "marwil_gnn" in self.strategies and model_dir != common.MODEL_COLD_START:
@@ -254,7 +252,6 @@ class InterruptRanker:
         return names[-1]
 
     def _score_with_gnn(self, screen, opts, record, panel, meta):
-        """Graph scores for this screen, or {}. Swallows its own failures on purpose:"""
         if self.gnn is None or not self.gnn.ready:
             return {}
         try:
@@ -266,7 +263,6 @@ class InterruptRanker:
             return {}
 
     def _exploit_ready(self, screen):
-        """(usable, why) for the CatBoost arm on THIS screen -- it is fitted per screen."""
         sr = self.meta.get("screen_rows")
         if sr is not None:
             seen = int(sr.get(str(screen), 0))
@@ -275,7 +271,6 @@ class InterruptRanker:
         return seen >= MIN_ROWS, "screen not in the fitted set (meta predates screen_rows)"
 
     def choose(self, screen, options, campaign, panel=None, record=None, meta=None):
-        """Pick one option, and score the screen with EVERY arm that can score it."""
         opts = sorted(options)
         if not opts:
             return None, "none", {}

@@ -1,29 +1,5 @@
 from __future__ import annotations
 
-"""Blocking screen -> graph.
-
-A dilemma, a pre-battle, an occupation choice and a diplomatic proposal are all the same
-shape as a map decision: a world, a candidate set, and one candidate that was taken. So
-they get the same graph, built by the same `build.build_graph`, and the options become
-action nodes like any other. What is new is only the screen they sit on.
-
-TWO THINGS THIS GETS RIGHT ON PURPOSE, because both were measured and both are silent:
-
-1. The world comes from the last real DECISION snapshot, never from the interrupt's own
-   `world_blob`. `decisions_stream` collects an interrupt with `collect.world_state`,
-   which on a popped panel returns no `relations`, no `citizenry` and no `war_graph` --
-   0 of 347 archived rows carry any of the three, against 100%/89.5%/100% on decision
-   snapshots. That is not a thinner graph, it is a WRONG one: with no citizenry every own
-   settlement's garrison_units is 0 (the only defensive scalar there is) and our own
-   garrison stacks stop being skipped in build.py's character loop, so they are built as
-   field armies. The live path already hands us the decision snapshot's world
-   (loop.py set_snapshot), so training on anything else would also be train/serve skew.
-
-2. `offers` are stripped from the borrowed record. By the time the advisor has a record
-   in hand, options.attach has already hung ~376 map actions off its entities. Leaving
-   them in would put them in the candidate set and the listwise softmax would be over the
-   wrong universe -- the screen's 3 options plus every move on the map.
-"""
 
 import os
 import sys
@@ -40,7 +16,6 @@ CONTEXT_KIND = "interrupt"
 
 
 def context_record(record):
-    """The borrowed decision snapshot, with every offer removed. See note 2 above."""
     ents = []
     for e in record.get("entities") or []:
         e2 = dict(e)
@@ -51,7 +26,6 @@ def context_record(record):
 
 
 def _num(v, default=0.0):
-    """Panel numbers arrive as UI text: '1,250', 'Strength Rank: 12' is already split."""
     try:
         return float(str(v).replace(",", "").strip())
     except (TypeError, ValueError):
@@ -59,7 +33,6 @@ def _num(v, default=0.0):
 
 
 def _panel_numbers(panel):
-    """The six numeric facts a panel can carry, flat, for one guard.Reader."""
     p = panel or {}
     ranks = [_num(x) for x in (p.get("strength_ranks") or [])]
     return {"attitude": _num(p.get("attitude")),
@@ -71,14 +44,12 @@ def _panel_numbers(panel):
 
 
 def _state_of(v):
-    """A forecast cell is {'text': ..., 'state': ...}; the state is the closed vocabulary."""
     if isinstance(v, dict):
         return str(v.get("state") or v.get("text") or "").strip()
     return str(v or "").strip()
 
 
 def panel_facts(screen, panel, options=None, meta=None):
-    """String-valued panel facts, as `<screen>.<field>=<value>` catalogue keys."""
     p = panel or {}
     out = []
 
@@ -101,7 +72,6 @@ def panel_facts(screen, panel, options=None, meta=None):
     rel = p.get("reliability") or []
     if rel:
         add("reliability", rel[0])
-    # A captive's fate is named by the control itself: button_captive_option_enslave.
     for o in options or ():
         s = str(o)
         if s.startswith("button_captive_option_"):
@@ -110,7 +80,6 @@ def panel_facts(screen, panel, options=None, meta=None):
 
 
 def _option_key(screen, opt, meta):
-    """Stable identity for one option: the screen, the dilemma it belongs to, the choice."""
     m = (meta or {}).get(opt) or {}
     did = str(m.get("dilemma_id") or "")
     oid = str(m.get("option_id") or opt)
@@ -118,13 +87,11 @@ def _option_key(screen, opt, meta):
 
 
 def screen_offers(screen, options, meta=None):
-    """The screen's options as offers, in the order they will be scored."""
-    atype = S.screen_action_type(screen)          # raises on a screen we do not know
+    atype = S.screen_action_type(screen)
     return [{"action_type": atype, "key": str(o), "params": {}} for o in options]
 
 
 def build_screen_graph(record, screen, options, meta=None, panel=None):
-    """One interrupt decision -> a graph whose action nodes are exactly its options."""
     opts = [str(o) for o in options]
     if not opts:
         return None
@@ -135,7 +102,6 @@ def build_screen_graph(record, screen, options, meta=None, panel=None):
     g = B.build_graph(rec)
     if g is None:
         return None
-    # Only the synthetic entity carries offers, so action nodes are the options in order.
     if len(g.action_nodes) != len(opts):
         raise ValueError(
             "mapgraph.interrupt_build: %s built %d action nodes for %d options -- the "
@@ -171,7 +137,6 @@ def build_screen_graph(record, screen, options, meta=None, panel=None):
 
 
 def _screen_values(screen, panel):
-    """The screen node's six scalars, scaled and clipped, all from the one panel."""
     nums = _panel_numbers(panel)
     if not any(nums.values()):
         return {}
@@ -187,7 +152,6 @@ def _screen_values(screen, panel):
 
 
 def taken_mask(g, options, chosen):
-    """1.0 on the option that was taken, in action-node order. None if it is not there."""
     opts = [str(o) for o in options]
     if str(chosen) not in opts:
         return None
@@ -195,7 +159,6 @@ def taken_mask(g, options, chosen):
 
 
 def _smoke(limit=5):
-    """Build a graph for the most recent interrupts in the corpus and print the shape."""
     import json
     sys.path.insert(0, common.DECISIONS)
     from store import DecisionStore
