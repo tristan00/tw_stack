@@ -131,8 +131,41 @@ class TypeEncoders(nn.Module):
         self.lin = nn.Linear(_NT * S.MAX_FIELDS, hidden, bias=False)
         self.bias = nn.Parameter(torch.zeros(_NT, hidden))
         self.register_buffer("_span", torch.arange(S.MAX_FIELDS), persistent=False)
+        self.register_buffer("center", torch.zeros(_NT, S.MAX_FIELDS))
+        self.register_buffer("spread", torch.ones(_NT, S.MAX_FIELDS))
+
+    @torch.no_grad()
+    def fit_norm(self, datas, log=None):
+        cols = [[[] for _ in range(S.MAX_FIELDS)] for _ in range(_NT)]
+        for d in datas:
+            x, nt = d.x, d.node_type
+            for t in nt.unique().tolist():
+                rows = x[nt == t]
+                for c in range(S.MAX_FIELDS):
+                    cols[t][c].append(rows[:, c])
+        fitted = 0
+        for t in range(_NT):
+            for c in range(S.MAX_FIELDS):
+                if not cols[t][c]:
+                    continue
+                v = torch.cat(cols[t][c])
+                if v.numel() < 8:
+                    continue
+                q = torch.quantile(v, torch.tensor([0.25, 0.5, 0.75], dtype=v.dtype))
+                iqr = float(q[2] - q[0])
+                sd = float(v.std(unbiased=False))
+                s = iqr / 1.349 if iqr > 0 else sd
+                if s <= 0:
+                    continue
+                self.center[t, c] = float(q[1])
+                self.spread[t, c] = s
+                fitted += 1
+        if log:
+            log("mapgraph.net: input norm fitted on %d (node type, field) pairs" % fitted)
+        return fitted
 
     def forward(self, x, node_type):
+        x = (x - F.embedding(node_type, self.center)) / F.embedding(node_type, self.spread)
         cols = node_type.unsqueeze(1) * S.MAX_FIELDS + self._span
         big = x.new_zeros(x.size(0), _NT * S.MAX_FIELDS).scatter_(1, cols, x)
         return self.lin(big) + F.embedding(node_type, self.bias)

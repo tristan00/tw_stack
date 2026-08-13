@@ -94,28 +94,7 @@ class Graph:
                         cat=S.cat_global(kind, key))
 
 
-_CAT_SCALE = {
-    "building": {
-        "create_cost": (S.BUILD_COST_SCALE, None, None),
-        "level": (S.LEVEL_SCALE, 0.0, 2.0),
-        "create_time": (S.BUILD_TIME_SCALE, 0.0, 2.0),
-    },
-    "unit": {
-        "recruitment_cost": (S.RECRUIT_COST_SCALE, None, None),
-        "upkeep_cost": (S.UPKEEP_SCALE, None, None),
-        "num_men": (S.MEN_SCALE, 0.0, 2.0),
-        "unit_tier": (S.TIER_SCALE, 0.0, 1.0),
-        "create_time": (S.UNIT_TIME_SCALE, 0.0, 1.0),
-    },
-    "skill": {
-        "unlocked_at_rank": (S.SKILL_RANK_SCALE, 0.0, 2.0),
-        "is_background_skill": (1.0, 0.0, 1.0),
-    },
-    "tech": {
-        "tech_tier": (S.TECH_TIER_SCALE, 0.0, 2.0),
-        "research_points_required": (S.RESEARCH_POINTS_SCALE, 0.0, 2.0),
-    },
-}
+_CAT_LOG = {"create_cost", "recruitment_cost", "upkeep_cost"}
 
 
 def _cat_values(kind, key, nid):
@@ -123,13 +102,11 @@ def _cat_values(kind, key, nid):
     if not row:
         return None
     rd = G.Reader(row, nid, "reference.%s" % kind)
-    scales = _CAT_SCALE[kind]
     out = {}
     for name in S.TYPE_FIELDS[kind]:
         if name in row:
-            scale, lo, hi = scales[name]
-            v = rd.num(name) / scale
-            out[name] = v.slog() if lo is None else v.clip(lo, hi)
+            v = rd.num(name)
+            out[name] = v.slog() if name in _CAT_LOG else v
     return out or None
 
 
@@ -176,12 +153,12 @@ def build_graph(record):
                       "faction:" + fk, "faction")
         vals = {"is_player": rd.flag("is_player")}
         if rel.get("standing") is not None:
-            vals["standing"] = (rd.num("standing") / 100.0).slog()
+            vals["standing"] = rd.num("standing").slog()
         if fk == me:
             cd = G.Reader(campaign, "campaign", "campaign")
-            vals["treasury"] = (cd.num("treasury") / S.TREASURY_SCALE).slog()
-            vals["income"] = (cd.num("income") / S.TREASURY_SCALE).slog()
-            vals["turn"] = cd.num("turn") / 20.0
+            vals["treasury"] = cd.num("treasury").slog()
+            vals["income"] = cd.num("income").slog()
+            vals["turn"] = cd.num("turn")
             _m = str(campaign.get("campaign_map") or "")
             if _m in ("wh3_main_combi", "wh3_main_chaos"):
                 md = G.Reader({"map": 1.0 if _m == "wh3_main_combi" else -1.0},
@@ -221,15 +198,15 @@ def build_graph(record):
         rd = G.Reader(r, "region:" + key, "world.regions[]")
         vals = {}
         if _pos_ok(r.get("x"), r.get("y")):
-            vals["x"] = rd.num("x") / S.COORD_SCALE
-            vals["y"] = rd.num("y") / S.COORD_SCALE
+            vals["x"] = rd.num("x")
+            vals["y"] = rd.num("y")
         vals["is_capital"] = rd.flag("capital")
         vals["is_ruin"] = rd.flag("abandoned")
         st = prov_state.get(key)
         if st is not None:
             pd = G.Reader(st, "region:" + key, "entities.province.state")
-            vals["public_order"] = (pd.num("public_order") / S.ORDER_SCALE).clip(-1.0, 1.0)
-            vals["income"] = (pd.num("income") / S.INCOME_SCALE).slog()
+            vals["public_order"] = pd.num("public_order")
+            vals["income"] = pd.num("income").slog()
         ri = g.add("r:" + key, "region", vals, own=(str(r.get("owner") or "") == me))
         if _pos_ok(r.get("x"), r.get("y")):
             region_xy.append((float(r["x"]), float(r["y"]), ri))
@@ -244,9 +221,8 @@ def build_graph(record):
             vals = {}
             if st is not None:
                 pd = G.Reader(st, "region:" + key, "entities.province.state")
-                vals["public_order"] = (pd.num("public_order") /
-                                        S.ORDER_SCALE).clip(-1.0, 1.0)
-                vals["income"] = (pd.num("income") / S.INCOME_SCALE).slog()
+                vals["public_order"] = pd.num("public_order")
+                vals["income"] = pd.num("income").slog()
             g.add("r:" + key, "region", vals)
             prov_of_region.setdefault(key, str((st or {}).get("province") or ""))
 
@@ -267,17 +243,16 @@ def build_graph(record):
             corr = st.get("corruption") or {}
             pd = G.Reader({"corruption": max([float(v) for v in corr.values()] or [0.0])},
                           "province:" + prov, "entities.province.state.corruption")
-            vals["corruption"] = (pd.num("corruption") / S.CORRUPT_SCALE).clip(0.0, 1.0)
+            vals["corruption"] = pd.num("corruption")
             sd = G.Reader(st, "province:" + prov, "entities.province.state")
             if st.get("growth_per_turn") is not None:
-                vals["growth_per_turn"] = (sd.num("growth_per_turn")
-                                           / S.GROWTH_SCALE).slog()
+                vals["growth_per_turn"] = sd.num("growth_per_turn").slog()
             if st.get("free_slots") is not None:
-                vals["free_slots"] = sd.num("free_slots") / S.SLOTS_SCALE
+                vals["free_slots"] = sd.num("free_slots")
             if st.get("max_slots") is not None:
-                vals["max_slots"] = sd.num("max_slots") / S.SLOTS_SCALE
+                vals["max_slots"] = sd.num("max_slots")
             if st.get("settlement_level") is not None:
-                vals["settlement_level"] = sd.num("settlement_level") / S.LEVEL_SCALE
+                vals["settlement_level"] = sd.num("settlement_level")
             if st.get("can_set_edict") is not None:
                 vals["can_set_edict"] = sd.flag("can_set_edict")
         pi = g.add("p:" + prov, "province", vals)
@@ -291,12 +266,12 @@ def build_graph(record):
         sd = G.Reader(s, "settlement:" + key, "world.settlements[]")
         if gar is not None:
             gd = G.Reader(gar, "char:" + str(gar.get("cqi") or ""), "world.armies[]")
-            svals = {"garrison_units": gd.num("units") / S.UNITS_SCALE}
+            svals = {"garrison_units": gd.num("units")}
         else:
             svals = {}
         if _pos_ok(s.get("x"), s.get("y")):
-            svals["x"] = sd.num("x") / S.COORD_SCALE
-            svals["y"] = sd.num("y") / S.COORD_SCALE
+            svals["x"] = sd.num("x")
+            svals["y"] = sd.num("y")
         si = g.add("s:" + key, "settlement", svals, own=True)
         ri = g.id2idx.get("r:" + key)
         if ri is None:
@@ -347,19 +322,19 @@ def build_graph(record):
         rd = G.Reader(row, "char:" + cqi, "world.armies[]")
         is_hero = (kind == "hero") or not a.get("has_army")
         ntype = "hero" if is_hero else "lord"
-        vals = {"rank": rd.num("rank") / S.RANK_SCALE,
-                "ap_pct": rd.num("ap_pct").clip(0.0, 1.0)}
+        vals = {"rank": rd.num("rank"),
+                "ap_pct": rd.num("ap_pct")}
         for _f in ("acted", "is_leader", "in_own_territory"):
             if row.get(_f) is not None:
                 vals[_f] = rd.flag(_f)
         if row.get("skill_points") is not None:
-            vals["skill_points"] = rd.num("skill_points") / S.SKILL_POINTS_SCALE
+            vals["skill_points"] = rd.num("skill_points")
         if _pos_ok(row.get("x"), row.get("y")):
-            vals["x"] = rd.num("x") / S.COORD_SCALE
-            vals["y"] = rd.num("y") / S.COORD_SCALE
+            vals["x"] = rd.num("x")
+            vals["y"] = rd.num("y")
         if ntype == "lord":
-            vals["units"] = rd.num("units") / S.UNITS_SCALE
-            vals["hp"] = rd.num("hp") / S.HP_SCALE
+            vals["units"] = rd.num("units")
+            vals["hp"] = rd.num("hp")
         ci = g.add("c:" + cqi, ntype, vals,
                    agent=S.agent_index(a.get("agent_type")),
                    stance=S.stance_index(a.get("stance")),
@@ -382,13 +357,13 @@ def build_graph(record):
             continue
         rd = G.Reader(h, "char:" + cqi, "world.hostiles[]")
         ntype = "lord" if MOBILE_KINDS[hk] else "hero"
-        vals = {"rank": rd.num("rank") / S.RANK_SCALE}
+        vals = {"rank": rd.num("rank")}
         if _pos_ok(h.get("x"), h.get("y")):
-            vals["x"] = rd.num("x") / S.COORD_SCALE
-            vals["y"] = rd.num("y") / S.COORD_SCALE
+            vals["x"] = rd.num("x")
+            vals["y"] = rd.num("y")
         if ntype == "lord":
-            vals["units"] = rd.num("units") / S.UNITS_SCALE
-            vals["hp"] = rd.num("hp") / S.HP_SCALE
+            vals["units"] = rd.num("units")
+            vals["hp"] = rd.num("hp")
         ci = g.add("c:" + cqi, ntype, vals,
                    agent=S.agent_index(h.get("agent_type")),
                    stance=S.stance_index(h.get("stance")),
@@ -408,8 +383,8 @@ def build_graph(record):
         hd = G.Reader(h, "settlement:" + rkey, "world.hostiles[kind=settlement]")
         vals = {}
         if _pos_ok(h.get("x"), h.get("y")):
-            vals["x"] = hd.num("x") / S.COORD_SCALE
-            vals["y"] = hd.num("y") / S.COORD_SCALE
+            vals["x"] = hd.num("x")
+            vals["y"] = hd.num("y")
         si = g.add("s:" + rkey, "settlement", vals, own=False)
         g.edge(ri, si, "sett_of")
         fj = g.id2idx.get("f:" + str(h.get("faction") or ""))
@@ -455,14 +430,14 @@ def build_graph(record):
 
     cd = G.Reader(campaign, "campaign", "campaign")
     g.g_ctx = [
-        float(cd.num("turn") / 20.0),
-        float((cd.num("treasury") / S.TREASURY_SCALE).slog()),
-        float((cd.num("income") / S.TREASURY_SCALE).slog()),
+        float(cd.num("turn")),
+        float(cd.num("treasury").slog()),
+        float(cd.num("income").slog()),
         float(cd.num("settlements") / 10.0),
         float(cd.num("armies") / 5.0),
         float(cd.num("allies") / 3.0),
         float(cd.num("vassals") / 3.0),
-        float((cd.num("power_rank") / 300.0).clip(-1.0, 1.0)),
+        float(cd.num("power_rank")),
         float(cd.num("lord_level") / 10.0),
     ]
     g.finalize()
@@ -545,8 +520,8 @@ def _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me,
     avals = {}
     if _pos_ok(params.get("x"), params.get("y")):
         pd = G.Reader(params, "offer:%s:%s:%s" % (ck, cid, key), "offers[].params")
-        avals["x"] = pd.num("x") / S.COORD_SCALE
-        avals["y"] = pd.num("y") / S.COORD_SCALE
+        avals["x"] = pd.num("x")
+        avals["y"] = pd.num("y")
     ai = g.add("a:%s:%s:%s:%d" % (ck, cid, key, len(g.action_nodes)), "action",
                avals, atype=S.atype_index(at), term=term,
                stance=S.stance_index(key) if at == "stance" else 0)
