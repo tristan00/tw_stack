@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 import common
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 INSTANCE_TYPES = ("faction", "region", "settlement", "province", "slot",
                   "lord", "hero", "action", "cgroup", "screen")

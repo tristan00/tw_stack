@@ -20,9 +20,9 @@ sys.path.insert(0, common.DECISIONS)
 
 THREADS = max(1, os.cpu_count() or 8)
 
-CFG = {"hidden": 128, "entity_layers": 1, "action_rounds": 3,
-       "lr": 3.989e-4, "weight_decay": 9.892e-3, "batch": 256, "epochs": 24, "patience": 4,
-       "grad_clip": 5.0, "adv_tau": 1.0, "adv_clip": 20.0, "value_weight": 0.2642, "bf16": True,
+CFG = {"hidden": 256, "entity_layers": 1, "action_rounds": 3,
+       "lr": 3.501e-4, "weight_decay": 4.320e-3, "batch": 384, "epochs": 24, "patience": 4,
+       "grad_clip": 5.0, "adv_tau": 1.0, "adv_clip": 20.0, "value_weight": 0.1351, "bf16": True,
        "seed": 0, "time_budget_s": 300, "device": "auto"}
 
 MIN_FIT_S = 30
