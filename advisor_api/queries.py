@@ -19,9 +19,9 @@ from advisor_api import db, ident
 from advisor_api.models import (
     ActionTypeRow, ActivityRow, AgreementPage, AgreementRankRow, AgreementSummary,
     ArmCoverage, CampaignRow, Count, CorrelationRow, CorrelationTile, Current,
-    DecisionRow, DiploEvent, EntityState, ForcingBar, ForcingTile, Ident, InterruptOption,
-    InterruptRow, Metric, ModelCard, OfferRow, OutcomeTally, PhaseSpan, PolicyRow, Rate,
-    RewardPoint, Scope, Service, StartRow, TimelineAction, TimelineLane,
+    DecisionRow, DiploEvent, EntityState, ForcingBar, ForcingTile, GrowthPoint, Ident,
+    InterruptOption, InterruptRow, Metric, ModelCard, OfferRow, OutcomeTally, PhaseSpan,
+    PolicyRow, Rate, RewardPoint, Scope, Service, StartRow, TimelineAction, TimelineLane,
     TimingRow, TrainingEvent, TrialCorr, TrialRow,
 )
 
@@ -1511,6 +1511,39 @@ def _campaign_settlement_growth(con) -> dict:
         g = CG.enrich(row).get("settlements_growth")
         if g is not None:
             out[ckey] = float(g)
+    return out
+
+
+_GROWTH_SERIES = """
+    SELECT c.campaign_id AS cid, c.faction AS faction,
+           MAX(t.settlements) - MIN(t.settlements) AS sett,
+           MAX(t.lord_level)  - MIN(t.lord_level)  AS lord,
+           MAX(t.vassals)     - MIN(t.vassals)     AS vas,
+           MAX(t.allies)      - MIN(t.allies)      AS ally,
+           COUNT(*) AS turns
+      FROM campaigns c
+      JOIN target_rows t ON t.campaign_id = c.campaign_key
+     GROUP BY c.campaign_id
+    HAVING turns > 1
+     ORDER BY c.campaign_id
+"""
+
+
+def growth_series(con) -> list:
+    if con is None:
+        return []
+    out = []
+    for row in con.execute(_GROWTH_SERIES):
+        sett = float(row["sett"] or 0.0)
+        lord = float(row["lord"] or 0.0)
+        vas = float(row["vas"] or 0.0)
+        ally = float(row["ally"] or 0.0)
+        out.append(GrowthPoint(
+            seq=len(out) + 1, campaign_id=int(row["cid"]), faction=row["faction"],
+            settlements=sett, lord_level=lord, vassals=vas, allies=ally,
+            total=sett + lord + vas + ally,
+            turns=Count(value=int(row["turns"]), noun="turns",
+                        population="with a reward row in this campaign")))
     return out
 
 
