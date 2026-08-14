@@ -906,6 +906,139 @@ function handlers.forces(seq)
 end
 
 
+local function faction_pos(g)
+  local x = try(function() return g:faction_leader():logical_position_x() end)
+  local y = try(function() return g:faction_leader():logical_position_y() end)
+  if x and y then return x, y end
+  local rl = try(function() return g:region_list() end)
+  local n = rl and try(function() return rl:num_items() end) or 0
+  for i = 0, n - 1 do
+    local r = try(function() return rl:item_at(i) end)
+    local s = r and try(function() return r:settlement() end)
+    if s then
+      x = try(function() return s:logical_position_x() end)
+      y = try(function() return s:logical_position_y() end)
+      if x and y then return x, y end
+    end
+  end
+  return nil, nil
+end
+
+
+function handlers.trim(seq, rest)
+  local radius = tonumber((rest or ""):match("([%-%d%.]+)") or "")
+  local dry = (rest or ""):find("dry") ~= nil
+  local f = human_faction()
+  local me = f and try(function() return f:name() end)
+  local ox, oy = nil, nil
+  if f then ox, oy = faction_pos(f) end
+  local can_kill = try(function() return type(cm.kill_faction) == "function" end) or false
+  if not radius or radius < 0 or not ox or not oy then
+    log({ seq = seq, cmd = "trim", error = "trim needs a radius >= 0 and a locatable "
+          .. "human start", radius = or_null(radius), origin_x = or_null(ox),
+          origin_y = or_null(oy), me = or_null(me), turn = turn() })
+    return
+  end
+  if not dry and not can_kill then
+    log({ seq = seq, cmd = "trim", error = "cm:kill_faction is not available in this "
+          .. "build; refusing to report kills that did not happen. Re-run with dry to "
+          .. "measure the split only.", radius = radius, can_kill = false, turn = turn() })
+    return
+  end
+  local killed, kept, unplaced, failed = {}, {}, {}, {}
+  local already = 0
+  local fl = try(function() return cm:model():world():faction_list() end)
+  local n = fl and try(function() return fl:num_items() end) or 0
+  for i = 0, n - 1 do
+    local g = try(function() return fl:item_at(i) end)
+    local name = g and try(function() return g:name() end)
+    if g and name and name ~= me then
+      if try(function() return g:is_dead() end) then
+        already = already + 1
+      else
+        local gx, gy = faction_pos(g)
+        if not gx or not gy then
+          unplaced[#unplaced + 1] = name
+        else
+          local dx, dy = gx - ox, gy - oy
+          if math.sqrt(dx * dx + dy * dy) > radius then
+            local done = true
+            if not dry then
+              done = try(function() cm:kill_faction(name) return true end) or false
+            end
+            if done then killed[#killed + 1] = name
+            else failed[#failed + 1] = name end
+          else
+            kept[#kept + 1] = name
+          end
+        end
+      end
+    end
+  end
+  log({ seq = seq, cmd = "trim", radius = radius, dry = dry, me = or_null(me),
+        origin_x = ox, origin_y = oy, n_factions = n,
+        n_killed = #killed, n_kept = #kept, n_unplaced = #unplaced,
+        n_failed = #failed, n_already_dead = already,
+        killed = killed, kept = kept, unplaced = unplaced, failed = failed,
+        turn = turn() })
+end
+
+
+local SAVE_CANDIDATES = {
+  { owner = "cm", name = "save_game" },
+  { owner = "cm", name = "request_save_game" },
+  { owner = "cm", name = "save" },
+  { owner = "_G", name = "save_game" },
+  { owner = "_G", name = "SaveGame" },
+}
+
+
+local function save_probe()
+  local found, missing = {}, {}
+  for _, c in ipairs(SAVE_CANDIDATES) do
+    local host = (c.owner == "cm") and cm or _G
+    local fn = try(function() return host[c.name] end)
+    if type(fn) == "function" then
+      found[#found + 1] = c.owner .. ":" .. c.name
+    else
+      missing[#missing + 1] = c.owner .. ":" .. c.name
+    end
+  end
+  return found, missing
+end
+
+
+function handlers.savegame(seq, rest)
+  local name = (rest or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  if name == "" then
+    log({ seq = seq, cmd = "savegame", error = "savegame needs a file name" })
+    return
+  end
+  local found, missing = save_probe()
+  if #found == 0 then
+    log({ seq = seq, cmd = "savegame", error = "no scripted save exists in this build; "
+          .. "the save screen has to be driven through the UI. Probed and did not find: "
+          .. table.concat(missing, ", "), probed = missing,
+          roots = root_names(), turn = turn() })
+    return
+  end
+  local used, err = nil, nil
+  for _, c in ipairs(SAVE_CANDIDATES) do
+    local host = (c.owner == "cm") and cm or _G
+    local fn = try(function() return host[c.name] end)
+    if type(fn) == "function" and not used then
+      local ok, e = pcall(function()
+        if c.owner == "cm" then fn(cm, name) else fn(name) end
+      end)
+      if ok then used = c.owner .. ":" .. c.name else err = tostring(e) end
+    end
+  end
+  log({ seq = seq, cmd = "savegame", name = name, used = or_null(used),
+        error = or_null(used and nil or (err or "every candidate raised")),
+        available = found, turn = turn() })
+end
+
+
 local last_seq = 0
 local last_pos = 0
 
