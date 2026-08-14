@@ -993,18 +993,37 @@ local SAVE_CANDIDATES = {
 }
 
 
-local function save_probe()
-  local found, missing = {}, {}
+local CCO_SAVE_CALLS = { "SaveGame", "Save", "RequestSaveGame", "SaveCampaign" }
+
+
+local function try_cco_save(name)
+  for _, call in ipairs(CCO_SAVE_CALLS) do
+    local ok = try(function()
+      cco("CcoCampaignRoot", ""):Call(call .. '("' .. name .. '")')
+      return true
+    end)
+    if ok then return "cco:CcoCampaignRoot:" .. call end
+  end
+  return nil
+end
+
+
+local function try_lua_save(name)
+  local tried = {}
   for _, c in ipairs(SAVE_CANDIDATES) do
     local host = (c.owner == "cm") and cm or _G
     local fn = try(function() return host[c.name] end)
     if type(fn) == "function" then
-      found[#found + 1] = c.owner .. ":" .. c.name
+      local ok = pcall(function()
+        if c.owner == "cm" then fn(cm, name) else fn(name) end
+      end)
+      if ok then return c.owner .. ":" .. c.name, tried end
+      tried[#tried + 1] = c.owner .. ":" .. c.name .. " raised"
     else
-      missing[#missing + 1] = c.owner .. ":" .. c.name
+      tried[#tried + 1] = c.owner .. ":" .. c.name .. " absent"
     end
   end
-  return found, missing
+  return nil, tried
 end
 
 
@@ -1014,28 +1033,13 @@ function handlers.savegame(seq, rest)
     log({ seq = seq, cmd = "savegame", error = "savegame needs a file name" })
     return
   end
-  local found, missing = save_probe()
-  if #found == 0 then
-    log({ seq = seq, cmd = "savegame", error = "no scripted save exists in this build; "
-          .. "the save screen has to be driven through the UI. Probed and did not find: "
-          .. table.concat(missing, ", "), probed = missing,
-          roots = root_names(), turn = turn() })
-    return
-  end
-  local used, err = nil, nil
-  for _, c in ipairs(SAVE_CANDIDATES) do
-    local host = (c.owner == "cm") and cm or _G
-    local fn = try(function() return host[c.name] end)
-    if type(fn) == "function" and not used then
-      local ok, e = pcall(function()
-        if c.owner == "cm" then fn(cm, name) else fn(name) end
-      end)
-      if ok then used = c.owner .. ":" .. c.name else err = tostring(e) end
-    end
-  end
+  local used = try_cco_save(name)
+  local tried = {}
+  if not used then used, tried = try_lua_save(name) end
   log({ seq = seq, cmd = "savegame", name = name, used = or_null(used),
-        error = or_null(used and nil or (err or "every candidate raised")),
-        available = found, turn = turn() })
+        error = or_null(used and nil or
+          "no scripted save answered; drive the save screen by click instead"),
+        tried = tried, roots = or_null(used and nil or root_names()), turn = turn() })
 end
 
 
