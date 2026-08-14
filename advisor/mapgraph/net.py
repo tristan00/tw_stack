@@ -11,9 +11,9 @@ from torch_geometric.utils import scatter, softmax
 
 from advisor.mapgraph import schema as S
 
-HIDDEN = 192
-ENTITY_LAYERS = 2
-ACTION_ROUNDS = 2
+HIDDEN = 256
+ENTITY_LAYERS = 1
+ACTION_ROUNDS = 3
 MAP_AGGR = "max"
 ACT_AGGR = "add+mean"
 ATTN = "act"

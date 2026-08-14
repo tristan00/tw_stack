@@ -23,7 +23,7 @@ THREADS = max(1, os.cpu_count() or 8)
 CFG = {"hidden": 256, "entity_layers": 1, "action_rounds": 3,
        "lr": 3.501e-4, "weight_decay": 4.320e-3, "batch": 384, "epochs": 24, "patience": 4,
        "grad_clip": 5.0, "adv_tau": 1.0, "adv_clip": 20.0, "value_weight": 0.1351, "bf16": True,
-       "seed": 0, "time_budget_s": 300, "device": "auto"}
+       "seed": 0, "time_budget_s": 300, "device": "cuda"}
 
 MIN_FIT_S = 30
 
