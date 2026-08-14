@@ -25,7 +25,7 @@ RUN = {"campaigns": 500, "turns": 20, "model": "catboost",
        "strategies": "marwil_gnn=0.4,greedy_catboost=0.4,random=0.1,ruleset=0.1",
        "ruleset": "probe_gaps",
        "factions": "all",
-       "campaign": "Realm of Chaos=0.9,Immortal Empires=0.1",
+       "campaign": "Realm of Chaos=0.5,Immortal Empires=0.5",
        "dev": True}
 
 
