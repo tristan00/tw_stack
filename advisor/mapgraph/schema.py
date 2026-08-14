@@ -35,7 +35,7 @@ TYPE_FIELDS = {
     "hero":         ("x", "y", "rank", "ap_pct",
                      "acted", "is_leader", "in_own_territory",
                      "skill_points"),
-    "action":       ("x", "y"),
+    "action":       ("x", "y", "cost", "pool_avail"),
     "cgroup":       (),
     "screen":       ("attitude", "amount_demanded", "amount_offered",
                      "strength_them", "strength_us", "settlements"),
@@ -86,6 +86,12 @@ CATALOGUE_RELATIONS = (
     "queued",
     "in_army",
     "innate",
+    "skill_active",
+    "skill_rank_locked",
+    "skill_inactive",
+    "tech_researched",
+    "tech_available",
+    "tech_locked",
 )
 
 ABILITY_RELATIONS = ("hinder_settlement", "hinder_army", "hinder_agent",
