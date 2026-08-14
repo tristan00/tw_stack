@@ -26,12 +26,22 @@ def _stamp():
     return time.strftime("%Y%m%d_%H%M%S")
 
 
-def _spawn(args, log_path, merge_err=False):
+def _spawn(args, log_path, merge_err=False, env=None):
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     out = open(log_path, "w", encoding="utf-8")
     err = subprocess.STDOUT if merge_err else open(log_path[:-4] + ".err", "w", encoding="utf-8")
-    subprocess.Popen(args, cwd=TW_STACK, stdout=out, stderr=err, creationflags=_DETACH)
+    subprocess.Popen(args, cwd=TW_STACK, stdout=out, stderr=err, creationflags=_DETACH,
+                     env=env)
     return log_path
+
+
+def _env_with_presave(presave_radius):
+    e = dict(os.environ)
+    if presave_radius is None:
+        e.pop("TW_PRESAVE_RADIUS", None)
+    else:
+        e["TW_PRESAVE_RADIUS"] = str(float(presave_radius))
+    return e
 
 
 def _ps_kill(match):
@@ -72,10 +82,10 @@ def kill_ui():
     return "killed uis=%d" % _ps_kill("advisor_api")
 
 
-def start_recorder(shots=DEFAULT_SHOTS, dev=True):
+def start_recorder(shots=DEFAULT_SHOTS, dev=True, presave_radius=None):
     log = os.path.join(SERVICES_LOG_DIR, "manager_%s.log" % _stamp())
     args = [VENV_PY, "-u", "manager/manager.py", "--shots", str(shots)] + (["--dev"] if dev else [])
-    _spawn(args, log, merge_err=True)
+    _spawn(args, log, merge_err=True, env=_env_with_presave(presave_radius))
     return "recorder -> %s" % log
 
 
@@ -141,10 +151,14 @@ def start_session(campaigns, turns, model=None, cfg=None, retrain=True, retrain_
             + (["--presave-radius", str(presave_radius)]
                if presave_radius is not None else [])
             + (["--dev"] if dev else []))
-    _spawn(args, log)
+    _spawn(args, log, env=_env_with_presave(presave_radius))
     os.makedirs(LOG_DIR, exist_ok=True)
-    with open(CURRENT_LOG, "w", encoding="utf-8", newline="") as fh:
+    tmp = CURRENT_LOG + ".tmp"
+    with open(tmp, "w", encoding="utf-8", newline="") as fh:
         fh.write(log)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, CURRENT_LOG)
     return log
 
 
@@ -157,7 +171,7 @@ def up(campaigns, turns, model=None, cfg=None, retrain=True, retrain_every=0, co
         steps.append(kill_ui())
         steps.append(kill_analytics())
     time.sleep(1.5)
-    steps.append(start_recorder(shots=shots, dev=dev))
+    steps.append(start_recorder(shots=shots, dev=dev, presave_radius=presave_radius))
     time.sleep(3.0)
     if with_ui:
         steps.append(start_ui(port=port))

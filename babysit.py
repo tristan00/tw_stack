@@ -54,9 +54,36 @@ def session_alive():
     return any("session.py" in row for row in runctl.status())
 
 
+def _pointer_target():
+    for attempt in range(3):
+        try:
+            with open(runctl.CURRENT_LOG, encoding="utf-8-sig") as fh:
+                p = fh.read().strip()
+        except OSError:
+            p = ""
+        if p and os.path.exists(p):
+            return p
+        if attempt < 2:
+            time.sleep(0.5)
+    return ""
+
+
+def newest_session_log():
+    d = common.native(common.LOGS_ADVISOR)
+    best = None
+    for f in os.listdir(d):
+        if not (f.startswith("session_") and f.endswith(".log")):
+            continue
+        p = os.path.join(d, f)
+        if best is None or os.path.getmtime(p) > os.path.getmtime(best):
+            best = p
+    return best
+
+
 def log_age():
-    with open(runctl.CURRENT_LOG, encoding="utf-8-sig") as fh:
-        p = fh.read().strip()
+    p = _pointer_target() or newest_session_log()
+    if not p:
+        raise OSError("no session log found to measure staleness")
     return time.time() - os.path.getmtime(p)
 
 
@@ -80,7 +107,7 @@ def main():
         age = log_age()
     except OSError as e:
         age = None
-        note("pointer/log unreadable: %r" % e)
+        note("staleness not measurable: %r" % e)
     if alive and age is not None and age < STALL_S:
         note("ok: session alive, log %.0fs old" % age)
         return 0

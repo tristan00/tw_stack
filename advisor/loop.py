@@ -401,8 +401,8 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
             log("   !! pre-end-turn gate check failed: %s" % repr(e)[:120])
             return False
         if failing:
-            log("   growth gate: FAILING at end of turn %s -- ending the turn for the scoring "
-                "row, then skipping the inter-turn settle" % turn)
+            log("   growth gate: FAILING at end of turn %s -- skipping the end turn and the "
+                "inter-turn settle, the campaign ends here" % turn)
         return failing
     while actions < pol.max_actions_per_turn:
         if stuck["fired"]:
@@ -475,13 +475,14 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
         I.set_snapshot(record["campaign"], record)
         last_record = record
         if (record.get("campaign") or {}).get("ll_wounded"):
-            log("   legendary lord is WOUNDED -- no further actions, ending the turn now")
+            log("   legendary lord is WOUNDED -- no further actions this turn")
             ended_by = "ll_wounded"
             gate_failed[0] = _check_gate_before_end()
-            _force_end_turn(run_dir, executor, decision_id, None, log)
-            act_hist.append("end_turn")
-            del act_hist[:-F.PREV_ACTIONS]
-            F.bump_action_counts(act_counts, "end_turn")
+            if not gate_failed[0]:
+                _force_end_turn(run_dir, executor, decision_id, None, log)
+                act_hist.append("end_turn")
+                del act_hist[:-F.PREV_ACTIONS]
+                F.bump_action_counts(act_counts, "end_turn")
             break
         if turn is not None and turn != _last_beat_turn[0]:
             _last_beat_turn[0] = turn
@@ -514,10 +515,11 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
             log("   nothing eligible -> ending turn")
             ended_by = "no_eligible_actions"
             gate_failed[0] = _check_gate_before_end()
-            _force_end_turn(run_dir, executor, decision_id, ranked, log)
-            act_hist.append("end_turn")
-            del act_hist[:-F.PREV_ACTIONS]
-            F.bump_action_counts(act_counts, "end_turn")
+            if not gate_failed[0]:
+                _force_end_turn(run_dir, executor, decision_id, ranked, log)
+                act_hist.append("end_turn")
+                del act_hist[:-F.PREV_ACTIONS]
+                F.bump_action_counts(act_counts, "end_turn")
             break
         _t = time.time()
         journal.log_pick(run_dir, decision_id, pick, P.scores_for_store(ranked), timings=timing)
@@ -606,7 +608,8 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
     else:
         ended_by = "action_cap"
         gate_failed[0] = _check_gate_before_end()
-        _force_end_turn(run_dir, executor, None, None, log)
+        if not gate_failed[0]:
+            _force_end_turn(run_dir, executor, None, None, log)
 
     terminal = ended_by in ("stuck", "no_campaign_ui", "defeated")
     target = None

@@ -385,7 +385,7 @@ class Executor:
         import bus as _bus
         return _bus._game_alive()
 
-    def wait_game_down(self, timeout=45.0, poll=1.5, log=None):
+    def wait_game_down(self, timeout=5.0, poll=0.25, log=None):
         for attempt in (1, 2):
             t0 = time.time()
             while time.time() - t0 < timeout:
@@ -404,7 +404,7 @@ class Executor:
 
     def hard_restart(self, plan, campaign="Immortal Empires", boot_timeout=90):
         self.kill_game()
-        time.sleep(8)
+        self.wait_game_down()
         return self.start_game(plan=plan, campaign=campaign, boot_timeout=boot_timeout)
 
     def at_main_menu(self):

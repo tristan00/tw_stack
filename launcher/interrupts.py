@@ -367,17 +367,29 @@ def live_control_ids(bus, root):
             if n.get("visible") and str(n.get("state")) in _CLICKABLE}
 
 
-def live_option_texts(bus, root):
-    out = set()
-    for n in _tree(bus, root, 22, 3000):
+def clickable_options(bus, root):
+    nodes = _tree(bus, root, 22, 3000)
+    by_path = {str(n.get("path")): n for n in nodes}
+    out = {}
+    for n in nodes:
         if str(n.get("id")) != "dy_option" or not n.get("visible"):
             continue
-        if str(n.get("state")) not in _CLICKABLE:
+        text = str(n.get("text") or "").strip().lower()
+        if not text:
             continue
-        t = str(n.get("text") or "").strip().lower()
-        if t:
-            out.add(t)
+        path = str(n.get("path") or "").rsplit("|dy_option", 1)[0]
+        button = by_path.get(path)
+        if button is not None and not button.get("visible"):
+            continue
+        state = button.get("state") if button is not None else n.get("state")
+        if str(state) not in _CLICKABLE:
+            continue
+        out[text] = path
     return out
+
+
+def live_option_texts(bus, root):
+    return set(clickable_options(bus, root))
 
 
 def _cancel_declare_root(bus, root, tree):
@@ -650,15 +662,9 @@ def handle_results(bus):
 
 
 def occupy(bus):
-    opts = {}
-    for n in _tree(bus, "settlement_captured", 22, 3000):
-        if str(n.get("id")) != "dy_option" or not n.get("text"):
-            continue
-        if not n.get("visible") or str(n.get("state")) not in _CLICKABLE:
-            continue
-        opts[str(n["text"]).strip().lower()] = str(n["path"]).rsplit("|dy_option", 1)[0]
+    opts = clickable_options(bus, "settlement_captured")
     if not opts:
-        sys.stderr.write("interrupts: settlement_captured has no clickable dy_option nodes\n")
+        sys.stderr.write("interrupts: settlement_captured has no clickable option_button nodes\n")
         return None
     detail = {k: {"context": None, "text": k} for k in opts}
     want = _choose("occupation", sorted(opts), _campaign_hint(),

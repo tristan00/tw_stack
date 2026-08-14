@@ -167,6 +167,19 @@ _LUA_CAMPAIGN_MAP = (
 _MAP_CACHE = {}
 
 
+def _presave_radius():
+    v = os.environ.get("TW_PRESAVE_RADIUS", "").strip()
+    if not v:
+        return None
+    try:
+        return float(v)
+    except ValueError:
+        raise ValueError(
+            "TW_PRESAVE_RADIUS is %r, which is not a number. The start condition of a "
+            "campaign is not something to guess at -- fix the launcher rather than "
+            "recording an unknown radius." % v)
+
+
 def campaign_map(bus, uuid=None):
     key = str(uuid or "")
     if key in _MAP_CACHE:
@@ -1427,6 +1440,7 @@ def snapshot(bus, active=None):
     prof["campaign_state_engine_ms"] = camp.pop("_eval_ms", None)
     camp["resources"] = _parse_resources(_bres(ra[1], "faction_resources", allow_nil=True))
     camp["campaign_map"] = campaign_map(bus, camp.get("campaign_uuid"))
+    camp["presave_radius"] = _presave_radius()
     regs = _parse_regions(_bres(ra[2], "regions", allow_nil=True))
     rs = _ruins_of(regs)
     ruin_keys = {r["region"] for r in rs}

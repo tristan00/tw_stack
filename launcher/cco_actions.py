@@ -376,10 +376,23 @@ def _horde_build_confirm(bus, ctx, pick, before):
     return (parts[1] == "true" and parts[2] == key), after
 
 
+def _horde_build_doomed(bus, ctx, pick, before, after):
+    parts = str((after or {}).get("state") or "").split("|")
+    if len(parts) != 3 or parts[1] == "true":
+        before["doom_streak"] = 0
+        return None
+    before["doom_streak"] = before.get("doom_streak", 0) + 1
+    if before["doom_streak"] < 2:
+        return None
+    return ("slot %s still not under construction after %d polls -- the order never queued"
+            % (parts[0], before["doom_streak"]))
+
+
 register("horde_building", {
     "layer": "cco", "signal": "force_slot_construction_queued",
     "snapshot": _horde_build_snapshot, "prechecks": [],
     "execute": _horde_build_execute, "confirm": _horde_build_confirm,
+    "doomed": _horde_build_doomed,
     "timeout_s": 10.0, "poll_s": 1.5, "spends_gold": True,
 })
 
@@ -573,10 +586,37 @@ def _items_confirm(bus, ctx, pick, before):
     return (n(now) > n(before.get("equipped"))), {"equipped": now}
 
 
+def _equipped_count(v):
+    try:
+        return int(str(v).split("|", 1)[0])
+    except (TypeError, ValueError):
+        return -1
+
+
+def _items_precheck(bus, ctx, pick, before):
+    if str(before.get("can_equip")).lower() == "false":
+        return False, "cannot_equip"
+    return True, None
+
+
+def _items_doomed(bus, ctx, pick, before, after):
+    now = _equipped_count((after or {}).get("equipped"))
+    was = _equipped_count(before.get("equipped"))
+    if now < 0 or was < 0 or now != was:
+        before["doom_streak"] = 0
+        return None
+    before["doom_streak"] = before.get("doom_streak", 0) + 1
+    if before["doom_streak"] < 2:
+        return None
+    return ("equipped count still %d after %d polls -- the item never equipped"
+            % (now, before["doom_streak"]))
+
+
 register("items", {
     "layer": "cco", "signal": "equipped_count_increase",
-    "snapshot": _items_snapshot, "prechecks": [],
+    "snapshot": _items_snapshot, "prechecks": [_items_precheck],
     "execute": _items_execute, "confirm": _items_confirm,
+    "doomed": _items_doomed,
     "timeout_s": 6.0, "poll_s": 1.2,
 })
 
@@ -642,10 +682,23 @@ def _rites_confirm(bus, ctx, pick, before):
     return (flags != before.get("flags") and not str(flags).startswith("true/")), {"flags": flags}
 
 
+def _rites_doomed(bus, ctx, pick, before, after):
+    flags = (after or {}).get("flags")
+    if not flags or flags != before.get("flags"):
+        before["doom_streak"] = 0
+        return None
+    before["doom_streak"] = before.get("doom_streak", 0) + 1
+    if before["doom_streak"] < 2:
+        return None
+    return ("rite flags unchanged (%s) after %d polls -- the rite never fired"
+            % (flags, before["doom_streak"]))
+
+
 register("rites", {
     "layer": "cco", "signal": "can_perform_false_and_complete",
     "snapshot": _rites_snapshot, "prechecks": [],
     "execute": _rites_execute, "confirm": _rites_confirm,
+    "doomed": _rites_doomed,
     "timeout_s": 8.0, "poll_s": 1.5,
 })
 

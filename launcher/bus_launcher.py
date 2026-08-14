@@ -357,17 +357,14 @@ class BusLauncher:
         self.spawn(save_file=save_file)
         _log("waiting for the loaded campaign ...")
         t0 = time.time()
-        if not self.wait_for({"started", "frontend_armed"}, boot_timeout):
-            raise TWError("loading %s: neither 'started' nor 'frontend_armed' within %ds"
-                          % (save_file, boot_timeout))
+        started = self.wait_for({"started"}, boot_timeout)
+        if not started:
+            raise TWError(
+                "loading %s never logged 'started' within %ds -- the save may not exist in "
+                "the game's own save folder" % (save_file, boot_timeout))
         self.bus = Bus()
         if not self._wait_bus_ready():
             raise TWError("bus never became ready after loading %s" % save_file)
-        started = self.wait_for({"started"}, load_timeout)
-        if not started:
-            raise TWError(
-                "loading %s reached the bus but never logged 'started' within %ds -- the "
-                "save may not exist in the game's own save folder" % (save_file, load_timeout))
         t_started = time.time()
         _log("save '%s' loaded after %.1fs" % (save_file, t_started - t0))
         if not self.advance_to_hud():

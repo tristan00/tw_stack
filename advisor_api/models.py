@@ -94,6 +94,7 @@ class CampaignRow(BaseModel):
     campaign_id: int
     campaign: Ident
     campaign_map: Ident | None = None
+    presave_radius: float | None = None
     turns: int | None = None
     decisions: int = 0
     no_action: int = 0
