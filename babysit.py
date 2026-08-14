@@ -20,13 +20,7 @@ LOG = common.BABYSIT_LOG
 STALL_S = 1200
 RELAUNCH_COOLDOWN_S = 1800
 
-RUN = {"campaigns": 500, "turns": 20, "model": "catboost",
-       "retrain": True, "retrain_every": 20, "retrain_first": True,
-       "strategies": "marwil_gnn=0.4,greedy_catboost=0.4,random=0.1,ruleset=0.1",
-       "ruleset": "probe_gaps",
-       "factions": "all",
-       "campaign": "Realm of Chaos=0.5,Immortal Empires=0.5",
-       "dev": True}
+from run_config import RUN
 
 
 def note(msg):
@@ -101,7 +95,8 @@ def main():
                           retrain_first=RUN.get("retrain_first", False),
                           dev=RUN.get("dev", False), with_ui=True,
                           strategies=RUN["strategies"], ruleset=RUN["ruleset"],
-                          factions=RUN["factions"], campaign=RUN["campaign"]):
+                          factions=RUN["factions"], campaign=RUN["campaign"],
+                          presave_radius=RUN.get("presave_radius")):
         note(step)
     return 0
 
