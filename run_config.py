@@ -12,7 +12,7 @@ RUN = {
     "ruleset": "probe_gaps",
     "factions": "all",
     "campaign": "Realm of Chaos=0.5,Immortal Empires=0.5",
-    "presave_radius": None,
+    "presave_radius": 150,
     "dev": True,
 }
 

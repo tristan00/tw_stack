@@ -113,15 +113,18 @@ class BusLauncher:
                  % (dst, ", ".join(moved), freed / 1e6))
         return moved
 
-    def spawn(self):
+    def spawn(self, save_file=None):
         if not os.path.isfile(EXE):
             raise TWError("WH3 exe not found: %s" % EXE)
         self._rotate_bus_files()
         flags = 0
         for n in ("DETACHED_PROCESS", "CREATE_NEW_PROCESS_GROUP"):
             flags |= getattr(subprocess, n, 0)
-        subprocess.Popen([EXE], cwd=GAME_DIR, creationflags=flags, close_fds=True)
-        _log("spawned %s" % EXE)
+        args = [EXE]
+        if save_file:
+            args += ["game_startup_mode", "campaign_load", str(save_file), ";"]
+        subprocess.Popen(args, cwd=GAME_DIR, creationflags=flags, close_fds=True)
+        _log("spawned %s%s" % (EXE, (" -> %s" % save_file) if save_file else ""))
 
     def wait_for(self, kinds, timeout):
         start = os.path.getsize(OUT_PATH) if os.path.exists(OUT_PATH) else 0
@@ -345,6 +348,33 @@ class BusLauncher:
             raise TWError("bus never became ready after frontend_armed")
         _log("bus ready.")
         return self.start_campaign(faction, campaign, load_timeout)
+
+    def load_save(self, save_file, boot_timeout=180, load_timeout=300):
+        save_file = str(save_file or "").strip()
+        if not save_file:
+            raise TWError("load_save() needs a save file name")
+        self.ensure_pack()
+        self.spawn(save_file=save_file)
+        _log("waiting for the loaded campaign ...")
+        t0 = time.time()
+        if not self.wait_for({"started", "frontend_armed"}, boot_timeout):
+            raise TWError("loading %s: neither 'started' nor 'frontend_armed' within %ds"
+                          % (save_file, boot_timeout))
+        self.bus = Bus()
+        if not self._wait_bus_ready():
+            raise TWError("bus never became ready after loading %s" % save_file)
+        started = self.wait_for({"started"}, load_timeout)
+        if not started:
+            raise TWError(
+                "loading %s reached the bus but never logged 'started' within %ds -- the "
+                "save may not exist in the game's own save folder" % (save_file, load_timeout))
+        t_started = time.time()
+        _log("save '%s' loaded after %.1fs" % (save_file, t_started - t0))
+        if not self.advance_to_hud():
+            raise TWError("loaded %s but never reached the interactive HUD" % save_file)
+        _log("CAMPAIGN PLAYABLE (loaded): %s -- load %.1fs + hud %.1fs = %.1fs"
+             % (save_file, t_started - t0, time.time() - t_started, time.time() - t0))
+        return started
 
     def startable_factions(self, campaign_map):
         import json
