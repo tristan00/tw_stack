@@ -862,7 +862,6 @@ function Training() {
     <div className="space-y-6">
       <Section title="reward per campaign">
         <ChartFrame
-          note={`mean of ${20} campaigns; settlements + lord level + allies + 3x vassals`}
           table={
             <DataTable
               rows={data.reward}
