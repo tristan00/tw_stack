@@ -13,6 +13,9 @@ _NREL = S.N_FORWARD_RELATIONS
 
 MOBILE_KINDS = {"army": True, "neutral_army": True, "hero": False, "neutral_hero": False}
 
+_SKILL_REL = {"active": "skill_active", "locked_due_to_rank": "skill_rank_locked",
+              "inactive": "skill_inactive"}
+
 
 class Graph:
     __slots__ = ("_nodes", "_edges",
@@ -90,8 +93,16 @@ class Graph:
         if not key:
             return None
         nid = "%s:%s" % (kind, key)
-        return self.add(nid, kind, _cat_values(kind, key, nid),
-                        cat=S.cat_global(kind, key))
+        idx = self.id2idx.get(nid)
+        if idx is not None:
+            return idx
+        idx = self.add(nid, kind, _cat_values(kind, key, nid),
+                       cat=S.cat_global(kind, key))
+        if kind == "building":
+            ch = C.chain_of(key)
+            if ch:
+                self.edge(idx, self.cat_node("chain", ch), "of_chain")
+        return idx
 
 
 def _cat_values(kind, key, nid):
@@ -127,7 +138,7 @@ def build_graph(record):
     relations = {str(r.get("faction")): r for r in (world.get("relations") or [])
                  if r.get("faction")}
 
-    prov_state, char_state = {}, {}
+    prov_state, char_state, camp_state = {}, {}, {}
     for e in record.get("entities") or []:
         kind = e.get("context_kind")
         st = e.get("state") or {}
@@ -135,6 +146,8 @@ def build_graph(record):
             prov_state[str(st["region"])] = st
         elif kind in ("lord", "hero"):
             char_state[str(e.get("context_id"))] = (kind, st)
+        elif kind == "campaign":
+            camp_state = st
 
     region_rows = {str(r.get("region")): r for r in (world.get("regions") or [])
                    if r.get("region")}
@@ -187,6 +200,19 @@ def build_graph(record):
             bi = g.id2idx.get("f:" + str(peer))
             if bi is not None and bi != ai:
                 g.edge(ai, bi, "dip_war")
+
+    for t in camp_state.get("tech") or ():
+        tk = str((t or {}).get("key") or "")
+        if not tk:
+            continue
+        g.edge(mi, g.cat_node("tech", tk),
+               "tech_researched" if t.get("researched")
+               else "tech_available" if t.get("can_research") else "tech_locked")
+    cur = camp_state.get("current_research")
+    if isinstance(cur, dict):
+        cur = cur.get("key")
+    if cur:
+        g.edge(mi, g.cat_node("tech", str(cur)), "researching")
 
     prov_of_region = {}
     region_xy = []
@@ -300,11 +326,7 @@ def build_graph(record):
                 g.edge(si, si, "slot_locked")
             bkey = built.get(str(sl)) or built.get(sl)
             if bkey:
-                bi = g.cat_node("building", str(bkey))
-                g.edge(si, bi, "slot_filled")
-                ch = C.chain_of(str(bkey))
-                if ch:
-                    g.edge(bi, g.cat_node("chain", ch), "of_chain")
+                g.edge(si, g.cat_node("building", str(bkey)), "slot_filled")
             nk = now.get(str(sl)) or now.get(sl)
             if isinstance(nk, dict):
                 nk = nk.get("key")
@@ -474,6 +496,11 @@ def _wire_char(g, ci, cqi, row, faction, prov_of_region, st):
     for sk in (st or {}).get("hidden_skills") or ():
         if sk:
             g.edge(ci, g.cat_node("skill", str(sk)), "innate")
+    for sk in (st or {}).get("skills") or ():
+        skey = str((sk or {}).get("key") or "")
+        rel = _SKILL_REL.get(str((sk or {}).get("status") or ""))
+        if skey and rel:
+            g.edge(ci, g.cat_node("skill", skey), rel)
 
 
 def _wire_knn(g):
@@ -519,10 +546,16 @@ def _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me,
     if at == "diplomacy":
         term = S.term_index(key.split(":", 1)[-1])
     avals = {}
+    pd = G.Reader(params, "offer:%s:%s:%s" % (ck, cid, key), "offers[].params")
     if _pos_ok(params.get("x"), params.get("y")):
-        pd = G.Reader(params, "offer:%s:%s:%s" % (ck, cid, key), "offers[].params")
         avals["x"] = pd.num("x")
         avals["y"] = pd.num("y")
+    if params.get("cost") is not None:
+        avals["cost"] = pd.num("cost")
+    elif params.get("repair_cost") is not None:
+        avals["cost"] = pd.num("repair_cost")
+    if params.get("pool_avail") is not None:
+        avals["pool_avail"] = pd.num("pool_avail")
     ai = g.add("a:%s:%s:%s:%d" % (ck, cid, key, len(g.action_nodes)), "action",
                avals, atype=S.atype_index(at), term=term,
                stance=S.stance_index(key) if at == "stance" else 0)
