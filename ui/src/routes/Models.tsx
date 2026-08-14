@@ -14,7 +14,7 @@ import {
   Section,
   Skeleton,
 } from '@/components/primitives'
-import { ChartFrame, RhoHistogram, RhoTrend } from '@/components/charts'
+import { ChartFrame, GrowthTrend, RhoHistogram, RhoTrend } from '@/components/charts'
 import { SubNav, useSubView } from '@/components/SubNav'
 import {
   useApi,
@@ -23,6 +23,7 @@ import {
   type AgreementSeriesPoint,
   type CorrelationsPage,
   type ForcingPage,
+  type GrowthPoint,
   type ModelsPage,
   type Schemas,
   type TrainingPage,
@@ -837,8 +838,44 @@ function Training() {
     },
   ]
 
+  const num = (v: number) => <span className="num text-2xs">{v}</span>
+  const growthCols: Col<GrowthPoint>[] = [
+    { key: 'seq', label: 'campaign', value: (r) => r.seq, render: (r) => num(r.seq) },
+    {
+      key: 'settlements',
+      label: 'settlements',
+      value: (r) => r.settlements,
+      render: (r) => num(r.settlements),
+    },
+    {
+      key: 'lord_level',
+      label: 'lord level',
+      value: (r) => r.lord_level,
+      render: (r) => num(r.lord_level),
+    },
+    { key: 'vassals', label: 'vassals', value: (r) => r.vassals, render: (r) => num(r.vassals) },
+    { key: 'allies', label: 'allies', value: (r) => r.allies, render: (r) => num(r.allies) },
+    { key: 'total', label: 'total', value: (r) => r.total, render: (r) => num(r.total) },
+  ]
+
   return (
     <div className="space-y-6">
+      <Section title="growth per campaign">
+        <ChartFrame
+          note={`mean of ${20} campaigns; settlements + lord level + vassals + allies`}
+          table={
+            <DataTable
+              rows={data.growth}
+              cols={growthCols}
+              rowId={(r) => String(r.seq)}
+              emptyWhat="no campaign measured yet"
+              emptyWhy="a campaign needs more than one reward row to show a gain"
+            />
+          }
+        >
+          <GrowthTrend points={data.growth} />
+        </ChartFrame>
+      </Section>
       <Section title="experiment ledger" scope={data.scope}>
         <DataTable
           rows={data.trials}

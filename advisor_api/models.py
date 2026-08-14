@@ -673,11 +673,24 @@ class TrainingEvent(BaseModel):
     groups: dict = Field(default_factory=dict)
 
 
+class GrowthPoint(BaseModel):
+    seq: int
+    campaign_id: int
+    faction: str | None = None
+    settlements: float
+    lord_level: float
+    vassals: float
+    allies: float
+    total: float
+    turns: Count
+
+
 class TrainingPage(BaseModel):
     scope: Scope
     trials: list[TrialRow]
     history: list[TrainingEvent]
     group_order: list[str]
+    growth: list[GrowthPoint]
 
 
 class ActivityRow(BaseModel):

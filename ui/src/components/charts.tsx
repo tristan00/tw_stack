@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import type { AgreementSeriesPoint, GenerationRow, RhoBin } from '@/lib/api'
+import type { AgreementSeriesPoint, GenerationRow, GrowthPoint, RhoBin } from '@/lib/api'
 import { n } from '@/lib/format'
 import { Card } from '@/components/primitives'
 import { cn } from '@/lib/utils'
@@ -500,6 +500,145 @@ export function RankScatter({ pairs, size = 236 }: { pairs: RankPair[]; size?: n
           'the taken offer is filled; every dot is a row in the ranking below'
         )}
       </div>
+    </div>
+  )
+}
+
+
+const GROWTH_WINDOW = 20
+
+export function GrowthTrend({ points }: { points: GrowthPoint[] }) {
+  const [ref, w] = useMeasure<HTMLDivElement>()
+  const [cursor, setCursor] = useState<number | null>(null)
+  const width = Math.max(360, w)
+  const iw = width - PAD.l - PAD.r
+  const n = points.length
+  const sx = (i: number) => PAD.l + (iw * i) / (n - 1 || 1)
+
+  const trend = points.map((_, i) => {
+    const lo = Math.max(0, i - GROWTH_WINDOW + 1)
+    const win = points.slice(lo, i + 1)
+    return win.reduce((a, p) => a + p.total, 0) / win.length
+  })
+  const top = Math.max(1, ...points.map((p) => p.total))
+  const sy = (v: number) => PAD.t + RAIL + PLOT_H * (1 - v / top)
+
+  const path = (vals: number[]) =>
+    'M' + vals.map((v, i) => `${sx(i).toFixed(1)},${sy(v).toFixed(1)}`).join('L')
+
+  const ticks = [0, top / 2, top]
+  const xticks = n > 1 ? [0, Math.floor((n - 1) / 2), n - 1] : [0]
+  const at = cursor === null ? n - 1 : cursor
+
+  return (
+    <div
+      ref={ref}
+      tabIndex={0}
+      role="img"
+      aria-label={`settlement, lord level, vassal and ally gain per campaign over ${n} campaigns; arrow keys step through campaigns`}
+      onKeyDown={(e) => {
+        if (e.key === 'ArrowLeft') setCursor((c) => Math.max(0, (c ?? n - 1) - 1))
+        if (e.key === 'ArrowRight') setCursor((c) => Math.min(n - 1, (c ?? n - 1) + 1))
+      }}
+      className="focus:outline-accent min-w-0 focus:outline-1"
+    >
+      <svg width={width} height={HEIGHT} className="block">
+        {ticks.map((v) => (
+          <g key={v}>
+            <line
+              x1={PAD.l}
+              x2={width - PAD.r}
+              y1={sy(v)}
+              y2={sy(v)}
+              stroke="var(--line)"
+              strokeWidth="1"
+              shapeRendering="crispEdges"
+            />
+            <text
+              x={PAD.l - 6}
+              y={sy(v) + 3.5}
+              textAnchor="end"
+              fontSize="11"
+              className="num fill-[var(--dim)]"
+            >
+              {v.toFixed(v === Math.round(v) ? 0 : 1)}
+            </text>
+          </g>
+        ))}
+
+        {xticks.map((i) => (
+          <text
+            key={i}
+            x={sx(i)}
+            y={PAD.t + RAIL + PLOT_H + 14}
+            textAnchor={i === 0 ? 'start' : i === n - 1 ? 'end' : 'middle'}
+            fontSize="11"
+            className="num fill-[var(--dim)]"
+          >
+            {points[i]?.seq}
+          </text>
+        ))}
+
+        <path
+          d={path(points.map((p) => p.total))}
+          fill="none"
+          stroke="var(--dim)"
+          strokeWidth="1"
+          opacity="0.25"
+        />
+        <path
+          d={path(trend)}
+          fill="none"
+          stroke="var(--accent)"
+          strokeWidth="2"
+          strokeLinejoin="round"
+          strokeLinecap="round"
+        />
+
+        {cursor !== null && (
+          <line
+            x1={sx(at)}
+            x2={sx(at)}
+            y1={PAD.t + RAIL}
+            y2={PAD.t + RAIL + PLOT_H}
+            stroke="var(--dim)"
+            strokeWidth="1"
+            opacity="0.5"
+            shapeRendering="crispEdges"
+          />
+        )}
+
+        {n > 0 && (
+          <>
+            <circle
+              cx={sx(at)}
+              cy={sy(trend[at])}
+              r="4"
+              fill="var(--accent)"
+              stroke="var(--surface)"
+              strokeWidth="2"
+            />
+            <text
+              x={Math.min(sx(at) + 8, width - PAD.r + 4)}
+              y={sy(trend[at]) + 4}
+              fontSize="11"
+              className="num fill-[var(--fg)]"
+            >
+              {trend[at].toFixed(2)}
+            </text>
+          </>
+        )}
+
+        <line
+          x1={PAD.l}
+          x2={width - PAD.r}
+          y1={PAD.t + RAIL + PLOT_H}
+          y2={PAD.t + RAIL + PLOT_H}
+          stroke="var(--line)"
+          strokeWidth="1"
+          shapeRendering="crispEdges"
+        />
+      </svg>
     </div>
   )
 }
