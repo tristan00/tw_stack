@@ -328,6 +328,7 @@ class BusLauncher:
             raise TWError("reached 'started' but never got the interactive HUD (loading/cinematic stuck)")
         _log("CAMPAIGN PLAYABLE: %s / %s -- load %.1fs + hud %.1fs = %.1fs"
              % (ckey, faction, t_started - t0, time.time() - t_started, time.time() - t0))
+        self.stamp_campaign_uuid()
         return started
 
     def restart_campaign(self, faction, campaign="Immortal Empires", load_timeout=120):
@@ -371,7 +372,26 @@ class BusLauncher:
             raise TWError("loaded %s but never reached the interactive HUD" % save_file)
         _log("CAMPAIGN PLAYABLE (loaded): %s -- load %.1fs + hud %.1fs = %.1fs"
              % (save_file, t_started - t0, time.time() - t_started, time.time() - t0))
+        self.stamp_campaign_uuid()
         return started
+
+    def stamp_campaign_uuid(self):
+        stamp = "%x" % int(time.time() * 1000)
+        lua = (
+            "local base='' "
+            "pcall(function() base=tostring(cm:get_cached_value('tw_stack_campaign_uuid', "
+            "  function() return tostring(cm:get_local_faction_name(true)) end)) end) "
+            "if base=='' or base=='nil' then base=tostring(cm:get_local_faction_name(true)) end "
+            "local nv=base..'_%s' "
+            "pcall(function() cm:set_saved_value('tw_stack_campaign_uuid', nv) end) "
+            "return nv" % stamp)
+        try:
+            got = (self.bus.send("eval", lua, timeout=20.0) or {}).get("result")
+        except Exception as e:
+            _log("campaign uuid not stamped: %s" % repr(e)[:80])
+            return None
+        _log("campaign uuid: %s" % got)
+        return got
 
     def startable_factions(self, campaign_map):
         import json
