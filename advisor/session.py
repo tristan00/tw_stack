@@ -90,6 +90,10 @@ def _pick_plan(plan, rng):
     return plan
 
 
+_CAMPAIGN_LABEL = {"wh3_main_combi": "Immortal Empires",
+                   "wh3_main_chaos": "Realm of Chaos"}
+
+
 def normalize_campaigns(spec):
     if isinstance(spec, dict):
         mix = dict(spec)
@@ -302,7 +306,7 @@ def _epsilon_mix(epsilon):
 def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                   log=print, runs_root=RUNS_ROOT, retrain=False, retrain_every=0, seed=None,
                   cold=False, backend=None, backend_cfg=None, epsilon=None, strategies=None,
-                  ruleset=None, retrain_first=False):
+                  ruleset=None, retrain_first=False, presave_radius=None):
     from bus import Bus
     from executor import Executor
 
@@ -321,6 +325,21 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
             % (epsilon, json.dumps(strategies)))
     mix = P.normalize_strategies(strategies)
     cmix = normalize_campaigns(campaign)
+    presaves = None
+    if presave_radius is not None:
+        sys.path.insert(0, common.ROOT)
+        import bake_saves
+        presaves = bake_saves.list_presaves(radius=presave_radius)
+        if not presaves:
+            raise SystemExit(
+                "--presave-radius %s but nothing is baked at that radius in %s (have %s). "
+                "A run that quietly fell back to fresh untrimmed campaigns would keep "
+                "growing a corpus that does not match what was asked for."
+                % (presave_radius, bake_saves.presave_dir(),
+                   bake_saves.presave_radii() or "none"))
+        log("presaves: %d baked start(s) at radius %s -- %s"
+            % (len(presaves), presave_radius,
+               ", ".join(sorted({p["faction"] for p in presaves}))))
     if "ruleset" in mix and not ruleset:
         raise SystemExit("strategy mix includes 'ruleset' but no --ruleset <name> was given")
     if ruleset and "ruleset" not in mix:
@@ -368,16 +387,26 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
     stretch, generation, trained = [], 0, None
 
     for i in range(n):
-        this_campaign = _pick_campaign(cmix, rng)
-        this_plan = _pick_plan(_plan_for(plan, this_campaign), rng)
+        this_presave = None
+        if presaves is not None:
+            this_presave = rng.choice(sorted(presaves, key=lambda p: p["file"]))
+            this_campaign = _CAMPAIGN_LABEL.get(this_presave["campaign_map"],
+                                                this_presave["campaign_map"])
+            this_plan = this_presave["faction"]
+        else:
+            this_campaign = _pick_campaign(cmix, rng)
+            this_plan = _pick_plan(_plan_for(plan, this_campaign), rng)
         this_turns = rng.randint(turns[0], turns[1]) if isinstance(turns, (tuple, list)) \
             else int(turns)
         log("\n" + "=" * 78)
-        log("CAMPAIGN %d/%d  (up to %d turns, map=%s, faction=%s)"
-            % (i + 1, n, this_turns, this_campaign, this_plan))
+        log("CAMPAIGN %d/%d  (up to %d turns, map=%s, faction=%s%s)"
+            % (i + 1, n, this_turns, this_campaign, this_plan,
+               ", presave r%g" % this_presave["radius"] if this_presave else ""))
         log("=" * 78)
         entry = {"index": i + 1, "started": time.time(), "plan": this_plan,
                  "campaign": this_campaign,
+                 "presave": this_presave["file"] if this_presave else None,
+                 "presave_radius": this_presave["radius"] if this_presave else None,
                  "max_turns": this_turns}
         try:
             ex.mark_campaign_start()
@@ -480,6 +509,13 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
         _preload = threading.Thread(target=_preload_models, name="model-preload", daemon=True)
         _preload.start()
         try:
+            if this_presave is not None:
+                raise SystemExit(
+                    "presave selection picked %s, but loading a save is not implemented "
+                    "yet -- there is no load path in the launcher. Starting a fresh "
+                    "campaign here would silently play the full untrimmed map while the "
+                    "run claims radius %g, so this stops instead."
+                    % (this_presave["file"], this_presave["radius"]))
             if hard_restart_next:
                 log("previous campaign ended %s -- killing the game rather than asking it to quit"
                     % prev_outcome)
@@ -1320,6 +1356,9 @@ def main():
     if epsilon is not None and strategies is not None:
         raise SystemExit("--epsilon is legacy sugar for --strategies; give one, not both")
     ruleset = _parse_ruleset(sys.argv)
+    presave_radius = None
+    if "--presave-radius" in sys.argv:
+        presave_radius = float(sys.argv[sys.argv.index("--presave-radius") + 1])
     campaign = "Immortal Empires"
     if "--campaign" in sys.argv:
         i = sys.argv.index("--campaign")
@@ -1331,7 +1370,8 @@ def main():
     r = run_campaigns(n, turns, plan=keys, retrain="--retrain" in sys.argv,
                       retrain_every=every, cold=cold, backend=backend,
                       backend_cfg=backend_cfg, epsilon=epsilon, strategies=strategies,
-                      ruleset=ruleset, campaign=campaign, retrain_first=retrain_first)
+                      ruleset=ruleset, campaign=campaign, retrain_first=retrain_first,
+                      presave_radius=presave_radius)
     return 0 if r["totals"]["completed"] else 2
 
 

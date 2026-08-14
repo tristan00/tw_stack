@@ -32,19 +32,97 @@ def save_dir():
     return d
 
 
-def save_name(campaign_map, faction, radius, kept, turn):
-    return "trim__%s__%s__r%g__keep%d__t%d" % (
-        campaign_map, faction, float(radius), int(kept), int(turn))
+def save_name(campaign_map, faction, radius, turn):
+    return "trim__%s__%s__r%g__t%d" % (
+        campaign_map, faction, float(radius), int(turn))
 
 
 def parse_save_name(name):
-    m = re.match(r"^trim__(.+?)__(.+?)__r([0-9.]+)__keep(\d+)__t(\d+)$",
+    m = re.match(r"^trim__(.+?)__(.+?)__r([0-9.]+)__t(\d+)$",
                  os.path.splitext(os.path.basename(name))[0])
     if not m:
         return None
     return {"campaign_map": m.group(1), "faction": m.group(2),
-            "radius": float(m.group(3)), "kept": int(m.group(4)),
-            "turn": int(m.group(5))}
+            "radius": float(m.group(3)), "turn": int(m.group(4))}
+
+
+def presave_dir():
+    d = os.path.join(common.native(common.TWDATA), "presaves")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def archive_presaves(log=print):
+    import shutil
+    copied, skipped = [], []
+    for f in sorted(os.listdir(save_dir())):
+        if not f.endswith(".save") or not parse_save_name(f):
+            continue
+        src = os.path.join(save_dir(), f)
+        dst = os.path.join(presave_dir(), f)
+        if os.path.exists(dst) and os.path.getsize(dst) == os.path.getsize(src):
+            skipped.append(f)
+            continue
+        shutil.copy2(src, dst)
+        copied.append(f)
+        log("archived %s (%d bytes)" % (f, os.path.getsize(dst)))
+    return {"copied": copied, "already_present": skipped, "dir": presave_dir()}
+
+
+def restore_presave(meta, log=print):
+    import shutil
+    dst = os.path.join(save_dir(), meta["file"])
+    if os.path.exists(dst) and os.path.getsize(dst) == os.path.getsize(meta["path"]):
+        return dst
+    shutil.copy2(meta["path"], dst)
+    log("restored %s into the game save folder" % meta["file"])
+    return dst
+
+
+def list_presaves(radius=None, campaign_map=None, turn=None, where="archive"):
+    roots = {"archive": [presave_dir()], "game": [save_dir()],
+             "both": [presave_dir(), save_dir()]}[where]
+    out, seen = [], set()
+    for root in roots:
+        for f in sorted(os.listdir(root)):
+            if not f.endswith(".save") or f in seen:
+                continue
+            meta = parse_save_name(f)
+            if not meta:
+                continue
+            if radius is not None and float(meta["radius"]) != float(radius):
+                continue
+            if campaign_map is not None and meta["campaign_map"] != campaign_map:
+                continue
+            if turn is not None and int(meta["turn"]) != int(turn):
+                continue
+            seen.add(f)
+            meta["file"] = f
+            meta["path"] = os.path.join(root, f)
+            out.append(meta)
+    return out
+
+
+
+
+def presave_radii():
+    counts = {}
+    for p in list_presaves():
+        counts.setdefault(p["radius"], []).append(p)
+    return {r: len(v) for r, v in sorted(counts.items())}
+
+
+def pick_presave(radius, rng, campaign_map=None, turn=None):
+    pool = list_presaves(radius=radius, campaign_map=campaign_map, turn=turn)
+    if not pool:
+        have = presave_radii()
+        raise RuntimeError(
+            "bake_saves: no presave at radius %s%s in %s. Baked radii on disk: %s. "
+            "Refusing to fall back to a different radius -- a run that quietly trains on "
+            "a world it did not ask for is worse than one that does not start."
+            % (radius, "" if campaign_map is None else " on %s" % campaign_map,
+               save_dir(), have or "none"))
+    return rng.choice(sorted(pool, key=lambda p: p["file"]))
 
 
 def _bus():
@@ -301,7 +379,7 @@ def bake_one(campaign, faction, radius, turn=1, dry=False, log=print):
         log("bake: dry run, nothing saved")
         return out
 
-    name = save_name(campaign_map, faction, radius, r["n_kept"], turn)
+    name = save_name(campaign_map, faction, radius, turn)
     out["save"] = save_campaign(bus, name, bl=bl, log=log)
     log("bake: saved %s" % out["save"])
     to_main_menu(bl)
