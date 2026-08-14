@@ -117,6 +117,7 @@ def check(verbose=True):
     try:
         from advisor.mapgraph import net as N
         from advisor.mapgraph import schema as S
+        from advisor.mapgraph import train as T
     except ImportError:
         import net as N
         import schema as S
@@ -169,8 +170,8 @@ def check(verbose=True):
        and enc.index("for _ in range(self.entity_layers)")
        < enc.index("for r in range(self.action_rounds)"))
 
-    e = N.Encoder(64, 2, 2)
-    conv = N.RelConv(8, S.REL_DIM, "mean")
+    e = N.from_cfg(dict(T.CFG, hidden=64, entity_layers=2, action_rounds=2)).encoder
+    conv = N.RelConv(8, S.REL_DIM, "mean", False, T.CFG["conv"], T.CFG["dst_dim"])
     empty = conv(torch.randn(5, 8), torch.zeros((2, 0), dtype=torch.long),
                  torch.zeros((0, S.REL_DIM)))
     ok("a2e gate initialised to zero", bool(torch.all(e.a2e_gate == 0)))
