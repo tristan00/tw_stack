@@ -76,6 +76,52 @@ class Executor:
 
     END_PANEL_BUTTON_XY = (0.5, 1345.0 / 1440.0)
 
+    def game_is_foreground(self):
+        try:
+            import ctypes
+            from ctypes import wintypes
+            u = ctypes.windll.user32
+            h = u.GetForegroundWindow()
+            n = u.GetWindowTextLengthW(h)
+            buf = ctypes.create_unicode_buffer(n + 1)
+            u.GetWindowTextW(h, buf, n + 1)
+            pid = wintypes.DWORD()
+            u.GetWindowThreadProcessId(h, ctypes.byref(pid))
+            return "warhammer" in buf.value.lower(), buf.value, pid.value
+        except Exception as e:
+            sys.stderr.write("executor: foreground check failed -> %s\n" % repr(e)[:110])
+            return False, "", 0
+
+    _VK = {"ctrl": 0x11, "shift": 0x10, "alt": 0x12, "s": 0x53}
+
+    def send_hotkey(self, *keys, hold=0.06, settle=0.5, require_foreground=True):
+        is_fg, title, pid = self.game_is_foreground()
+        if require_foreground and not is_fg:
+            sys.stderr.write(
+                "executor: refusing to send hotkey %s -- foreground window is %r (pid %s), "
+                "not the game. A global keypress sent to the wrong window is worse than "
+                "no keypress at all.\n" % ("+".join(keys), title, pid))
+            return False
+        try:
+            import ctypes
+            u = ctypes.windll.user32
+            KEYEVENTF_KEYUP = 0x0002
+            codes = [self._VK[k.lower()] for k in keys]
+            for c in codes:
+                u.keybd_event(c, 0, 0, 0)
+                time.sleep(0.02)
+            time.sleep(hold)
+            for c in reversed(codes):
+                u.keybd_event(c, 0, KEYEVENTF_KEYUP, 0)
+                time.sleep(0.02)
+            time.sleep(settle)
+            sys.stderr.write("executor: hardware hotkey %s sent to %r\n"
+                             % ("+".join(keys), title))
+            return True
+        except Exception as e:
+            sys.stderr.write("executor: hardware hotkey failed -> %s\n" % repr(e)[:110])
+            return False
+
     def click_screen(self, fx, fy, settle=0.6):
         try:
             import ctypes

@@ -52,6 +52,17 @@ def _bus():
     return Bus()
 
 
+def attach(bus=None):
+    import bus_launcher
+    bl = bus_launcher.BusLauncher()
+    bl.bus = bus or _bus()
+    if not bl._wait_bus_ready():
+        raise RuntimeError(
+            "bake_saves: no live game answered the bus. Start the game first, or let "
+            "bake_one launch it, rather than driving a session that is not there.")
+    return bl
+
+
 def game_is_up(bus):
     try:
         r = bus.send("eval", "cm and cm:turn_number()", timeout=15.0) or {}
@@ -72,7 +83,7 @@ def trim(bus, radius, dry=False):
                 "factions it removed is not a result: %s" % (k, json.dumps(r)[:300]))
     if r["n_failed"]:
         raise RuntimeError(
-            "bake_saves: cm:kill_faction failed on %d of %d factions (%s). Refusing to "
+            "bake_saves: disarming failed on %d of %d factions (%s). Refusing to "
             "save a world that is trimmed differently from what the name will claim."
             % (r["n_failed"], r["n_failed"] + r["n_killed"],
                ", ".join(r.get("failed") or [])[:200]))
@@ -146,30 +157,105 @@ def save_via_ui(bl, name, log=print):
     return {"entry": entry, "accept": accept, "fields": fields[:3]}
 
 
-def save_campaign(bus, name, bl=None, timeout=SAVE_SETTLE_S, log=print):
-    before = set(os.listdir(save_dir()))
-    r = bus.send("savegame", name, timeout=timeout) or {}
-    if r.get("error"):
-        if bl is None:
-            raise RuntimeError("bake_saves: savegame refused -- %s" % r["error"])
-        log("bake: no scripted save (%s) -- driving the save screen by click"
-            % str(r["error"])[:120])
-        save_via_ui(bl, name, log=log)
-    else:
-        log("bake: scripted save via %s" % r.get("used"))
+QUICKSAVE_HOTKEY = ("ctrl", "s")
+STABLE_POLL_S = 3.0
+STABLE_READS = 2
+
+
+def _list_save_files():
+    d = save_dir()
+    out = {}
+    for f in os.listdir(d):
+        p = os.path.join(d, f)
+        if os.path.isfile(p):
+            out[f] = os.path.getsize(p)
+    return out
+
+
+def _is_decoy(fname):
+    stem, ext = os.path.splitext(fname)
+    return ext == ".save" and stem.endswith(".save")
+
+
+def _wait_named_save(name, timeout, log=print):
     deadline = time.time() + timeout
     while time.time() < deadline:
-        now = set(os.listdir(save_dir()))
-        fresh = [f for f in (now - before) if f.startswith(name)]
-        if fresh:
-            path = os.path.join(save_dir(), sorted(fresh)[0])
-            if os.path.getsize(path) > 0:
-                return path
+        for f in os.listdir(save_dir()):
+            if f.startswith(name):
+                path = os.path.join(save_dir(), f)
+                if os.path.getsize(path) > 0:
+                    return path
         time.sleep(1.0)
     raise RuntimeError(
-        "bake_saves: no save file named %r appeared in %s within %.0fs. The click may "
-        "have been reported as sent without the game writing anything -- an unverified "
-        "save is void." % (name, save_dir(), timeout))
+        "bake_saves: no save file named %r appeared in %s within %.0fs. A save call "
+        "reported as sent without the game writing anything is not a save."
+        % (name, save_dir(), timeout))
+
+
+def quicksave_via_hotkey(bl, timeout=SAVE_SETTLE_S, log=print):
+    from executor import Executor
+    before = set(_list_save_files())
+    ex = Executor(bl.bus)
+    if not ex.send_hotkey(*QUICKSAVE_HOTKEY):
+        raise RuntimeError(
+            "bake_saves: could not send the quicksave hotkey -- the game was not the "
+            "foreground window. A hotkey sent anywhere else does nothing.")
+    deadline = time.time() + timeout
+    candidate, last_size, stable_reads = None, None, 0
+    while time.time() < deadline:
+        now = _list_save_files()
+        fresh = {f: sz for f, sz in now.items() if f not in before}
+        primaries = {f: sz for f, sz in fresh.items() if not _is_decoy(f)}
+        decoy_present = any(_is_decoy(f) for f in fresh)
+        if primaries:
+            candidate = sorted(primaries)[0]
+            sz = primaries[candidate]
+            if decoy_present:
+                stable_reads = 0
+            elif sz == last_size:
+                stable_reads += 1
+            else:
+                stable_reads = 1
+            last_size = sz
+            log("bake: quicksave candidate %r  size=%d  decoy=%s  stable_reads=%d"
+                % (candidate, sz, decoy_present, stable_reads))
+            if stable_reads >= STABLE_READS and not decoy_present:
+                return os.path.join(save_dir(), candidate)
+        time.sleep(STABLE_POLL_S)
+    raise RuntimeError(
+        "bake_saves: quicksave hotkey sent but no save settled to a stable size within "
+        "%.0fs (last candidate %r). A file whose size is still changing, or that still "
+        "has its .save.save staging twin, is not saved yet." % (timeout, candidate))
+
+
+def save_campaign(bus, name, bl=None, timeout=SAVE_SETTLE_S, log=print):
+    r = bus.send("savegame", name, timeout=15) or {}
+    if not r.get("error"):
+        log("bake: scripted save via %s" % r.get("used"))
+        return _wait_named_save(name, timeout, log=log)
+
+    log("bake: no scripted save (%s)" % str(r["error"])[:120])
+    if bl is None:
+        raise RuntimeError("bake_saves: savegame refused and no launcher was given "
+                           "to fall back on -- %s" % r["error"])
+
+    try:
+        log("bake: trying the quicksave hotkey")
+        raw = quicksave_via_hotkey(bl, timeout=timeout, log=log)
+    except RuntimeError as e:
+        log("bake: quicksave hotkey failed (%s) -- driving the save screen by click"
+            % repr(e)[:150])
+        save_via_ui(bl, name, log=log)
+        return _wait_named_save(name, timeout, log=log)
+
+    target = os.path.join(save_dir(), name + ".save")
+    if os.path.exists(target):
+        raise RuntimeError(
+            "bake_saves: target save name %r already exists -- refusing to overwrite "
+            "a prior bake rather than silently clobbering it" % target)
+    os.replace(raw, target)
+    log("bake: renamed %s -> %s" % (os.path.basename(raw), target))
+    return target
 
 
 def to_main_menu(bl):
@@ -189,7 +275,8 @@ def bake_one(campaign, faction, radius, turn=1, dry=False, log=print):
 
     if game_is_up(bus):
         log("bake: taking over the running game")
-        started = bl.start_campaign(faction, campaign, load_timeout=PLAYABLE_TIMEOUT_S)
+        bl = attach(bus)
+        started = bl.restart_campaign(faction, campaign, load_timeout=PLAYABLE_TIMEOUT_S)
     else:
         log("bake: launching the game")
         started = bl.launch(faction, campaign, load_timeout=PLAYABLE_TIMEOUT_S)
@@ -199,7 +286,7 @@ def bake_one(campaign, faction, radius, turn=1, dry=False, log=print):
 
     t0 = time.time()
     r = trim(bus, radius, dry=dry)
-    log("bake: trim r=%g -- killed %d, kept %d, unplaced %d, already dead %d (%.1fs)"
+    log("bake: trim r=%g -- disarmed %d, kept %d, unplaced %d, already dead %d (%.1fs)"
         % (radius, r["n_killed"], r["n_kept"], r["n_unplaced"],
            r.get("n_already_dead") or 0, time.time() - t0))
 
@@ -258,8 +345,7 @@ def main(argv):
         factions = [k.strip() for k in arg("--factions").split(",") if k.strip()]
 
     if "--discover-save" in argv:
-        import bus_launcher
-        discover_save_ui(bus_launcher.BusLauncher())
+        discover_save_ui(attach())
         return 0
     if one:
         print(json.dumps(bake_one(campaign, one, radius, turn=turn, dry=dry),
