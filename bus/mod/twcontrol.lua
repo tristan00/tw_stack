@@ -925,6 +925,52 @@ local function faction_pos(g)
 end
 
 
+local function disarm_faction(g, name)
+  local ok = try(function() cm:kill_all_armies_for_faction(g) return true end)
+  if not ok then
+    ok = try(function() cm:kill_all_armies_for_faction(name) return true end)
+  end
+  local cl = try(function() return g:character_list() end)
+  local cn = cl and try(function() return cl:num_items() end) or 0
+  for i = 0, cn - 1 do
+    local c = try(function() return cl:item_at(i) end)
+    local cqi = c and try(function() return c:command_queue_index() end)
+    if cqi then
+      local killed = try(function()
+        cm:kill_character("character_cqi:" .. tostring(cqi), true) return true end)
+      if not killed then
+        try(function() cm:kill_character(tostring(cqi), true) return true end)
+      end
+    end
+  end
+  return ok == true
+end
+
+
+function handlers.apiprobe(seq, rest)
+  local want = (rest or ""):lower()
+  if want == "" then want = "kill|destroy|remove|region|faction|save|confeder" end
+  local out = {}
+  local mt = getmetatable(cm)
+  local t = (mt and mt.__index) or cm
+  for k, v in pairs(t) do
+    if type(k) == "string" and type(v) == "function" then
+      local lk = k:lower()
+      for pat in want:gmatch("[^|]+") do
+        if lk:find(pat, 1, true) then out[#out + 1] = k break end
+      end
+    end
+  end
+  table.sort(out)
+  local globals = {}
+  for _, n in ipairs({ "custom_starts", "core", "effect", "CampaignUI", "common" }) do
+    globals[#globals + 1] = n .. "=" .. type(_G[n])
+  end
+  log({ seq = seq, cmd = "apiprobe", pattern = want, n = #out, functions = out,
+        globals = globals, turn = turn() })
+end
+
+
 function handlers.trim(seq, rest)
   local radius = tonumber((rest or ""):match("([%-%d%.]+)") or "")
   local dry = (rest or ""):find("dry") ~= nil
@@ -932,17 +978,19 @@ function handlers.trim(seq, rest)
   local me = f and try(function() return f:name() end)
   local ox, oy = nil, nil
   if f then ox, oy = faction_pos(f) end
-  local can_kill = try(function() return type(cm.kill_faction) == "function" end) or false
+  local can_disarm = try(function()
+    return type(cm.kill_all_armies_for_faction) == "function" end) or false
   if not radius or radius < 0 or not ox or not oy then
     log({ seq = seq, cmd = "trim", error = "trim needs a radius >= 0 and a locatable "
           .. "human start", radius = or_null(radius), origin_x = or_null(ox),
           origin_y = or_null(oy), me = or_null(me), turn = turn() })
     return
   end
-  if not dry and not can_kill then
-    log({ seq = seq, cmd = "trim", error = "cm:kill_faction is not available in this "
-          .. "build; refusing to report kills that did not happen. Re-run with dry to "
-          .. "measure the split only.", radius = radius, can_kill = false, turn = turn() })
+  if not dry and not can_disarm then
+    log({ seq = seq, cmd = "trim", error = "cm:kill_all_armies_for_faction is not "
+          .. "available in this build; refusing to report removals that did not happen. "
+          .. "Re-run with dry to measure the split only.", radius = radius,
+          can_disarm = false, turn = turn() })
     return
   end
   local killed, kept, unplaced, failed = {}, {}, {}, {}
@@ -963,9 +1011,7 @@ function handlers.trim(seq, rest)
           local dx, dy = gx - ox, gy - oy
           if math.sqrt(dx * dx + dy * dy) > radius then
             local done = true
-            if not dry then
-              done = try(function() cm:kill_faction(name) return true end) or false
-            end
+            if not dry then done = disarm_faction(g, name) end
             if done then killed[#killed + 1] = name
             else failed[#failed + 1] = name end
           else
