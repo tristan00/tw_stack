@@ -19,7 +19,7 @@ from advisor_api import db, ident
 from advisor_api.models import (
     ActionTypeRow, ActivityRow, AgreementPage, AgreementRankRow, AgreementSummary,
     ArmCoverage, CampaignRow, Count, CorrelationRow, CorrelationTile, Current,
-    DecisionRow, DiploEvent, EntityState, ForcingBar, ForcingTile, GrowthPoint, Ident,
+    CampaignReward, DecisionRow, DiploEvent, EntityState, ForcingBar, ForcingTile, Ident,
     InterruptOption, InterruptRow, Metric, ModelCard, OfferRow, OutcomeTally, PhaseSpan,
     PolicyRow, Rate, RewardPoint, Scope, Service, StartRow, TimelineAction, TimelineLane,
     TimingRow, TrainingEvent, TrialCorr, TrialRow,
@@ -1514,7 +1514,13 @@ def _campaign_settlement_growth(con) -> dict:
     return out
 
 
-_GROWTH_SERIES = """
+def _W(part: str) -> float:
+    sys.path.insert(0, common.ADVISOR)
+    import base_model
+    return float(base_model.TARGET_WEIGHTS.get(part, 1.0))
+
+
+_REWARD_SERIES = """
     SELECT c.campaign_id AS cid, c.faction AS faction,
            MAX(t.settlements) - MIN(t.settlements) AS sett,
            MAX(t.lord_level)  - MIN(t.lord_level)  AS lord,
@@ -1529,19 +1535,20 @@ _GROWTH_SERIES = """
 """
 
 
-def growth_series(con) -> list:
+def campaign_reward_series(con) -> list:
     if con is None:
         return []
     out = []
-    for row in con.execute(_GROWTH_SERIES):
+    for row in con.execute(_REWARD_SERIES):
         sett = float(row["sett"] or 0.0)
         lord = float(row["lord"] or 0.0)
         vas = float(row["vas"] or 0.0)
         ally = float(row["ally"] or 0.0)
-        out.append(GrowthPoint(
+        out.append(CampaignReward(
             seq=len(out) + 1, campaign_id=int(row["cid"]), faction=row["faction"],
             settlements=sett, lord_level=lord, vassals=vas, allies=ally,
-            total=sett + lord + vas + ally,
+            total=(_W("settlements") * sett + _W("lord_level") * lord
+                   + _W("vassals") * vas + _W("allies") * ally),
             turns=Count(value=int(row["turns"]), noun="turns",
                         population="with a reward row in this campaign")))
     return out

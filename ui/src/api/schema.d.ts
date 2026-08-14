@@ -676,6 +676,26 @@ export interface components {
             /** Decisions */
             decisions: components["schemas"]["DecisionRow"][];
         };
+        /** CampaignReward */
+        CampaignReward: {
+            /** Seq */
+            seq: number;
+            /** Campaign Id */
+            campaign_id: number;
+            /** Faction */
+            faction?: string | null;
+            /** Settlements */
+            settlements: number;
+            /** Lord Level */
+            lord_level: number;
+            /** Vassals */
+            vassals: number;
+            /** Allies */
+            allies: number;
+            /** Total */
+            total: number;
+            turns: components["schemas"]["Count"];
+        };
         /** CampaignRow */
         CampaignRow: {
             /** Campaign Id */
@@ -1075,26 +1095,6 @@ export interface components {
             /** Rbo Mean */
             rbo_mean?: number | null;
             same_top: components["schemas"]["Rate"];
-        };
-        /** GrowthPoint */
-        GrowthPoint: {
-            /** Seq */
-            seq: number;
-            /** Campaign Id */
-            campaign_id: number;
-            /** Faction */
-            faction?: string | null;
-            /** Settlements */
-            settlements: number;
-            /** Lord Level */
-            lord_level: number;
-            /** Vassals */
-            vassals: number;
-            /** Allies */
-            allies: number;
-            /** Total */
-            total: number;
-            turns: components["schemas"]["Count"];
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -1629,8 +1629,8 @@ export interface components {
             history: components["schemas"]["TrainingEvent"][];
             /** Group Order */
             group_order: string[];
-            /** Growth */
-            growth: components["schemas"]["GrowthPoint"][];
+            /** Reward */
+            reward: components["schemas"]["CampaignReward"][];
         };
         /** TrialCorr */
         TrialCorr: {
