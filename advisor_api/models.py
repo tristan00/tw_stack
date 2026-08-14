@@ -673,7 +673,7 @@ class TrainingEvent(BaseModel):
     groups: dict = Field(default_factory=dict)
 
 
-class GrowthPoint(BaseModel):
+class CampaignReward(BaseModel):
     seq: int
     campaign_id: int
     faction: str | None = None
@@ -690,7 +690,7 @@ class TrainingPage(BaseModel):
     trials: list[TrialRow]
     history: list[TrainingEvent]
     group_order: list[str]
-    growth: list[GrowthPoint]
+    reward: list[CampaignReward]
 
 
 class ActivityRow(BaseModel):

@@ -273,7 +273,7 @@ def get_training() -> TrainingPage:
                      "trials come from the experiment ledger; retrains from the session "
                      "reports"),
         trials=q.trials(_con()), history=history, group_order=seen,
-        growth=q.growth_series(_con()))
+        reward=q.campaign_reward_series(_con()))
 
 
 @app.get("/api/models", response_model=ModelsPage, tags=["models"])

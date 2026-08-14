@@ -14,7 +14,7 @@ import {
   Section,
   Skeleton,
 } from '@/components/primitives'
-import { ChartFrame, GrowthTrend, RhoHistogram, RhoTrend } from '@/components/charts'
+import { ChartFrame, RewardTrend, RhoHistogram, RhoTrend } from '@/components/charts'
 import { SubNav, useSubView } from '@/components/SubNav'
 import {
   useApi,
@@ -23,7 +23,7 @@ import {
   type AgreementSeriesPoint,
   type CorrelationsPage,
   type ForcingPage,
-  type GrowthPoint,
+  type CampaignReward,
   type ModelsPage,
   type Schemas,
   type TrainingPage,
@@ -839,7 +839,7 @@ function Training() {
   ]
 
   const num = (v: number) => <span className="num text-2xs">{v}</span>
-  const growthCols: Col<GrowthPoint>[] = [
+  const rewardCols: Col<CampaignReward>[] = [
     { key: 'seq', label: 'campaign', value: (r) => r.seq, render: (r) => num(r.seq) },
     {
       key: 'settlements',
@@ -860,20 +860,20 @@ function Training() {
 
   return (
     <div className="space-y-6">
-      <Section title="growth per campaign">
+      <Section title="reward per campaign">
         <ChartFrame
-          note={`mean of ${20} campaigns; settlements + lord level + vassals + allies`}
+          note={`mean of ${20} campaigns; settlements + lord level + allies + 3x vassals`}
           table={
             <DataTable
-              rows={data.growth}
-              cols={growthCols}
+              rows={data.reward}
+              cols={rewardCols}
               rowId={(r) => String(r.seq)}
               emptyWhat="no campaign measured yet"
               emptyWhy="a campaign needs more than one reward row to show a gain"
             />
           }
         >
-          <GrowthTrend points={data.growth} />
+          <RewardTrend points={data.reward} />
         </ChartFrame>
       </Section>
       <Section title="experiment ledger" scope={data.scope}>

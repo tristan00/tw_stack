@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import type { AgreementSeriesPoint, GenerationRow, GrowthPoint, RhoBin } from '@/lib/api'
+import type { AgreementSeriesPoint, CampaignReward, GenerationRow, RhoBin } from '@/lib/api'
 import { n } from '@/lib/format'
 import { Card } from '@/components/primitives'
 import { cn } from '@/lib/utils'
@@ -505,9 +505,9 @@ export function RankScatter({ pairs, size = 236 }: { pairs: RankPair[]; size?: n
 }
 
 
-const GROWTH_WINDOW = 20
+const REWARD_WINDOW = 20
 
-export function GrowthTrend({ points }: { points: GrowthPoint[] }) {
+export function RewardTrend({ points }: { points: CampaignReward[] }) {
   const [ref, w] = useMeasure<HTMLDivElement>()
   const [cursor, setCursor] = useState<number | null>(null)
   const width = Math.max(360, w)
@@ -516,7 +516,7 @@ export function GrowthTrend({ points }: { points: GrowthPoint[] }) {
   const sx = (i: number) => PAD.l + (iw * i) / (n - 1 || 1)
 
   const trend = points.map((_, i) => {
-    const lo = Math.max(0, i - GROWTH_WINDOW + 1)
+    const lo = Math.max(0, i - REWARD_WINDOW + 1)
     const win = points.slice(lo, i + 1)
     return win.reduce((a, p) => a + p.total, 0) / win.length
   })
@@ -535,7 +535,7 @@ export function GrowthTrend({ points }: { points: GrowthPoint[] }) {
       ref={ref}
       tabIndex={0}
       role="img"
-      aria-label={`settlement, lord level, vassal and ally gain per campaign over ${n} campaigns; arrow keys step through campaigns`}
+      aria-label={`reward per campaign over ${n} campaigns; arrow keys step through campaigns`}
       onKeyDown={(e) => {
         if (e.key === 'ArrowLeft') setCursor((c) => Math.max(0, (c ?? n - 1) - 1))
         if (e.key === 'ArrowRight') setCursor((c) => Math.min(n - 1, (c ?? n - 1) + 1))
