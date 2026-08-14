@@ -1466,8 +1466,7 @@ def _read_tree_or_die(bus, root, tries=3, pause=0.4, timeout=2.0):
                          % (attempt + 1, tries, root))
         time.sleep(pause)
     raise UnhandledScreen(
-        "could not read the %s tree in %d attempts at %.0fs -- refusing to answer a dilemma whose "
-        "options were never read. This is a bus failure, not an empty panel."
+        "could not read the %s tree in %d attempts at %.0fs -- the bus stopped answering."
         % (root, tries, timeout))
 
 
