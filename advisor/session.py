@@ -579,9 +579,8 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
         except UnhandledScreen as e:
             _postmortem(runs_root, dict(entry, outcome="unhandled_screen",
                                         error=str(e)[:400]), ex, log)
-            log("!! UNHANDLED SCREEN on campaign %d -- killing the session rather than "
-                "recording another campaign of unusable data:\n%s" % (i + 1, str(e)[:600]))
-            raise
+            entry.update(outcome="unhandled_screen", error=str(e)[:300], **_played(e))
+            log("!! campaign %d abandoned, screen unread: %s" % (i + 1, str(e)[:300]))
         except BaseException as e:
             dead = False
             try:
@@ -1293,6 +1292,9 @@ def main():
              if "--campaign" in sys.argv else "Immortal Empires")
     _names = sorted(normalize_campaigns(_spec))
     keys = {}
+    if "--presave-radius" in sys.argv:
+        keys = {n: ["presave"] for n in _names}
+        _names = []
     for _name in _names:
         if arg == "all":
             sys.path.insert(0, common.LAUNCHER)
