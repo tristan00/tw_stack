@@ -22,10 +22,10 @@ RELAUNCH_COOLDOWN_S = 1800
 
 RUN = {"campaigns": 500, "turns": 20, "model": "catboost",
        "retrain": True, "retrain_every": 20, "retrain_first": True,
-       "strategies": "marwil_gnn=0.3,greedy_catboost=0.3,random=0.3,ruleset=0.1",
+       "strategies": "marwil_gnn=0.4,greedy_catboost=0.4,random=0.1,ruleset=0.1",
        "ruleset": "probe_gaps",
        "factions": "all",
-       "campaign": "Realm of Chaos",
+       "campaign": "Realm of Chaos=0.9,Immortal Empires=0.1",
        "dev": True}
 
 

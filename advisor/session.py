@@ -90,6 +90,57 @@ def _pick_plan(plan, rng):
     return plan
 
 
+def normalize_campaigns(spec):
+    if isinstance(spec, dict):
+        mix = dict(spec)
+    else:
+        mix = {}
+        for part in str(spec or "").split(","):
+            part = part.strip()
+            if not part:
+                continue
+            name, sep, weight = part.partition("=")
+            name = name.strip()
+            if not name:
+                raise ValueError("campaign mix %r has an entry with no name" % (spec,))
+            try:
+                mix[name] = float(weight) if sep else 1.0
+            except ValueError:
+                raise ValueError("campaign %r has a non-numeric weight %r" % (name, weight))
+    if not mix:
+        raise ValueError("empty campaign mix")
+    for name, w in mix.items():
+        if w < 0.0:
+            raise ValueError("campaign %r has a negative weight %r" % (name, w))
+    total = sum(mix.values())
+    if total <= 0.0:
+        raise ValueError("campaign mix %r sums to zero" % (spec,))
+    return {k: w / total for k, w in mix.items()}
+
+
+def _pick_campaign(mix, rng):
+    names = sorted(mix)
+    if len(names) == 1:
+        return names[0]
+    r, acc = rng.random(), 0.0
+    for name in names:
+        acc += mix[name]
+        if r < acc:
+            return name
+    return names[-1]
+
+
+def _plan_for(plan, campaign):
+    if not isinstance(plan, dict):
+        return plan
+    keys = plan.get(campaign)
+    if not keys:
+        raise RuntimeError(
+            "no startable factions for campaign %r -- the roster is keyed by map and this "
+            "one is absent, so the session cannot pick a start for it" % campaign)
+    return keys
+
+
 def _tail_jsonl(path, n):
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
@@ -269,6 +320,7 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
         log("legacy --epsilon %s mapped to strategies %s"
             % (epsilon, json.dumps(strategies)))
     mix = P.normalize_strategies(strategies)
+    cmix = normalize_campaigns(campaign)
     if "ruleset" in mix and not ruleset:
         raise SystemExit("strategy mix includes 'ruleset' but no --ruleset <name> was given")
     if ruleset and "ruleset" not in mix:
@@ -289,6 +341,7 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
         ruleset_meta = {"name": rs.name, "sha256": rs.sha256}
         log("ruleset: %s (%d rules, sha256 %s)" % (rs.name, len(rs.rules), rs.sha256[:12]))
     log("strategy mix: %s" % json.dumps(mix))
+    log("campaign mix: %s" % json.dumps(cmix))
     log("model backend: %s -- %s%s"
         % (backend, B.label(backend),
            ("  cfg=%s" % json.dumps(backend_cfg)) if backend_cfg else ""))
@@ -299,7 +352,11 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                                                     "strategies": mix,
                                                     "ruleset": ruleset_meta},
               "campaigns": []}
-    if isinstance(plan, (list, tuple, set)):
+    if isinstance(plan, dict):
+        for _c in sorted(plan):
+            log("sampling the start on %s from %d: %s"
+                % (_c, len(plan[_c]), ", ".join(sorted(plan[_c]))))
+    elif isinstance(plan, (list, tuple, set)):
         log("sampling the start per campaign from: %s" % ", ".join(sorted(plan)))
     stamp = time.strftime("%Y%m%d_%H%M%S")
     out_path = os.path.join(runs_root, "session_%s.json" % stamp)
@@ -311,13 +368,16 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
     stretch, generation, trained = [], 0, None
 
     for i in range(n):
-        this_plan = _pick_plan(plan, rng)
+        this_campaign = _pick_campaign(cmix, rng)
+        this_plan = _pick_plan(_plan_for(plan, this_campaign), rng)
         this_turns = rng.randint(turns[0], turns[1]) if isinstance(turns, (tuple, list)) \
             else int(turns)
         log("\n" + "=" * 78)
-        log("CAMPAIGN %d/%d  (up to %d turns, faction=%s)" % (i + 1, n, this_turns, this_plan))
+        log("CAMPAIGN %d/%d  (up to %d turns, map=%s, faction=%s)"
+            % (i + 1, n, this_turns, this_campaign, this_plan))
         log("=" * 78)
         entry = {"index": i + 1, "started": time.time(), "plan": this_plan,
+                 "campaign": this_campaign,
                  "max_turns": this_turns}
         try:
             ex.mark_campaign_start()
@@ -423,9 +483,9 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
             if hard_restart_next:
                 log("previous campaign ended %s -- killing the game rather than asking it to quit"
                     % prev_outcome)
-                state = ex.hard_restart(plan=this_plan, campaign=campaign)
+                state = ex.hard_restart(plan=this_plan, campaign=this_campaign)
             else:
-                state = ex.ensure_campaign(plan=this_plan, campaign=campaign, fresh=True)
+                state = ex.ensure_campaign(plan=this_plan, campaign=this_campaign, fresh=True)
             entry["start_state"] = state
             run_dir = journal.current_run_dir(timeout=180.0)
             entry["run_dir"] = run_dir
@@ -1190,32 +1250,46 @@ def main():
                          "                 for the rest.\n"
                          "  <key,...>   -- game faction keys, e.g. wh2_main_hef_nagarythe")
     arg = sys.argv[sys.argv.index("--factions") + 1].strip()
-    _name = (sys.argv[sys.argv.index("--campaign") + 1].strip()
+    _spec = (sys.argv[sys.argv.index("--campaign") + 1].strip()
              if "--campaign" in sys.argv else "Immortal Empires")
-    if arg == "all":
-        sys.path.insert(0, common.LAUNCHER)
-        import bus_launcher
-        keys = bus_launcher.BusLauncher().startable_factions(_name)
-        print("--factions all on %s: %d startable starts" % (_name, len(keys)))
-    elif arg == "no-cutscene":
-        sys.path.insert(0, common.LAUNCHER)
-        import bus_launcher
-        import cutscene_starts
-        _map = bus_launcher.BusLauncher.CAMPAIGN_KEYS.get(_name, _name)
-        r = cutscene_starts.classify(campaign_map=_map)
-        keys = [x["faction"] for x in r["clean"]]
-        if not keys:
-            raise SystemExit(
-                "--factions no-cutscene found no classified starts. It is derived from the "
-                "launcher's own logs under %s; with none on disk there is nothing to "
-                "filter, and silently falling back to every start would hide that."
-                % common.TWDATA)
-        print("--factions no-cutscene on %s: %d clean starts, excluding %d with a cutscene "
-              "and %d unclassified" % (_map, len(keys), len(r["cutscene"]),
-                                       len(r["unknown"])))
-    else:
-        keys = [k.strip() for k in arg.split(",") if k.strip()]
-    if not keys:
+    _names = sorted(normalize_campaigns(_spec))
+    keys = {}
+    for _name in _names:
+        if arg == "all":
+            sys.path.insert(0, common.LAUNCHER)
+            import bus_launcher
+            keys[_name] = bus_launcher.BusLauncher().startable_factions(_name)
+            print("--factions all on %s: %d startable starts" % (_name, len(keys[_name])))
+        elif arg == "no-cutscene":
+            sys.path.insert(0, common.LAUNCHER)
+            import bus_launcher
+            import cutscene_starts
+            _map = bus_launcher.BusLauncher.CAMPAIGN_KEYS.get(_name, _name)
+            r = cutscene_starts.classify(campaign_map=_map)
+            keys[_name] = [x["faction"] for x in r["clean"]]
+            if not keys[_name]:
+                raise SystemExit(
+                    "--factions no-cutscene found no classified starts on %s. It is derived "
+                    "from the launcher's own logs under %s; with none on disk there is "
+                    "nothing to filter, and silently falling back to every start would hide "
+                    "that." % (_map, common.TWDATA))
+            print("--factions no-cutscene on %s: %d clean starts, excluding %d with a "
+                  "cutscene and %d unclassified"
+                  % (_map, len(keys[_name]), len(r["cutscene"]), len(r["unknown"])))
+        else:
+            explicit = [k.strip() for k in arg.split(",") if k.strip()]
+            if len(_names) > 1:
+                sys.path.insert(0, common.LAUNCHER)
+                import bus_launcher
+                roster = set(bus_launcher.BusLauncher().startable_factions(_name))
+                absent = [k for k in explicit if k not in roster]
+                if absent:
+                    raise SystemExit(
+                        "--factions names %s, which are not startable on %s. A campaign mix "
+                        "draws that map for some campaigns, and those launches would fail "
+                        "one by one." % (", ".join(absent), _name))
+            keys[_name] = explicit
+    if not keys or not all(keys.values()):
         raise SystemExit("--factions given but empty")
     every = 0
     if "--retrain-every" in sys.argv:
