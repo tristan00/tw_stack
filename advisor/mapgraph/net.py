@@ -11,19 +11,9 @@ from torch_geometric.utils import scatter, softmax
 
 from advisor.mapgraph import schema as S
 
-HIDDEN = 256
-ENTITY_LAYERS = 1
-ACTION_ROUNDS = 3
-MAP_AGGR = "max"
-ACT_AGGR = "add+mean"
-ATTN = "act"
-CONV = "sage"
-CONV_MAP = None
-CONV_A2E = None
-CONV_E2A = "rel"
-DST_DIM = 48
-UPDATE = "linear"
-SELF_TRANSFORM = False
+NET_KEYS = ("hidden", "entity_layers", "action_rounds", "map_aggr", "act_aggr", "attn",
+            "conv", "conv_map", "conv_a2e", "conv_e2a", "dst_dim", "update",
+            "self_transform")
 
 
 class DecisionGraph(Data):
@@ -91,7 +81,7 @@ def _mlp(dims, dropout=0.0):
 
 class RelConv(MessagePassing):
 
-    def __init__(self, hidden, rel_dim, aggr, attn=False, conv=CONV, dst_dim=DST_DIM):
+    def __init__(self, hidden, rel_dim, aggr, attn, conv, dst_dim):
         aggrs = [a for a in str(aggr).split("+") if a]
         super().__init__(aggr="add" if attn else (aggrs if len(aggrs) > 1 else aggrs[0]))
         self.conv_kind = conv
@@ -190,11 +180,9 @@ class TypeNorm(nn.Module):
 
 class Encoder(nn.Module):
 
-    def __init__(self, hidden=HIDDEN, entity_layers=ENTITY_LAYERS,
-                 action_rounds=ACTION_ROUNDS, map_aggr=MAP_AGGR, act_aggr=ACT_AGGR,
-                 attn=ATTN, conv=CONV, conv_map=CONV_MAP, conv_a2e=CONV_A2E,
-                 conv_e2a=CONV_E2A, dst_dim=DST_DIM, update=UPDATE,
-                 self_transform=SELF_TRANSFORM):
+    def __init__(self, hidden, entity_layers, action_rounds, map_aggr, act_aggr,
+                 attn, conv, conv_map, conv_a2e, conv_e2a, dst_dim, update,
+                 self_transform):
         super().__init__()
         map_attn = attn in ("map", "all")
         act_attn = attn in ("act", "all")
@@ -297,7 +285,7 @@ class Encoder(nn.Module):
 
 class Head(nn.Module):
 
-    def __init__(self, hidden=HIDDEN):
+    def __init__(self, hidden):
         super().__init__()
         self.q = _mlp([hidden, 128, 64, 1], dropout=0.1)
         self.v = _mlp([hidden + S.G_CTX_DIM, 64, 1], dropout=0.1)
@@ -310,11 +298,9 @@ class Head(nn.Module):
 
 class Net(nn.Module):
 
-    def __init__(self, hidden=HIDDEN, entity_layers=ENTITY_LAYERS,
-                 action_rounds=ACTION_ROUNDS, map_aggr=MAP_AGGR, act_aggr=ACT_AGGR,
-                 attn=ATTN, conv=CONV, conv_map=CONV_MAP, conv_a2e=CONV_A2E,
-                 conv_e2a=CONV_E2A, dst_dim=DST_DIM, update=UPDATE,
-                 self_transform=SELF_TRANSFORM):
+    def __init__(self, hidden, entity_layers, action_rounds, map_aggr, act_aggr,
+                 attn, conv, conv_map, conv_a2e, conv_e2a, dst_dim, update,
+                 self_transform):
         super().__init__()
         self.encoder = Encoder(hidden, entity_layers, action_rounds,
                                map_aggr, act_aggr, attn, conv, conv_map, conv_a2e,
@@ -336,16 +322,16 @@ def listwise_nll(q, a_graph, is_taken, n_graphs):
 
 def from_cfg(cfg):
     cfg = cfg or {}
-    return Net(cfg.get("hidden", HIDDEN),
-               cfg.get("entity_layers", ENTITY_LAYERS),
-               cfg.get("action_rounds", ACTION_ROUNDS),
-               map_aggr=cfg.get("map_aggr", MAP_AGGR),
-               act_aggr=cfg.get("act_aggr", ACT_AGGR),
-               attn=cfg.get("attn", ATTN),
-               conv=cfg.get("conv", CONV),
-               conv_map=cfg.get("conv_map", CONV_MAP),
-               conv_a2e=cfg.get("conv_a2e", CONV_A2E),
-               conv_e2a=cfg.get("conv_e2a", CONV_E2A),
-               dst_dim=cfg.get("dst_dim", DST_DIM),
-               update=cfg.get("update", UPDATE),
-               self_transform=cfg.get("self_transform", SELF_TRANSFORM))
+    missing = [k for k in NET_KEYS if k not in cfg]
+    if missing:
+        raise KeyError(
+            "mapgraph.net.from_cfg: %s absent from cfg. Every net parameter comes from "
+            "train.CFG and is stored in the model's meta.json, so a saved model carries "
+            "the shape it was trained with. There is no default to fall back to -- a "
+            "default here would silently build a different net than the weights expect."
+            % ", ".join(missing))
+    return Net(cfg["hidden"], cfg["entity_layers"], cfg["action_rounds"],
+               map_aggr=cfg["map_aggr"], act_aggr=cfg["act_aggr"], attn=cfg["attn"],
+               conv=cfg["conv"], conv_map=cfg["conv_map"], conv_a2e=cfg["conv_a2e"],
+               conv_e2a=cfg["conv_e2a"], dst_dim=cfg["dst_dim"], update=cfg["update"],
+               self_transform=cfg["self_transform"])

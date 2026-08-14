@@ -21,6 +21,9 @@ sys.path.insert(0, common.DECISIONS)
 THREADS = max(1, os.cpu_count() or 8)
 
 CFG = {"hidden": 256, "entity_layers": 1, "action_rounds": 3,
+       "map_aggr": "max", "act_aggr": "add+mean", "attn": "act",
+       "conv": "sage", "conv_map": None, "conv_a2e": None, "conv_e2a": "rel",
+       "dst_dim": 48, "update": "linear", "self_transform": False,
        "lr": 3.501e-4, "weight_decay": 4.320e-3, "batch": 384, "epochs": 24, "patience": 4,
        "grad_clip": 5.0, "adv_tau": 1.0, "adv_clip": 20.0, "value_weight": 0.1351, "bf16": True,
        "seed": 0, "time_budget_s": 300, "device": "cuda"}
@@ -227,12 +230,6 @@ def fit_net(datas, ys, groups, cfg, log=print):
         from advisor.mapgraph import net as N
     except ImportError:
         import net as N
-
-    for k, v in (("map_aggr", N.MAP_AGGR), ("act_aggr", N.ACT_AGGR), ("attn", N.ATTN),
-                 ("conv", N.CONV), ("conv_map", N.CONV_MAP), ("conv_a2e", N.CONV_A2E),
-                 ("conv_e2a", N.CONV_E2A), ("dst_dim", N.DST_DIM),
-                 ("update", N.UPDATE), ("self_transform", N.SELF_TRANSFORM)):
-        cfg.setdefault(k, v)
 
     torch.set_num_threads(THREADS)
     torch.manual_seed(cfg["seed"])
