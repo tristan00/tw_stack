@@ -86,7 +86,8 @@ class DecisionStore:
                          (S.SCHEMA_VERSION,))
         self.con.commit()
 
-    _ADD_COLUMNS = (("campaigns", "campaign_map", "TEXT"),)
+    _ADD_COLUMNS = (("campaigns", "campaign_map", "TEXT"),
+                    ("campaigns", "presave_radius", "REAL"))
 
     def _add_missing_columns(self):
         for table, col, decl in self._ADD_COLUMNS:
@@ -162,7 +163,7 @@ class DecisionStore:
     def campaign_key(self, faction, uuid=None):
         return str(uuid) if uuid else "%s@%s" % (faction, self.run_id)
 
-    def _campaign_id(self, key, faction=None, campaign_map=None):
+    def _campaign_id(self, key, faction=None, campaign_map=None, presave_radius=None):
         hit = self._campaign_cache.get(key)
         if hit is not None:
             if campaign_map:
@@ -170,10 +171,16 @@ class DecisionStore:
                     "UPDATE campaigns SET campaign_map=? "
                     "WHERE campaign_id=? AND (campaign_map IS NULL OR campaign_map='')",
                     (campaign_map, hit))
+            if presave_radius is not None:
+                self.con.execute(
+                    "UPDATE campaigns SET presave_radius=? "
+                    "WHERE campaign_id=? AND presave_radius IS NULL",
+                    (presave_radius, hit))
             return hit
         self.con.execute(
-            "INSERT OR IGNORE INTO campaigns(campaign_key,faction,campaign_map) VALUES(?,?,?)",
-            (key, faction, campaign_map))
+            "INSERT OR IGNORE INTO campaigns(campaign_key,faction,campaign_map,presave_radius) "
+            "VALUES(?,?,?,?)",
+            (key, faction, campaign_map, presave_radius))
         cid = self.con.execute("SELECT campaign_id FROM campaigns WHERE campaign_key=?",
                                (key,)).fetchone()[0]
         self._campaign_cache[key] = cid
@@ -208,7 +215,8 @@ class DecisionStore:
                              % (len(ents), S.MAX_ENTITIES_PER_DECISION - 1))
         cid = self._campaign_id(self.campaign_key(camp.get("faction"),
                                                   camp.get("campaign_uuid")),
-                                camp.get("faction"), camp.get("campaign_map"))
+                                camp.get("faction"), camp.get("campaign_map"),
+                                camp.get("presave_radius"))
         cur = self.con.execute(
             "INSERT INTO decisions(campaign_id,ts,turn,decision_seq,policy,version_id,"
             "n_entities,n_offers,campaign_blob,world_blob)"

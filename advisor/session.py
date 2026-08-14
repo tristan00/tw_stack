@@ -515,7 +515,7 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                 import bus_launcher
                 bake_saves.restore_presave(this_presave, log=log)
                 ex.kill_game()
-                ex.wait_game_down(timeout=60, log=log)
+                ex.wait_game_down(log=log)
                 bl = bus_launcher.BusLauncher()
                 state = bl.load_save(this_presave["file"])
                 ex.bus = bl.bus or ex.bus
@@ -610,6 +610,8 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
             except Exception:
                 pass
         _postmortem(runs_root, entry, ex, log)
+        if presaves is not None:
+            ex.kill_game()
         prev_outcome = entry.get("outcome")
         hard_restart_next = prev_outcome in ("stuck", "error", "defeated")
         entry["seconds"] = round(time.time() - entry["started"], 1)

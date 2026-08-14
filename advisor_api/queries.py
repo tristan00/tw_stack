@@ -346,7 +346,8 @@ def campaign_rows(con) -> list:
     growth = {g["campaign_key"]: CG.enrich(g)
               for g in adb.rows("SELECT * FROM campaign_growth")}
     meta = {r["campaign_key"]: r for r in con.execute(
-        "SELECT campaign_id, campaign_key, faction, turns, campaign_map FROM campaigns")}
+        "SELECT campaign_id, campaign_key, faction, turns, campaign_map, presave_radius "
+        "FROM campaigns")}
 
     outcomes = join_outcomes(con)
     out = []
@@ -362,6 +363,7 @@ def campaign_rows(con) -> list:
             campaign_id=_i(m["campaign_id"], 0) if m else 0,
             campaign=_camp(ckey),
             campaign_map=_id(ident.campaign_map(m["campaign_map"] if m else None)),
+            presave_radius=(m["presave_radius"] if m else None),
             turns=_i(d["last_turn"], _i(m["turns"]) if m else None),
             decisions=n_dec,
             no_action=max(0, n_dec - rows_),

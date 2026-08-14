@@ -24,9 +24,9 @@ CFG = {"hidden": 256, "entity_layers": 1, "action_rounds": 3,
        "map_aggr": "max", "act_aggr": "add+mean", "attn": "act",
        "conv": "sage", "conv_map": None, "conv_a2e": None, "conv_e2a": "rel",
        "dst_dim": 48, "update": "linear", "self_transform": False,
-       "lr": 3.501e-4, "weight_decay": 4.320e-3, "batch": 384, "epochs": 24, "patience": 4,
+       "lr": 3.501e-4, "weight_decay": 4.320e-3, "batch": 384, "epochs": 30, "patience": 10,
        "grad_clip": 5.0, "adv_tau": 1.0, "adv_clip": 20.0, "value_weight": 0.1351, "bf16": True,
-       "seed": 0, "time_budget_s": 300, "device": "cuda"}
+       "seed": 0, "time_budget_s": 600, "device": "cuda"}
 
 MIN_FIT_S = 30
 

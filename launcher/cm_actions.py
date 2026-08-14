@@ -178,11 +178,23 @@ def _leave_confirm(bus, ctx, pick, before):
     return (v == "false"), {"in_settlement": v}
 
 
+def _leave_doomed(bus, ctx, pick, before, after):
+    if (after or {}).get("in_settlement") != "true":
+        before["doom_streak"] = 0
+        return None
+    before["doom_streak"] = before.get("doom_streak", 0) + 1
+    if before["doom_streak"] < 2:
+        return None
+    return ("still in_settlement after %d polls -- the garrison exit never landed"
+            % before["doom_streak"])
+
+
 register("leave_garrison", {
     "layer": "cm", "signal": "in_settlement_false",
     "snapshot": _garrison_snapshot,
     "prechecks": [],
     "execute": _leave_execute, "confirm": _leave_confirm,
+    "doomed": _leave_doomed,
     "timeout_s": 10.0, "poll_s": 1.5,
 })
 

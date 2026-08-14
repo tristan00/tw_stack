@@ -6,7 +6,7 @@ RUN = {
     "turns": 20,
     "model": "catboost",
     "retrain": True,
-    "retrain_every": 20,
+    "retrain_every": 40,
     "retrain_first": True,
     "strategies": "marwil_gnn=0.4,greedy_catboost=0.4,random=0.1,ruleset=0.1",
     "ruleset": "probe_gaps",
