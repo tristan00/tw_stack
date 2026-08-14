@@ -14,16 +14,16 @@ from advisor.mapgraph import schema as S
 HIDDEN = 192
 ENTITY_LAYERS = 2
 ACTION_ROUNDS = 2
-MAP_AGGR = "mean"
+MAP_AGGR = "max"
 ACT_AGGR = "add+mean"
-ATTN = "none"
-CONV = "rel"
+ATTN = "act"
+CONV = "sage"
 CONV_MAP = None
 CONV_A2E = None
 CONV_E2A = "rel"
-DST_DIM = 96
-UPDATE = "none"
-SELF_TRANSFORM = True
+DST_DIM = 48
+UPDATE = "linear"
+SELF_TRANSFORM = False
 
 
 class DecisionGraph(Data):
