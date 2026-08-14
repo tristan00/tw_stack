@@ -947,6 +947,15 @@ local function disarm_faction(g, name)
 end
 
 
+local PROBE_NAMES = {
+  "kill_faction", "kill_all_armies_for_faction", "kill_character",
+  "transfer_region_to_faction", "set_region_abandoned", "abandon_region",
+  "grant_region_to_faction", "make_region_ruined", "region_change",
+  "confederate_factions", "force_declare_war", "disable_faction",
+  "save_game", "request_save_game",
+}
+
+
 function handlers.apiprobe(seq, rest)
   local want = (rest or ""):lower()
   if want == "" then want = "kill|destroy|remove|region|faction|save|confeder" end
@@ -966,8 +975,25 @@ function handlers.apiprobe(seq, rest)
   for _, n in ipairs({ "custom_starts", "core", "effect", "CampaignUI", "common" }) do
     globals[#globals + 1] = n .. "=" .. type(_G[n])
   end
+  local direct = {}
+  local gi = try(function() return cm.game_interface end)
+  for _, n in ipairs(PROBE_NAMES) do
+    direct[#direct + 1] = "cm." .. n .. "=" ..
+      tostring(try(function() return type(cm[n]) end) or "err")
+    if gi then
+      direct[#direct + 1] = "gi." .. n .. "=" ..
+        tostring(try(function() return type(gi[n]) end) or "err")
+    end
+  end
+  for n in (rest or ""):gmatch("[^%s,|]+") do
+    if not n:find("|") then
+      direct[#direct + 1] = "cm." .. n .. "=" ..
+        tostring(try(function() return type(cm[n]) end) or "err")
+    end
+  end
   log({ seq = seq, cmd = "apiprobe", pattern = want, n = #out, functions = out,
-        globals = globals, turn = turn() })
+        direct = direct, has_game_interface = (gi ~= nil),
+        mt_index_type = type(t), globals = globals, turn = turn() })
 end
 
 
