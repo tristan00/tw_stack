@@ -510,13 +510,16 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
         _preload.start()
         try:
             if this_presave is not None:
-                raise SystemExit(
-                    "presave selection picked %s, but loading a save is not implemented "
-                    "yet -- there is no load path in the launcher. Starting a fresh "
-                    "campaign here would silently play the full untrimmed map while the "
-                    "run claims radius %g, so this stops instead."
-                    % (this_presave["file"], this_presave["radius"]))
-            if hard_restart_next:
+                sys.path.insert(0, common.LAUNCHER)
+                import bake_saves
+                import bus_launcher
+                bake_saves.restore_presave(this_presave, log=log)
+                ex.kill_game()
+                ex.wait_game_down(timeout=60, log=log)
+                bl = bus_launcher.BusLauncher()
+                state = bl.load_save(this_presave["file"])
+                ex.bus = bl.bus or ex.bus
+            elif hard_restart_next:
                 log("previous campaign ended %s -- killing the game rather than asking it to quit"
                     % prev_outcome)
                 state = ex.hard_restart(plan=this_plan, campaign=this_campaign)

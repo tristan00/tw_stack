@@ -925,25 +925,37 @@ local function faction_pos(g)
 end
 
 
-local function disarm_faction(g, name)
-  local ok = try(function() cm:kill_all_armies_for_faction(g) return true end)
-  if not ok then
-    ok = try(function() cm:kill_all_armies_for_faction(name) return true end)
+local function remove_faction(g)
+  local gi = try(function() return cm.game_interface end)
+  if not gi then return false, 0, 0 end
+  local nreg, nchar = 0, 0
+  local rl = try(function() return g:region_list() end)
+  local rn = rl and try(function() return rl:num_items() end) or 0
+  local keys = {}
+  for i = 0, rn - 1 do
+    local r = try(function() return rl:item_at(i) end)
+    local k = r and try(function() return r:name() end)
+    if k then keys[#keys + 1] = k end
+  end
+  for _, k in ipairs(keys) do
+    if try(function() gi:set_region_abandoned(k) return true end) then nreg = nreg + 1 end
   end
   local cl = try(function() return g:character_list() end)
   local cn = cl and try(function() return cl:num_items() end) or 0
+  local cqs = {}
   for i = 0, cn - 1 do
     local c = try(function() return cl:item_at(i) end)
-    local cqi = c and try(function() return c:command_queue_index() end)
-    if cqi then
-      local killed = try(function()
-        cm:kill_character("character_cqi:" .. tostring(cqi), true) return true end)
-      if not killed then
-        try(function() cm:kill_character(tostring(cqi), true) return true end)
-      end
+    local q = c and try(function() return c:command_queue_index() end)
+    if q then cqs[#cqs + 1] = q end
+  end
+  for _, q in ipairs(cqs) do
+    if try(function()
+      gi:kill_character("character_cqi:" .. tostring(q), true) return true end) then
+      nchar = nchar + 1
     end
   end
-  return ok == true
+  local left = try(function() return g:region_list():num_items() end) or 0
+  return left == 0, nreg, nchar
 end
 
 
@@ -1005,7 +1017,8 @@ function handlers.trim(seq, rest)
   local ox, oy = nil, nil
   if f then ox, oy = faction_pos(f) end
   local can_disarm = try(function()
-    return type(cm.kill_all_armies_for_faction) == "function" end) or false
+    return type(getmetatable(cm.game_interface).set_region_abandoned) == "function"
+  end) or false
   if not radius or radius < 0 or not ox or not oy then
     log({ seq = seq, cmd = "trim", error = "trim needs a radius >= 0 and a locatable "
           .. "human start", radius = or_null(radius), origin_x = or_null(ox),
@@ -1013,7 +1026,7 @@ function handlers.trim(seq, rest)
     return
   end
   if not dry and not can_disarm then
-    log({ seq = seq, cmd = "trim", error = "cm:kill_all_armies_for_faction is not "
+    log({ seq = seq, cmd = "trim", error = "game_interface:set_region_abandoned is not "
           .. "available in this build; refusing to report removals that did not happen. "
           .. "Re-run with dry to measure the split only.", radius = radius,
           can_disarm = false, turn = turn() })
@@ -1021,6 +1034,7 @@ function handlers.trim(seq, rest)
   end
   local killed, kept, unplaced, failed = {}, {}, {}, {}
   local already = 0
+  local n_regions, n_chars = 0, 0
   local fl = try(function() return cm:model():world():faction_list() end)
   local n = fl and try(function() return fl:num_items() end) or 0
   for i = 0, n - 1 do
@@ -1037,7 +1051,12 @@ function handlers.trim(seq, rest)
           local dx, dy = gx - ox, gy - oy
           if math.sqrt(dx * dx + dy * dy) > radius then
             local done = true
-            if not dry then done = disarm_faction(g, name) end
+            if not dry then
+              local nr, nc
+              done, nr, nc = remove_faction(g)
+              n_regions = n_regions + nr
+              n_chars = n_chars + nc
+            end
             if done then killed[#killed + 1] = name
             else failed[#failed + 1] = name end
           else
@@ -1051,6 +1070,7 @@ function handlers.trim(seq, rest)
         origin_x = ox, origin_y = oy, n_factions = n,
         n_killed = #killed, n_kept = #kept, n_unplaced = #unplaced,
         n_failed = #failed, n_already_dead = already,
+        n_regions_abandoned = n_regions, n_characters_killed = n_chars,
         killed = killed, kept = kept, unplaced = unplaced, failed = failed,
         turn = turn() })
 end
