@@ -337,15 +337,36 @@ def harness_tick():
     return "relaunched"
 
 
+def _ui_ok(port=DEFAULT_PORT, timeout=8.0):
+    import urllib.request
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:%d/api/run" % port,
+                                    timeout=timeout) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
 def harness(every_s=HARNESS_EVERY_S):
     _harness_note("harness starting: check every %.0fs, stall %.0fs, progress %.0fs, "
                   "cooldown %.0fs" % (every_s, HARNESS_STALL_S, HARNESS_PROGRESS_S,
                                       HARNESS_COOLDOWN_S))
+    ui_fails = 0
     while True:
         try:
             r = harness_tick()
             if r in ("off", "complete"):
                 return 0
+            if r == "relaunched" or _ui_ok():
+                ui_fails = 0
+            else:
+                ui_fails += 1
+                if ui_fails >= 2:
+                    _harness_note("UI unresponsive on %d consecutive checks -- restarting "
+                                  "the UI service only, the session is untouched" % ui_fails)
+                    _harness_note(kill_ui())
+                    _harness_note(start_ui())
+                    ui_fails = 0
         except Exception as e:
             _harness_note("tick failed (continuing): %r" % (e,))
         time.sleep(every_s)
