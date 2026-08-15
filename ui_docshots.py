@@ -9,7 +9,8 @@ BASE = "http://127.0.0.1:8777"
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docs", "ui")
 SHOTS = (("run", "/run", "text=turns/hr", True),
          ("experiment-ledger", "/models?view=training", "text=experiment ledger", False),
-         ("decisions", "/decisions", "text=every action", False))
+         ("decisions", "/decisions", "text=every action", False),
+         ("decision-detail", "/decisions/21558", "text=where the time went", False))
 WINDOW = {"width": 1600, "height": 1100}
 CONTENT_TIMEOUT_MS = 20000
 SETTLE_S = 2.0
