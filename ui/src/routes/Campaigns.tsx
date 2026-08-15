@@ -38,6 +38,13 @@ const campaignCols: Col<CampaignRow>[] = [
     render: (r) => <IdentLabel ident={r.campaign} />,
   },
   {
+    key: 'map',
+    label: 'map',
+    group: 'campaign',
+    value: (r) => r.campaign_map?.label ?? '',
+    render: (r) => <span className="text-dim">{r.campaign_map?.label ?? '—'}</span>,
+  },
+  {
     key: 'outcome',
     label: 'outcome',
     group: 'campaign',
