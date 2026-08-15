@@ -257,6 +257,8 @@ class Bus:
             seq, offset = self._alloc_and_append(channel, payload)
         except OSError as exc:
             raise TWError("bus: cannot append to %s: %s" % (self.cmd_path, exc))
+        if self.consec_timeouts >= 3:
+            timeout = min(timeout, 1.5)
         t0 = time.time()
         deadline = time.time() + timeout
         next_alive = time.time() + 2.0
@@ -327,6 +329,8 @@ class Bus:
                 raise TWError("bus: cannot append batch to %s: %s" % (self.cmd_path, exc))
         wanted = {s: requests[i][0] for i, s in enumerate(seqs)}
         found: dict = {}
+        if self.consec_timeouts >= 3:
+            timeout = min(timeout, 1.5)
         t_wait = time.time()
         deadline = time.time() + timeout
         next_alive = time.time() + 2.0
