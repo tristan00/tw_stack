@@ -91,7 +91,7 @@ def campaign(campaign_key: str) -> dict:
     fkey, tail = split_campaign_key(campaign_key)
     out = faction(fkey)
     out["raw"] = str(campaign_key or "")
-    out["tag"] = tail[:6]
+    out["tag"] = tail.split("_")[-1][-6:] if tail else ""
     return out
 
 
