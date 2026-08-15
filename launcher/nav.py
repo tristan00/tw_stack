@@ -189,6 +189,10 @@ WHITE_TIGER_TITLE_PATH = ("events|event_layouts|incident_large|incident_large|ba
 WHITE_TIGER_CONFIRM_PATH = ("events|event_layouts|incident_large|incident_large|background|"
                             "footer|text_button")
 
+DECLARE_WAR_TITLE = "Declare War?"
+DECLARE_WAR_TITLE_PATH = "move_options|header|panel_title|title_frame"
+DECLARE_WAR_CANCEL_PATH = "move_options|panel|options_bar3|button_txt"
+
 
 def find_dismiss_buttons(bus, root, max_depth=24, max_nodes=4000):
     tr = bus.send("tree", "%s %d %d" % (root, max_depth, max_nodes), timeout=_TREE_T) or {}
@@ -205,6 +209,15 @@ def find_dismiss_buttons(bus, root, max_depth=24, max_nodes=4000):
             sys.stderr.write("nav: hardcoded dismisser hit -- %r -> %s\n"
                              % (WHITE_TIGER_TITLE, WHITE_TIGER_CONFIRM_PATH))
             return [WHITE_TIGER_CONFIRM_PATH]
+    if root == "move_options":
+        title = by_path.get(DECLARE_WAR_TITLE_PATH)
+        cancel = by_path.get(DECLARE_WAR_CANCEL_PATH)
+        if (title is not None and title.get("visible")
+                and str(title.get("text") or "").strip() == DECLARE_WAR_TITLE
+                and cancel is not None and cancel.get("visible")):
+            sys.stderr.write("nav: hardcoded dismisser hit -- %r -> %s\n"
+                             % (DECLARE_WAR_TITLE, DECLARE_WAR_CANCEL_PATH))
+            return [DECLARE_WAR_CANCEL_PATH]
     hits, seen = [], set()
     for n in nodes:
         if not n.get("visible") or str(n.get("state")) not in _CLICKABLE_STATES:
