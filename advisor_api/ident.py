@@ -14,7 +14,7 @@ import common
 
 _GAME = re.compile(r"^wh\d?_")
 _PACK = re.compile(r"^(main|dlc\d+|pro\d+|twa\d+|sf\d+)_")
-_CAMP_TAIL = re.compile(r"_[0-9a-f]{8,}$")
+_CAMP_TAIL = re.compile(r"(?:_[0-9a-f]{8,})+$")
 
 _KEEP_LOWER = {"of", "the", "and", "de", "du", "von", "der"}
 
