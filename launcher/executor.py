@@ -141,7 +141,7 @@ class Executor:
             sys.stderr.write("executor: hardware click failed -> %s\n" % repr(e)[:110])
             return False
 
-    def leave_campaign_via_click(self, timeout=60.0, poll=1.0):
+    def leave_campaign_via_click(self, timeout=12.0, poll=1.0):
         try:
             start = os.path.getsize(self.bus.out_path)
         except OSError:
@@ -363,7 +363,7 @@ class Executor:
         sys.stderr.write("executor: disable_ui_hotkeys -> %s\n" % (out,))
         return out
 
-    def start_game(self, plan, campaign="Immortal Empires", boot_timeout=90):
+    def start_game(self, plan, campaign="Immortal Empires", boot_timeout=30):
         import bus_launcher
         bl = bus_launcher.BusLauncher()
         started = bl.launch(plan, campaign=campaign, boot_timeout=boot_timeout)
@@ -402,7 +402,7 @@ class Executor:
         import bus_launcher
         return bus_launcher.BusLauncher().rotate_out_log()
 
-    def hard_restart(self, plan, campaign="Immortal Empires", boot_timeout=90):
+    def hard_restart(self, plan, campaign="Immortal Empires", boot_timeout=30):
         self.kill_game()
         self.wait_game_down()
         return self.start_game(plan=plan, campaign=campaign, boot_timeout=boot_timeout)
