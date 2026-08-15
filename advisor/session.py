@@ -40,7 +40,7 @@ def _rotate_logs(log):
     from bus_launcher import GAME_DIR
     dirs = [(os.path.join(GAME_DIR, "script_log_*.txt"), ROTATE_MIN_AGE_S)]
     try:
-        rd = journal.current_run_dir()
+        rd = journal.current_run_dir(timeout=5.0)
         dirs.append((os.path.join(rd, "shots", "*"), 86400))
     except Exception as e:
         log("   rotation: run-dir shots skipped (no CURRENT_RUN: %s)" % repr(e)[:60])
@@ -526,7 +526,7 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
             else:
                 state = ex.ensure_campaign(plan=this_plan, campaign=this_campaign, fresh=True)
             entry["start_state"] = state
-            run_dir = journal.current_run_dir()
+            run_dir = journal.current_run_dir(timeout=180.0)
             entry["run_dir"] = run_dir
             ex.shots_dir = os.path.join(run_dir, "shots")
             log("run dir: %s" % run_dir)

@@ -18,7 +18,7 @@ RUN_DIR = common.RUN_DIR
 BUSY_TIMEOUT = 30.0
 
 
-def current_run_dir(runs_root=RUNS_ROOT):
+def current_run_dir(runs_root=RUNS_ROOT, timeout=0.0):
     return RUN_DIR
 
 
