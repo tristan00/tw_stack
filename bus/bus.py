@@ -198,6 +198,10 @@ class Bus:
                     if row.get("cmd") in kinds and (pred is None or pred(row)):
                         common.waitlog("wait_row", time.time() - t0, True, str(row.get("cmd")))
                         return row, off
+            if self.consec_timeouts >= 3:
+                common.waitlog("wait_row", time.time() - t0, False,
+                               "bus_silent x%d %s" % (self.consec_timeouts, ",".join(sorted(kinds))))
+                return None, off
             if time.time() >= deadline:
                 common.waitlog("wait_row", time.time() - t0, False,
                                "timeout %s" % ",".join(sorted(kinds)))

@@ -597,10 +597,15 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
                     % (moved_s, loco))
             _t_row = time.time()
             row = executor.bus.wait_row(
-                ("panel", "battle_completed", "dilemma_issued"),
+                ("panel", "battle_completed", "dilemma_issued", "faction_destroyed"),
                 timeout=POST_ATTACK_ROW_WAIT, offset=pre_off,
-                pred=lambda r: r.get("cmd") != "panel" or bool(r.get("opened")))
+                pred=lambda r: (bool(r.get("is_us")) if r.get("cmd") == "faction_destroyed"
+                                else r.get("cmd") != "panel" or bool(r.get("opened"))))
             common.waitlog("post_attack_row", time.time() - _t_row, row is not None)
+            if row is not None and row.get("cmd") == "faction_destroyed":
+                log("   faction_destroyed row landed post-attack -- defeat, ending the turn now")
+                ended_by = "defeated"
+                break
             if row is None:
                 try:
                     _trace_post_attack(executor, log, run_dir, pick)
