@@ -532,14 +532,7 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
             log("run dir: %s" % run_dir)
 
             _t_join = time.time()
-            # 900s is far beyond any observed load; a hang here (corrupt model,
-            # dead disk, GPU wedge) previously blocked the session forever --
-            # this is before the campaign watchdog is armed.
-            _preload.join(timeout=900.0)
-            if _preload.is_alive():
-                raise RuntimeError(
-                    "model preload still not finished after 900s -- the ranker "
-                    "load is wedged; see the session log for the last preload line")
+            _preload.join()
             if "error" in _models:
                 raise _models["error"]
             ranker, pol = _models["ranker"], _models["policy"]
