@@ -89,7 +89,6 @@ export function IdentLabel({
       {showCulture && ident.culture && (
         <span className="text-dim text-2xs ml-1.5">{ident.culture}</span>
       )}
-      {ident.tag && <span className="text-dim text-2xs num ml-1.5">#{ident.tag}</span>}
     </button>
   )
 }

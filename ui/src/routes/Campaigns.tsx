@@ -306,6 +306,12 @@ const startCols: Col<StartRow>[] = [
     render: (r) => <IdentLabel ident={r.faction} />,
   },
   {
+    key: 'map',
+    label: 'map',
+    value: (r) => r.campaign_map?.label ?? '',
+    render: (r) => <span className="text-dim">{r.campaign_map?.label ?? '—'}</span>,
+  },
+  {
     key: 'n',
     label: 'campaigns',
     align: 'right',
@@ -399,7 +405,7 @@ function Starts() {
       <DataTable
         rows={data.rows}
         cols={startCols}
-        rowId={(r) => r.faction.raw}
+        rowId={(r) => `${r.campaign_map?.raw ?? ''}|${r.faction.raw}`}
         initialSort={{ key: 'n', desc: true }}
         searchPlaceholder="search start…"
         emptyWhat="no start has recorded a campaign yet"

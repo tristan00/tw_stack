@@ -435,8 +435,9 @@ def starts_rows(con) -> list:
     per = {}
     for row in campaign_rows(con):
         fkey, _ = ident.split_campaign_key(row.campaign.raw)
-        b = per.setdefault(fkey, {"n": 0, "turns": [], "sett": [], "rank": [], "lord": [],
-                                  "att": 0, "conf": 0})
+        mkey = row.campaign_map.raw if row.campaign_map else ""
+        b = per.setdefault((mkey, fkey), {"n": 0, "turns": [], "sett": [], "rank": [], "lord": [],
+                                          "att": 0, "conf": 0})
         b["n"] += 1
         if row.turns is not None:
             b["turns"].append(row.turns)
@@ -456,19 +457,23 @@ def starts_rows(con) -> list:
     ever_a, ever_v = {}, {}
     for row in campaign_rows(con):
         fkey, _ = ident.split_campaign_key(row.campaign.raw)
-        ever_a[fkey] = ever_a.get(fkey, 0) + (1 if (allied.get(row.campaign.raw) or 0) else 0)
-        ever_v[fkey] = ever_v.get(fkey, 0) + (1 if (vassal.get(row.campaign.raw) or 0) else 0)
+        mkey = row.campaign_map.raw if row.campaign_map else ""
+        k = (mkey, fkey)
+        ever_a[k] = ever_a.get(k, 0) + (1 if (allied.get(row.campaign.raw) or 0) else 0)
+        ever_v[k] = ever_v.get(k, 0) + (1 if (vassal.get(row.campaign.raw) or 0) else 0)
 
     out = []
-    for fkey, b in per.items():
+    for (mkey, fkey), b in per.items():
         out.append(StartRow(
-            faction=_fac(fkey), n=b["n"], single_sample=b["n"] <= 2,
+            faction=_fac(fkey),
+            campaign_map=_id(ident.campaign_map(mkey)) if mkey else None,
+            n=b["n"], single_sample=b["n"] <= 2,
             avg_turns=round(sum(b["turns"]) / len(b["turns"]), 1) if b["turns"] else None,
             best_turns=max(b["turns"]) if b["turns"] else None,
             best_settlements=max(b["sett"]) if b["sett"] else None,
             best_power_rank=min(b["rank"]) if b["rank"] else None,
             best_lord_level=max(b["lord"]) if b["lord"] else None,
-            ever_allied=ever_a.get(fkey, 0), ever_vassal=ever_v.get(fkey, 0),
+            ever_allied=ever_a.get((mkey, fkey), 0), ever_vassal=ever_v.get((mkey, fkey), 0),
             confirm_rate=Rate(n=b["conf"], of=b["att"], noun="actions",
                               population="attempted across this start's campaigns")))
     out.sort(key=lambda r: (-r.n, r.faction.label))

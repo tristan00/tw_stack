@@ -146,6 +146,7 @@ class CampaignsPage(BaseModel):
 
 class StartRow(BaseModel):
     faction: Ident
+    campaign_map: Ident | None = None
     n: int
     single_sample: bool = False
     avg_turns: float | None = None

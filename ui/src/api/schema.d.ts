@@ -1484,6 +1484,7 @@ export interface components {
         /** StartRow */
         StartRow: {
             faction: components["schemas"]["Ident"];
+            campaign_map?: components["schemas"]["Ident"] | null;
             /** N */
             n: number;
             /**
