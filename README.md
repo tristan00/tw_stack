@@ -150,6 +150,11 @@ of it:
 
 ![experiment ledger](docs/ui/experiment-ledger.png)
 
+The decision log — every action the run took, what both models thought of it, and which
+arm picked it:
+
+![decisions](docs/ui/decisions.png)
+
 ## Where things live
 
 Code is here. Everything a run produces lives under `TWDATA` — run directories and the
