@@ -31,6 +31,21 @@ def _log(msg):
     print("[launch] %s" % msg, flush=True)
 
 
+def _same_file(a, b):
+    try:
+        if os.path.getsize(a) != os.path.getsize(b):
+            return False
+        import hashlib
+        ha, hb = hashlib.sha256(), hashlib.sha256()
+        for p, h in ((a, ha), (b, hb)):
+            with open(p, "rb") as fh:
+                for chunk in iter(lambda: fh.read(1 << 20), b""):
+                    h.update(chunk)
+        return ha.hexdigest() == hb.hexdigest()
+    except OSError:
+        return False
+
+
 class BusLauncher:
     def __init__(self):
         self.bus = None
@@ -44,12 +59,9 @@ class BusLauncher:
         _log("mod pack built from %s" % os.path.join(os.path.dirname(PACK_SRC), "..", "mod"))
         if not os.path.isfile(PACK_SRC):
             raise TWError("mod pack missing: %s" % PACK_SRC)
-        if os.path.isfile(PACK_DST):
-            fresh = (os.path.getsize(PACK_DST) == os.path.getsize(PACK_SRC)
-                     and os.path.getmtime(PACK_DST) >= os.path.getmtime(PACK_SRC))
-            if fresh:
-                _log("mod pack current: %s" % PACK_DST)
-                return
+        if os.path.isfile(PACK_DST) and _same_file(PACK_SRC, PACK_DST):
+            _log("mod pack current: %s" % PACK_DST)
+            return
         shutil.copy2(PACK_SRC, PACK_DST)
         _log("installed mod pack -> %s" % PACK_DST)
 
@@ -306,7 +318,8 @@ class BusLauncher:
             time.sleep(0.4)
         raise TWError("cm:quit() dispatched but the main menu never appeared within %ds" % timeout)
 
-    def start_campaign(self, faction, campaign="Immortal Empires", load_timeout=120):
+    def start_campaign(self, faction, campaign="Immortal Empires", load_timeout=120,
+                       hud_timeout=None):
         ckey = self.CAMPAIGN_KEYS.get(campaign, campaign)
         faction = str(faction or "").strip()
         if not faction:
@@ -324,18 +337,20 @@ class BusLauncher:
             raise TWError("campaign did not load ('started' never logged) within %ds" % load_timeout)
         t_started = time.time()
         _log("campaign 'started' after %.1fs" % (t_started - t0))
-        if not self.advance_to_hud():
+        if not self.advance_to_hud(timeout=(200 if hud_timeout is None else hud_timeout)):
             raise TWError("reached 'started' but never got the interactive HUD (loading/cinematic stuck)")
         _log("CAMPAIGN PLAYABLE: %s / %s -- load %.1fs + hud %.1fs = %.1fs"
              % (ckey, faction, t_started - t0, time.time() - t_started, time.time() - t0))
         self.stamp_campaign_uuid()
         return started
 
-    def restart_campaign(self, faction, campaign="Immortal Empires", load_timeout=120):
-        self.quit_to_main_menu()
-        return self.start_campaign(faction, campaign, load_timeout)
+    def restart_campaign(self, faction, campaign="Immortal Empires", load_timeout=120,
+                         hud_timeout=None, quit_timeout=120):
+        self.quit_to_main_menu(timeout=quit_timeout)
+        return self.start_campaign(faction, campaign, load_timeout, hud_timeout=hud_timeout)
 
-    def launch(self, faction, campaign="Immortal Empires", boot_timeout=90, load_timeout=120):
+    def launch(self, faction, campaign="Immortal Empires", boot_timeout=90, load_timeout=120,
+               hud_timeout=None):
         if not str(faction or "").strip():
             raise TWError("launch() needs a faction key -- none given")
         self.ensure_pack()
@@ -348,7 +363,7 @@ class BusLauncher:
         if not self._wait_bus_ready():
             raise TWError("bus never became ready after frontend_armed")
         _log("bus ready.")
-        return self.start_campaign(faction, campaign, load_timeout)
+        return self.start_campaign(faction, campaign, load_timeout, hud_timeout=hud_timeout)
 
     def load_save(self, save_file, boot_timeout=180, load_timeout=300):
         save_file = str(save_file or "").strip()
