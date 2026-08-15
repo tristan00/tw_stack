@@ -30,7 +30,7 @@ def main():
         if not os.path.isdir(run_dir):
             raise SystemExit("run dir does not exist: %s (start the manager first)" % run_dir)
     else:
-        run_dir = journal.current_run_dir(timeout=30.0)
+        run_dir = journal.current_run_dir()
 
     from bus import Bus
     from executor import Executor
@@ -38,7 +38,7 @@ def main():
     state = ex.ensure_campaign(fresh="--fresh" in sys.argv)
     print("campaign: %s" % json.dumps(state)[:200], flush=True)
     if not state.get("already_in_campaign"):
-        live = journal.current_run_dir(timeout=120.0)
+        live = journal.current_run_dir()
         if live != run_dir:
             print("recorder rotated on the campaign swap: %s -> %s" % (run_dir, live), flush=True)
             run_dir = live
