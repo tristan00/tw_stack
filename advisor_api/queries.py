@@ -211,28 +211,32 @@ def totals(con) -> list:
 
 @db.cached
 def throughput(con) -> list:
+    import time
+    now = time.time()
+    since = now - 3600.0
     rows = con.execute(
         "SELECT ts, campaign_id, turn FROM decision_points"
-        " ORDER BY decision_id DESC LIMIT 4000").fetchall()
+        " WHERE ts >= ? ORDER BY decision_id DESC", (since,)).fetchall()
     out = []
     if not rows:
         return out
-    span_h = max(1e-6, ((_f(rows[0]["ts"]) or 0) - (_f(rows[-1]["ts"]) or 0)) / 3600.0)
+    span_h = max(1e-6, (now - (_f(rows[-1]["ts"]) or now)) / 3600.0)
     camps = len({r["campaign_id"] for r in rows})
     turns = len({(r["campaign_id"], r["turn"]) for r in rows})
     taken = con.execute(
         "SELECT COUNT(*) a,"
         " SUM(CASE WHEN counted=1 THEN 1 ELSE 0 END) c"
-        " FROM action_taken WHERE refusal IS NOT 'awaiting_execution'").fetchone()
+        " FROM action_taken WHERE refusal IS NOT 'awaiting_execution' AND ts >= ?",
+        (since,)).fetchone()
     attempted, confirmed = _i(taken["a"], 0) or 0, _i(taken["c"], 0) or 0
     pct = (100.0 * confirmed / attempted) if attempted else None
     camp_spark, turn_spark = _rate_sparks(rows)
     out.append(Metric(label="campaigns/hr", value=round(camps / span_h, 1),
-                      sub="over the last %d decisions" % len(rows), spark=camp_spark))
+                      sub="over the last 60 min", spark=camp_spark))
     out.append(Metric(label="turns/hr", value=round(turns / span_h, 1),
-                      sub="over the last %d decisions" % len(rows), spark=turn_spark))
+                      sub="over the last 60 min", spark=turn_spark))
     out.append(Metric(label="confirm rate", value=(round(pct, 1) if pct is not None else None),
-                      unit="%", sub="%d of %d attempted actions" % (confirmed, attempted),
+                      unit="%", sub="%d of %d actions, last 60 min" % (confirmed, attempted),
                       spark=_confirm_spark(con)))
     return out
 
