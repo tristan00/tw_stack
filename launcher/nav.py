@@ -442,7 +442,7 @@ def hover(bus, root, match, frac=(0.5, 0.5), settle=0.9):
 BASE_ROOTS = frozenset((
     "ai_attack_targets_parent", "3d_ui_parent", "mission_indicator_parent", "hud_campaign",
     "menu_bar", "panel_manager", "under_advisor_docker", "tooltip_default", "saving_icon",
-    "ai_turns", "campaign", "tutorial_halo_group",
+    "ai_turns", "campaign", "tutorial_halo_group", "text_pointer_parent",
     "character_map_path_icons", "targeting_interface_dimming", "black_fade", "resources_bar",
     "help_panel", "qa_console", "campaign_space_bar_options",
 ))
