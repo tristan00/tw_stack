@@ -596,7 +596,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
                 log("   attack: lord moved for %.1fs (locomotion_done=%s) -- timeout starts now"
                     % (moved_s, loco))
             _t_row = time.time()
-            row = executor.bus.wait_row(
+            row, _ = executor.bus.wait_row(
                 ("panel", "battle_completed", "dilemma_issued", "faction_destroyed"),
                 timeout=POST_ATTACK_ROW_WAIT, offset=pre_off,
                 pred=lambda r: (bool(r.get("is_us")) if r.get("cmd") == "faction_destroyed"
