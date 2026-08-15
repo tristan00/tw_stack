@@ -636,7 +636,7 @@ for _merc_atype, _merc_btn in MERC_POOL_BUTTONS.items():
 
 
 def _character_count(bus):
-    for attempt in range(1):
+    for attempt in range(3):
         v = _ev(bus, "local f=cm:get_local_faction(true) return f:character_list():num_items()",
                 timeout=20.0)
         try:
