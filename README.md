@@ -125,7 +125,8 @@ that ranks every offer is fixed — `advisor/backends.py` is its registry). `--e
 replacements.
 
     open http://127.0.0.1:8777          # watch it
-    python babysit.py --loop 300        # supervise: relaunch a dead session, same config
+    python runctl.py harness            # supervise: kill and relaunch a dead, stalled,
+                                        # or non-progressing session, same config
     python runctl.py down               # stop everything
 
 The run is engineered for throughput measured in turns per hour, wall-clock honest:

@@ -87,4 +87,7 @@
   handling — slow click-through is the thing to fix.
 - The exploit scorer (backend) is fixed and internal (`advisor/backends.py`); the CLI's only
   model surface is `--strategies`. `run_config.RUN` is the authoritative run description
-  for both `runctl` and `babysit`.
+  for both `runctl up` and `runctl harness`, the built-in supervisor that kills and
+  relaunches a dead, stalled, or non-progressing session (liveness + log freshness +
+  a last-real-work check on turn/retrain markers, with a relaunch cooldown; pause it
+  with the `HARNESS_OFF` flag file in the twdata root).
