@@ -155,6 +155,11 @@ arm picked it:
 
 ![decisions](docs/ui/decisions.png)
 
+One decision, drilled in — where its milliseconds went, how alike the two models' rankings
+were, and the full scored offer list with the taken row marked:
+
+![decision detail](docs/ui/decision-detail.png)
+
 ## Where things live
 
 Code is here. Everything a run produces lives under `TWDATA` — run directories and the
