@@ -165,7 +165,6 @@ def clear_screen(bus, log=print, rounds=3):
 
 
 def end_campaign_tour(bus, log=print):
-    """End the game's opening campaign tour; blocker handling is deliberately separate."""
     r = bus.send("eval", _LUA_END_CAMPAIGN_TOUR, timeout=5.0) or {}
     if r.get("error"):
         raise RuntimeError("bake_starts: could not end campaign tour -- %s" % r["error"])
@@ -174,7 +173,6 @@ def end_campaign_tour(bus, log=print):
 
 
 def prepare_for_trim(bus, log=print):
-    """Stabilize either campaign map before mutating its world state."""
     end_campaign_tour(bus, log=log)
     clear_screen(bus, log=log)
     end_campaign_tour(bus, log=log)
@@ -182,7 +180,6 @@ def prepare_for_trim(bus, log=print):
 
 
 def game_is_alive(bus):
-    """Prefer the live bus; Windows may deny tasklist to a background controller."""
     try:
         bus.send("roots", "", timeout=3)
         return True
