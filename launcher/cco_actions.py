@@ -1298,6 +1298,36 @@ def pending_action(bus):
     return _ev(bus, _LUA_PENDING, timeout=8.0)
 
 
+def _attack_pending(pend):
+    p = str(pend or "")
+    return p.startswith("true") and p.endswith("PENDING_ATTACK")
+
+
+def _await_pending_attack(bus, cap=20.0, poll=0.5):
+    import interrupts
+    t0 = time.time()
+    battles = 0
+    while time.time() - t0 < cap:
+        pend = pending_action(bus)
+        if not _attack_pending(pend):
+            common.waitlog("pending_attack_resolve", time.time() - t0, True,
+                           "battles=%d pend=%s" % (battles, str(pend)[:32]))
+            return True
+        r = interrupts.roots(bus)
+        if ("popup_pre_battle" in r or "popup_battle_results" in r
+                or "settlement_captured" in r):
+            steps = interrupts.resolve_battle(bus)
+            if steps:
+                battles += 1
+                sys.stderr.write("cco_actions: end_turn blocked by PENDING_ATTACK -- "
+                                 "resolved the in-flight battle: %s\n" % steps[:4])
+            continue
+        time.sleep(poll)
+    common.waitlog("pending_attack_resolve", time.time() - t0, False,
+                   "still pending after %d battles" % battles)
+    return False
+
+
 _LUA_NOTIF_EMPTY = ("local v=common.get_context_value('CcoCampaignRoot','',"
                     "'NotificationQueueContext.IsNotificationListEmpty') return tostring(v)")
 
@@ -1366,6 +1396,9 @@ def _endturn_execute(bus, ctx, pick, before):
         sys.stderr.write("cco_actions: end_turn clear_screen -> %s\n" % repr(e)[:100])
     before["blockers"] = _clear_end_turn_blockers(bus)
     pend = pending_action(bus)
+    if _attack_pending(pend):
+        before["pending_attack_resolved"] = _await_pending_attack(bus)
+        pend = pending_action(bus)
     res = _ev(bus, _LUA_ENDTURN)
     ok = str(res or "").startswith("true")
     if not ok or (pend and pend != "none" and not pend.startswith("false")):
