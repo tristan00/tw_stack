@@ -24,7 +24,7 @@ ROSTER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "startabl
 P_LIST_PARENT = ("campaign_select_new|right_holder|tab_campaign|campaign_holder|"
                  "campaign_button_holder|list_parent")
 P_CONTINUE = "custom_loading_screen|bottom_parent|button_continue"
-HUD_GRACE = 25.0
+HUD_GRACE = 6.0
 
 
 def _log(msg):
@@ -141,6 +141,9 @@ class BusLauncher:
     def wait_for(self, kinds, timeout):
         start = os.path.getsize(OUT_PATH) if os.path.exists(OUT_PATH) else 0
         t0 = time.time()
+        polls = 0
+        _log("waiting up to %.0fs for %s, polling the bus log every 0.5s"
+             % (timeout, "/".join(sorted(kinds))))
         while time.time() - t0 < timeout:
             try:
                 with open(OUT_PATH, "rb") as f:
@@ -157,8 +160,14 @@ class BusLauncher:
                 except ValueError:
                     continue
                 if obj.get("cmd") in kinds:
+                    _log("%s after %.1fs on poll %d" % (obj.get("cmd"), time.time() - t0, polls))
                     return obj
-            time.sleep(0.25)
+            polls += 1
+            _log("  %.1fs poll %d: no %s yet (%d bytes of new log)"
+                 % (time.time() - t0, polls, "/".join(sorted(kinds)), len(data)))
+            time.sleep(0.5)
+        _log("gave up waiting for %s after %.1fs and %d polls"
+             % ("/".join(sorted(kinds)), time.time() - t0, polls))
         return None
 
     def _send(self, channel, payload="", timeout=15, tries=3):
@@ -247,9 +256,15 @@ class BusLauncher:
         last_alive_probe = time.time()
         cinematic_keys = 0
         hud_since = None
+        polls = 0
+        _log("waiting up to %.0fs for the interactive HUD, polling every 0.3s "
+             "(cutscene skip every 2s, %.0fs grace on cinematic bars)" % (timeout, HUD_GRACE))
         while time.time() - t0 < timeout:
             roots = self._roots_safe()
             vis = {k.get("id") for k in roots if k.get("visible")}
+            polls += 1
+            _log("  %.1fs poll %d: %s" % (time.time() - t0, polls,
+                                          ",".join(sorted(vis)) or "no visible roots"))
             if "hud_campaign" in vis:
                 if hud_since is None:
                     hud_since = time.time()
@@ -311,10 +326,17 @@ class BusLauncher:
         if not str((r or {}).get("result", "")).startswith("ok=true"):
             raise TWError("cm:quit() did not dispatch: %s" % r)
         t0 = time.time()
+        polls = 0
+        _log("cm:quit() dispatched -- waiting up to %ds for 'main', polling every 0.4s" % timeout)
         while time.time() - t0 < timeout:
-            if any(k.get("id") == "main" and k.get("visible") for k in self._roots_safe()):
-                _log("back at the main menu via cm:quit() (%.1fs)" % (time.time() - t0))
+            roots = self._roots_safe()
+            polls += 1
+            if any(k.get("id") == "main" and k.get("visible") for k in roots):
+                _log("back at the main menu via cm:quit() (%.1fs, %d polls)"
+                     % (time.time() - t0, polls))
                 return True
+            _log("  %.1fs poll %d: not at 'main' yet (%d roots)"
+                 % (time.time() - t0, polls, len(roots)))
             time.sleep(0.4)
         raise TWError("cm:quit() dispatched but the main menu never appeared within %ds" % timeout)
 
