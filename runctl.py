@@ -18,7 +18,7 @@ CURRENT_LOG = common.CURRENT_SESSION_LOG
 DEFAULT_PORT = 8777
 DEFAULT_SHOTS = 60
 
-_DETACH = (getattr(subprocess, "DETACHED_PROCESS", 0)
+_DETACH = (getattr(subprocess, "CREATE_NO_WINDOW", 0)
            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
 
 
