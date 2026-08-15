@@ -29,7 +29,7 @@
   opt-in; `decisions` on by default) into the run dir; writes the `CURRENT_RUN` pointer.
 - **advisor** — the backend. `session.py N T` plays N campaigns × T turns: `loop.py` per-turn
   decision loop, `policy.py` selection, `model.py` E1/E2 global+local ranking,
-  `interrupt_model.py` for blocking screens, `watchdog.py`, `analyze.py`/`efficiency.py` reports.
+  `interrupt_model.py` for blocking screens, `watchdog.py`.
   `reference/` is the offline game-data lookup layer (`features_db.py`, rebuilt by
   `build_reference.py` from the WH3 packs). `mapgraph/` is the graph ranker — one model, no
   version suffix; it lives here because it is an advisor model, not a peer of the recorder.
