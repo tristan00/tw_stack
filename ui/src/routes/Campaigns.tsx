@@ -109,21 +109,37 @@ const campaignCols: Col<CampaignRow>[] = [
       ),
   },
   {
-    key: 'settlements_growth',
-    label: 'settlements',
+    key: 'settlements_start',
+    label: 'starting',
+    unit: 'settlements',
+    align: 'right',
     group: 'growth (first → best)',
-
-
+    value: (r) => r.first_settlements ?? undefined,
+    sortUndefined: 'last',
+    render: (r) =>
+      r.first_settlements === null || r.first_settlements === undefined ? (
+        <span className="text-dim">—</span>
+      ) : (
+        <span className="num">{n(r.first_settlements)}</span>
+      ),
+  },
+  {
+    key: 'settlements_gained',
+    label: 'gained',
+    unit: 'settlements',
+    align: 'right',
+    group: 'growth (first → best)',
     value: (r) => r.settlements_growth ?? undefined,
     sortUndefined: 'last',
-    render: (r) => (
-      <Growth
-        row={r}
-        first={r.first_settlements}
-        last={r.peak_settlements}
-        delta={r.settlements_growth}
-      />
-    ),
+    render: (r) =>
+      r.settlements_growth === null || r.settlements_growth === undefined ? (
+        <span className="text-dim">—</span>
+      ) : (
+        <span className="num">
+          {r.settlements_growth > 0 ? '+' : ''}
+          {n(r.settlements_growth)}
+        </span>
+      ),
   },
   {
     key: 'settlements_per_turn',
@@ -146,19 +162,19 @@ const campaignCols: Col<CampaignRow>[] = [
       ),
   },
   {
-    key: 'lord_growth',
+    key: 'lord_level',
     label: 'lord level',
+    unit: 'reached',
+    align: 'right',
     group: 'growth (first → best)',
-    value: (r) => r.lord_growth ?? undefined,
+    value: (r) => r.peak_lord_level ?? undefined,
     sortUndefined: 'last',
-    render: (r) => (
-      <Growth
-        row={r}
-        first={r.first_lord_level}
-        last={r.peak_lord_level}
-        delta={r.lord_growth}
-      />
-    ),
+    render: (r) =>
+      r.peak_lord_level === null || r.peak_lord_level === undefined ? (
+        <span className="text-dim">—</span>
+      ) : (
+        <span className="num">{n(r.peak_lord_level)}</span>
+      ),
   },
   {
     key: 'lord_per_turn',
