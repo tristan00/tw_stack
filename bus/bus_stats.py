@@ -251,9 +251,6 @@ class SuppressionGuard:
                 return False
             return True
 
-    def is_stressed(self) -> bool:
-        with self._lock:
-            return self._effective_threshold_locked() < self.threshold
 
     def reset(self) -> None:
         with self._lock:

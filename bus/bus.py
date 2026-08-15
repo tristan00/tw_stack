@@ -155,10 +155,6 @@ class Bus:
             sys.stderr.write("bus: _max_existing_seq read failed (seq seeds 0) -> %s\n" % repr(e)[:60])
             return 0
 
-    def _next_seq(self) -> int:
-        with self._seq_lock:
-            self._seq += 1
-            return self._seq
 
     def _out_size(self) -> int:
         try:

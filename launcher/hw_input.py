@@ -83,19 +83,6 @@ def key(vk, settle=0.12):
     time.sleep(settle)
 
 
-def chord(mod_vk, vk, settle=0.12):
-    md = _KEYBDINPUT(mod_vk, 0, 0, 0, None)
-    kd = _KEYBDINPUT(vk, 0, 0, 0, None)
-    ku = _KEYBDINPUT(vk, 0, KEYEVENTF_KEYUP, 0, None)
-    mu = _KEYBDINPUT(mod_vk, 0, KEYEVENTF_KEYUP, 0, None)
-    _send(_INPUT(type=INPUT_KEYBOARD, ki=md))
-    _send(_INPUT(type=INPUT_KEYBOARD, ki=kd))
-    time.sleep(0.03)
-    _send(_INPUT(type=INPUT_KEYBOARD, ki=ku))
-    _send(_INPUT(type=INPUT_KEYBOARD, ki=mu))
-    time.sleep(settle)
-
-
 def text(s, per=0.02):
     for ch in s:
         d = _KEYBDINPUT(0, ord(ch), KEYEVENTF_UNICODE, 0, None)
@@ -103,9 +90,3 @@ def text(s, per=0.02):
         _send(_INPUT(type=INPUT_KEYBOARD, ki=d))
         _send(_INPUT(type=INPUT_KEYBOARD, ki=u))
         time.sleep(per)
-
-
-def clear_field(n=64):
-    key(VK_END, settle=0.05)
-    for _ in range(n):
-        key(VK_BACK, settle=0.012)

@@ -13,10 +13,6 @@ def posix(p):
     return p.replace("\\", "/")
 
 
-def _env(name, default):
-    return os.environ.get(name) or default
-
-
 def _load_config():
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.toml")
     if not os.path.exists(path):

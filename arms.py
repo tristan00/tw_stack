@@ -53,11 +53,6 @@ def arm_of(policy) -> str | None:
         "share with nothing to show why." % (policy, list(NAMES), _FALLBACK, NOT_A_DRAW[0]))
 
 
-def is_draw(policy) -> bool:
-    a = arm_of(policy)
-    return bool(a) and a in NAMES
-
-
 def fell_back(policy) -> bool:
     if policy is None:
         return False

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 
-import math
 
 
 class CrossEntityError(Exception):
@@ -58,8 +57,6 @@ class Raw:
     def __neg__(self):
         return Raw(-self.v, self.eid, self.path)
 
-    def clip(self, lo, hi):
-        return Raw(max(lo, min(hi, self.v)), self.eid, self.path)
 
     def __float__(self):
         return self.v
