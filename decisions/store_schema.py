@@ -13,9 +13,6 @@ PRAGMAS = (
     "PRAGMA auto_vacuum=INCREMENTAL",
     "PRAGMA journal_mode=WAL",
     "PRAGMA synchronous=NORMAL",
-    # analytics and bus_stats already set this; without it a reader holding the
-    # db during a write burst surfaces as an immediate "database is locked".
-    "PRAGMA busy_timeout=5000",
 )
 
 DDL = """
