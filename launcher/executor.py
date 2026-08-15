@@ -257,12 +257,6 @@ class Executor:
         except (TypeError, ValueError):
             return None
 
-    def clear_popups(self):
-        try:
-            return len(nav.close_popups(self.bus))
-        except Exception as e:
-            sys.stderr.write("executor: close_popups -> %s\n" % repr(e)[:90])
-            return 0
 
     def visible_roots(self):
         try:

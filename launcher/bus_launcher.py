@@ -211,41 +211,6 @@ class BusLauncher:
     def tree(self, path, depth=4, nodes=400):
         return self._send("tree", "%s %d %d" % (path, depth, nodes), timeout=25)
 
-    def text_of(self, path):
-        return (self.find(path).get("result") or {}).get("text")
-
-    def wait_root(self, root_id, timeout=30):
-        t0 = time.time()
-        while time.time() - t0 < timeout:
-            for k in self._roots_safe():
-                if k.get("id") == root_id and k.get("visible"):
-                    return True
-            time.sleep(0.4)
-        return False
-
-    def _child_path_matching(self, container, substrings, leaf):
-        t = self.tree(container, depth=1, nodes=200)
-        for nd in (t.get("nodes") or []):
-            p = nd.get("path", "")
-            if p == container:
-                continue
-            cid = nd.get("id") or ""
-            if p.count("|") != container.count("|") + 1:
-                continue
-            if all(s in cid for s in substrings):
-                return p + "|" + leaf
-        return None
-
-    def _campaign_card(self, label):
-        t = self.tree(P_LIST_PARENT, depth=1, nodes=200)
-        for nd in (t.get("nodes") or []):
-            p = nd.get("path", "")
-            if p.count("|") != P_LIST_PARENT.count("|") + 1:
-                continue
-            entry = p + "|button_campaign_entry"
-            if self.text_of(entry + "|button_txt") == label:
-                return entry
-        return None
 
     def advance_to_hud(self, timeout=200):
         import bus as _bus

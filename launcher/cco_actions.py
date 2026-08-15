@@ -1390,13 +1390,6 @@ def _endturn_confirm(bus, ctx, pick, before):
         ours = is_our_turn(bus)
         return (moved or ours is False), tt
 
-    def _back_to_us():
-        tt = _ev(bus, "return cm:model():turn_number()", timeout=8.0)
-        try:
-            moved = (tt is not None and float(tt) > float(before["turn"]))
-        except (TypeError, ValueError):
-            moved = False
-        return (moved and is_our_turn(bus) is True), tt
 
     ok, t = _took_effect()
     steps = []

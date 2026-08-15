@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import collections
-import math
 import os
-import random
 import re
 import sqlite3
 import sys
@@ -864,13 +861,6 @@ def _reach_lua(cqi, target_cqis, regions):
             "local ok,v=pcall(function() return cm:character_can_reach_settlement(a,s) end) "
             "o[#o+1]='R'..t..'='..tostring(ok and v) end return table.concat(o,',')"
             % (cqi, ",".join(str(t) for t in target_cqis), ",".join(regions)))
-
-
-def _reach(bus, cqi, target_cqis, regions):
-    if not target_cqis and not regions:
-        return {}, {}
-    return _parse_reach(_ev(bus, _reach_lua(cqi, target_cqis, regions), timeout=40.0,
-                            allow_nil=True))
 
 
 def _parse_reach(raw):

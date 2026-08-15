@@ -51,23 +51,6 @@ def presave_dir():
     return d
 
 
-def archive_presaves(log=print):
-    import shutil
-    copied, skipped = [], []
-    for f in sorted(os.listdir(save_dir())):
-        if not f.endswith(".save") or not parse_save_name(f):
-            continue
-        src = os.path.join(save_dir(), f)
-        dst = os.path.join(presave_dir(), f)
-        if os.path.exists(dst) and os.path.getsize(dst) == os.path.getsize(src):
-            skipped.append(f)
-            continue
-        shutil.copy2(src, dst)
-        copied.append(f)
-        log("archived %s (%d bytes)" % (f, os.path.getsize(dst)))
-    return {"copied": copied, "already_present": skipped, "dir": presave_dir()}
-
-
 def restore_presave(meta, log=print):
     import shutil
     dst = os.path.join(save_dir(), meta["file"])
@@ -108,26 +91,11 @@ def list_presaves(radius=None, campaign_map=None, turn=None, where="archive"):
     return out
 
 
-
-
 def presave_radii():
     counts = {}
     for p in list_presaves():
         counts.setdefault(p["radius"], []).append(p)
     return {r: len(v) for r, v in sorted(counts.items())}
-
-
-def pick_presave(radius, rng, campaign_map=None, turn=None):
-    pool = list_presaves(radius=radius, campaign_map=campaign_map, turn=turn)
-    if not pool:
-        have = presave_radii()
-        raise RuntimeError(
-            "bake_saves: no presave at radius %s%s in %s. Baked radii on disk: %s. "
-            "Refusing to fall back to a different radius -- a run that quietly trains on "
-            "a world it did not ask for is worse than one that does not start."
-            % (radius, "" if campaign_map is None else " on %s" % campaign_map,
-               save_dir(), have or "none"))
-    return rng.choice(sorted(pool, key=lambda p: p["file"]))
 
 
 def _bus():
