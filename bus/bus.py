@@ -48,12 +48,27 @@ _CMD_RE = re.compile(r"^\s*(\d+)\s+(\S+)\s*(.*)$")
 
 def _game_alive() -> bool:
     try:
+        import psutil
+        for proc in psutil.process_iter(["name"]):
+            try:
+                if str(proc.info.get("name") or "").lower() == "warhammer3.exe":
+                    return True
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        return False
+    except ImportError:
+        pass
+    try:
         import subprocess
         out = subprocess.run(
             ["tasklist", "/FI", "IMAGENAME eq Warhammer3.exe", "/NH"],
             capture_output=True, text=True, timeout=4,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
+        if out.returncode != 0:
+            sys.stderr.write("bus: _game_alive tasklist unreadable (rc=%s, %s); fail-open\n"
+                             % (out.returncode, (out.stderr or out.stdout or "").strip()[:100]))
+            return True
         return "warhammer3.exe" in (out.stdout or "").lower()
     except Exception as e:
         sys.stderr.write("bus: _game_alive tasklist check failed (fail-open) -> %s\n" % repr(e)[:80])
