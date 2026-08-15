@@ -39,8 +39,8 @@ def main() -> int:
     ok &= _row("twdata", common.TWDATA, os.path.isdir(common.TWDATA),
                _src("TWDATA", "twdata"),
                "will be created on first run, or set paths.twdata")
-    ok &= _row("runner", common.RUNNER, os.path.isdir(common.RUNNER),
-               _src("TW_RUNNER", "runner"), "set paths.runner -- the folder holding .venv")
+    ok &= _row("project", common.RUNNER, os.path.isdir(common.RUNNER),
+               "checkout", "the checkout must own .venv")
     ok &= _row("venv", common.VENV_PY, os.path.isfile(common.VENV_PY),
                "derived from runner", "create it: python -m venv <runner>/.venv")
     ok &= _row("bus dir", common.native(common.RUNNER_DATA),

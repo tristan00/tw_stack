@@ -25,20 +25,6 @@ Everything above is recorded: the state, the full option set, the score each opt
 one taken, and whether the game confirmed it. That record is the product. The models are
 downstream of it.
 
-## Why the record is the hard part
-
-An action counts as taken only when it is **executed AND confirmed**. A click that the game
-silently ignored is void, and is stored as void. This matters more than it sounds: a corpus
-where refused actions look identical to successful ones teaches a model that they work.
-
-The same principle runs through the rest:
-
-- Unhandled screens end the session rather than being clicked past. A campaign recorded
-  against a screen the agent could not read is worse than no campaign.
-- Every count names the population it counted; every rate carries its denominator.
-- "Not measurable" is a distinct state, never a zero.
-- Growth has exactly one definition, shared by the training ledger and the dashboard, so the
-  two can never disagree about whether a campaign grew.
 
 ## Structure
 
@@ -83,8 +69,8 @@ trajectories that are still going somewhere rather than on 20 turns of nothing.
 
     git clone <repo> tw_stack && cd tw_stack
 
-    python -m venv ../totalwar_runner/.venv          # the venv also owns the file bus
-    ../totalwar_runner/.venv/Scripts/python -m pip install -r requirements.txt
+    py -3.13 -m venv .venv
+    .venv/Scripts/python -m pip install -r requirements.txt
     cd ui && npm install && cd ..
 
     python doctor.py
@@ -92,14 +78,16 @@ trajectories that are still going somewhere rather than on 20 turns of nothing.
 `doctor.py` prints every machine-dependent path, where each one came from, and what to do
 about any it could not find. If it says `all paths resolve`, there is nothing to configure.
 
-It usually does. Three paths are machine-dependent and each is resolved as
+It usually does. Two paths are machine-dependent and each is resolved as
 **environment variable → `config.toml` → autodetection → default**:
 
 | | env | found by |
 |---|---|---|
 | the game install | `TW_GAME_DIR` | scanning the usual Steam library locations |
 | everything a run produces | `TWDATA` | a `twdata` folder beside the checkout |
-| the venv and file bus | `TW_RUNNER` | the interpreter you are running, if it is a venv |
+
+The checkout always owns `.venv`. Generated data, including the live file bus, belongs
+under `TWDATA` outside the checkout; the bus uses `<TWDATA>/bus`.
 
 Only if one is missing: `cp config.example.toml config.toml` and set it. `config.toml` is
 not in git, so each machine keeps its own.
