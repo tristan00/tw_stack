@@ -41,6 +41,7 @@ const campaignCols: Col<CampaignRow>[] = [
     key: 'outcome',
     label: 'outcome',
     group: 'campaign',
+    optional: true,
     value: (r) => r.outcome?.label ?? '',
 
 
