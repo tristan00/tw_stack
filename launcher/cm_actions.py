@@ -253,34 +253,32 @@ def _move_confirm(bus, ctx, pick, before):
     return moved, after
 
 
-_SETTLE_POLLS = 6
-_SETTLE_PAUSE = 0.8
+_STANDSTILL_CAP = 4.8
+_STANDSTILL_POLL = 0.25
+_LUA_LOCOMOTION = (
+    "local ok,v=pcall(function() return cco('CcoCampaignRoot',''):Call('IsLocomotionComplete') end) "
+    "if ok and v~=nil then return tostring(v) end return 'nil'")
 
 
 def _await_standstill(bus, cqi, after):
     t0 = time.time()
-    last = (after.get("x"), after.get("y"))
-    stable = 0
-    for _ in range(_SETTLE_POLLS):
-        time.sleep(_SETTLE_PAUSE)
-        x = _char_scalar(bus, cqi, "c:logical_position_x()")
-        y = _char_scalar(bus, cqi, "c:logical_position_y()")
-        if x is None or y is None or x == "no-char":
-            common.waitlog("move_standstill", time.time() - t0, False,
-                           "cqi=%s position unreadable" % cqi)
-            return False
-        if (x, y) == last:
-            stable += 1
-            if stable >= 2:
+    polls = 0
+    while time.time() - t0 < _STANDSTILL_CAP:
+        polls += 1
+        r = str(_ev(bus, _LUA_LOCOMOTION, timeout=2.0) or "")
+        if r == "true":
+            x = _char_scalar(bus, cqi, "c:logical_position_x()")
+            y = _char_scalar(bus, cqi, "c:logical_position_y()")
+            if x is not None and y is not None and x != "no-char":
                 after["x"], after["y"] = x, y
-                common.waitlog("move_standstill", time.time() - t0, True, "cqi=%s" % cqi)
-                return True
-        else:
-            stable = 0
-            last = (x, y)
-    after["x"], after["y"] = last
+            common.waitlog("move_standstill", time.time() - t0, True,
+                           "cqi=%s locomotion done polls=%d" % (cqi, polls))
+            return True
+        time.sleep(_STANDSTILL_POLL)
     sys.stderr.write("cm_actions: cqi=%s still moving after %.1fs -- next order may land mid-path\n"
-                     % (cqi, _SETTLE_POLLS * _SETTLE_PAUSE))
+                     % (cqi, _STANDSTILL_CAP))
+    common.waitlog("move_standstill", time.time() - t0, False,
+                   "cqi=%s locomotion still running polls=%d" % (cqi, polls))
     return False
 
 
