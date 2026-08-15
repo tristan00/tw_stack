@@ -164,6 +164,10 @@ def up(campaigns, turns, retrain_every=0, cold=False,
         steps.append(kill_ui())
         steps.append(kill_analytics())
     common.wait("runctl_kill_settle", 1.5)
+    leftover = [row for row in status() if "session.py" in row]
+    if leftover:
+        raise SystemExit("REFUSING to start a second session -- session.py is still "
+                         "alive after the kill pass: %s" % "; ".join(leftover)[:200])
     steps.append(start_recorder(shots=shots, dev=dev, presave_radius=presave_radius))
     common.wait("runctl_recorder_spawn_grace", 3.0)
     if with_ui:

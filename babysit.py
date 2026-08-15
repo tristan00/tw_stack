@@ -116,6 +116,9 @@ def main():
     if not cooled_down():
         note("DEAD/STALLED (alive=%s age=%s) -- cooldown active, skipping" % (alive, age))
         return 0
+    if session_alive():
+        note("session appeared between the check and the relaunch -- standing down")
+        return 0
     note("DEAD/STALLED (alive=%s age=%s) -- relaunching" % (alive, age))
     with open(STAMP, "w", encoding="utf-8") as fh:
         fh.write(str(time.time()))
