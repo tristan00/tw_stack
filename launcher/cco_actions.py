@@ -92,7 +92,7 @@ REGISTRY = {}
 
 def register(action_type, spec):
     spec.setdefault("timeout_s", 6.0)
-    spec.setdefault("poll_s", 1.2)
+    spec.setdefault("poll_s", 0.25)
     spec.setdefault("retryable", True)
     spec.setdefault("spends_gold", False)
     spec.setdefault("prechecks", [])
@@ -282,7 +282,7 @@ register("stance", {
     "snapshot": _stance_snapshot,
     "prechecks": [],
     "execute": _stance_execute, "confirm": _stance_confirm,
-    "timeout_s": 5.0, "poll_s": 1.2,
+    "timeout_s": 5.0, "poll_s": 0.25,
 })
 
 
@@ -416,7 +416,7 @@ register("building", {
     "snapshot": _building_snapshot,
     "prechecks": [],
     "execute": _building_execute, "confirm": _building_confirm,
-    "timeout_s": 6.0, "poll_s": 2.0, "spends_gold": True,
+    "timeout_s": 6.0, "poll_s": 0.25, "spends_gold": True,
 })
 
 
@@ -471,7 +471,7 @@ register("research", {
     "layer": "cco", "signal": "is_researching_and_current_tech",
     "snapshot": _research_snapshot, "prechecks": [],
     "execute": _research_execute, "confirm": _research_confirm,
-    "timeout_s": 6.0, "poll_s": 1.5,
+    "timeout_s": 6.0, "poll_s": 0.25,
 })
 
 
@@ -532,7 +532,7 @@ register("skills", {
     "layer": "cco", "signal": "skill_point_spent_and_committed",
     "snapshot": _skills_snapshot, "prechecks": [],
     "execute": _skills_execute, "confirm": _skills_confirm,
-    "timeout_s": 6.0, "poll_s": 1.2,
+    "timeout_s": 6.0, "poll_s": 0.25,
 })
 
 
@@ -649,7 +649,7 @@ def _unequip_confirm(bus, ctx, pick, before):
 register("item_unequip", {
     "layer": "cco", "signal": "equipped_count_decrease",
     "snapshot": _unequip_snapshot, "execute": _unequip_execute, "confirm": _unequip_confirm,
-    "timeout_s": 5.0, "poll_s": 1.2,
+    "timeout_s": 5.0, "poll_s": 0.25,
 })
 
 
@@ -781,7 +781,7 @@ register("building_repair", {
     "snapshot": _slot_snapshot,
     "execute": _slot_exec("Repair", "CanRepair"),
     "confirm": _slot_confirm("repairing", True),
-    "timeout_s": 6.0, "poll_s": 1.0, "spends_gold": True,
+    "timeout_s": 6.0, "poll_s": 0.25, "spends_gold": True,
 })
 
 register("building_cancel", {
@@ -789,7 +789,7 @@ register("building_cancel", {
     "snapshot": _slot_snapshot,
     "execute": _slot_exec("CancelConstruction", "ConstructionItemContext"),
     "confirm": _slot_confirm("queued", False),
-    "timeout_s": 6.0, "poll_s": 1.0,
+    "timeout_s": 6.0, "poll_s": 0.25,
 })
 
 register("building_dismantle", {
@@ -797,7 +797,7 @@ register("building_dismantle", {
     "snapshot": _slot_snapshot,
     "execute": _slot_exec_paced("Dismantle", "CanDismantle"),
     "confirm": _slot_confirm("queued", True),
-    "timeout_s": 6.0, "poll_s": 1.0,
+    "timeout_s": 6.0, "poll_s": 0.25,
 })
 
 
