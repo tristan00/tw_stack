@@ -104,6 +104,10 @@ def rebuild_reason(tenant, src, an) -> str | None:
         return "the tenant's table is missing"
     if have != int(st["rows"]):
         return "table holds %d rows, state recorded %d" % (have, st["rows"])
+    hi = tenant.safe_hi(src, an)
+    if hi is not None and int(st["watermark"]) > int(hi):
+        return ("the watermark is at %s but the source reaches only %s -- it went backwards"
+                % (st["watermark"], hi))
     stats = tenant.source_stats(src, int(st["watermark"])) if st["watermark"] else None
     if stats is not None and not isinstance(stats, tuple):
         raise TypeError("%s.source_stats must return (count, floor) or None" % tenant.NAME)
