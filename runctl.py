@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import subprocess
@@ -188,6 +189,168 @@ def down():
     return [kill_session(), kill_recorder(), kill_ui(), kill_analytics()]
 
 
+HARNESS_EVERY_S = 300.0
+HARNESS_STALL_S = 1200.0
+HARNESS_PROGRESS_S = 1800.0
+HARNESS_COOLDOWN_S = 1800.0
+_PROGRESS_MARKS = ("== turn ", "mapgraph.train: epoch", "retrained before run")
+
+
+def _harness_note(msg):
+    line = "%s %s" % (time.strftime("%Y-%m-%dT%H:%M:%S"), msg)
+    print(line, flush=True)
+    try:
+        os.makedirs(os.path.dirname(common.HARNESS_LOG), exist_ok=True)
+        with open(common.HARNESS_LOG, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except OSError:
+        pass
+
+
+def _pointer_log():
+    try:
+        with open(CURRENT_LOG, encoding="utf-8-sig") as fh:
+            p = fh.read().strip()
+        if p and os.path.exists(p):
+            return p
+    except OSError:
+        pass
+    best = None
+    try:
+        for f in os.listdir(LOG_DIR):
+            if f.startswith("session_") and f.endswith(".log"):
+                q = os.path.join(LOG_DIR, f)
+                if best is None or os.path.getmtime(q) > os.path.getmtime(best):
+                    best = q
+    except OSError:
+        pass
+    return best or ""
+
+
+def _first_stamp(path):
+    try:
+        with open(path, "rb") as f:
+            head = f.read(8192).decode("utf-8", "replace")
+    except OSError:
+        return None
+    for line in head.splitlines():
+        try:
+            return datetime.datetime.fromisoformat(line[:23]).timestamp()
+        except ValueError:
+            continue
+    return None
+
+
+def _progress_age(path):
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            f.seek(max(0, size - 262144))
+            tail = f.read().decode("utf-8", "replace")
+    except OSError:
+        return None
+    last = None
+    for line in tail.splitlines():
+        if any(m in line for m in _PROGRESS_MARKS):
+            try:
+                last = datetime.datetime.fromisoformat(line[:23]).timestamp()
+            except ValueError:
+                continue
+    if last is None:
+        last = _first_stamp(path)
+    if last is None:
+        return None
+    return time.time() - last
+
+
+def _session_reports_complete():
+    root = common.native(common.RUNS_ROOT)
+    try:
+        paths = [os.path.join(root, f) for f in os.listdir(root)
+                 if f.startswith("session_") and f.endswith(".json")]
+    except OSError:
+        return False
+    if not paths:
+        return False
+    try:
+        rep = json.load(open(max(paths, key=os.path.getmtime), encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    want = (rep.get("requested") or {}).get("campaigns") or 0
+    return bool(want) and len(rep.get("campaigns") or []) >= want
+
+
+def _cooled_down():
+    try:
+        last = float(open(common.HARNESS_STAMP, encoding="utf-8").read().strip())
+    except (OSError, ValueError):
+        return True
+    return time.time() - last >= HARNESS_COOLDOWN_S
+
+
+def harness_tick():
+    if os.path.exists(common.HARNESS_OFF):
+        _harness_note("HARNESS_OFF present -- standing down")
+        return "off"
+    if _session_reports_complete():
+        _harness_note("session complete -- nothing to supervise")
+        return "complete"
+    alive = any("session.py" in row for row in status())
+    log = _pointer_log()
+    log_age = (time.time() - os.path.getmtime(log)) if log else None
+    prog_age = _progress_age(log) if log else None
+    healthy = (alive and log_age is not None and log_age < HARNESS_STALL_S
+               and prog_age is not None and prog_age < HARNESS_PROGRESS_S)
+    if healthy:
+        _harness_note("ok: session alive, log %.0fs old, last progress %.0fs ago"
+                      % (log_age, prog_age))
+        return "ok"
+    reason = ("alive=%s log_age=%s progress_age=%s"
+              % (alive,
+                 "%.0fs" % log_age if log_age is not None else "unknown",
+                 "%.0fs" % prog_age if prog_age is not None else "unknown"))
+    if not _cooled_down():
+        _harness_note("UNHEALTHY (%s) -- cooldown active, holding" % reason)
+        return "cooldown"
+    _harness_note("UNHEALTHY (%s) -- killing the stack and relaunching" % reason)
+    try:
+        with open(common.HARNESS_STAMP, "w", encoding="utf-8") as fh:
+            fh.write(str(time.time()))
+    except OSError:
+        pass
+    from run_config import RUN
+    for step in down():
+        _harness_note(step)
+    common.wait("harness_relaunch_settle", 2.0)
+    try:
+        for step in up(RUN["campaigns"], RUN["turns"],
+                       retrain_every=RUN["retrain_every"],
+                       retrain_first=RUN.get("retrain_first", False),
+                       dev=RUN.get("dev", True), with_ui=True,
+                       strategies=RUN["strategies"], ruleset=RUN["ruleset"],
+                       factions=RUN["factions"], campaign=RUN["campaign"],
+                       presave_radius=RUN.get("presave_radius")):
+            _harness_note(step)
+    except SystemExit as e:
+        _harness_note("relaunch refused: %s" % e)
+        return "refused"
+    return "relaunched"
+
+
+def harness(every_s=HARNESS_EVERY_S):
+    _harness_note("harness starting: check every %.0fs, stall %.0fs, progress %.0fs, "
+                  "cooldown %.0fs" % (every_s, HARNESS_STALL_S, HARNESS_PROGRESS_S,
+                                      HARNESS_COOLDOWN_S))
+    while True:
+        try:
+            r = harness_tick()
+            if r in ("off", "complete"):
+                return 0
+        except Exception as e:
+            _harness_note("tick failed (continuing): %r" % (e,))
+        time.sleep(every_s)
+
+
 def status():
     cmd = ("Get-CimInstance Win32_Process -Filter \"Name like '%python%'\" | "
            "? { $_.CommandLine -like '*session.py*' -or $_.CommandLine -like '*manager.py*' "
@@ -245,6 +408,8 @@ def main():
             s.add_argument("--no-ui", action="store_true")
     sub.add_parser("down")
     sub.add_parser("status")
+    h = sub.add_parser("harness")
+    h.add_argument("--every", type=float, default=HARNESS_EVERY_S)
     a = ap.parse_args()
     if a.cmd == "status":
         print("\n".join(status()))
@@ -252,6 +417,8 @@ def main():
     if a.cmd == "down":
         print("\n".join(down()))
         return
+    if a.cmd == "harness":
+        raise SystemExit(harness(a.every))
     common = dict(retrain_every=a.retrain_every, retrain_first=a.retrain_first,
                   cold=a.cold, dev=not a.no_dev,
                   factions=a.factions, strategies=a.strategies, ruleset=a.ruleset,
