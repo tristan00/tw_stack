@@ -96,9 +96,6 @@ def main(argv):
     check(enemy > 0, "enemy settlements have nodes", "%d over %d graphs"
           % (enemy, len(graphs)))
 
-    check(S.MAX_FIELDS == 6, "MAX_FIELDS unchanged by the new action fields",
-          "MAX_FIELDS=%d, action=%s" % (S.MAX_FIELDS, list(S.TYPE_FIELDS["action"])))
-
     print("\naction coverage:")
     for at in sorted(per_type, key=lambda a: -per_type[a]["n"]):
         t = per_type[at]

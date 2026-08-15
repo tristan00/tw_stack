@@ -394,6 +394,9 @@ def test_no_column_is_empty_in_every_row():
             "notes are only written for trials with a recorded outcome tally",
         ("$.services", "started"):
             "the process probe reports a start time only for processes it matched",
+        ("$.rows", "presave_radius"):
+            "a campaign carries a radius only when the run booted it from a baked "
+            "presave, which is newer than every campaign in this corpus",
     }
     responses = _all_responses()
     bad = []

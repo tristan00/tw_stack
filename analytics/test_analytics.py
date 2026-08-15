@@ -127,16 +127,19 @@ class _Tenant:
     DDL = ("CREATE TABLE IF NOT EXISTS probe("
            " decision_id INTEGER PRIMARY KEY, doubled INTEGER NOT NULL) WITHOUT ROWID;")
 
-    def __init__(self, version=1, boom_at=None, drop=None):
+    def __init__(self, version=1, boom_at=None, drop=None, blind=False):
         self.FORMULA_VERSION = version
         self.boom_at = boom_at
         self.drop = drop
+        self.blind = blind
 
     def safe_hi(self, src, an=None):
         row = src.execute("SELECT MAX(decision_id) FROM decisions").fetchone()
         return int(row[0] or 0)
 
     def source_stats(self, src, hi):
+        if self.blind:
+            return None
         r = src.execute("SELECT COUNT(*), MIN(decision_id) FROM decisions"
                         " WHERE decision_id <= ?", (hi,)).fetchone()
         return int(r[0] or 0), r[1]
@@ -229,6 +232,26 @@ def test_source_drift_forces_rebuild(fail):
     return "a shrunken or replaced source rebuilds instead of appending"
 
 
+def test_a_watermark_ahead_of_its_source_rebuilds(fail):
+    with _Sandbox() as box:
+        src = box.corpus("src.sqlite", range(91, 111))
+        an = box.analytics()
+        t = _Tenant(blind=True)
+        S.run_tenant(t, src, an)
+        src.execute("DELETE FROM decisions WHERE decision_id > 100")
+        src.commit()
+        S.run_tenant(t, src, an)
+        st = S.state(an, "probe")
+        n = an.execute("SELECT COUNT(*) FROM probe").fetchone()[0]
+        if st["watermark"] != 100 or n != 10:
+            fail("the source shrank to 100 and the tenant still reports watermark=%r "
+                 "rows=%r -- a rollup that cannot count its source would describe a "
+                 "corpus that no longer exists for ever, because every later pass sees "
+                 "a hi below its own watermark and does nothing"
+                 % (st["watermark"], n))
+    return "a watermark past the end of its source rebuilds, counted or not"
+
+
 def test_no_source_row_below_the_watermark_is_uncomputed(fail):
     with _Sandbox() as box:
         src = box.corpus("src.sqlite", [91, 92, 93, 97, 98])
@@ -297,6 +320,7 @@ TESTS = [
     test_top_measures_are_tie_safe,
     test_formula_version_bump_wipes_and_rebuilds,
     test_source_drift_forces_rebuild,
+    test_a_watermark_ahead_of_its_source_rebuilds,
     test_no_source_row_below_the_watermark_is_uncomputed,
     test_watermark_and_rows_commit_together,
     test_every_tenant_implements_the_contract,
