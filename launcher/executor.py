@@ -174,6 +174,7 @@ class Executor:
             return turn_before is None or (r.get("turn") or 0) > turn_before
 
         rounds = 0
+        dead_pings = 0
         while time.time() - t0 < timeout:
             if _aborted():
                 return _bail()
@@ -198,6 +199,19 @@ class Executor:
                 sys.stderr.write("executor: settle -- the faction is DEAD (row)\n")
                 return {"turn": None, "steps": steps + ["defeated"],
                         "waited_s": round(time.time() - t0, 1), "defeated": True}
+            try:
+                self.bus.send("roots", "", timeout=1.5)
+                dead_pings = 0
+            except Exception:
+                dead_pings += 1
+                if dead_pings >= 3:
+                    common.waitlog("settle_between_turns", time.time() - t0, False,
+                                   "bus silent x3 -- defeat modal or crash")
+                    sys.stderr.write("executor: settle -- the bus went silent, the defeat "
+                                     "modal or a crash owns the game now\n")
+                    return {"turn": None, "steps": steps + ["bus_silent"],
+                            "waited_s": round(time.time() - t0, 1)}
+                continue
             s = self.resolve_interrupts()
             if s:
                 steps.extend(s)
