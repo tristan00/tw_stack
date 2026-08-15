@@ -29,31 +29,6 @@ const VIEWS = [
 ]
 
 
-function Growth({
-  row,
-  first,
-  last,
-  delta,
-}: {
-  row: CampaignRow
-  first?: number | null
-  last?: number | null
-  delta?: number | null
-}) {
-  if (row.growth_state === 'no_turn_rows')
-    return <span className="text-dim text-2xs">no turn recorded</span>
-  if (row.growth_state === 'single_turn')
-    return <span className="text-dim text-2xs">one turn only — no span</span>
-  if (delta === null || delta === undefined)
-    return <span className="text-dim text-2xs">not recorded</span>
-  return (
-    <span className={delta > 0 ? 'text-ok' : delta < 0 ? 'text-bad' : undefined}>
-      {n(first)} <span className="text-dim">→</span> {n(last)}
-      <span className="num ml-1 text-2xs">{delta > 0 ? `+${n(delta)}` : n(delta)}</span>
-    </span>
-  )
-}
-
 const campaignCols: Col<CampaignRow>[] = [
   {
     key: 'campaign',
