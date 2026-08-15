@@ -6,9 +6,10 @@
 catboost>=1.2.10
 numpy>=2.1
 
-# the graph model. torch is NOT pinned to a CUDA build here: install the wheel that
+# the graph model. torch is NOT pinned to a CUDA build here: install the CUDA wheel that
 # matches your machine first (https://pytorch.org/get-started/locally/), then this file.
-# A CPU-only torch works -- mapgraph trains slower and reports device=cpu.
+# A CPU-only torch is a broken install for this project: mapgraph trains on CUDA and the
+# session refuses to run with an unusable graph model rather than degrading silently.
 torch>=2.4
 torch-geometric>=2.6
 
@@ -26,3 +27,6 @@ zstandard>=0.23
 
 # hyperparameter search for the catboost arm (advisor/tune_catboost.py only)
 optuna>=4.0
+
+# UI self-documentation screenshots (ui_docshots.py only; drives the installed Edge)
+playwright>=1.60

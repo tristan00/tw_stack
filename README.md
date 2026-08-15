@@ -58,12 +58,10 @@ diplomacy) as its own ranking problem.
 Campaigns are abandoned early when they stop growing, so the run spends its time on
 trajectories that are still going somewhere rather than on 20 turns of nothing.
 
-The trainable arms are hard dependencies: if a model in the mix is missing, fails to load,
-fails to train, or fails to predict, the session refuses to start or crashes rather than
-silently playing random in its place. Only `--cold` runs modelless, deliberately.
-Retraining never happens unless asked for (`--retrain-every N`, optionally
-`--retrain-first`); a launch plays on the models already on disk. The graph models train
-on CUDA.
+The trainable arms are hard dependencies: a missing or broken model stops the run rather
+than silently playing random in its place, and retraining only happens when asked
+(`--retrain-every N`). The operating rules the run is held to — throughput, lifecycle,
+waits, screen handling — live in `CLAUDE.md`.
 
 ## Requirements
 
@@ -130,20 +128,27 @@ replacements.
     python babysit.py --loop 300        # supervise: relaunch a dead session, same config
     python runctl.py down               # stop everything
 
-The run is engineered for throughput measured in turns per hour, wall-clock honest. Each
-campaign kills the game when its fate is sealed (defeat, growth gate, stall) and the next
-one boots fresh — no state is ever inherited across campaigns, and no action starts on an
-uncleared screen. A turn whose end-turn cannot advance within the settle budget ends the
-campaign rather than waiting. Blocking screens the handlers do not recognise are treated
-as panel-handling bugs: each gets a hardcoded per-screen rule (exact title and node
-paths), never an early generalisation.
-
-Every wait and retry in the stack logs its use and outcome — greppable `WAIT`, `TRY` and
-`PHASE` lines in the service `.err` files, every line ISO-timestamped. "Where did the
-seconds go" is always one grep.
+The run is engineered for throughput measured in turns per hour, wall-clock honest:
+campaigns kill the game the moment their fate is sealed and the next boots fresh, stalls
+end campaigns in seconds instead of being waited out, and every wait in the stack logs
+its use and outcome with ISO timestamps. `CLAUDE.md` states these rules precisely.
 
 `check.py` marks which gates need a live game or a populated corpus. The rest run on a
 fresh clone.
+
+## The dashboard
+
+`python ui_docshots.py` regenerates these from the live UI (API must be up).
+
+The run screen — live throughput against the 60 turns/hour floor, services, per-stage
+timing, and the session log:
+
+![run screen](docs/ui/run.png)
+
+The experiment ledger — every trial and every retrain, with what it played and what came
+of it:
+
+![experiment ledger](docs/ui/experiment-ledger.png)
 
 ## Where things live
 
