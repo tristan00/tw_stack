@@ -73,6 +73,8 @@ DISPLAY_CONTROLS = frozenset((
     "button_finance",
     "button_books_of_nagash",
     "button_nakai_temples",
+    "button_chieftain_category",
+    "button_battle_ready",
     "button_zoom",
     "button_txt",
 ))
