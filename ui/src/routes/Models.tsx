@@ -762,7 +762,6 @@ function Training() {
       unit: 'per campaign',
       align: 'right',
       group: 'result',
-      optional: true,
       value: (r) => r.seconds_per_campaign ?? 0,
       render: (r) => n(r.seconds_per_campaign, 1),
     },
