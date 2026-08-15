@@ -12,7 +12,6 @@ import common
 sys.path.insert(0, common.LAUNCHER)
 sys.path.insert(0, os.path.join(common.ROOT, "bus"))
 
-DEFAULT_RADIUS = 240.0
 SAVE_SETTLE_S = 90.0
 TRIM_TIMEOUT_S = 120.0
 PLAYABLE_TIMEOUT_S = 240.0
@@ -80,8 +79,14 @@ def restore_presave(meta, log=print):
 
 
 def list_presaves(radius=None, campaign_map=None, turn=None, where="archive"):
-    roots = {"archive": [presave_dir()], "game": [save_dir()],
-             "both": [presave_dir(), save_dir()]}[where]
+    if where == "archive":
+        roots = [presave_dir()]
+    elif where == "game":
+        roots = [save_dir()]
+    elif where == "both":
+        roots = [presave_dir(), save_dir()]
+    else:
+        raise ValueError("where must be archive, game, or both; got %r" % where)
     out, seen = [], set()
     for root in roots:
         for f in sorted(os.listdir(root)):
@@ -413,7 +418,10 @@ def main(argv):
         return argv[argv.index(name) + 1] if name in argv else default
 
     campaign = arg("--campaign", "Realm of Chaos")
-    radius = float(arg("--radius", str(DEFAULT_RADIUS)))
+    radius_arg = arg("--radius")
+    if radius_arg is None:
+        raise SystemExit("--radius is required; refusing to trim with an implicit radius")
+    radius = float(radius_arg)
     turn = int(arg("--turn", "1"))
     dry = "--dry" in argv
     one = arg("--faction")
