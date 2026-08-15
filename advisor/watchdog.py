@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import common
 
 STUCK_SECONDS = 75.0
 POLL_SECONDS = 15.0
@@ -35,7 +39,10 @@ class Watchdog:
     def stop(self):
         self._stop.set()
         if self._thread is not None:
+            t0 = time.time()
             self._thread.join(timeout=self.poll_seconds + 5.0)
+            common.waitlog("watchdog_join", time.time() - t0,
+                           not self._thread.is_alive())
 
     def beat(self, why="action"):
         with self._lock:
@@ -55,6 +62,9 @@ class Watchdog:
         return list(self._last_roots)
 
     def _run(self):
+        t0 = time.time()
+        self._log("poll loop starting: every %.0fs, stuck after %.0fs"
+                  % (self.poll_seconds, self.stuck_seconds))
         last_error = None
         while not self._stop.is_set():
             reason = detail = None
@@ -99,3 +109,4 @@ class Watchdog:
                 return
             self._stop.wait(max(1.0, min(self.poll_seconds,
                                          self.stuck_seconds - self.idle_seconds())))
+        common.waitlog("watchdog_poll", time.time() - t0, True, "stopped")

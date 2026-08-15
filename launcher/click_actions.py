@@ -61,15 +61,18 @@ def engine_click(bus, component_id):
         return False
 
 
-def _until(pred, cap, step=0.2):
-    deadline = time.time() + cap
+def _until(pred, cap, step=0.2, tag="until_poll", detail=""):
+    t0 = time.time()
+    deadline = t0 + cap
     while time.time() < deadline:
         try:
             if pred():
+                common.waitlog(tag, time.time() - t0, True, detail)
                 return True
         except Exception:
             pass
         time.sleep(step)
+    common.waitlog(tag, time.time() - t0, False, detail)
     return False
 
 
@@ -90,9 +93,26 @@ def _clear_trace(row):
 def clear_screen(bus, where=None):
     import nav
     import interrupts
+    t_clear = time.time()
     inflight = sys.exc_info()[1]
     pending_before = nav.engine_pending(bus)
     roots_before = nav.visible_roots(bus) or []
+    if not [r for r in roots_before if r not in nav.BASE_ROOTS
+            and r not in nav.BENIGN_PANELS] and not nav.pending_blocks(pending_before):
+        benign = [r for r in roots_before if r in nav.BENIGN_PANELS]
+        nav.deselect(bus)
+        try:
+            _ev(bus, 'common.call_context_command([[CloseAllPanels]]) return "sent"',
+                timeout=15.0)
+        except Exception as e:
+            sys.stderr.write("click_actions: fast CloseAllPanels -> %s" % repr(e)[:80]
+                             + chr(10))
+        if benign:
+            _until(lambda: not [r for r in (nav.visible_roots(bus) or [])
+                                if r in nav.BENIGN_PANELS], 1.0, tag="benign_close_settle")
+        common.phaselog("clear_screen_total", time.time() - t_clear,
+                        "%s fast_path benign=%d" % (where, len(benign)))
+        return 0
     guard = {}
     try:
         guard = interrupts.claim_screen(bus, where or "clear_screen",
@@ -112,11 +132,13 @@ def clear_screen(bus, where=None):
         _clear_trace({"ts": time.time(), "where": where, "pending_before": pending_before,
                       "pending_after": guard.get("pending_after"), "closed_n": 0,
                       "roots_before": roots_before[:14], "guard": guard})
+        common.phaselog("clear_screen_total", time.time() - t_clear, "%s guard_left" % where)
         return 0
     try:
         _ev(bus, 'common.call_context_command([[CloseAllPanels]]) return "sent"', timeout=15.0)
         _until(lambda: not [r for r in (nav.visible_roots(bus) or [])
-                            if r not in nav.BASE_ROOTS], 1.0)
+                            if r not in nav.BASE_ROOTS and r not in nav.BENIGN_PANELS],
+               1.0, tag="close_all_panels_settle")
     except Exception as e:
         sys.stderr.write("click_actions: CloseAllPanels -> %s" % repr(e)[:80] + chr(10))
     n = 0
@@ -140,9 +162,10 @@ def clear_screen(bus, where=None):
         if any(r not in nav.BASE_ROOTS for r in (nav.visible_roots(bus) or [])):
             nav.deselect(bus)
             _until(lambda: not [r for r in (nav.visible_roots(bus) or [])
-                                if r not in nav.BASE_ROOTS], 1.2)
+                                if r not in nav.BASE_ROOTS], 1.2, tag="deselect_settle")
     except Exception as e:
         sys.stderr.write("click_actions: deselect -> %s" % repr(e)[:80] + chr(10))
+    common.phaselog("clear_screen_total", time.time() - t_clear, str(where))
     return n
 
 
@@ -150,7 +173,7 @@ def select_settlement(bus, region):
     r = _ev(bus, _G + "local s=cco('CcoCampaignSettlement','settlement:%s') if not s then return 'NO-SETT' end "
                       "local ok,e=pcall(function() s:Call('Select') end) return 'ok='..tostring(ok)" % region,
             timeout=20.0)
-    _until(lambda: bool(_roots(bus)), 1.5)
+    _until(lambda: bool(_roots(bus)), 1.5, tag="settlement_select_panel", detail=str(region))
     return r == "ok=true"
 
 
@@ -158,7 +181,7 @@ def select_character(bus, cqi):
     r = _ev(bus, _G + "local c=cco('CcoCampaignCharacter','%s') if not c then return 'NO-CHAR' end "
                       "local ok,e=pcall(function() c:Call('Select') end) return 'ok='..tostring(ok)" % cqi,
             timeout=20.0)
-    _until(lambda: bool(_roots(bus)), 1.2)
+    _until(lambda: bool(_roots(bus)), 1.2, tag="character_select_panel", detail=str(cqi))
     return r == "ok=true"
 
 
@@ -179,14 +202,17 @@ def focus_settlement(bus, region):
     return r == "ok"
 
 
-def prepare(bus, kind, entity_id, expect_root=None, timeout=6.0):
+def prepare(bus, kind, entity_id, expect_root=None, timeout=1.0):
     import nav
+    t_prep = time.time()
     if kind == "settlement":
         focus_settlement(bus, entity_id)
     elif kind == "lord":
         focus_character(bus, entity_id)
     if (expect_root and is_selected(bus, kind, entity_id) is True
             and expect_root in (nav.visible_roots(bus) or [])):
+        common.phaselog("prepare_total", time.time() - t_prep,
+                        "%s already_ready" % expect_root)
         return True, "already_ready"
     clear_screen(bus, "prepare")
     if kind == "settlement":
@@ -196,17 +222,27 @@ def prepare(bus, kind, entity_id, expect_root=None, timeout=6.0):
     else:
         return False, "unknown_subject_kind_%s" % kind
     if not ok:
+        common.phaselog("prepare_total", time.time() - t_prep,
+                        "could_not_select_%s" % kind)
         return False, "could_not_select_%s_%s" % (kind, entity_id)
     if expect_root:
-        deadline = time.time() + timeout
+        t0 = time.time()
+        deadline = t0 + timeout
         while time.time() < deadline:
             try:
                 if expect_root in (nav.visible_roots(bus) or []):
+                    common.waitlog("prepare_panel_open", time.time() - t0, True, expect_root)
+                    common.phaselog("prepare_total", time.time() - t_prep,
+                                    "%s ready" % expect_root)
                     return True, "ready"
             except Exception:
                 pass
             time.sleep(0.5)
+        common.waitlog("prepare_panel_open", time.time() - t0, False, expect_root)
+        common.phaselog("prepare_total", time.time() - t_prep,
+                        "%s never_opened" % expect_root)
         return False, "expected_panel_%s_never_opened" % expect_root
+    common.phaselog("prepare_total", time.time() - t_prep, "no_expect_root")
     return True, "ready"
 
 
@@ -327,9 +363,11 @@ POOL_LIST = ("units_panel|main_units_panel|recruitment_docker|recruitment_option
 
 
 def recruitable_units(bus):
+    t0 = time.time()
     try:
         tr = bus.send("tree", "units_panel 30 9000", timeout=20) or {}
     except Exception:
+        common.phaselog("recruit_cards_tree", time.time() - t0, "error")
         return []
     nodes = tr.get("nodes") or []
     by_path = {}
@@ -361,6 +399,8 @@ def recruitable_units(bus):
                     "cost": _num(_child_text(path, "external_holder", "RecruitmentCost", "Cost")),
                     "upkeep": _num(_child_text(path, "external_holder", "UpkeepCost", "Upkeep")),
                     "turns": _num(_child_text(path, "unit_icon", "Turns"))})
+    common.phaselog("recruit_cards_tree", time.time() - t0,
+                    "nodes=%d cards=%d" % (len(nodes), len(out)))
     return out
 
 
@@ -422,7 +462,7 @@ def _recruit_execute_inner(bus, ctx, pick, before):
     if not cards:
         if not _click(bus, RECRUIT_BTN):
             return False
-        _until(lambda: bool(recruitable_units(bus)), 1.4)
+        _until(lambda: bool(recruitable_units(bus)), 1.4, tag="recruit_cards_populate")
         cards = recruitable_units(bus)
     unit, want_q = split_key(pick)
     same_key = [c for c in cards if c["key"] == unit]
@@ -510,9 +550,11 @@ def _force_units(bus, cqi):
 
 
 def mercenary_units(bus):
+    t0 = time.time()
     try:
         tr = bus.send("tree", "units_panel 30 9000", timeout=20) or {}
     except Exception:
+        common.phaselog("merc_cards_tree", time.time() - t0, "error")
         return []
     nodes = tr.get("nodes") or []
     by_path = {}
@@ -543,6 +585,8 @@ def mercenary_units(bus):
             continue
         out.append({"key": i[:-len(MERC_SUFFIX)], "state": n.get("state"), "path": path,
                     "cost": _num(_child_text(path, "external_holder", "RecruitmentCost", "Cost"))})
+    common.phaselog("merc_cards_tree", time.time() - t0,
+                    "nodes=%d cards=%d" % (len(nodes), len(out)))
     return out
 
 
@@ -584,7 +628,7 @@ def _merc_execute_inner(bus, ctx, pick, before, pool_btn):
     if card is None:
         if not _click(bus, "%s|%s" % (MERC_BTN_CONTAINER, pool_btn)):
             return False
-        _until(lambda: bool(mercenary_units(bus)), 2.0)
+        _until(lambda: bool(mercenary_units(bus)), 2.0, tag="merc_cards_populate")
         card = _card()
     if card is None:
         sys.stderr.write("click_actions: unit %r not among mercenary cards for %s\n"
@@ -608,7 +652,7 @@ def _merc_execute_inner(bus, ctx, pick, before, pool_btn):
                 return True
         return False
 
-    if not _until(_armed, 2.0):
+    if not _until(_armed, 2.0, tag="merc_hire_arm", detail=unit):
         sys.stderr.write("click_actions: no hire button armed after selecting %s\n" % unit)
         return False
     return _click(bus, hire["path"])
@@ -640,10 +684,13 @@ def _character_count(bus):
         v = _ev(bus, "local f=cm:get_local_faction(true) return f:character_list():num_items()",
                 timeout=20.0)
         try:
-            return int(float(v))
+            n = int(float(v))
+            common.trylog("character_count_read", attempt + 1, 1, True)
+            return n
         except (TypeError, ValueError):
+            common.trylog("character_count_read", attempt + 1, 1, False, repr(v)[:60])
             if attempt < 2:
-                time.sleep(1.0)
+                common.wait("character_count_retry_pause", 1.0)
     sys.stderr.write("click_actions: character count UNREADABLE after 3 tries -- "
                      "reporting unknown, NOT zero-growth" + chr(10))
     return None
@@ -707,7 +754,7 @@ def _open_panel_mode(bus, mode):
     btn = AGENTS_BTN if mode == AGENT_MODE else CREATE_ARMY_BTN
     if not _click(bus, btn):
         return False
-    if _until(lambda: _panel_mode(bus) == mode, 3.0):
+    if _until(lambda: _panel_mode(bus) == mode, 3.0, tag="recruit_panel_mode", detail=mode):
         return True
     sys.stderr.write("click_actions: %s left the panel in mode %r, wanted %r -- refusing to click "
                      "a list the panel is not showing\n"
@@ -762,7 +809,8 @@ def _lord_execute_inner(bus, ctx, pick, before):
         return False
     if not _click(bus, "%s|%s" % (type_path, btn)):
         return False
-    _until(lambda: bool(lord_candidates(bus)) or bool(lore_tabs(bus)), 1.5)
+    _until(lambda: bool(lord_candidates(bus)) or bool(lore_tabs(bus)), 1.5,
+           tag="lord_candidates_populate")
     lores = lore_tabs(bus)
     if lores:
         if not lore_hint:
@@ -777,7 +825,7 @@ def _lord_execute_inner(bus, ctx, pick, before):
             return False
         if not _click(bus, hit[0][1]):
             return False
-        _until(lambda: bool(lord_candidates(bus)), 2.0)
+        _until(lambda: bool(lord_candidates(bus)), 2.0, tag="lore_candidates_populate")
     cands = lord_candidates(bus)
     if not cands:
         sys.stderr.write("click_actions: no general_candidate rows for %r\n" % pick["key"])

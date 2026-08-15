@@ -157,7 +157,7 @@ def clear_screen(bus, log=print, rounds=3):
             shut = []
         log("  clear %d/%d %.1fs: close_popups dismissed %d -- %s"
             % (i + 1, rounds, time.time() - t0, len(shut), shut[:4] or "nothing"))
-        time.sleep(CLEAR_POLL_S)
+        common.wait("clear_screen_retry", CLEAR_POLL_S, "%d/%d" % (i + 1, rounds))
     raise RuntimeError(
         "bake_starts: screen still blocked after %.1fs and %d rounds of resolve + "
         "close_popups: %s -- refusing to click blind"

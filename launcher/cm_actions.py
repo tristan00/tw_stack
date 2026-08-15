@@ -258,6 +258,7 @@ _SETTLE_PAUSE = 0.8
 
 
 def _await_standstill(bus, cqi, after):
+    t0 = time.time()
     last = (after.get("x"), after.get("y"))
     stable = 0
     for _ in range(_SETTLE_POLLS):
@@ -265,11 +266,14 @@ def _await_standstill(bus, cqi, after):
         x = _char_scalar(bus, cqi, "c:logical_position_x()")
         y = _char_scalar(bus, cqi, "c:logical_position_y()")
         if x is None or y is None or x == "no-char":
+            common.waitlog("move_standstill", time.time() - t0, False,
+                           "cqi=%s position unreadable" % cqi)
             return False
         if (x, y) == last:
             stable += 1
             if stable >= 2:
                 after["x"], after["y"] = x, y
+                common.waitlog("move_standstill", time.time() - t0, True, "cqi=%s" % cqi)
                 return True
         else:
             stable = 0

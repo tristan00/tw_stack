@@ -40,7 +40,7 @@ def _log_send(seq, channel, payload):
     except OSError:
         pass
 
-READ_POLL_SECONDS = 0.05
+READ_POLL_SECONDS = 0.01
 DEFAULT_TIMEOUT = 30
 
 _CMD_RE = re.compile(r"^\s*(\d+)\s+(\S+)\s*(.*)$")
@@ -90,16 +90,21 @@ class _ProcLock:
     def __enter__(self):
         if self._f is None:
             return self
+        t0 = time.time()
+        contended = False
         deadline = time.time() + 10.0
         while True:
             try:
                 self._f.seek(0)
                 msvcrt.locking(self._f.fileno(), msvcrt.LK_NBLCK, 1)
+                if contended:
+                    common.waitlog("proc_lock_acquire", time.time() - t0, True)
                 return self
             except OSError:
                 if time.time() > deadline:
                     sys.stderr.write("bus: _ProcLock acquire timed out (10s) -> proceeding without lock\n")
                     return self
+                contended = True
                 time.sleep(0.003)
 
     def __exit__(self, *exc) -> None:
@@ -169,6 +174,7 @@ class Bus:
                  poll: float = 0.25, pred=None):
         kinds = frozenset(kinds)
         off = self._out_size() if offset is None else offset
+        t0 = time.time()
         deadline = time.time() + timeout
         while True:
             try:
@@ -189,8 +195,11 @@ class Bus:
                     except ValueError:
                         continue
                     if row.get("cmd") in kinds and (pred is None or pred(row)):
+                        common.waitlog("wait_row", time.time() - t0, True, str(row.get("cmd")))
                         return row, off
             if time.time() >= deadline:
+                common.waitlog("wait_row", time.time() - t0, False,
+                               "timeout %s" % ",".join(sorted(kinds)))
                 return None, off
             time.sleep(min(poll, max(0.02, deadline - time.time())))
 
@@ -243,20 +252,27 @@ class Bus:
             seq, offset = self._alloc_and_append(channel, payload)
         except OSError as exc:
             raise TWError("bus: cannot append to %s: %s" % (self.cmd_path, exc))
+        t0 = time.time()
         deadline = time.time() + timeout
         next_alive = time.time() + 2.0
         while time.time() < deadline:
             result = self._scan_result(offset, seq, channel)
             if result is not None:
+                common.waitlog("send_reply_poll", time.time() - t0, True,
+                               "seq=%d %s" % (seq, channel))
                 return result
             now = time.time()
             if now >= next_alive:
                 if not _game_alive():
+                    common.waitlog("send_reply_poll", time.time() - t0, False,
+                                   "game_gone seq=%d %s" % (seq, channel))
                     raise TWError("bus: WH3 process gone while awaiting seq %d cmd %s "
                                   "-- failing fast (game CTD, not a %ss timeout)"
                                   % (seq, channel, timeout))
                 next_alive = now + 2.0
             time.sleep(self.poll_seconds)
+        common.waitlog("send_reply_poll", time.time() - t0, False,
+                       "timeout seq=%d %s" % (seq, channel))
         raise TWError("bus timeout: no result for seq %d cmd %s" % (seq, channel))
 
     def send_batch(self, requests, timeout: float = DEFAULT_TIMEOUT) -> list:
@@ -304,6 +320,7 @@ class Bus:
                 raise TWError("bus: cannot append batch to %s: %s" % (self.cmd_path, exc))
         wanted = {s: requests[i][0] for i, s in enumerate(seqs)}
         found: dict = {}
+        t_wait = time.time()
         deadline = time.time() + timeout
         next_alive = time.time() + 2.0
         while time.time() < deadline:
@@ -313,16 +330,22 @@ class Bus:
                     found[s] = obj
             if len(found) == len(wanted):
                 _note("hit")
+                common.waitlog("batch_reply_poll", time.time() - t_wait, True,
+                               "%d replies" % len(seqs))
                 return [found[s] for s in seqs]
             now = time.time()
             if now >= next_alive:
                 if not _game_alive():
                     _note("error")
+                    common.waitlog("batch_reply_poll", time.time() - t_wait, False,
+                                   "game_gone missing=%s" % sorted(set(wanted) - set(found)))
                     raise TWError("bus: WH3 process gone while awaiting batch seqs %s"
                                   % sorted(set(wanted) - set(found)))
                 next_alive = now + 2.0
             time.sleep(self.poll_seconds)
         _note("timeout")
+        common.waitlog("batch_reply_poll", time.time() - t_wait, False,
+                       "timeout %d/%d replies" % (len(found), len(wanted)))
         raise TWError("bus batch timeout: %d/%d replies, missing seqs %s"
                       % (len(found), len(wanted), sorted(set(wanted) - set(found))))
 

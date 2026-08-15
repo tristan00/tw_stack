@@ -148,12 +148,14 @@ def prune(run_dir, before_id, older_than=PRUNE_AFTER_S):
 
 def _await(run_dir, req_id, timeout, poll=0.02):
     con = _con(run_dir)
-    deadline = time.time() + timeout
+    t0 = time.time()
+    deadline = t0 + timeout
     while time.time() < deadline:
         row = con.execute("SELECT decision_id,payload,error FROM rpc_responses"
                           " WHERE req_id=?", (req_id,)).fetchone()
         if row is not None:
             did, payload, err = row
+            common.waitlog("recorder_rpc", time.time() - t0, not err, req_id)
             if err:
                 raise RuntimeError("recorder failed request %s: %s" % (req_id, err))
             try:
@@ -163,6 +165,7 @@ def _await(run_dir, req_id, timeout, poll=0.02):
             body["decision_id"] = did
             return body
         time.sleep(poll)
+    common.waitlog("recorder_rpc", time.time() - t0, False, req_id)
     raise RuntimeError("recorder never answered request %s within %ss -- is the decisions "
                        "stream running?" % (req_id, timeout))
 

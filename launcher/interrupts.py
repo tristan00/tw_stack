@@ -265,19 +265,27 @@ def _refusal(gone, clicked):
 
 
 def _root_gone(bus, root, tries=3, pause=0.4):
-    for _ in range(tries):
+    for attempt in range(tries):
         try:
-            return root not in nav.visible_roots(bus)
+            gone = root not in nav.visible_roots(bus)
+            common.trylog("root_gone_probe", attempt + 1, tries, True,
+                          "%s gone=%s" % (root, gone))
+            return gone
         except Exception:
-            time.sleep(pause)
+            common.trylog("root_gone_probe", attempt + 1, tries, False,
+                          "%s roots unreadable" % root)
+            common.wait("root_gone_retry", pause, root)
     return None
 
 
 def _wait_root(bus, root, tries=30, pause=1.0):
+    t0 = time.time()
     for _ in range(tries):
         if root in roots(bus):
+            common.waitlog("root_appear", time.time() - t0, True, root)
             return True
         time.sleep(pause)
+    common.waitlog("root_appear", time.time() - t0, False, root)
     return False
 
 
@@ -323,11 +331,15 @@ def _click(bus, path, settle=1.5):
     CLICK_LOG.append((time.time(), path, ok))
     sys.stderr.write("interrupts: CLICK %s -> clicked=%s\n" % (path, ok))
     _sample_ui_hiding(bus, path)
-    deadline = time.time() + settle
+    t0 = time.time()
+    deadline = t0 + settle
+    changed = False
     while time.time() < deadline:
         time.sleep(0.3)
         if tuple(roots(bus)) != before:
+            changed = True
             break
+    common.waitlog("click_settle", time.time() - t0, changed, path.rsplit("|", 1)[-1])
     return ok
 
 
@@ -530,6 +542,8 @@ def resolve_prebattle(bus):
     off = bus.out_offset()
     clicked = _click(bus, ctrls[target], settle=1.5)
     if not clicked:
+        common.trylog("prebattle_answer", m["tries"], _ANSWER_TRIES, False,
+                      "%s click failed" % target)
         if final_try:
             _record_choice("pre_battle", "popup_pre_battle", opts, target,
                            extra={"panel": forecast, "tree": tree, "controls": offered_all},
@@ -539,9 +553,12 @@ def resolve_prebattle(bus):
     if target in ("button_continue_siege", "button_surround", "button_retreat",
                   "button_sally_forth", "button_maintain_blockade", "button_demand_surrender"):
         name = target[len("button_"):]
-        bus.wait_row(("panel",), timeout=4.0, offset=off,
-                     pred=lambda r: r.get("opened") is False
-                     and "pre_battle" in str(r.get("name") or ""))
+        t1 = time.time()
+        row_close, _ = bus.wait_row(("panel",), timeout=4.0, offset=off,
+                                    pred=lambda r: r.get("opened") is False
+                                    and "pre_battle" in str(r.get("name") or ""))
+        common.waitlog("prebattle_panel_close_row", time.time() - t1,
+                       row_close is not None, name)
         ok = "popup_pre_battle" not in roots(bus)
         if not ok:
             sys.stderr.write("interrupts: %s clicked but the pre-battle is still open\n" % name)
@@ -549,6 +566,7 @@ def resolve_prebattle(bus):
     else:
         ok = _results_appeared(bus, off, timeout=20.0)
         outcome = "autoresolve" if ok else False
+    common.trylog("prebattle_answer", m["tries"], _ANSWER_TRIES, bool(ok), target)
     if not ok:
         still_up = "popup_pre_battle" in roots(bus)
         sys.stderr.write("interrupts: %s did NOT resolve the battle (pre_battle still open=%s)\n"
@@ -565,7 +583,8 @@ def resolve_prebattle(bus):
 
 
 def _results_appeared(bus, offset, timeout=20.0):
-    deadline = time.time() + timeout
+    t0 = time.time()
+    deadline = t0 + timeout
     off = offset
 
     def _wanted(r):
@@ -579,10 +598,14 @@ def _results_appeared(bus, offset, timeout=20.0):
                                 offset=off, pred=_wanted)
         if row is not None:
             if _wait_root(bus, "popup_battle_results", tries=6, pause=0.5):
+                common.waitlog("battle_results_appear", time.time() - t0, True,
+                               "row then root")
                 return True
             continue
         if "popup_battle_results" in roots(bus):
+            common.waitlog("battle_results_appear", time.time() - t0, True, "root visible")
             return True
+    common.waitlog("battle_results_appear", time.time() - t0, False)
     return False
 
 
@@ -630,7 +653,10 @@ def handle_results(bus):
                 sys.stderr.write("interrupts: results panel still offers no advance control (%s)\n"
                                  % ",".join(sorted(ctrls)[:6]))
                 break
-            time.sleep(1.0)
+            t0 = time.time()
+            while time.time() - t0 < 1.0 and not _clickable_controls(bus, "popup_battle_results"):
+                time.sleep(0.2)
+            common.waitlog("results_advance_render", time.time() - t0, True)
             continue
         decisions = sorted([i for i in ctrls if is_captive_option(i)]
                            + [i for i in ADVANCE_PREFERENCE if i in ctrls])
@@ -687,6 +713,18 @@ def occupy(bus):
     return want if gone else None
 
 
+def _await_roots_change(bus, before, cap, tag, tick=0.1):
+    t0 = time.time()
+    while True:
+        if tuple(roots(bus)) != before:
+            common.waitlog(tag, time.time() - t0, True)
+            return True
+        if time.time() - t0 >= cap:
+            common.waitlog(tag, time.time() - t0, False)
+            return False
+        time.sleep(tick)
+
+
 def resolve_battle(bus, max_rounds=4):
     steps = []
     for _ in range(max_rounds):
@@ -695,7 +733,7 @@ def resolve_battle(bus, max_rounds=4):
             steps.append("prebattle:%s" % resolve_prebattle(bus))
         elif "popup_battle_results" in before or "settlement_captured" in before:
             steps.extend(handle_results(bus))
-            time.sleep(1.5)
+            _await_roots_change(bus, before, 1.5, "results_transition_settle")
         else:
             break
         if tuple(roots(bus)) == before:
@@ -837,11 +875,14 @@ def _sticky_choice(screen, root, options, panel=None, live=None, meta=None):
 
 
 def _await_root_gone(bus, root, limit=6.0):
-    deadline = time.time() + limit
+    t0 = time.time()
+    deadline = t0 + limit
     while time.time() < deadline:
         if root not in roots(bus):
+            common.waitlog("root_gone_wait", time.time() - t0, True, root)
             return True
         time.sleep(0.5)
+    common.waitlog("root_gone_wait", time.time() - t0, False, root)
     return False
 
 
@@ -953,6 +994,8 @@ def _drive_decision(bus, root, kind, opts, detail, extra, panel=None):
                        live=lambda: live_control_ids(bus, root), meta=detail)
     m.update(kind=kind, opts=dict(opts), detail=detail, extra=extra)
     if m["tries"] > _ANSWER_TRIES:
+        common.trylog("%s_answer" % kind, m["tries"], _ANSWER_TRIES, False,
+                      "%s gave up" % root)
         steps.append("%s_gave_up:%s" % (kind, root))
         return steps
     want = m["want"]
@@ -960,6 +1003,8 @@ def _drive_decision(bus, root, kind, opts, detail, extra, panel=None):
     clicked = _click(bus, opts[want], settle=2.0)
     m["clicked"] = bool(m.get("clicked")) or clicked
     gone = _await_root_gone(bus, root)
+    common.trylog("%s_answer" % kind, m["tries"], _ANSWER_TRIES, bool(clicked and gone),
+                  "%s %s" % (root, want))
     if clicked:
         steps.append("%s_%s:%s" % (kind, detail[want]["answer"], want))
     if not clicked or not gone:
@@ -1222,6 +1267,39 @@ def answer_ally_attacked(bus):
 
 _stuck_sig = [None]
 
+_transient_memo = {"sig": None, "count": 0, "dismissed": False}
+
+_LUA_DISMISS_OVERLAY = (
+    "local hid = {} "
+    "pcall(function() cm:dismiss_advice() end) "
+    "pcall(function() "
+    "  local r = core:get_ui_root() "
+    "  for _, n in ipairs({'fullscreen_highlight','text_pointer_parent',"
+    "'tutorial_halo_group','highlight_dummy'}) do "
+    "    local c = find_uicomponent(r, n) "
+    "    if c and c:Visible() then c:SetVisible(false) hid[#hid+1] = n end "
+    "  end "
+    "end) "
+    "return table.concat(hid, ',')")
+
+
+def _dismiss_script_overlay(bus, sig):
+    try:
+        r = bus.send("eval", _LUA_DISMISS_OVERLAY, timeout=10.0) or {}
+    except Exception as e:
+        sys.stderr.write("interrupts: overlay dismissal eval failed -> %s\n" % repr(e)[:100])
+        return False
+    hid = str(r.get("result") or "")
+    t0 = time.time()
+    left = [x for x in sig if x in roots(bus)]
+    while left and time.time() - t0 < 1.0:
+        time.sleep(0.2)
+        left = [x for x in sig if x in roots(bus)]
+    common.waitlog("overlay_dismiss_settle", time.time() - t0, not left, ",".join(sig))
+    sys.stderr.write("interrupts: scripted overlay dismissal on %s -> hid=[%s] still_open=%s\n"
+                     % (",".join(sig), hid, left or "none"))
+    return not left
+
 
 def choose_dilemma(bus, open_roots):
     steps = []
@@ -1235,10 +1313,12 @@ def choose_dilemma(bus, open_roots):
             p = nav.engine_pending(bus)
             if p is not None and nav.pending_blocks(p):
                 if "DILEMMA" in str(p):
-                    deadline = time.time() + 3.0
+                    t0 = time.time()
+                    deadline = t0 + 3.0
                     while not dilemma and time.time() < deadline:
                         time.sleep(0.5)
                         dilemma = _is_dilemma(bus, root)
+                    common.waitlog("dilemma_render", time.time() - t0, bool(dilemma), root)
                 ack_pending = not dilemma
         if not dilemma and not ack_pending and not (root == "events" and any(
                 str(n.get("text") or "").strip() == "Purification Chant"
@@ -1456,21 +1536,22 @@ def _options_of(bus, root, ids):
 DILEMMA_LIST = "dilemma_list"
 
 
-def _read_tree_or_die(bus, root, tries=3, pause=0.4, timeout=2.0):
+def _read_tree_or_die(bus, root, tries=2, pause=0.4, timeout=2.0):
     for attempt in range(tries):
         try:
             r = bus.send("tree", "%s %d %d" % (root, 22, 4000), timeout=timeout) or {}
         except Exception as e:
             sys.stderr.write("interrupts: dilemma tree read %d/%d on %s -> %s\n"
                              % (attempt + 1, tries, root, repr(e)[:80]))
-            time.sleep(pause)
+            common.wait("dilemma_tree_retry", pause, root)
             continue
         nodes = r.get("nodes") or []
         if nodes:
+            common.trylog("dilemma_tree_read", attempt + 1, tries, True, root)
             return nodes
         sys.stderr.write("interrupts: dilemma tree read %d/%d on %s -> empty reply\n"
                          % (attempt + 1, tries, root))
-        time.sleep(pause)
+        common.wait("dilemma_tree_retry", pause, root)
     raise UnhandledScreen(
         "could not read the %s tree in %d attempts at %.0fs -- the bus stopped answering."
         % (root, tries, timeout))
@@ -1521,7 +1602,7 @@ def _is_dilemma(bus, root):
                for n in tree)
 
 
-def resolve(bus, max_rounds=6):
+def resolve(bus, max_rounds=4):
     steps = []
     waited = 0
     watch = {"at": None, "seen": set(), "now": (), "polls": 0, "waited_s": 0.0}
@@ -1605,11 +1686,11 @@ def resolve(bus, max_rounds=6):
             if watch["at"] is None:
                 watch["at"] = before
                 watch["seen"].update(before)
-            if waited < 2:
+            if waited < 1:
                 waited += 1
                 sys.stderr.write("interrupts: pending %s with %s unclaimed -- waiting for the "
                                  "panel to finish rendering (%d)\n" % (owned + (waited,)))
-                time.sleep(3.0)
+                common.wait("pending_render_grace", 3.0, str(owned[0]))
                 watch["waited_s"] += 3.0
                 continue
             _note_pending_unclaimed(bus, owned, watch,
@@ -1633,6 +1714,27 @@ def resolve(bus, max_rounds=6):
             drivable = {x: _clickable_controls(bus, x) for x in odd}
             drivable = {k: v for k, v in drivable.items() if v}
             steps.append("%s:%s" % ("undismissable" if drivable else "transient", ",".join(odd)))
+            if not drivable:
+                sig = tuple(sorted(odd))
+                if sig == _transient_memo["sig"]:
+                    _transient_memo["count"] += 1
+                else:
+                    _transient_memo.update(sig=sig, count=1, dismissed=False)
+                if _transient_memo["count"] >= 3:
+                    if not _transient_memo["dismissed"]:
+                        _transient_memo["dismissed"] = True
+                        if _dismiss_script_overlay(bus, sig):
+                            steps.append("script_overlay_dismissed:%s" % ",".join(sig))
+                            _transient_memo.update(sig=None, count=0, dismissed=False)
+                            _stuck_sig[0] = None
+                            continue
+                    _report_unhandled(bus, "transient_overlay_persisted", list(sig), [],
+                                      root=",".join(sig))
+                    raise UnhandledScreen(
+                        "controlless overlay %s persisted across %d resolve sweeps and "
+                        "survived the scripted dismissal -- it will never clear on its own, "
+                        "refusing to keep playing under it." % (list(sig),
+                                                                _transient_memo["count"]))
             if drivable:
                 ack = _lone_acknowledge(bus, drivable)
                 if ack:
@@ -1641,7 +1743,7 @@ def resolve(bus, max_rounds=6):
                     sys.stderr.write("interrupts: ACK %s -> %s (sole control on %s)\n"
                                      % (ack[0], res.get("clicked"), ack[2]))
                     if res.get("clicked"):
-                        time.sleep(0.6)
+                        common.wait("ack_click_settle", 0.6, ack[0])
                         _stuck_sig[0] = None
                         continue
                 if before != _stuck_sig[0]:
@@ -1676,7 +1778,7 @@ def claim_screen(bus, where, pending=None, open_roots=None):
     owned = pending_owned(bus, r, pending=p)
     if not surface and not owned:
         if p is not None and nav.pending_blocks(p):
-            time.sleep(2.0)
+            common.wait("pending_reprobe_grace", 2.0, str(p))
             r = roots(bus)
             p = nav.engine_pending(bus)
             out["pending"] = p

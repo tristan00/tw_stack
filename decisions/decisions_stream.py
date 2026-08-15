@@ -39,6 +39,8 @@ def run(ctx):
         return False
     counts = {"snapshot": 0, "target": 0, "turn": 0, "hash": 0, "pick": 0,
               "verification": 0, "error": 0}
+    t_loop = time.time()
+    sys.stderr.write("decisions_stream: poll loop starting (tick %.2fs)\n" % POLL)
     while ctx.is_running():
         try:
             out_dir = ctx.out_dir
@@ -167,9 +169,10 @@ def run(ctx):
                               "requests": gone_a, "responses": gone_b})
         except Exception as e:
             ctx.on_error("decisions-stream", e)
-            time.sleep(5.0)
+            common.wait("decisions_error_backoff", 5.0, repr(e)[:80])
             continue
         time.sleep(POLL)
+    common.waitlog("decisions_poll", time.time() - t_loop, True, "stopped")
     if store is not None:
         ctx.emit({"kind": "decisions_status", "status": "closing", **counts})
         store.close()

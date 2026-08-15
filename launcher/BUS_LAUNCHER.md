@@ -9,6 +9,16 @@ resolution and layout — the reason for retiring the old absolute-pixel-fractio
 All paths were discovered live on WH3 v8.1.1 (2026-07-27) and the whole flow was validated
 end-to-end to a playable Nagarythe campaign.
 
+## The presave path (what runs actually use)
+
+Sessions with `--presave-radius` never touch the frontend: `load_save(save_file)` spawns
+`Warhammer3.exe game_startup_mode campaign_load <save>`, waits for the mod's `started`
+(boot budget 90s; observed ~25–31s), probes the bus, and advances to the HUD (budget 60s;
+observed ~0.1s on presave loads). The frontend-navigation flow below remains for fresh
+campaigns and the bake tools. The caller guarantees no game instance is running — the
+previous campaign's kill confirms process death before returning, and `spawn` refuses to
+boot over a live mod.
+
 ## Run
 ```
 python bus_launcher.py [plan]      # plan defaults to "nagarythe"
@@ -34,9 +44,9 @@ a genuinely missing component or an un-advanceable load raises `TWError`.
 
 ## Notes / limits
 - Requires **Steam running** (for auth) and the mod pack (`dist/tw.pack`).
-- The bus paths (`data/commands.txt`, `data/twcontrol.jsonl`) are the monolith's — they must match
-  the compiled `tw.pack`.
-- It does **not** kill an already-running game; quit any existing WH3 instance first, or you'll get
-  a second one.
+- The bus paths (`<TWDATA>/bus/commands.txt`, `<TWDATA>/bus/twcontrol.jsonl`) are baked into the
+  compiled `tw.pack` by `pack_multi.py` — pack and Python must agree.
+- It does **not** kill an already-running game; `spawn` refuses to boot over a live WH3 instance
+  (bus rotation guard). In a run, the previous campaign's confirmed kill provides the clean slate.
 - It performs **no gameplay actions** — it only navigates menus and reads state (the mod's own
   `start()` skips intro cutscenes; the launcher only clicks UI and polls).

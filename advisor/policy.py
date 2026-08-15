@@ -15,13 +15,15 @@ import ruleset as R
 import strategies as S
 
 
-MAX_ACTIONS_PER_TURN = 8
+MAX_ACTIONS_PER_TURN = 6
 MAX_ACTIONS_PER_ENTITY = 6
 
 EPSILON = 0.10
 BETA = 0.10
 
 DEFAULT_STRATEGIES = {"greedy_catboost": 0.8, "random": 0.2}
+
+ModelUnavailable = S.ModelUnavailable
 
 
 def normalize_strategies(strategies):
@@ -78,7 +80,6 @@ class Policy:
         self.gate = O.Gate(max_actions_per_entity=max_actions_per_entity)
         self.last_drops = []
         self.last_choice = {}
-        self.gnn_score_errors = 0
 
     def new_turn(self):
         self.gate.new_turn()
@@ -114,8 +115,16 @@ class Policy:
         roll = self.rng.random()
         drawn = self._draw(roll)
         member = self.members[drawn]
+        if drawn in S.TRAINABLE and not member.ready:
+            raise S.ModelUnavailable(
+                "policy: trainable arm %r drawn but its model is not ready -- a run that "
+                "needs a model must not silently play random" % drawn)
         best = member.pick(elig, record) if member.ready else None
         if best is None:
+            if drawn in S.TRAINABLE:
+                raise S.ModelUnavailable(
+                    "policy: trainable arm %r returned no pick from %d eligible offers"
+                    % (drawn, len(elig)))
             mode = "%s_random_fallback" % drawn
             best = self.fallback.pick(elig, record)
         elif drawn == "ruleset":
@@ -132,15 +141,9 @@ class Policy:
         return pick, ranked
 
     def _score_with_gnn(self, ranked, record):
-        if self.gnn is None or not getattr(self.gnn, "ready", False) or not ranked:
+        if self.gnn is None or not ranked:
             return None
-        try:
-            impact = self.gnn.score_elig(ranked, record)
-        except Exception as e:
-            self.gnn_score_errors += 1
-            sys.stderr.write("policy: gnn scoring failed (%d so far) -> %s\n"
-                             % (self.gnn_score_errors, repr(e)[:140]))
-            return None
+        impact = self.gnn.score_elig(ranked, record)
         scored = {S.offer_key(r): float(v) for r, v in zip(ranked, impact)}
         if not scored:
             return None

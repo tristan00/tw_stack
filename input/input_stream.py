@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import ctypes
+import os
+import sys
 import time
 from ctypes import wintypes
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import common
 
 MOVE_HZ = 20
 
@@ -60,6 +65,8 @@ class Probes:
 def run(ctx, probes: Probes | None = None) -> None:
     probes = probes or Probes()
     prev, last_move, last_pos, last_fg = {}, 0.0, None, None
+    t_loop = time.time()
+    sys.stderr.write("input: poll loop starting (tick 0.008s)\n")
     while ctx.is_running():
         try:
             t = time.time()
@@ -97,4 +104,5 @@ def run(ctx, probes: Probes | None = None) -> None:
             time.sleep(0.008)
         except Exception as e:
             ctx.on_error("input", e)
-            time.sleep(0.2)
+            common.wait("input_error_backoff", 0.2, repr(e)[:60])
+    common.waitlog("input_poll", time.time() - t_loop, True, "stopped")

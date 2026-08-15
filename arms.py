@@ -3,6 +3,12 @@ from __future__ import annotations
 
 NAMES = ("random", "greedy_catboost", "ruleset", "marwil_gnn")
 
+TRAINABLE = ("greedy_catboost", "marwil_gnn")
+
+
+class ModelUnavailable(RuntimeError):
+    pass
+
 ALIASES = {
     "exploit_tree": "greedy_catboost",
     "gnn_marwil": "marwil_gnn",

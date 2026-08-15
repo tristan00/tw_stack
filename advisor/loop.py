@@ -7,7 +7,7 @@ import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
-HUD_MISS_BUDGET = 12
+HUD_MISS_BUDGET = 6
 HUD_MISS_PAUSE = 5.0
 POST_ATTACK_ROW_WAIT = 22.0
 POST_ATTACK_HUD_TRIES = 3
@@ -67,6 +67,8 @@ def _await_locomotion(executor, log, run_dir=None, pick=None,
         capped = True
         log("   attack: locomotion still running after %.1fs -- proceeding" % cap)
     elapsed = time.time() - t0
+    common.waitlog("attack_locomotion", elapsed, not capped,
+                   "locomotion_done=%s polls=%d" % (last, polls))
     if run_dir:
         _append(os.path.join(run_dir, "locomotion.jsonl"),
                 {"ts": time.time(), "action_type": (pick or {}).get("action_type"),
@@ -91,9 +93,11 @@ def _trace_post_attack(executor, log, run_dir, pick, tries=POST_ATTACK_HUD_TRIES
                         "pending": probe.get("pending"),
                         "cutscene": probe.get("cutscene")})
         if samples[-1]["popups"] or samples[-1]["hud_root"]:
+            common.trylog("post_attack_hud", i + 1, tries, True)
             break
+        common.trylog("post_attack_hud", i + 1, tries, False)
         if i + 1 < tries:
-            time.sleep(pause)
+            common.wait("post_attack_hud_pause", pause)
     _append(os.path.join(run_dir, "post_attack_trace.jsonl"),
             {"ts": time.time(), "action_type": pick.get("action_type"), "key": pick.get("key"),
              "samples": samples})
@@ -197,22 +201,28 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
                   ranker.choose(screen, options, F.stamp_action_counts(
                       F.stamp_prev_actions(dict(campaign or {}), act_hist), act_counts),
                       panel, record, meta))
+    if not cold and "greedy_catboost" in ranker.strategies and not ranker.ready:
+        raise P.ModelUnavailable(
+            "interrupt policy: greedy_catboost is in the mix but the interrupt model did "
+            "not load from %s -- a run that needs a model must not silently play random"
+            % IM.MODEL_DIR)
+    if not cold and "marwil_gnn" in ranker.strategies \
+            and not (ranker.gnn and ranker.gnn.ready):
+        raise P.ModelUnavailable(
+            "interrupt policy: marwil_gnn is in the mix but the interrupt graph model is "
+            "not ready -- a run that needs a model must not silently play random")
     if ranker.ready:
         log("interrupt policy: mix %s, trained(%d rows, screens=%s)"
             % (json.dumps(ranker.strategies), (ranker.meta or {}).get("rows", 0),
                ",".join((ranker.meta or {}).get("screens") or [])))
     else:
-        log("interrupt policy: mix %s, greedy_catboost unready -> random fallback%s"
-            % (json.dumps(ranker.strategies),
-               " (FORCED -- cold start)" if cold else ""))
+        log("interrupt policy: mix %s, greedy_catboost unready -> random fallback "
+            "(FORCED -- cold start)" % json.dumps(ranker.strategies))
     if "marwil_gnn" in ranker.strategies:
         gm = (ranker.gnn.meta or {}) if ranker.gnn else {}
         gf = gm.get("fit") or {}
-        log("interrupt graph arm: %s"
-            % ("trained(%d screens, val_nll %s vs uniform %s)"
-               % (gm.get("rows", 0), gf.get("val_listwise_nll"), gm.get("uniform_nll"))
-               if ranker.gnn and ranker.gnn.ready
-               else "unready -> marwil_gnn_random_fallback"))
+        log("interrupt graph arm: trained(%d screens, val_nll %s vs uniform %s)"
+            % (gm.get("rows", 0), gf.get("val_listwise_nll"), gm.get("uniform_nll")))
 
     def _stuck(reason, detail):
         stuck.update(fired=True, reason=reason, detail=detail)
@@ -272,6 +282,12 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
                 raise GameStuck("no_campaign_ui: hud_campaign absent, nothing clickable "
                                 "(turn %s, %d actions, %d confirmed)"
                                 % (row["turn"], row["actions"], row["confirmed"]))
+            if row["ended_by"] == "turn_stalled":
+                if executor.defeated_row_seen():
+                    raise CampaignLost("turn stalled because the faction is DEAD")
+                raise GameStuck("turn_stalled: the turn did not advance within the settle "
+                                "budget (turn %s, %d actions, %d confirmed)"
+                                % (row["turn"], row["actions"], row["confirmed"]))
             if row["ended_by"] == "stuck":
                 if executor.defeated_row_seen() or executor.defeated_probe() is True:
                     raise CampaignLost("watchdog fired but the faction is DEAD -- defeat, "
@@ -303,6 +319,7 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
                 "looks like from here: %s" % repr(e)[:140]))
         raise
     finally:
+        executor.kill_game()
         wd.stop()
         _drain_interrupts(run_dir, log)
         try:
@@ -445,7 +462,8 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
                 except Exception as e:
                     log("   !! force_ui_restore failed: %s" % repr(e)[:100])
             if no_hud < HUD_MISS_BUDGET:
-                time.sleep(HUD_MISS_PAUSE)
+                common.wait("hud_miss_pause", HUD_MISS_PAUSE,
+                            "%d/%d" % (no_hud, HUD_MISS_BUDGET))
                 continue
             if no_hud >= HUD_MISS_BUDGET:
                 shot = None
@@ -577,10 +595,12 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
             if moved_s >= 0.5:
                 log("   attack: lord moved for %.1fs (locomotion_done=%s) -- timeout starts now"
                     % (moved_s, loco))
+            _t_row = time.time()
             row = executor.bus.wait_row(
                 ("panel", "battle_completed", "dilemma_issued"),
                 timeout=POST_ATTACK_ROW_WAIT, offset=pre_off,
                 pred=lambda r: r.get("cmd") != "panel" or bool(r.get("opened")))
+            common.waitlog("post_attack_row", time.time() - _t_row, row is not None)
             if row is None:
                 try:
                     _trace_post_attack(executor, log, run_dir, pick)
@@ -626,8 +646,8 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
         settle = {"turn": None, "steps": [], "waited_s": 0.0, "skipped": "growth_gate_failed"}
         log("   inter-turn settle skipped: the growth gate failed, the campaign ends here")
     else:
-        settle = executor.settle_between_turns(turn_before=turn,
-                                               abort=lambda: bool(stuck.get("fired")))
+        settle = executor.settle_between_turns(
+            turn_before=turn, abort=lambda: bool(stuck.get("fired")))
     if settle["steps"]:
         log("   inter-turn: %s (%.0fs)" % (", ".join(str(s) for s in settle["steps"]),
                                            settle["waited_s"]))
@@ -635,8 +655,9 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
         log("   !! faction destroyed during the AI phase -- defeat, not a stall")
         ended_by = "defeated"
     elif settle["turn"] is None and not terminal and not settle.get("skipped"):
-        log("   !! turn never advanced after %.0fs -- the watchdog decides from here"
-            % settle["waited_s"])
+        ended_by = "turn_stalled"
+        log("   !! turn never advanced within %.0fs -- a turn that cannot advance ends "
+            "the campaign" % settle["waited_s"])
     if (not terminal and not settle.get("defeated") and DS.tracked()
             and settle.get("turn") is not None and not stuck.get("fired")):
         try:
@@ -695,24 +716,47 @@ def _append(path, row):
         f.write(json.dumps(row, default=str) + "\n")
 
 
-def verify_streams(run_dir):
+def stream_watermark(run_dir):
     sys.path.insert(0, common.DECISIONS)
     from store import DecisionStore
-    s = DecisionStore(run_dir)
+    s = DecisionStore(run_dir, readonly=True)
     try:
-        q = lambda sql: s.con.execute(sql).fetchone()[0]
+        return s.con.execute(
+            "SELECT COALESCE(MAX(decision_id), 0) FROM decision_points").fetchone()[0]
+    except Exception:
+        return 0
+    finally:
+        s.close()
+
+
+def verify_streams(run_dir, since=0, campaign=None):
+    sys.path.insert(0, common.DECISIONS)
+    from store import DecisionStore
+    s = DecisionStore(run_dir, readonly=True)
+    try:
+        q = lambda sql, *p: s.con.execute(sql, p).fetchone()[0]
+        since = int(since or 0)
         out = {
-            "turns_with_reward": q("SELECT COUNT(*) FROM target_rows"),
-            "decision_points": q("SELECT COUNT(*) FROM decision_points"),
-            "points_with_offers": q("SELECT COUNT(DISTINCT decision_id) FROM action_offers"),
-            "points_with_taken": q("SELECT COUNT(DISTINCT decision_id) FROM action_taken"),
-            "taken_with_evidence": q("SELECT COUNT(*) FROM action_taken WHERE confirm_signal IS NOT NULL"
-                                     " OR refusal IS NOT NULL"),
-            "counted": q("SELECT COUNT(*) FROM action_taken WHERE counted=1"),
-            "awaiting_execution": q("SELECT COUNT(*) FROM action_taken"
-                                    " WHERE refusal='awaiting_execution'"),
-            "offers": q("SELECT COUNT(*) FROM action_offers"),
-            "scored_offers": q("SELECT COUNT(*) FROM action_offers WHERE score IS NOT NULL"),
+            "since_decision_id": since,
+            "turns_with_reward": (q("SELECT COUNT(*) FROM target_rows WHERE campaign_id=?",
+                                    campaign) if campaign
+                                  else q("SELECT COUNT(*) FROM target_rows")),
+            "decision_points": q("SELECT COUNT(*) FROM decision_points"
+                                 " WHERE decision_id>?", since),
+            "points_with_offers": q("SELECT COUNT(DISTINCT decision_id) FROM action_offers"
+                                    " WHERE decision_id>?", since),
+            "points_with_taken": q("SELECT COUNT(DISTINCT decision_id) FROM action_taken"
+                                   " WHERE decision_id>?", since),
+            "taken_with_evidence": q("SELECT COUNT(*) FROM action_taken WHERE decision_id>?"
+                                     " AND (confirm_signal IS NOT NULL OR refusal IS NOT NULL)",
+                                     since),
+            "counted": q("SELECT COUNT(*) FROM action_taken WHERE decision_id>? AND counted=1",
+                         since),
+            "awaiting_execution": q("SELECT COUNT(*) FROM action_taken WHERE decision_id>?"
+                                    " AND refusal='awaiting_execution'", since),
+            "offers": q("SELECT COUNT(*) FROM action_offers WHERE decision_id>?", since),
+            "scored_offers": q("SELECT COUNT(*) FROM action_offers WHERE decision_id>?"
+                               " AND score IS NOT NULL", since),
         }
         out["all_points_have_offers"] = out["decision_points"] == out["points_with_offers"]
         out["all_taken_have_evidence"] = out["points_with_taken"] == out["taken_with_evidence"]

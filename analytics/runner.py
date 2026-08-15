@@ -64,6 +64,7 @@ def rebuild(an, tenants, log=_log):
 
 
 def main(argv):
+    common.install_stamped_logs()
     run_dir = common.RUN_DIR
     if "--run-dir" in argv:
         run_dir = argv[argv.index("--run-dir") + 1]
@@ -76,6 +77,9 @@ def main(argv):
         rebuild(an, TENANTS)
     t0 = time.time()
     last_beat, misses = 0.0, 0
+    if not once:
+        _log("analytics: poll loop starting -- every %.0fs, busy backoff %s"
+             % (POLL_S, list(BUSY_BACKOFF)))
     while True:
         try:
             res = one_pass(src, an, TENANTS)
@@ -97,7 +101,11 @@ def main(argv):
             last_beat = time.time()
             st = store.state(an, "model_agreement")
             _log("alive: model_agreement at %s, %s rows" % (st["watermark"], st["rows"]))
-        time.sleep(BUSY_BACKOFF[misses] if res["failed"] else POLL_S)
+        if res["failed"]:
+            common.wait("analytics_busy_backoff", BUSY_BACKOFF[misses],
+                        "%d tenant(s) failed" % len(res["failed"]))
+        else:
+            time.sleep(POLL_S)
 
 
 if __name__ == "__main__":

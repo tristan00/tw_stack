@@ -246,24 +246,6 @@ def _postmortem(runs_root, entry, ex, log):
     except Exception as e:
         rec["wh3_running"] = None
         rec["wh3_probe_error"] = repr(e)[:120]
-    if entry.get("outcome") == "defeated" and rec["wh3_running"]:
-        rec.update(roots=None, ui_state=None, turn_at_death=None,
-                   probes_skipped="defeat_modal_tick_paused")
-    else:
-        for name, fn in (("roots", lambda: ex.visible_roots()),
-                         ("ui_state", lambda: ex.ui_state()),
-                         ("turn_at_death", lambda: ex.turn_number())):
-            try:
-                rec[name] = fn()
-            except Exception as e:
-                rec[name] = None
-                rec[name + "_error"] = repr(e)[:120]
-    try:
-        rec["screenshot"] = ex.screenshot("end_%s_%s_%d"
-                                          % (entry.get("index"), entry.get("outcome"),
-                                             int(time.time())))
-    except Exception as e:
-        rec["screenshot_error"] = repr(e)[:120]
     rd = entry.get("run_dir")
     if rd:
         rec["turn_tail"] = _tail_jsonl(os.path.join(rd, "loop_report.jsonl"), 6)
@@ -295,16 +277,38 @@ def _postmortem(runs_root, entry, ex, log):
         log("   !! post-mortem NOT written: %s" % repr(e)[:160])
 
 
-def _epsilon_mix(epsilon):
-    e = float(epsilon)
-    if not 0.0 <= e <= 1.0:
-        raise SystemExit("--epsilon must be in [0, 1]")
-    return {"greedy_catboost": 1.0 - e, "random": e}
+def _require_models(mix, cold, MB, log):
+    if cold:
+        return
+    problems = []
+    if "greedy_catboost" in mix:
+        if not MB.Ranker().ready:
+            problems.append("greedy_catboost: main ranker did not load from %s"
+                            % common.MODELS)
+        if not IM.InterruptRanker(strategies=mix).ready:
+            problems.append("greedy_catboost: interrupt model did not load from %s"
+                            % IM.MODEL_DIR)
+    if "marwil_gnn" in mix:
+        if common.ROOT not in sys.path:
+            sys.path.insert(0, common.ROOT)
+        from advisor.mapgraph import interrupt_rank as GIR
+        from advisor.mapgraph import rank as GR
+        if not GR.Ranker().ready:
+            problems.append("marwil_gnn: mapgraph model did not load from %s"
+                            % common.MODEL_MAPGRAPH)
+        if not GIR.Ranker().ready:
+            problems.append("marwil_gnn: mapgraph interrupt model did not load from %s"
+                            % common.MODEL_MAPGRAPH_INTERRUPT)
+    if problems:
+        raise SystemExit(
+            "REFUSING TO START: the mix needs trained models that are not usable, and only "
+            "--cold may run without models.\n  " + "\n  ".join(problems))
+    log("model gate: every trainable arm in the mix loaded a usable model")
 
 
 def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
-                  log=print, runs_root=RUNS_ROOT, retrain=False, retrain_every=0, seed=None,
-                  cold=False, backend=None, backend_cfg=None, epsilon=None, strategies=None,
+                  log=print, runs_root=RUNS_ROOT, retrain_every=0, seed=None,
+                  cold=False, backend=None, backend_cfg=None, strategies=None,
                   ruleset=None, retrain_first=False, presave_radius=None):
     from bus import Bus
     from executor import Executor
@@ -316,12 +320,6 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
     backend = backend or B.DEFAULT
     backend_cfg = backend_cfg or {}
     MB = B.resolve(backend)
-    if epsilon is not None:
-        if strategies is not None:
-            raise SystemExit("--epsilon is legacy sugar for --strategies; give one, not both")
-        strategies = _epsilon_mix(epsilon)
-        log("legacy --epsilon %s mapped to strategies %s"
-            % (epsilon, json.dumps(strategies)))
     mix = P.normalize_strategies(strategies)
     cmix = normalize_campaigns(campaign)
     presaves = None
@@ -347,11 +345,7 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
     if cold and "marwil_gnn" in mix:
         raise SystemExit("--cold forces cold_random but the mix includes 'marwil_gnn' -- a cold "
                          "run must not load a trained model; drop 'marwil_gnn' or drop --cold")
-    if retrain and not retrain_every:
-        raise SystemExit("--retrain no longer fits before campaign 1: the start retrain was "
-                         "removed because it refits a model that is already on disk under "
-                         "%s and delays every relaunch and every babysitter restart. Pass "
-                         "--retrain-every N for the cadence, or drop --retrain." % common.MODELS)
+    _require_models(mix, cold, MB, log)
     ruleset_meta = None
     if ruleset:
         import ruleset as RS
@@ -366,7 +360,6 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
     report = {"started": time.time(), "requested": {"campaigns": n, "turns": turns, "plan": plan,
                                                     "backend": backend,
                                                     "backend_cfg": backend_cfg,
-                                                    "epsilon": epsilon,
                                                     "strategies": mix,
                                                     "ruleset": ruleset_meta},
               "campaigns": []}
@@ -381,9 +374,9 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
     report["session"] = out_path
     report["trials"] = []
 
-    hard_restart_next, prev_outcome = True, "session start"
     launch_failures = 0
     stretch, generation, trained = [], 0, None
+    streams_thread = None
 
     for i in range(n):
         this_presave = None
@@ -411,14 +404,6 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
             ex.mark_campaign_start()
         except Exception as e:
             log("   could not mark the bus offset for this campaign: %s" % repr(e)[:100])
-        if hard_restart_next:
-            if prev_outcome == "defeated" and ex.leave_campaign_via_click():
-                log("previous campaign ended defeated -- returned to the main menu by "
-                    "clicking the panel button; the game is kept")
-                hard_restart_next = False
-            else:
-                log("previous campaign ended %s -- killing the game now" % prev_outcome)
-                ex.kill_game()
         log("   log rotation: %s" % _rotate_logs(log))
         entry["bus_files"] = _bus_sizes()
         log("   bus: %s" % ", ".join("%s %.1fMB" % (k, v)
@@ -431,14 +416,7 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
             _flush_generation(stretch, backend, backend_cfg, generation, report, trained, log)
             stretch = []
             generation += 1
-            log("taking the game down for retraining -- trainers get the whole box")
-            ex.kill_game()
-            if ex.wait_game_down(log=log):
-                log("   game down, gpu is free")
-            else:
-                log("!! GAME STILL RUNNING after two kills -- training anyway, but it is "
-                    "contending with the game for the gpu")
-            hard_restart_next, prev_outcome = True, "retrain window"
+            log("retraining -- the game is down between campaigns, trainers get the whole box")
             try:
                 t0 = time.time()
                 rep = MB.train(**backend_cfg) if backend_cfg else MB.train()
@@ -453,46 +431,41 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                 entry["retrain_interrupt"] = irep
                 log("   interrupt model: %s" % json.dumps(irep)[:200])
                 if "marwil_gnn" in mix:
-                    try:
-                        if common.ROOT not in sys.path:
-                            sys.path.insert(0, common.ROOT)
-                        from advisor.mapgraph import train as GT
-                        t1 = time.time()
-                        grep = GT.train(log=log)
-                        grep["seconds"] = round(time.time() - t1, 1)
-                    except Exception as ge:
-                        grep = {"trained": False, "error": repr(ge)[:250]}
-                        log("!! gnn retrain before run %d failed (continuing on the previous "
-                            "gnn): %s" % (i + 1, repr(ge)[:180]))
+                    if common.ROOT not in sys.path:
+                        sys.path.insert(0, common.ROOT)
+                    from advisor.mapgraph import train as GT
+                    t1 = time.time()
+                    grep = GT.train(log=log)
+                    grep["seconds"] = round(time.time() - t1, 1)
                     entry["retrain_gnn"] = grep
                     entry["retrain"]["gnn"] = grep
                     log("   gnn model: %s" % json.dumps(grep, default=str)[:220])
-                    try:
-                        from advisor.mapgraph import interrupt_train as GIT
-                        t1 = time.time()
-                        girep = GIT.train(log=log)
-                        girep["seconds"] = round(time.time() - t1, 1)
-                    except Exception as ge:
-                        girep = {"trained": False, "error": repr(ge)[:250]}
-                        log("!! gnn interrupt retrain before run %d failed (continuing on "
-                            "the previous one): %s" % (i + 1, repr(ge)[:180]))
+                    from advisor.mapgraph import interrupt_train as GIT
+                    t1 = time.time()
+                    girep = GIT.train(log=log)
+                    girep["seconds"] = round(time.time() - t1, 1)
                     entry["retrain_gnn_interrupt"] = girep
                     entry["retrain"]["gnn_interrupt"] = girep
                     log("   gnn interrupt model: %s" % json.dumps(girep, default=str)[:220])
-                if not rep.get("trained"):
-                    log("!! retrain %d DID NOT FIT (rows=%s need=%s) -- this campaign will NOT be "
-                        "played by a freshly trained model" % (i + 1, rep.get("rows"), rep.get("need")))
-            except Exception as e:
-                entry["retrain"] = {"error": repr(e)[:250]}
+                for what, r in (("backend", rep), ("interrupt", entry.get("retrain_interrupt")),
+                                ("gnn", entry.get("retrain_gnn")),
+                                ("gnn_interrupt", entry.get("retrain_gnn_interrupt"))):
+                    if r is not None and not r.get("trained"):
+                        raise P.ModelUnavailable(
+                            "retrain %d: %s trainer reported trained=false (rows=%s need=%s "
+                            "error=%s)" % (i + 1, what, r.get("rows"), r.get("need"),
+                                           r.get("error")))
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except BaseException as e:
+                entry.setdefault("retrain", {})
+                entry["retrain"]["error"] = repr(e)[:250]
+                entry["outcome"] = "retrain_failed"
                 trained = entry["retrain"]
-                if "marwil_gnn" in mix and "retrain_gnn" not in entry:
-                    entry["retrain_gnn"] = {"trained": False,
-                                            "error": "skipped: upstream retrain raised"}
-                if "marwil_gnn" in mix and "retrain_gnn_interrupt" not in entry:
-                    entry["retrain_gnn_interrupt"] = {
-                        "trained": False, "error": "skipped: upstream retrain raised"}
-                log("!! retrain before run %d failed (continuing on the previous model): %s"
-                    % (i + 1, repr(e)[:180]))
+                _write(out_path, dict(report, campaigns=report["campaigns"] + [entry]))
+                log("!! retrain before run %d FAILED -- the run needs freshly usable models, "
+                    "crashing instead of playing on without them: %s" % (i + 1, repr(e)[:180]))
+                raise SystemExit("retrain before run %d failed: %s" % (i + 1, repr(e)[:250]))
             entry.setdefault("outcome", "in_progress")
             _write(out_path, dict(report, campaigns=report["campaigns"] + [entry]))
         _models = {}
@@ -513,20 +486,15 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                 import bake_saves
                 import bus_launcher
                 bake_saves.restore_presave(this_presave, log=log)
-                ex.kill_game()
-                ex.wait_game_down(log=log)
                 bl = bus_launcher.BusLauncher()
                 state = bl.load_save(this_presave["file"])
                 ex.bus = bl.bus or ex.bus
-            elif hard_restart_next:
-                log("previous campaign ended %s -- killing the game rather than asking it to quit"
-                    % prev_outcome)
-                state = ex.hard_restart(plan=this_plan, campaign=this_campaign)
             else:
-                state = ex.ensure_campaign(plan=this_plan, campaign=this_campaign, fresh=True)
+                state = ex.start_game(plan=this_plan, campaign=this_campaign)
             entry["start_state"] = state
-            run_dir = journal.current_run_dir(timeout=180.0)
+            run_dir = journal.current_run_dir(timeout=60.0)
             entry["run_dir"] = run_dir
+            entry["stream_watermark"] = L.stream_watermark(run_dir)
             ex.shots_dir = os.path.join(run_dir, "shots")
             log("run dir: %s" % run_dir)
 
@@ -538,13 +506,20 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
             log("model preload: %.1fs still to wait after the game was up" % (time.time() - _t_join))
             entry["model_preload_wait_s"] = round(time.time() - _t_join, 1)
             entry["backend"] = backend
+            if not cold:
+                if "greedy_catboost" in mix and not ranker.ready:
+                    raise P.ModelUnavailable(
+                        "campaign %d: main ranker is not ready after preload (models under "
+                        "%s)" % (i + 1, common.MODELS))
+                if pol.gnn is not None and not pol.gnn.ready:
+                    raise P.ModelUnavailable(
+                        "campaign %d: mapgraph model is not ready after preload (%s)"
+                        % (i + 1, common.MODEL_MAPGRAPH))
             entry["policy"] = ("cold_random(forced)" if cold else
-                               "trained(%d rows)" % (ranker.meta or {}).get("rows", 0)
-                               if ranker.ready else "cold_random")
+                               "trained(%d rows)" % (ranker.meta or {}).get("rows", 0))
             log("policy: %s" % entry["policy"])
             if pol.gnn is not None:
-                entry["gnn_policy"] = ("trained(%d rows)" % (pol.gnn.meta or {}).get("rows", 0)
-                                       if pol.gnn.ready else "unready->gnn_random_fallback")
+                entry["gnn_policy"] = "trained(%d rows)" % (pol.gnn.meta or {}).get("rows", 0)
                 log("gnn: %s" % entry["gnn_policy"])
             _checkpoint_trial(stretch + [entry], backend, backend_cfg, generation, report,
                               trained, log)
@@ -575,6 +550,13 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
             log("!! campaign %d abandoned (stuck): %s" % (i + 1, str(e)[:200]))
         except (KeyboardInterrupt, SystemExit):
             raise
+        except P.ModelUnavailable as e:
+            entry.update(outcome="model_unavailable", error=str(e)[:300], **_played(e))
+            report["campaigns"].append(entry)
+            _write(out_path, report)
+            log("!! campaign %d needs a model that is not usable -- crashing the session "
+                "instead of playing on without it: %s" % (i + 1, str(e)[:250]))
+            raise SystemExit("model unavailable in campaign %d: %s" % (i + 1, str(e)[:250]))
         except UnhandledScreen as e:
             _postmortem(runs_root, dict(entry, outcome="unhandled_screen",
                                         error=str(e)[:400]), ex, log)
@@ -604,26 +586,38 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                     break
             else:
                 launch_failures = 0
-            try:
-                entry["screenshot"] = ex.screenshot("session_fail_%d_%d" % (i + 1, int(time.time())))
-            except Exception:
-                pass
+        _t = time.time()
         _postmortem(runs_root, entry, ex, log)
-        if presaves is not None:
-            ex.kill_game()
-        prev_outcome = entry.get("outcome")
-        hard_restart_next = prev_outcome in ("stuck", "error", "defeated")
+        _pm_s = time.time() - _t
         entry["seconds"] = round(time.time() - entry["started"], 1)
-        try:
-            entry["streams"] = L.verify_streams(entry["run_dir"]) if entry.get("run_dir") else None
-        except Exception as e:
-            entry["streams"] = {"error": repr(e)[:160]}
+        entry["streams"] = {"pending": True}
+
+        def _verify_streams_bg(_e=entry, _rd=entry.get("run_dir"), _t0=time.time()):
+            try:
+                _e["streams"] = (L.verify_streams(_rd, since=_e.get("stream_watermark") or 0,
+                                                  campaign=_e.get("campaign_uuid"))
+                                 if _rd else None)
+            except Exception as e:
+                _e["streams"] = {"error": repr(e)[:160]}
+            common.waitlog("verify_streams_bg", time.time() - _t0, True,
+                           "campaign %s" % _e.get("index"))
+
+        streams_thread = threading.Thread(target=_verify_streams_bg, name="verify-streams",
+                                          daemon=True)
+        streams_thread.start()
         report["campaigns"].append(entry)
         stretch.append(entry)
         log("campaign %d -> %s in %.0fs" % (i + 1, entry["outcome"], entry["seconds"]))
+        _t = time.time()
         _write(out_path, report)
+        _wr_s = time.time() - _t
+        _t = time.time()
         _checkpoint_trial(stretch, backend, backend_cfg, generation, report, trained, log)
+        log("   boundary bookkeeping: postmortem %.1fs, report %.1fs, trial_checkpoint %.1fs, "
+            "verify_streams backgrounded" % (_pm_s, _wr_s, time.time() - _t))
 
+    if streams_thread is not None and streams_thread.is_alive():
+        streams_thread.join(20.0)
     _flush_generation(stretch, backend, backend_cfg, generation, report, trained, log)
     report["seconds"] = round(time.time() - report["started"], 1)
     report["totals"] = _totals(report)
@@ -847,7 +841,6 @@ def _trial_row(stretch, backend, backend_cfg, gen_n, report, trained, log):
            "campaign_index": [first.get("index"), last.get("index")],
            "campaigns": len(played),
            "backend": backend, "backend_cfg": backend_cfg,
-           "epsilon": (report.get("requested") or {}).get("epsilon"),
            "strategies": (report.get("requested") or {}).get("strategies"),
            "ruleset": (report.get("requested") or {}).get("ruleset"),
            "feature_version": _feature_version(),
@@ -1083,30 +1076,34 @@ def _parse_turns(arg):
 
 
 def main():
+    common.install_stamped_logs()
     sys.path.insert(0, _HERE)
     if "--backfill-trials" in sys.argv:
         return backfill_trials(recompute="--recompute" in sys.argv)
     n = int(sys.argv[1]) if len(sys.argv) > 1 else 3
     turns = _parse_turns(sys.argv[2]) if len(sys.argv) > 2 else 20
-    import backends as B
+    for gone, hint in (("--model", "the exploit scorer is fixed; models are chosen via "
+                                   "--strategies"),
+                       ("--backend", "the exploit scorer is fixed; models are chosen via "
+                                     "--strategies"),
+                       ("--epsilon", "give --strategies greedy_catboost=1-E,random=E"),
+                       ("--retrain", "the cadence is --retrain-every N [--retrain-first]")):
+        if gone in sys.argv:
+            raise SystemExit("%s was removed: %s" % (gone, hint))
+    if any(a.startswith("--nn-") for a in sys.argv):
+        raise SystemExit("--nn-* hyperparameter flags were removed; they were parsed into "
+                         "nothing (backends.parse_cfg always returned {})")
     if "--factions" not in sys.argv:
         raise SystemExit("usage: session.py <campaigns> <turns|min-max> --factions "
-                         "all|<key,key,...> [--retrain] [--model %s] [--nn-KEY VALUE ...]\n"
+                         "all|<key,key,...>\n"
                          "                  [--strategies a=x,b=y[,c=z]] [--ruleset <name>]\n"
-                         "  --model     -- which ranker to play on (default %s):\n%s\n"
-                         "  --nn-KEY V  -- backend hyperparameter, e.g. --nn-bottleneck 64\n"
                          "  --strategies -- per-decision sampling mix over %s\n"
                          "                 (default greedy_catboost=0.8,random=0.2; weights "
-                         "normalized)\n"
+                         "normalized). Trainable arms (%s) require their trained models and "
+                         "hard-crash without them; only --cold runs modelless\n"
                          "  --ruleset   -- rule file name under <TWDATA>/rules\\<name>.json "
                          "(required when 'ruleset' is in the mix)\n"
-                         "  'marwil_gnn' -- MARWIL/AWR on the graph encoder "
-                         "(<TWDATA>/models\\mapgraph); untrained -> gnn_random_fallback\n"
-                         "  --epsilon E -- legacy sugar for greedy_catboost=1-E,random=E\n"
-                         % ("|".join(B.names()), B.DEFAULT,
-                            "\n".join("                 %-10s %s" % (k, B.label(k))
-                                      for k in B.names()),
-                            ",".join(ST.NAMES))
+                         % (",".join(ST.NAMES), ",".join(ST.TRAINABLE))
                          + "\n"
                          "  all         -- sample from every playable start ON THE MAP --campaign\n"
                          "                 selects, read from launcher/startable_factions.json\n"
@@ -1125,6 +1122,11 @@ def main():
     _names = sorted(normalize_campaigns(_spec))
     keys = {}
     if "--presave-radius" in sys.argv:
+        if arg != "all":
+            raise SystemExit(
+                "--presave-radius samples starts from the baked save pool and ignores "
+                "faction lists entirely -- --factions %r would be silently discarded. "
+                "Give --factions all with presaves, or drop --presave-radius." % arg)
         keys = {n: ["presave"] for n in _names}
         _names = []
     for _name in _names:
@@ -1177,21 +1179,10 @@ def main():
     if "--dev" in sys.argv:
         os.environ["TW_DEV"] = "1"
         sys.stderr.write("session: DEV logging on -- UI scrapes and overlay dumps enabled\n")
-    if cold and ("--retrain" in sys.argv or every):
-        raise SystemExit("--cold cannot be combined with --retrain/--retrain-every: a cold run "
+    if cold and every:
+        raise SystemExit("--cold cannot be combined with --retrain-every: a cold run "
                          "deliberately ignores the fitted model, so retraining it is wasted work")
-    backend = (sys.argv[sys.argv.index("--model") + 1].strip()
-               if "--model" in sys.argv else B.DEFAULT)
-    B.resolve(backend)
-    backend_cfg = B.parse_cfg(sys.argv)
-    epsilon = None
-    if "--epsilon" in sys.argv:
-        epsilon = float(sys.argv[sys.argv.index("--epsilon") + 1])
-        if not 0.0 <= epsilon <= 1.0:
-            raise SystemExit("--epsilon must be in [0, 1]")
     strategies = _parse_strategies(sys.argv)
-    if epsilon is not None and strategies is not None:
-        raise SystemExit("--epsilon is legacy sugar for --strategies; give one, not both")
     ruleset = _parse_ruleset(sys.argv)
     presave_radius = None
     if "--presave-radius" in sys.argv:
@@ -1204,9 +1195,8 @@ def main():
                              "('Immortal Empires', 'Realm of Chaos', 'Prologue') or a raw "
                              "campaign key such as wh3_main_chaos")
         campaign = sys.argv[i + 1]
-    r = run_campaigns(n, turns, plan=keys, retrain="--retrain" in sys.argv,
-                      retrain_every=every, cold=cold, backend=backend,
-                      backend_cfg=backend_cfg, epsilon=epsilon, strategies=strategies,
+    r = run_campaigns(n, turns, plan=keys,
+                      retrain_every=every, cold=cold, strategies=strategies,
                       ruleset=ruleset, campaign=campaign, retrain_first=retrain_first,
                       presave_radius=presave_radius)
     return 0 if r["totals"]["completed"] else 2
