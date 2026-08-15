@@ -27,7 +27,7 @@ returns nothing. `hit` = the reply carried something (`result.found` / non-empty
 / non-null result); `empty` = reply arrived but found=false / null.
 
 - **Enable/disable:** ON by default. `set BUS_STATS=0` to turn off. DB path override:
-  `set BUS_STATS_DB=<path>` (default `D:/totalwar_runner/data/bus_stats.sqlite`).
+  `set BUS_STATS_DB=<path>` (default `<TWDATA>/bus/bus_stats.sqlite`).
 - **Read the report:** `python bus_stats.py` — prints total calls, %hit/empty/timeout, and the
   **JUNK list** (keys with `calls>=5` and `hits==0`, i.e. never returned anything), sorted by
   call count, with wasted ms. Flags: `--db <path>`, `--min <n>` (junk threshold), `--top <n>`.

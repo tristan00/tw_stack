@@ -20,8 +20,5 @@
 #   default: a "twdata" folder beside the checkout
 # twdata = "D:/twdata"
 
-# The folder holding the .venv, and the data/ directory the file bus lives in. The
-# lua mod reads and writes commands.txt and twcontrol.jsonl under <runner>/data.
-#   env: TW_RUNNER
-#   autodetected from the interpreter you are running, if it is a venv
-# runner = "D:/totalwar_runner"
+# The checkout itself always owns .venv. Runtime data stays outside the checkout under
+# TWDATA; the live file bus uses <TWDATA>/bus.

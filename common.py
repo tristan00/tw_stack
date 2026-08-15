@@ -66,14 +66,6 @@ def _find_game():
     return None
 
 
-def _find_runner():
-    exe = os.path.abspath(sys.executable)
-    d = os.path.dirname(os.path.dirname(exe))
-    if os.path.basename(d).lower() in (".venv", "venv", "env"):
-        return os.path.dirname(d)
-    return None
-
-
 ROOT = os.path.dirname(os.path.abspath(__file__))
 if not os.path.isdir(os.path.join(ROOT, "decisions")):
     raise SystemExit("common.py is not inside a tw_stack checkout: %s" % ROOT)
@@ -159,8 +151,7 @@ ARCHIVE_SCRIPT_LOGS = os.path.join(ARCHIVE_DIR, "script_logs")
 ARCHIVE_BUS = os.path.join(ARCHIVE_DIR, "bus")
 
 
-RUNNER = _setting("TW_RUNNER", "runner", _find_runner, default=ROOT)
-_RN = posix(RUNNER)
+RUNNER = ROOT
 
 VENV_PY = os.path.join(RUNNER, ".venv",
                        "Scripts" if os.name == "nt" else "bin",
@@ -183,7 +174,7 @@ def require_venv(what=None):
         "so running elsewhere silently skips checks instead of failing them. Re-run as:\n"
         "  %s %s\n"
         "(set TW_ALLOW_ANY_PYTHON=1 to override)" % (sys.executable, VENV_PY, VENV_PY, argv))
-RUNNER_DATA = _RN + "/data"
+RUNNER_DATA = posix(os.path.join(TWDATA, "bus"))
 BUS_CMD_PATH = RUNNER_DATA + "/commands.txt"
 BUS_OUT_PATH = RUNNER_DATA + "/twcontrol.jsonl"
 BUS_SEND_LOG = RUNNER_DATA + "/bus_send.jsonl"
