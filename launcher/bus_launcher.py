@@ -405,7 +405,7 @@ class BusLauncher:
             raise TWError("bus never became ready after loading %s" % save_file)
         t_started = time.time()
         _log("save '%s' loaded after %.1fs" % (save_file, t_started - t0))
-        if not self.advance_to_hud():
+        if not self.advance_to_hud(timeout=load_timeout):
             raise TWError("loaded %s but never reached the interactive HUD" % save_file)
         _log("CAMPAIGN PLAYABLE (loaded): %s -- load %.1fs + hud %.1fs = %.1fs"
              % (save_file, t_started - t0, time.time() - t_started, time.time() - t0))

@@ -21,7 +21,7 @@ SNAPSHOT_EVERY = 20.0
 
 
 def main():
-    run_dir = sys.argv[1] if len(sys.argv) > 1 else journal.current_run_dir(timeout=60.0)
+    run_dir = sys.argv[1] if len(sys.argv) > 1 else journal.current_run_dir()
     sys.stderr.write("human_poller -> %s\n" % run_dir)
     counts = {"turn": 0, "target": 0, "hash": 0, "snapshot": 0, "error": 0}
     last = {"turn": 0.0, "target": 0.0, "hash": 0.0, "snapshot": 0.0}
