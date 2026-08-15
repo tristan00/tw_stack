@@ -62,9 +62,11 @@ def _pointer_target():
         except OSError:
             p = ""
         if p and os.path.exists(p):
+            common.trylog("pointer_read", attempt + 1, 3, True)
             return p
+        common.trylog("pointer_read", attempt + 1, 3, False)
         if attempt < 2:
-            time.sleep(0.5)
+            common.wait("pointer_retry", 0.5)
     return ""
 
 
@@ -117,8 +119,8 @@ def main():
     note("DEAD/STALLED (alive=%s age=%s) -- relaunching" % (alive, age))
     with open(STAMP, "w", encoding="utf-8") as fh:
         fh.write(str(time.time()))
-    for step in runctl.up(RUN["campaigns"], RUN["turns"], model=RUN["model"],
-                          retrain=RUN["retrain"], retrain_every=RUN["retrain_every"],
+    for step in runctl.up(RUN["campaigns"], RUN["turns"],
+                          retrain_every=RUN["retrain_every"],
                           retrain_first=RUN.get("retrain_first", False),
                           dev=RUN.get("dev", False), with_ui=True,
                           strategies=RUN["strategies"], ruleset=RUN["ruleset"],

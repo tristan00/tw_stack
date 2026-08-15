@@ -5,6 +5,62 @@ import os
 import sys
 
 
+def wait(tag, seconds, detail=""):
+    import time
+    sys.stderr.write("WAIT %s %.2fs%s\n" % (tag, seconds,
+                                            (" " + str(detail)[:120]) if detail else ""))
+    time.sleep(seconds)
+
+
+def waitlog(tag, seconds, ok, detail=""):
+    sys.stderr.write("WAIT %s %.2fs ok=%s%s\n" % (tag, seconds, ok,
+                                                  (" " + str(detail)[:120]) if detail else ""))
+
+
+def trylog(tag, attempt, total, ok, detail=""):
+    sys.stderr.write("TRY %s %s/%s ok=%s%s\n" % (tag, attempt, total, ok,
+                                                 (" " + str(detail)[:120]) if detail else ""))
+
+
+def phaselog(tag, seconds, detail=""):
+    sys.stderr.write("PHASE %s %.2fs%s\n" % (tag, seconds,
+                                             (" " + str(detail)[:120]) if detail else ""))
+
+
+class _StampedStream:
+    def __init__(self, raw):
+        self._raw = raw
+        self._buf = ""
+
+    def write(self, s):
+        import time
+        self._buf += str(s)
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            if line:
+                t = time.time()
+                self._raw.write("%s.%03d %s\n"
+                                % (time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(t)),
+                                   int(t % 1 * 1000), line))
+            else:
+                self._raw.write("\n")
+
+    def flush(self):
+        if self._buf:
+            self.write("\n")
+        self._raw.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._raw, name)
+
+
+def install_stamped_logs():
+    if not isinstance(sys.stdout, _StampedStream):
+        sys.stdout = _StampedStream(sys.stdout)
+    if not isinstance(sys.stderr, _StampedStream):
+        sys.stderr = _StampedStream(sys.stderr)
+
+
 def native(p):
     return p.replace("/", os.sep)
 

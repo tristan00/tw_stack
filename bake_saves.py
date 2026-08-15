@@ -163,7 +163,7 @@ def ui_paths(bl, needles, depth=8, nodes=1500):
 
 def discover_save_ui(bl, log=print):
     bl._send("key", "@root escape", timeout=15)
-    time.sleep(1.5)
+    common.wait("escape_menu_settle", 1.5)
     roots = [r.get("id") for r in (bl._roots_safe() or []) if r.get("visible")]
     out = {"roots_visible": roots,
            "save_like": ui_paths(bl, SAVE_NEEDLES),
@@ -175,7 +175,7 @@ def discover_save_ui(bl, log=print):
 
 def save_via_ui(bl, name, log=print):
     bl._send("key", "@root escape", timeout=15)
-    time.sleep(1.5)
+    common.wait("escape_menu_settle", 1.5)
     entries = ui_paths(bl, SAVE_NEEDLES)
     if not entries:
         raise RuntimeError(
@@ -186,12 +186,12 @@ def save_via_ui(bl, name, log=print):
     entry = sorted(entries, key=len)[0]
     log("bake: clicking save entry %s" % entry)
     bl._send("click", entry, timeout=20)
-    time.sleep(1.5)
+    common.wait("save_entry_settle", 1.5)
     fields = ui_paths(bl, FIELD_NEEDLES)
     if fields:
         field = sorted(fields, key=len)[0]
         bl._send("click", field, timeout=20)
-        time.sleep(0.4)
+        common.wait("save_field_settle", 0.4)
         for ch in name:
             bl._send("key", "%s %s" % (field, ch), timeout=10)
     else:
@@ -229,14 +229,17 @@ def _is_decoy(fname):
 
 
 def _wait_named_save(name, timeout, log=print):
-    deadline = time.time() + timeout
+    t0 = time.time()
+    deadline = t0 + timeout
     while time.time() < deadline:
         for f in os.listdir(save_dir()):
             if f.startswith(name):
                 path = os.path.join(save_dir(), f)
                 if os.path.getsize(path) > 0:
+                    common.waitlog("named_save_appear", time.time() - t0, True, f)
                     return path
         time.sleep(1.0)
+    common.waitlog("named_save_appear", time.time() - t0, False, name)
     raise RuntimeError(
         "bake_saves: no save file named %r appeared in %s within %.0fs. A save call "
         "reported as sent without the game writing anything is not a save."
@@ -251,7 +254,8 @@ def quicksave_via_hotkey(bl, timeout=SAVE_SETTLE_S, log=print):
         raise RuntimeError(
             "bake_saves: could not send the quicksave hotkey -- the game was not the "
             "foreground window. A hotkey sent anywhere else does nothing.")
-    deadline = time.time() + timeout
+    t0 = time.time()
+    deadline = t0 + timeout
     candidate, last_size, stable_reads = None, None, 0
     while time.time() < deadline:
         now = _list_save_files()
@@ -271,8 +275,10 @@ def quicksave_via_hotkey(bl, timeout=SAVE_SETTLE_S, log=print):
             log("bake: quicksave candidate %r  size=%d  decoy=%s  stable_reads=%d"
                 % (candidate, sz, decoy_present, stable_reads))
             if stable_reads >= STABLE_READS and not decoy_present:
+                common.waitlog("quicksave_stable", time.time() - t0, True, candidate)
                 return os.path.join(save_dir(), candidate)
         time.sleep(STABLE_POLL_S)
+    common.waitlog("quicksave_stable", time.time() - t0, False, candidate or "")
     raise RuntimeError(
         "bake_saves: quicksave hotkey sent but no save settled to a stable size within "
         "%.0fs (last candidate %r). A file whose size is still changing, or that still "

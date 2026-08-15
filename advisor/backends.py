@@ -23,14 +23,10 @@ def names():
 def resolve(name):
     key = str(name or DEFAULT).strip().lower()
     if key not in BACKENDS:
-        raise SystemExit("unknown --model %r -- known backends: %s"
+        raise SystemExit("unknown backend %r -- known backends: %s"
                          % (name, ", ".join(names())))
     return __import__(BACKENDS[key]["module"])
 
 
 def label(name):
     return BACKENDS.get(str(name or DEFAULT).strip().lower(), {}).get("label", "?")
-
-
-def parse_cfg(argv):
-    return {}

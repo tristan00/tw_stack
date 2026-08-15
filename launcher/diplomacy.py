@@ -29,12 +29,14 @@ _CLICKABLE = ("active", "hover", "selected")
 POLL_STEP = 0.15
 
 
-def _wait(pred, limit, step=POLL_STEP):
+def _wait(pred, limit, step=POLL_STEP, tag="diplo_poll", detail=""):
     t0 = time.time()
     while time.time() - t0 < limit:
         if pred():
+            common.waitlog(tag, time.time() - t0, True, detail)
             return True
         time.sleep(step)
+    common.waitlog(tag, time.time() - t0, False, detail)
     return False
 
 
@@ -98,7 +100,9 @@ def _settled_y(bus, row_id, limit=3.0, agree=3):
         n = n + 1 if cur == prev else 0
         prev = cur
         if n >= agree - 1:
+            common.waitlog("row_y_settle", time.time() - t0, True, row_id)
             return cur
+    common.waitlog("row_y_settle", time.time() - t0, False, row_id)
     return prev if prev is not None else 0
 
 
@@ -122,16 +126,19 @@ def scroll_to_row(bus, row_id, margin=6):
         clicks += 1
         centre = _settled_y(bus, row_id) + h // 2
         if lo <= centre <= hi:
+            common.trylog("scroll_to_row", clicks, budget, True, row_id)
             return clicks
         if centre == prev:
             stalled += 1
             if stalled >= 3:
+                common.trylog("scroll_to_row", clicks, budget, False, "%s stalled" % row_id)
                 raise DiplomacyError("%s stopped moving at centre %s after %d clicks (band "
                                      "%s..%s) -- the list will not scroll further"
                                      % (row_id, centre, clicks, lo, hi))
         else:
             stalled = 0
         prev = centre
+    common.trylog("scroll_to_row", clicks, budget, False, "%s budget exhausted" % row_id)
     raise DiplomacyError("%s still at centre %s after %d measured clicks, outside %s..%s"
                          % (row_id, centre, clicks, lo, hi))
 
@@ -168,21 +175,24 @@ def open_panel(bus, limit=10.0):
     already = ROOT in interrupts.roots(bus)
     if not already:
         nav.bus_click(bus, BTN_DIPLOMACY)
-        if not _wait(lambda: ROOT in interrupts.roots(bus), limit):
+        if not _wait(lambda: ROOT in interrupts.roots(bus), limit, tag="diplo_panel_open"):
             raise DiplomacyError("diplomacy panel never opened (roots=%s)" % interrupts.roots(bus))
-    if not _wait(lambda: bool(_rows(bus)), limit):
+    if not _wait(lambda: bool(_rows(bus)), limit, tag="faction_rows_render"):
         if _node(bus, "cancel_payments"):
             sys.stderr.write("diplomacy: payments subpanel was covering the faction list -- "
                              "backing out of it (a previous walk died mid-payment)\n")
             cancel_payments(bus)
-        if not _wait(lambda: bool(_rows(bus)), limit):
+        if not _wait(lambda: bool(_rows(bus)), limit, tag="faction_rows_render",
+                     detail="after payments cancel"):
             raise DiplomacyError("panel open but no faction row ever rendered")
     return not already
 
 
-def close_panel(bus, tries=3, limit=2.5):
-    for _ in range(tries):
+def close_panel(bus, tries=3, limit=1.0):
+    for attempt in range(tries):
         if ROOT not in interrupts.roots(bus):
+            if attempt:
+                common.trylog("panel_close_retry", attempt, tries, True, "closed late")
             return True
         cancel_payments(bus)
         n = _node(bus, "button_cancel") or _node(bus, "button_close")
@@ -190,8 +200,10 @@ def close_panel(bus, tries=3, limit=2.5):
             _bus_click(bus, n)
         else:
             nav.close_popups(bus)
-        if _wait(lambda: ROOT not in interrupts.roots(bus), limit):
+        if _wait(lambda: ROOT not in interrupts.roots(bus), limit, tag="diplo_panel_close"):
+            common.trylog("panel_close_retry", attempt + 1, tries, True)
             return True
+        common.trylog("panel_close_retry", attempt + 1, tries, False)
     live = sorted({"%s(%s)" % (c.get("id"), c.get("state")) for c in _tree(bus)
                    if c.get("visible") and str(c.get("state") or "") in _CLICKABLE
                    and str(c.get("id") or "").startswith("button")})
@@ -210,10 +222,13 @@ def select_faction(bus, faction_key, limit=4.0):
             raise DiplomacyError("no %s in the panel -- that faction is not deal-able right now"
                                  % row_id)
         nav.bus_click(bus, _path(n))
-        if _wait(lambda: _is_selected(_find(bus, row_id).get("state")), 1.5, step=0.2):
+        if _wait(lambda: _is_selected(_find(bus, row_id).get("state")), 1.5, step=0.2,
+                 tag="faction_row_select", detail=row_id):
+            common.trylog("faction_row_click", attempt + 1, 3, True, row_id)
             break
         sys.stderr.write("diplomacy: %s did not take the click (attempt %d)\n"
                          % (row_id, attempt + 1))
+        common.trylog("faction_row_click", attempt + 1, 3, False, row_id)
     else:
         raise DiplomacyError("%s never became selected after 3 bus clicks" % row_id)
     row = _node(bus, row_id)
@@ -221,7 +236,7 @@ def select_faction(bus, faction_key, limit=4.0):
         raise DiplomacyError("%s vanished from the tree after selection -- no component path to "
                              "open the negotiation with" % row_id)
     _bus_click(bus, row, double=True)
-    if _wait(lambda: bool(offered_terms(bus)), limit):
+    if _wait(lambda: bool(offered_terms(bus)), limit, tag="negotiation_open", detail=row_id):
         return True
     raise DiplomacyError("selected %s but no negotiation opened (no diplomatic_option_* appeared)"
                          % row_id)
@@ -249,7 +264,8 @@ def add_term(bus, term, limit=2.5):
         _trace("add_term %r: state=%r but the node is absent/invisible/pathless", term, before)
         return False
     nav.bus_click(bus, _path(n))
-    ok = _wait(lambda: str(_find(bus, node_id).get("state") or "") not in ("", before), limit)
+    ok = _wait(lambda: str(_find(bus, node_id).get("state") or "") not in ("", before), limit,
+               tag="term_state_change", detail=term)
     if not ok:
         _trace("add_term %r clicked but state stayed %r -- panel offers %s", term, before,
                {k: v for k, v in sorted(offered.items())})
@@ -264,7 +280,7 @@ def open_payments(bus, limit=4.0):
     if n is None or not n.get("visible") or not _path(n):
         return False
     nav.bus_click(bus, _path(n))
-    return _wait(lambda: bool(_node(bus, PAY_OFFER)), limit)
+    return _wait(lambda: bool(_node(bus, PAY_OFFER)), limit, tag="payments_subpanel_open")
 
 
 def _index(bus):
@@ -338,7 +354,8 @@ def select_offer(bus, limit=2.0):
         _trace("select_offer: %s has no path", PAY_OFFER)
         return False
     nav.bus_click(bus, _path(n))
-    ok = _wait(lambda: _is_selected(_find(bus, PAY_OFFER).get("state")), limit)
+    ok = _wait(lambda: _is_selected(_find(bus, PAY_OFFER).get("state")), limit,
+               tag="pay_offer_select")
     if not ok:
         _trace("select_offer: %s stayed %r after the click", PAY_OFFER,
                _find(bus, PAY_OFFER).get("state"))
@@ -349,7 +366,7 @@ def choose_gift(bus, tier, limit=2.0, ready=2.5):
     if tier not in GIFT_TIERS:
         raise DiplomacyError("unknown gift tier %r -- want one of %s" % (tier, list(GIFT_TIERS)))
     node_id = "button_%s_gift" % tier
-    _wait(lambda: bool(_node(bus, node_id)), ready)
+    _wait(lambda: bool(_node(bus, node_id)), ready, tag="gift_button_render", detail=node_id)
     n = _node(bus, node_id)
     if n is None or not n.get("visible") or not _path(n):
         return False
@@ -360,7 +377,8 @@ def choose_gift(bus, tier, limit=2.0, ready=2.5):
     _trace("gift %s: clicking %s (currently selected=%r, committable=%s)",
            tier, node_id, cur, _committable(bus))
     nav.bus_click(bus, _path(n))
-    ok = _wait(lambda: selected_tier(bus) == tier and _committable(bus), limit)
+    ok = _wait(lambda: selected_tier(bus) == tier and _committable(bus), limit,
+               tag="gift_tier_settle", detail=tier)
     if not ok:
         _trace("gift %s: after clicking %s the panel reads selected_tier=%r committable=%s "
                "-- neither settled within %ss", tier, node_id, selected_tier(bus),
@@ -378,7 +396,8 @@ def commit_payment(bus, limit=3.0):
                n.get("state"))
         return False
     nav.bus_click(bus, _path(n))
-    ok = _wait(lambda: not _find(bus, "ok_payments").get("visible"), limit, step=0.2)
+    ok = _wait(lambda: not _find(bus, "ok_payments").get("visible"), limit, step=0.2,
+               tag="payments_commit_close")
     if not ok:
         _trace("commit_payment: clicked ok_payments but the subpanel is still up")
     return ok
@@ -391,7 +410,8 @@ def cancel_payments(bus, limit=2.5):
     if str(n.get("state") or "") not in _CLICKABLE or not _path(n):
         return False
     nav.bus_click(bus, _path(n))
-    return _wait(lambda: not _find(bus, "cancel_payments").get("visible"), limit, step=0.2)
+    return _wait(lambda: not _find(bus, "cancel_payments").get("visible"), limit, step=0.2,
+                 tag="payments_cancel_close")
 
 
 def stage_gift(bus, tier):
@@ -508,7 +528,8 @@ def finish_after_send(bus, limit=2.0):
                r.get("state_before"), r.get("state_after"))
         if ROOT not in (r.get("roots_after") or []):
             return True
-    gone = _wait(lambda: ROOT not in interrupts.roots(bus), limit, step=0.1)
+    gone = _wait(lambda: ROOT not in interrupts.roots(bus), limit, step=0.1,
+                 tag="post_send_exit")
     if not gone:
         _trace("post-send exit: all %d steps clicked but %s is STILL open",
                len(EXIT_AFTER_SEND), ROOT)
@@ -520,7 +541,8 @@ def send(bus):
     if not (n and n.get("visible") and str(n.get("state")) in _CLICKABLE):
         return False
     _bus_click(bus, n)
-    _wait(lambda: not _find(bus, "button_send").get("visible"), 2.5, step=0.2)
+    _wait(lambda: not _find(bus, "button_send").get("visible"), 2.5, step=0.2,
+          tag="send_button_clear")
     return True
 
 
@@ -534,7 +556,8 @@ def _clickable_node(bus, node_id):
 def approve_declare(bus):
     walk = {"confirm_appeared": False, "confirm_clicked": False, "confirm_gone": False,
             "receipt_appeared": False, "receipt_clicked": False, "receipt_gone": False}
-    if not _wait(lambda: _clickable_node(bus, "button_ok_declare") is not None, 6.0, step=0.2):
+    if not _wait(lambda: _clickable_node(bus, "button_ok_declare") is not None, 6.0, step=0.2,
+                 tag="declare_confirm_appear"):
         return walk
     walk["confirm_appeared"] = True
     n = _clickable_node(bus, "button_ok_declare")
@@ -543,15 +566,18 @@ def approve_declare(bus):
     nav.bus_click(bus, _path(n))
     walk["confirm_clicked"] = True
     walk["confirm_gone"] = _wait(
-        lambda: not _find(bus, "button_ok_declare").get("visible"), 5.0, step=0.2)
-    if _wait(lambda: _clickable_node(bus, "button_ok_war_declared") is not None, 5.0, step=0.2):
+        lambda: not _find(bus, "button_ok_declare").get("visible"), 5.0, step=0.2,
+        tag="declare_confirm_close")
+    if _wait(lambda: _clickable_node(bus, "button_ok_war_declared") is not None, 5.0, step=0.2,
+             tag="war_receipt_appear"):
         walk["receipt_appeared"] = True
         n = _clickable_node(bus, "button_ok_war_declared")
         if n is not None:
             nav.bus_click(bus, _path(n))
             walk["receipt_clicked"] = True
             walk["receipt_gone"] = _wait(
-                lambda: not _find(bus, "button_ok_war_declared").get("visible"), 5.0, step=0.2)
+                lambda: not _find(bus, "button_ok_war_declared").get("visible"), 5.0, step=0.2,
+                tag="war_receipt_close")
     return walk
 
 
@@ -618,7 +644,7 @@ def propose(bus, faction_key, terms, gift=None):
             out["failed_at"] = "send_refused"
             return out
         out["stage"] = "response"
-        _wait(lambda: offer_response(bus) is not None, 6.0, step=0.25)
+        _wait(lambda: offer_response(bus) is not None, 6.0, step=0.25, tag="offer_response")
         out["response"] = offer_response(bus)
         if out["response"] is not None:
             out["accepted"] = bool(out["response"].get("accepted"))

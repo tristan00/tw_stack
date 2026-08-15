@@ -194,7 +194,7 @@ def _execute_confirmed(bus, ctx, pick):
     _tc = time.time()
     settle = float(spec.get("confirm_settle_s") or 0.0)
     if settle > 0.0:
-        time.sleep(settle)
+        common.wait("confirm_settle", settle, atype)
     deadline = time.time() + spec["timeout_s"]
     confirmed, after, polls = False, {}, 0
     doomed = spec.get("doomed")
@@ -221,6 +221,8 @@ def _execute_confirmed(bus, ctx, pick):
                                               spec["timeout_s"]))
                 break
         time.sleep(spec["poll_s"])
+    common.waitlog("action_confirm_poll", time.time() - _tc, bool(confirmed),
+                   "%s polls=%d" % (atype, polls))
     rec["confirmed"] = bool(confirmed)
     rec["counted"] = rec["confirmed"]
     rec["confirm"] = {"signal": spec.get("signal"), "before": before, "after": after,
@@ -502,7 +504,7 @@ def _skills_execute(bus, ctx, pick, before):
     if res != "called":
         sys.stderr.write("cco_actions: skills AddPoint %r -> %s\n" % (pick["key"], res))
         return False
-    time.sleep(0.8)
+    common.wait("skill_commit_pacing", 0.8, pick["key"])
     _ev(bus, _G + "local c=cco('CcoCampaignCharacter','%s'); "
                   "pcall(function() c:Call('CommitSkillChoices') end); return 'called'" % cqi)
     return True
@@ -548,7 +550,7 @@ def _equipped_names(bus, cqi):
 def _select_character(bus, cqi):
     _ev(bus, _G + "local c=cco('CcoCampaignCharacter','%s'); pcall(function() c:Call('Select') end); "
                   "return 'ok'" % cqi)
-    time.sleep(1.0)
+    common.wait("character_select_settle", 1.0, str(cqi))
 
 
 def _items_snapshot(bus, ctx, pick):
@@ -757,9 +759,9 @@ def _slot_exec_paced(cmd, guard, pause=1.0):
     inner = _slot_exec(cmd, guard)
 
     def run(bus, ctx, pick, before):
-        time.sleep(pause)
+        common.wait("slot_op_pacing", pause, "before " + cmd)
         ok = inner(bus, ctx, pick, before)
-        time.sleep(pause)
+        common.wait("slot_op_pacing", pause, "after " + cmd)
         return ok
     return run
 
@@ -1211,10 +1213,12 @@ def _hero_action_execute_inner(bus, ctx, pick, before):
     opened = False
     if tpath:
         if nav.bus_input(bus, "cco_actions.py:hero_target_rclick", tpath, action="rclick"):
+            _tw = time.time()
             row, _ = bus.wait_row(("panel",), timeout=3.0, offset=off,
                                   pred=lambda r2: bool(r2.get("opened"))
                                   and r2.get("name") == _HERO_PANEL)
             opened = row is not None
+            common.waitlog("hero_panel_open", time.time() - _tw, opened, _HERO_PANEL)
     if not opened:
         return fail("open_panel", "rclick on %s did not open %s" % (tpath, _HERO_PANEL))
     before["panel_opened"] = True
@@ -1318,9 +1322,11 @@ def _clear_end_turn_blockers(bus):
         out["notifications_empty_after"] = _ev(bus, _LUA_NOTIF_EMPTY, timeout=8.0)
     _ev(bus, "cm:dismiss_advice() return 'ok'", timeout=8.0)
     clicks = 0
-    for _ in range(6):
+    for attempt in range(6):
         if "events" not in nav.visible_roots(bus):
             break
+        if attempt:
+            common.trylog("end_turn_event_dismiss", attempt, 6, False, "events still open")
         g = interrupts.claim_screen(bus, "end_turn_blockers")
         if g.get("fired"):
             out.setdefault("guards", []).append(g.get("steps"))
@@ -1332,13 +1338,17 @@ def _clear_end_turn_blockers(bus):
             sys.stderr.write("cco_actions: end_turn blocked -- events panel open with no dismiss "
                              "button\n")
             break
+        sig = nav.panel_sig(bus, "events")
         r = bus.send("click", btns[0], timeout=8.0) or {}
         if not r.get("clicked"):
             break
         clicks += 1
-        time.sleep(0.6)
+        nav.await_gone_or_changed(bus, "events", sig, 0.6, "event_dismiss_pacing")
     out["events_dismissed"] = clicks
     out["events_open"] = "events" in nav.visible_roots(bus)
+    if clicks or out["events_open"]:
+        common.trylog("end_turn_event_dismiss", clicks, 6, not out["events_open"],
+                      "dismissed=%d" % clicks)
     out["tooltip"] = _end_turn_tooltip(bus)
     out["cleared_ms"] = int((time.time() - t0) * 1000)
     if out["events_open"] or str(out.get("notifications_empty_after",

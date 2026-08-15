@@ -42,12 +42,14 @@ def run(ctx, grab=None, foreground=None, shot_every: float = SHOT_EVERY,
     foreground = foreground or _real_foreground
     n, last = 0, 0.0
     os.makedirs(os.path.join(BULK_ROOT, "shots"), exist_ok=True)
+    t_loop = time.time()
+    sys.stderr.write("shots: poll loop starting (every %.0fs)\n" % shot_every)
     while ctx.is_running():
         try:
             clicked = ctx.shot_req.wait(0.1)
             if clicked:
                 ctx.shot_req.clear()
-                time.sleep(0.18)
+                common.wait("post_click_shot_settle", 0.18)
             if not clicked and (time.time() - last) < shot_every:
                 continue
             n += 1
@@ -62,4 +64,5 @@ def run(ctx, grab=None, foreground=None, shot_every: float = SHOT_EVERY,
                       "trigger": "click" if clicked else "interval"})
         except Exception as e:
             ctx.on_error("shots", e)
-            time.sleep(0.5)
+            common.wait("shots_error_backoff", 0.5, repr(e)[:60])
+    common.waitlog("shots_poll", time.time() - t_loop, True, "stopped")

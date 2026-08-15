@@ -176,10 +176,14 @@ class Recording:
 
     def stop(self, join_timeout=3.0):
         self._stop.set()
-        time.sleep(0.8)
+        common.wait("recording_stop_settle", 0.8)
         self._events({"t": round(time.time() - self.t0, 3), "kind": "stop"})
+        t0 = time.time()
         for th in self._threads:
             th.join(timeout=join_timeout)
+        left = self.alive()
+        common.waitlog("recording_stop_join", time.time() - t0, not left,
+                       ",".join(left)[:120])
         for w in list(self._writers.values()):
             w.close()
 
@@ -264,6 +268,7 @@ def reset_bus_files():
 def main():
     import sys
 
+    common.install_stamped_logs()
     here = os.path.dirname(os.path.abspath(__file__))
     for repo in ("input", "shots", "logs", "ui-capture", "bus", "launcher", "decisions"):
         sys.path.insert(0, os.path.join(os.path.dirname(here), repo))
@@ -343,7 +348,8 @@ def main():
         while True:
             time.sleep(0.5)
     except KeyboardInterrupt:
-        pass
+        common.waitlog("manager_keepalive", time.time() - rec.t0, True,
+                       "keyboard_interrupt")
     rec.stop()
     print("DONE -> %s" % rec.out_dir, flush=True)
 

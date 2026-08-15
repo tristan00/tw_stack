@@ -8,6 +8,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import arms
 
 NAMES = ("random", "greedy_catboost", "ruleset", "marwil_gnn")
+TRAINABLE = arms.TRAINABLE
+ModelUnavailable = arms.ModelUnavailable
 
 
 class Random:
@@ -65,7 +67,6 @@ class MarwilGnn:
 
     def __init__(self, gnn):
         self.gnn = gnn
-        self.errors = 0
         self.last_scores = {}
         self.scored = None
 
@@ -85,13 +86,7 @@ class MarwilGnn:
             if best is not None:
                 return best
         self.last_scores = {}
-        try:
-            best = self.gnn.pick(elig, record)
-        except Exception as e:
-            self.errors += 1
-            sys.stderr.write("strategies: gnn pick failed (%d so far) -> %s\n"
-                             % (self.errors, repr(e)[:140]))
-            return None
+        best = self.gnn.pick(elig, record)
         impact = getattr(self.gnn, "last_impact", None) or []
         self.last_scores = {offer_key(r): float(v) for r, v in zip(elig, impact)}
         return best

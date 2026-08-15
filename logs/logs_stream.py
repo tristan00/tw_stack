@@ -83,6 +83,9 @@ def run(ctx, log_dirs, poll_every: float = LOGTAIL_EVERY, own_slack: float = 2.0
                 sys.stderr.write("logs: cannot list %s -> %s\n" % (base, repr(e)[:60]))
         return out
 
+    t_loop = time.time()
+    sys.stderr.write("logs: tail poll starting -- every %.1fs over %d dir(s)\n"
+                     % (poll_every, len(log_dirs)))
     while ctx.is_running():
         try:
             for src in targets():
@@ -116,3 +119,4 @@ def run(ctx, log_dirs, poll_every: float = LOGTAIL_EVERY, own_slack: float = 2.0
         except Exception as e:
             ctx.on_error("logs", e)
         time.sleep(poll_every)
+    common.waitlog("logs_tail_poll", time.time() - t_loop, True, "stopped")

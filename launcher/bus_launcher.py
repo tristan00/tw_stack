@@ -89,12 +89,14 @@ class BusLauncher:
                 if not bad:
                     _log("bus files rotated -> %s (%s)"
                          % (dst, ", ".join(moved) or "were already empty"))
+                    common.trylog("bus_rotate", attempt + 1, 3, True)
                     return
                 last = "non-empty after recreate: %s" % bad
             except OSError as e:
                 last = repr(e)[:100]
+            common.trylog("bus_rotate", attempt + 1, 3, False, last)
             _log("bus rotation attempt %d failed (%s) -- retrying" % (attempt + 1, last))
-            time.sleep(5.0)
+            common.wait("bus_rotate_backoff", 5.0)
         raise TWError("bus rotation FAILED after 3 attempts (%s) -- refusing to boot the game "
                       "on a grown command file (the A/B-proven corruption state)" % last)
 
@@ -172,12 +174,16 @@ class BusLauncher:
 
     def _send(self, channel, payload="", timeout=15, tries=3):
         last = None
-        for _ in range(tries):
+        for attempt in range(tries):
             try:
-                return self.bus.send(channel, payload, timeout=timeout)
+                r = self.bus.send(channel, payload, timeout=timeout)
+                common.trylog("bus_send", attempt + 1, tries, True, channel)
+                return r
             except TWError as e:
                 last = e
-                time.sleep(1.0)
+                common.trylog("bus_send", attempt + 1, tries, False,
+                              "%s %s" % (channel, repr(e)[:60]))
+                common.wait("bus_send_backoff", 1.0, channel)
         raise last
 
     def _wait_bus_ready(self, timeout=40):
@@ -185,9 +191,11 @@ class BusLauncher:
         while time.time() - t0 < timeout:
             try:
                 self.bus.send("roots", "", timeout=8)
+                common.waitlog("bus_ready_poll", time.time() - t0, True)
                 return True
             except TWError:
                 time.sleep(0.4)
+        common.waitlog("bus_ready_poll", time.time() - t0, False, "timeout=%ss" % timeout)
         return False
 
     def _roots_safe(self):
@@ -202,7 +210,7 @@ class BusLauncher:
             raise TWError("launch: component not found to click: %s" % path)
         if not r.get("clicked"):
             raise TWError("launch: found but click failed: %s" % path)
-        time.sleep(settle)
+        common.wait("click_settle", settle, path)
         return r
 
     def find(self, path):
@@ -212,7 +220,7 @@ class BusLauncher:
         return self._send("tree", "%s %d %d" % (path, depth, nodes), timeout=25)
 
 
-    def advance_to_hud(self, timeout=200):
+    def advance_to_hud(self, timeout=60):
         import bus as _bus
         t0 = time.time()
         did_continue = False
@@ -247,6 +255,7 @@ class BusLauncher:
             if time.time() - last_alive_probe > 5.0:
                 last_alive_probe = time.time()
                 if not _bus._game_alive():
+                    common.waitlog("hud_poll", time.time() - t0, False, "game process gone")
                     raise TWError("the game PROCESS IS GONE %.1fs into the campaign load -- it "
                                   "crashed rather than stalled (%d cinematic keys sent). Not "
                                   "waiting out the remaining %.0fs of the HUD timeout."
@@ -277,6 +286,7 @@ class BusLauncher:
                     did_continue = True
                     _log("dismissed loading-screen Continue")
             time.sleep(0.3)
+        common.waitlog("hud_poll", time.time() - t0, False, "timeout after %d polls" % polls)
         return False
 
     CAMPAIGN_KEYS = {"Immortal Empires": "wh3_main_combi",
@@ -303,6 +313,7 @@ class BusLauncher:
             _log("  %.1fs poll %d: not at 'main' yet (%d roots)"
                  % (time.time() - t0, polls, len(roots)))
             time.sleep(0.4)
+        common.waitlog("main_menu_poll", time.time() - t0, False, "timeout after %d polls" % polls)
         raise TWError("cm:quit() dispatched but the main menu never appeared within %ds" % timeout)
 
     def start_campaign(self, faction, campaign="Immortal Empires", load_timeout=120,
@@ -352,7 +363,7 @@ class BusLauncher:
         _log("bus ready.")
         return self.start_campaign(faction, campaign, load_timeout, hud_timeout=hud_timeout)
 
-    def load_save(self, save_file, boot_timeout=180, load_timeout=300):
+    def load_save(self, save_file, boot_timeout=90):
         save_file = str(save_file or "").strip()
         if not save_file:
             raise TWError("load_save() needs a save file name")
@@ -473,6 +484,7 @@ class BusLauncher:
 
         out = sorted({k for v in races.values() for k in v})
         if not out:
+            common.waitlog("harvest_sample_loop", time.time() - t0, False, "no lord entries")
             raise TWError("harvest saw no lord entries. Is the campaign-select lord list "
                           "showing for %s?" % key)
         say("harvest %s: %d races, %d factions" % (key, len(races), len(out)))

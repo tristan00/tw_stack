@@ -223,23 +223,19 @@ class InterruptRanker:
     def score(self, screen, options, campaign, panel=None, world=None, meta=None):
         if not self.ready or not options:
             return {}
-        try:
-            from catboost import Pool
-            m = self.meta
-            num, cat = m.get("num") or [], m.get("cat") or []
-            snum, scat = m.get("state_num") or [], m.get("state_cat") or []
-            opts = list(options)
-            rows = [_row(screen, o, len(opts), campaign, world, panel, meta) for o in opts]
-            X = F.matrix(rows, num, cat)
-            f1 = list(self.e1.predict(Pool(X, cat_features=list(
-                range(len(num), len(num) + len(cat))))))
-            Xs = F.matrix([_state_row(screen, len(opts), campaign, world)], snum, scat)
-            g = list(self.e2.predict(Pool(Xs, cat_features=list(
-                range(len(snum), len(snum) + len(scat))))))[0]
-            return dict(zip(opts, _ranks([v - g for v in f1])))
-        except Exception as e:
-            sys.stderr.write("interrupt_model: scoring failed -> %s\n" % repr(e)[:140])
-            return {}
+        from catboost import Pool
+        m = self.meta
+        num, cat = m.get("num") or [], m.get("cat") or []
+        snum, scat = m.get("state_num") or [], m.get("state_cat") or []
+        opts = list(options)
+        rows = [_row(screen, o, len(opts), campaign, world, panel, meta) for o in opts]
+        X = F.matrix(rows, num, cat)
+        f1 = list(self.e1.predict(Pool(X, cat_features=list(
+            range(len(num), len(num) + len(cat))))))
+        Xs = F.matrix([_state_row(screen, len(opts), campaign, world)], snum, scat)
+        g = list(self.e2.predict(Pool(Xs, cat_features=list(
+            range(len(snum), len(snum) + len(scat))))))[0]
+        return dict(zip(opts, _ranks([v - g for v in f1])))
 
     def _draw(self):
         roll = self.rng.random()
@@ -254,13 +250,7 @@ class InterruptRanker:
     def _score_with_gnn(self, screen, opts, record, panel, meta):
         if self.gnn is None or not self.gnn.ready:
             return {}
-        try:
-            return self.gnn.score(screen, opts, record, panel, meta)
-        except Exception as e:
-            self.gnn_score_errors += 1
-            sys.stderr.write("interrupt_model: gnn scoring failed (%d so far) -> %s\n"
-                             % (self.gnn_score_errors, repr(e)[:140]))
-            return {}
+        return self.gnn.score(screen, opts, record, panel, meta)
 
     def _exploit_ready(self, screen):
         sr = self.meta.get("screen_rows")
@@ -300,6 +290,10 @@ class InterruptRanker:
             return self.rng.choice(opts), "ruleset_random_fallback", rich
         if drawn == "marwil_gnn":
             if not gnn:
+                if self.gnn is not None and self.gnn.ready:
+                    raise P.ModelUnavailable(
+                        "interrupt_model: marwil_gnn drawn with a ready model but no scores "
+                        "for screen %r -- refusing to silently play random" % (screen,))
                 return self.rng.choice(opts), "marwil_gnn_random_fallback", rich
             return max(gnn, key=gnn.get), "marwil_gnn", rich
         if drawn != "greedy_catboost":
@@ -311,6 +305,10 @@ class InterruptRanker:
                              % (screen, pick, why))
             return pick, "greedy_catboost_random_fallback", rich
         if not exploit:
+            if self.ready:
+                raise P.ModelUnavailable(
+                    "interrupt_model: greedy_catboost drawn with a ready model but scoring "
+                    "produced nothing for screen %r" % (screen,))
             return self.rng.choice(opts), "greedy_catboost_random_fallback", rich
         return max(exploit, key=exploit.get), "greedy_catboost", rich
 

@@ -79,15 +79,17 @@ _LUA_ENGINE_PENDING = (
 
 
 def engine_pending(bus, tries=2):
-    for _ in range(tries):
+    for attempt in range(tries):
         try:
             r = bus.send("eval", _LUA_ENGINE_PENDING, timeout=8.0) or {}
             v = r.get("result")
             if v is not None:
+                common.trylog("engine_pending_read", attempt + 1, tries, True)
                 return v
         except Exception as e:
             _warn("engine_pending", repr(e)[:80])
-        time.sleep(0.3)
+        common.trylog("engine_pending_read", attempt + 1, tries, False)
+        common.wait("engine_pending_retry", 0.3)
     return None
 
 
@@ -181,12 +183,28 @@ def _is_dismiss_id(nid):
     return nid in DISMISS_BUTTON_IDS or nid.startswith("button_ok")
 
 
+WHITE_TIGER_TITLE = "The White Tiger's Calling"
+WHITE_TIGER_TITLE_PATH = ("events|event_layouts|incident_large|incident_large|background|"
+                          "header|panel_title|button_txt")
+WHITE_TIGER_CONFIRM_PATH = ("events|event_layouts|incident_large|incident_large|background|"
+                            "footer|text_button")
+
+
 def find_dismiss_buttons(bus, root, max_depth=24, max_nodes=4000):
     tr = bus.send("tree", "%s %d %d" % (root, max_depth, max_nodes), timeout=_TREE_T) or {}
     if not tr.get("nodes"):
         _warn("find_dismiss_buttons(%s)" % root, "empty/None tree reply (bus miss)")
     nodes = tr.get("nodes") or []
     by_path = {str(n.get("path") or ""): n for n in nodes}
+    if root == "events":
+        title = by_path.get(WHITE_TIGER_TITLE_PATH)
+        confirm = by_path.get(WHITE_TIGER_CONFIRM_PATH)
+        if (title is not None and title.get("visible")
+                and str(title.get("text") or "").strip() == WHITE_TIGER_TITLE
+                and confirm is not None and confirm.get("visible")):
+            sys.stderr.write("nav: hardcoded dismisser hit -- %r -> %s\n"
+                             % (WHITE_TIGER_TITLE, WHITE_TIGER_CONFIRM_PATH))
+            return [WHITE_TIGER_CONFIRM_PATH]
     hits, seen = [], set()
     for n in nodes:
         if not n.get("visible") or str(n.get("state")) not in _CLICKABLE_STATES:
@@ -243,40 +261,75 @@ def close_panel(bus, root, settle=0.7):
         ccmd(bus, "CloseCurrentHUDPanel")
     else:
         modeval(bus, "CampaignUI.ClosePanel('%s') return 'called'" % root)
-    time.sleep(settle)
-    return root not in visible_roots(bus)
+    return _await_root_gone(bus, root, settle, "panel_close_settle")
 
 
 def diplomacy_owned(root):
     return root in DECISION_ROOTS or "diplo" in str(root).lower()
 
 
-def _insist(bus, root, btn, settle, tries=3):
+def _await_root_gone(bus, root, cap, tag, tick=0.1):
+    t0 = time.time()
+    while True:
+        if root not in _open_roots(bus):
+            common.waitlog(tag, time.time() - t0, True, root)
+            return True
+        if time.time() - t0 >= cap:
+            common.waitlog(tag, time.time() - t0, False, root)
+            return False
+        time.sleep(tick)
+
+
+def panel_sig(bus, root):
+    tr = bus.send("tree", "%s 24 4000" % root, timeout=_TREE_T) or {}
+    return tuple((str(n.get("path") or ""), str(n.get("text") or "")[:40])
+                 for n in (tr.get("nodes") or [])
+                 if n.get("visible") and str(n.get("state")) in _CLICKABLE_STATES)
+
+
+def await_gone_or_changed(bus, root, before_sig, cap, tag, tick=0.1):
+    t0 = time.time()
+    while True:
+        if root not in _open_roots(bus):
+            common.waitlog(tag, time.time() - t0, True, "%s gone" % root)
+            return "gone"
+        if panel_sig(bus, root) != before_sig:
+            common.waitlog(tag, time.time() - t0, True, "%s changed" % root)
+            return "changed"
+        if time.time() - t0 >= cap:
+            common.waitlog(tag, time.time() - t0, False, "%s unchanged" % root)
+            return "stuck"
+        time.sleep(tick)
+
+
+def _insist(bus, root, btn, settle, tries=2):
     out = []
-    for _ in range(tries):
+    for attempt in range(tries):
         for key in ("space", "escape"):
             try:
                 bus.send("key", "@root %s" % key, timeout=_FIND_T)
             except Exception:
                 pass
-        time.sleep(settle)
-        if root not in _open_roots(bus):
+        if _await_root_gone(bus, root, settle, "insist_keys_settle"):
+            common.trylog("insist_retry", attempt + 1, tries, True, "%s closed by key" % root)
             return out
         try:
             res = bus.send("click", btn, timeout=_FIND_T) or {}
         except Exception as e:
             _warn("close_popups", "insist click failed on %s -> %s" % (root, repr(e)[:60]))
+            common.trylog("insist_retry", attempt + 1, tries, False, "click raised on %s" % root)
             return out
         if res.get("clicked"):
             out.append(btn)
-        time.sleep(settle)
-        if root not in _open_roots(bus):
+        if _await_root_gone(bus, root, settle, "insist_click_settle"):
+            common.trylog("insist_retry", attempt + 1, tries, True, "%s closed by click" % root)
             return out
+        common.trylog("insist_retry", attempt + 1, tries, False, "%s still open" % root)
     _warn("close_popups", "%s stayed open after %d insist rounds on %s" % (root, tries, btn))
     return out
 
 
-def close_popups(bus, max_rounds=8, settle=0.7):
+def close_popups(bus, max_rounds=4, settle=0.7):
     clicked_paths = []
     protected = set()
     census_roots(bus)
@@ -292,13 +345,17 @@ def close_popups(bus, max_rounds=8, settle=0.7):
             if root not in BASE_ROOTS and root not in BENIGN_PANELS:
                 dump_screen(bus, root, "predismiss")
             for btn in find_dismiss_buttons(bus, root):
+                sig = panel_sig(bus, root)
                 res = bus.send("click", btn, timeout=_FIND_T) or {}
                 if res.get("clicked"):
                     clicked_paths.append(btn)
                     clicked_this_round = True
-                    time.sleep(settle)
-                    if root in _open_roots(bus):
+                    outcome = await_gone_or_changed(bus, root, sig, settle,
+                                                    "dismiss_click_settle")
+                    if outcome == "stuck":
                         clicked_paths += _insist(bus, root, btn, settle)
+                    else:
+                        break
                 else:
                     _warn("close_popups", "dismiss click did not register: %s (%s)" % (btn, res))
         if not clicked_this_round:
@@ -378,14 +435,14 @@ def hover(bus, root, match, frac=(0.5, 0.5), settle=0.9):
         _warn("hover(%s, %s)" % (root, match), "find_rect returned nothing/position-less -> None")
         return None
     r = bus_input(bus, "nav.py:hover(%s,%s)" % (root, match), n.get("path"), action="hover")
-    time.sleep(settle)
+    common.wait("hover_settle", settle, match)
     return {"path": n.get("path"), "delivered": bool(r)}
 
 
 BASE_ROOTS = frozenset((
     "ai_attack_targets_parent", "3d_ui_parent", "mission_indicator_parent", "hud_campaign",
     "menu_bar", "panel_manager", "under_advisor_docker", "tooltip_default", "saving_icon",
-    "ai_turns",
+    "ai_turns", "campaign", "tutorial_halo_group",
     "character_map_path_icons", "targeting_interface_dimming", "black_fade", "resources_bar",
     "help_panel", "qa_console", "campaign_space_bar_options",
 ))
@@ -399,9 +456,7 @@ def visible_roots(bus):
 
 
 def deselect(bus):
-    r = ccmd(bus, CLOSE_AND_CLEAR)
-    time.sleep(0.4)
-    return r
+    return ccmd(bus, CLOSE_AND_CLEAR)
 
 
 def capital_region(bus):

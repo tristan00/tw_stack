@@ -62,6 +62,9 @@ class Executor:
         return rec
 
     def resolve_interrupts(self):
+        if self.defeated_row_seen():
+            sys.stderr.write("executor: resolve skipped -- faction_destroyed row present\n")
+            return []
         return interrupts.resolve(self.bus)
 
     def defeated_probe(self):
@@ -73,8 +76,6 @@ class Executor:
 
     def mark_campaign_start(self):
         self._campaign_offset = self.bus.out_offset()
-
-    END_PANEL_BUTTON_XY = (0.5, 1345.0 / 1440.0)
 
     def game_is_foreground(self):
         try:
@@ -110,60 +111,17 @@ class Executor:
             for c in codes:
                 u.keybd_event(c, 0, 0, 0)
                 time.sleep(0.02)
-            time.sleep(hold)
+            common.wait("hotkey_pacing", hold, "+".join(keys))
             for c in reversed(codes):
                 u.keybd_event(c, 0, KEYEVENTF_KEYUP, 0)
                 time.sleep(0.02)
-            time.sleep(settle)
+            common.wait("hotkey_settle", settle, "+".join(keys))
             sys.stderr.write("executor: hardware hotkey %s sent to %r\n"
                              % ("+".join(keys), title))
             return True
         except Exception as e:
             sys.stderr.write("executor: hardware hotkey failed -> %s\n" % repr(e)[:110])
             return False
-
-    def click_screen(self, fx, fy, settle=0.6):
-        try:
-            import ctypes
-            u = ctypes.windll.user32
-            sw, sh = u.GetSystemMetrics(0), u.GetSystemMetrics(1)
-            x, y = int(fx * (sw - 1)), int(fy * (sh - 1))
-            ax, ay = int(x * 65535 / (sw - 1)), int(y * 65535 / (sh - 1))
-            u.mouse_event(0x8001, ax, ay, 0, 0)
-            time.sleep(0.08)
-            u.mouse_event(0x0002, 0, 0, 0, 0)
-            time.sleep(0.05)
-            u.mouse_event(0x0004, 0, 0, 0, 0)
-            time.sleep(settle)
-            sys.stderr.write("executor: hardware click at (%d,%d) of %dx%d\n" % (x, y, sw, sh))
-            return True
-        except Exception as e:
-            sys.stderr.write("executor: hardware click failed -> %s\n" % repr(e)[:110])
-            return False
-
-    def leave_campaign_via_click(self, timeout=12.0, poll=1.0):
-        try:
-            start = os.path.getsize(self.bus.out_path)
-        except OSError:
-            start = 0
-        fx, fy = self.END_PANEL_BUTTON_XY
-        if not self.click_screen(fx, fy):
-            return False
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            try:
-                with open(self.bus.out_path, "rb") as f:
-                    f.seek(start)
-                    data = f.read()
-            except OSError:
-                data = b""
-            if b'"frontend_armed"' in data:
-                sys.stderr.write("executor: campaign left via the panel button -- frontend armed\n")
-                return True
-            time.sleep(poll)
-        sys.stderr.write("executor: clicked the end panel but the frontend never armed in %ss\n"
-                         % timeout)
-        return False
 
     def defeated_row_seen(self):
         import json
@@ -192,7 +150,7 @@ class Executor:
                 return True
         return False
 
-    def settle_between_turns(self, timeout=420.0, poll=4.0, turn_before=None, abort=None):
+    def settle_between_turns(self, timeout=30.0, poll=4.0, turn_before=None, abort=None):
         t0 = time.time()
         steps = []
 
@@ -200,6 +158,7 @@ class Executor:
             return abort is not None and abort()
 
         def _bail():
+            common.waitlog("settle_between_turns", time.time() - t0, False, "aborted")
             sys.stderr.write("executor: settle aborted -- the run was declared stuck\n")
             return {"turn": None, "steps": steps, "waited_s": round(time.time() - t0, 1),
                     "aborted": True}
@@ -222,14 +181,23 @@ class Executor:
                                          timeout=poll, offset=off, pred=_row_wanted)
             if row is not None:
                 if row.get("cmd") == "faction_destroyed":
+                    common.waitlog("settle_between_turns", time.time() - t0, False,
+                                   "defeated event=%s" % row.get("event"))
                     sys.stderr.write("executor: settle -- the faction is DEAD (event=%s)\n"
                                      % row.get("event"))
                     return {"turn": None, "steps": steps + ["defeated"],
                             "waited_s": round(time.time() - t0, 1), "defeated": True}
+                common.waitlog("settle_between_turns", time.time() - t0, True,
+                               "turn=%s" % row.get("turn"))
                 return {"turn": row.get("turn"), "steps": steps,
                         "waited_s": round(time.time() - t0, 1)}
             if _aborted():
                 return _bail()
+            if self.defeated_row_seen():
+                common.waitlog("settle_between_turns", time.time() - t0, False, "defeated row")
+                sys.stderr.write("executor: settle -- the faction is DEAD (row)\n")
+                return {"turn": None, "steps": steps + ["defeated"],
+                        "waited_s": round(time.time() - t0, 1), "defeated": True}
             s = self.resolve_interrupts()
             if s:
                 steps.extend(s)
@@ -237,11 +205,16 @@ class Executor:
             if rounds % 8 == 0:
                 t = self.turn_number()
                 if t is not None and (turn_before is None or t > turn_before):
+                    common.waitlog("settle_between_turns", time.time() - t0, True,
+                                   "turn=%s via probe" % t)
                     return {"turn": t, "steps": steps, "waited_s": round(time.time() - t0, 1)}
                 if interrupts.defeated_probe(self.bus) is True:
+                    common.waitlog("settle_between_turns", time.time() - t0, False,
+                                   "defeated probe")
                     sys.stderr.write("executor: settle -- the faction is DEAD (probe)\n")
                     return {"turn": None, "steps": steps + ["defeated"],
                             "waited_s": round(time.time() - t0, 1), "defeated": True}
+        common.waitlog("settle_between_turns", time.time() - t0, False, "timeout")
         sys.stderr.write("executor: turn did not advance within %ss (steps=%s)\n" % (timeout, steps))
         return {"turn": None, "steps": steps, "waited_s": round(time.time() - t0, 1)}
 
@@ -366,6 +339,8 @@ class Executor:
 
     def kill_game(self):
         import subprocess
+        import bus as _bus
+        t0 = time.time()
         try:
             subprocess.run(["powershell", "-NoProfile", "-Command",
                             "Get-Process -Name Warhammer3 -ErrorAction SilentlyContinue "
@@ -374,57 +349,13 @@ class Executor:
                            creationflags=subprocess.CREATE_NO_WINDOW)
         except Exception as e:
             sys.stderr.write("executor: kill_game -> %s\n" % repr(e)[:120])
-
-    def game_is_up(self):
-        import bus as _bus
-        return _bus._game_alive()
-
-    def wait_game_down(self, timeout=5.0, poll=0.25, log=None):
-        for attempt in (1, 2):
-            t0 = time.time()
-            while time.time() - t0 < timeout:
-                if not self.game_is_up():
-                    return True
-                time.sleep(poll)
-            if attempt == 1:
-                if log:
-                    log("   game still up %.0fs after kill -- killing again" % timeout)
-                self.kill_game()
-        return not self.game_is_up()
+        while _bus._game_alive() and time.time() - t0 < 10.0:
+            time.sleep(0.2)
+        common.waitlog("kill_game_down", time.time() - t0, not _bus._game_alive())
 
     def rotate_out_log(self):
         import bus_launcher
         return bus_launcher.BusLauncher().rotate_out_log()
-
-    def hard_restart(self, plan, campaign="Immortal Empires", boot_timeout=30):
-        self.kill_game()
-        self.wait_game_down()
-        return self.start_game(plan=plan, campaign=campaign, boot_timeout=boot_timeout)
-
-    def at_main_menu(self):
-        return "main" in self.visible_roots()
-
-    def ensure_campaign(self, plan, campaign="Immortal Empires", fresh=False):
-        if self.at_main_menu():
-            import bus_launcher
-            bl = bus_launcher.BusLauncher()
-            bl.bus = self.bus
-            started = bl.start_campaign(plan, campaign=campaign)
-            self.bus = bl.bus or self.bus
-            return started
-        if self.turn_number() is None:
-            raise RuntimeError("game is neither at the main menu nor in a readable campaign "
-                               "(roots=%s)" % self.visible_roots())
-        return self.new_campaign(plan, campaign) if fresh else {"already_in_campaign": True,
-                                                                "turn": self.turn_number()}
-
-    def new_campaign(self, plan, campaign="Immortal Empires"):
-        import bus_launcher
-        bl = bus_launcher.BusLauncher()
-        bl.bus = self.bus
-        started = bl.restart_campaign(plan, campaign=campaign)
-        self.bus = bl.bus or self.bus
-        return started
 
     def screenshot(self, name):
         path = os.path.join(self.shots_dir, "%s.png" % name)

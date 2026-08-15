@@ -107,15 +107,15 @@ def start_analytics():
 
 def rebuild_analytics():
     steps = [kill_analytics()]
-    time.sleep(0.5)
+    common.wait("runctl_analytics_settle", 0.5)
     log = os.path.join(SERVICES_LOG_DIR, "analytics_rebuild_%s.log" % _stamp())
     _spawn([VENV_PY, "-u", "-m", "analytics.runner", "--rebuild"], log, merge_err=True)
     steps.append("analytics rebuilding -> %s" % log)
     return steps
 
 
-def start_session(campaigns, turns, model=None, cfg=None, retrain=True, retrain_every=0,
-                  cold=False, dev=True, epsilon=None, factions="all", strategies=None,
+def start_session(campaigns, turns, retrain_every=0,
+                  cold=False, dev=True, factions="all", strategies=None,
                   ruleset=None, campaign=None, retrain_first=False, presave_radius=None):
     if not str(factions or "").strip():
         raise SystemExit("--factions must be 'all', 'no-cutscene', or a comma-separated "
@@ -131,20 +131,13 @@ def start_session(campaigns, turns, model=None, cfg=None, retrain=True, retrain_
                 % (presave_radius, bake_saves.presave_dir(),
                    bake_saves.presave_radii() or "none"))
     ts = _stamp()
-    log = os.path.join(LOG_DIR, "session_%s%s%sx%s_%s.log"
-                       % ("cold_" if cold else "", ("%s_" % model) if model else "",
-                          campaigns, turns, ts))
-    cfg_args = []
-    for k, v in sorted((cfg or {}).items()):
-        cfg_args += ["--nn-%s" % k, str(v)]
+    log = os.path.join(LOG_DIR, "session_%s%sx%s_%s.log"
+                       % ("cold_" if cold else "", campaigns, turns, ts))
     args = ([VENV_PY, "-u", "advisor/session.py", str(campaigns), str(turns),
              "--factions", str(factions).strip()]
-            + (["--model", model] if model else []) + cfg_args
             + (["--cold"] if cold else [])
-            + (["--retrain"] if retrain and not cold else [])
             + (["--retrain-every", str(retrain_every)] if retrain_every and not cold else [])
             + (["--retrain-first"] if retrain_first and retrain_every and not cold else [])
-            + (["--epsilon", str(epsilon)] if epsilon is not None else [])
             + (["--strategies", str(strategies)] if strategies else [])
             + (["--ruleset", str(ruleset)] if ruleset else [])
             + (["--campaign", str(campaign)] if campaign else [])
@@ -162,24 +155,24 @@ def start_session(campaigns, turns, model=None, cfg=None, retrain=True, retrain_
     return log
 
 
-def up(campaigns, turns, model=None, cfg=None, retrain=True, retrain_every=0, cold=False,
-       dev=True, shots=DEFAULT_SHOTS, port=DEFAULT_PORT, with_ui=True, epsilon=None,
+def up(campaigns, turns, retrain_every=0, cold=False,
+       dev=True, shots=DEFAULT_SHOTS, port=DEFAULT_PORT, with_ui=True,
        factions="all", strategies=None, ruleset=None, campaign=None, retrain_first=False,
        presave_radius=None):
     steps = [kill_session(), kill_recorder()]
     if with_ui:
         steps.append(kill_ui())
         steps.append(kill_analytics())
-    time.sleep(1.5)
+    common.wait("runctl_kill_settle", 1.5)
     steps.append(start_recorder(shots=shots, dev=dev, presave_radius=presave_radius))
-    time.sleep(3.0)
+    common.wait("runctl_recorder_spawn_grace", 3.0)
     if with_ui:
         steps.append(start_ui(port=port))
         steps.append(start_analytics())
-        time.sleep(2.0)
-    steps.append("session -> %s" % start_session(campaigns, turns, model=model, cfg=cfg,
-                                                 retrain=retrain, retrain_every=retrain_every,
-                                                 cold=cold, dev=dev, epsilon=epsilon,
+        common.wait("runctl_ui_spawn_grace", 2.0)
+    steps.append("session -> %s" % start_session(campaigns, turns,
+                                                 retrain_every=retrain_every,
+                                                 cold=cold, dev=dev,
                                                  factions=factions, strategies=strategies,
                                                  ruleset=ruleset, campaign=campaign,
                                                  retrain_first=retrain_first,
@@ -212,16 +205,6 @@ def status():
     return procs + ["pointer: %s" % ptr]
 
 
-def _cfg(pairs):
-    out = {}
-    for p in pairs or []:
-        k, _, v = p.partition("=")
-        if not _:
-            raise SystemExit("--cfg expects KEY=VALUE, got %r" % p)
-        out[k.strip()] = v.strip()
-    return out
-
-
 def main():
     ap = argparse.ArgumentParser(prog="runctl", description="start and stop tw_stack runs")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -230,13 +213,10 @@ def main():
         s = sub.add_parser(name)
         s.add_argument("campaigns", type=int, nargs="?", default=RUN["campaigns"])
         s.add_argument("turns", nargs="?", default=str(RUN["turns"]))
-        s.add_argument("--model", default=RUN["model"])
         s.add_argument("--factions", default=RUN["factions"],
                        help="all | no-cutscene | key,key,...  ('no-cutscene' drops the 14 "
                             "starts that open on an intro movie; see "
                             "launcher/cutscene_starts.py)")
-        s.add_argument("--cfg", action="append")
-        s.add_argument("--no-retrain", action="store_true")
         s.add_argument("--retrain-every", type=int, default=RUN["retrain_every"])
         s.add_argument("--retrain-first", action="store_true",
                        default=RUN["retrain_first"],
@@ -245,7 +225,6 @@ def main():
         s.add_argument("--no-retrain-first", dest="retrain_first",
                        action="store_false",
                        help="skip the campaign-1 retrain even though run_config wants it")
-        s.add_argument("--epsilon", type=float, default=None)
         s.add_argument("--strategies", default=RUN["strategies"])
         s.add_argument("--ruleset", default=RUN["ruleset"])
         s.add_argument("--campaign", default=RUN["campaign"])
@@ -254,8 +233,6 @@ def main():
                             "radius instead of starting fresh campaigns; fails if none "
                             "are baked at that radius")
         s.add_argument("--cold", action="store_true")
-        s.add_argument("--dev", action="store_true",
-                       help="(default; accepted so the old spelling still works)")
         s.add_argument("--no-dev", action="store_true",
                        help="turn the diagnostic streams OFF -- they are on by default")
         if name == "up":
@@ -271,9 +248,8 @@ def main():
     if a.cmd == "down":
         print("\n".join(down()))
         return
-    common = dict(model=a.model, cfg=_cfg(a.cfg), retrain=not a.no_retrain,
-                  retrain_every=a.retrain_every, retrain_first=a.retrain_first,
-                  cold=a.cold, dev=not a.no_dev, epsilon=a.epsilon,
+    common = dict(retrain_every=a.retrain_every, retrain_first=a.retrain_first,
+                  cold=a.cold, dev=not a.no_dev,
                   factions=a.factions, strategies=a.strategies, ruleset=a.ruleset,
                   campaign=a.campaign, presave_radius=a.presave_radius)
     if a.cmd == "session":
