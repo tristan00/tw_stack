@@ -58,12 +58,21 @@ diplomacy) as its own ranking problem.
 Campaigns are abandoned early when they stop growing, so the run spends its time on
 trajectories that are still going somewhere rather than on 20 turns of nothing.
 
+The trainable arms are hard dependencies: if a model in the mix is missing, fails to load,
+fails to train, or fails to predict, the session refuses to start or crashes rather than
+silently playing random in its place. Only `--cold` runs modelless, deliberately.
+Retraining never happens unless asked for (`--retrain-every N`, optionally
+`--retrain-first`); a launch plays on the models already on disk. The graph models train
+on CUDA.
+
 ## Requirements
 
 - Total War: WARHAMMER III, installed and run once so its settings file exists
 - Python 3.11+ (3.13 here; `tomllib` is used to read the config)
 - Node LTS, for the dashboard client
-- An NVIDIA GPU is used if present; the graph model trains on CPU otherwise
+- An NVIDIA GPU with a CUDA build of torch — the graph models train on CUDA, and a CPU-only
+  torch wheel leaves `marwil_gnn` unable to retrain (the session refuses rather than
+  degrading silently)
 
 ## Setup
 
@@ -100,21 +109,38 @@ rather than shipping a pack pointing at the machine that last built it.
 
     python check.py                      # every gate; do this first on a new machine
 
-    python runctl.py up 500 20 --campaign "Realm of Chaos" --model catboost \
-        --strategies marwil_gnn=0.3,greedy_catboost=0.3,random=0.3,ruleset=0.1 \
-        --ruleset probe_gaps --factions all --dev
+    python runctl.py up                  # the configured run: run_config.RUN
 
-That plays 500 campaigns of up to 20 turns and starts four processes: the recorder, the
-API on `:8777`, the analytics roller, and the play session. It builds and installs the mod
-pack, launches the game, and drives it from there — nothing else to click.
+`run_config.RUN` is the authoritative description of the run — campaigns, turns, the
+strategy mix, ruleset, campaign-map mix, presave radius, retrain cadence. `runctl up`
+starts four processes: the recorder, the API on `:8777`, the analytics roller, and the
+play session. It builds and installs the mod pack, boots the game, and drives it from
+there — nothing else to click. Any RUN value can be overridden per launch, e.g.:
+
+    python runctl.py up 500 20 --campaign "Realm of Chaos=0.5,Immortal Empires=0.5" \
+        --strategies marwil_gnn=0.4,greedy_catboost=0.4,random=0.1,ruleset=0.1 \
+        --ruleset probe_gaps --factions all --presave-radius 150
+
+Models are chosen only through `--strategies`; there is no model flag (the exploit scorer
+that ranks every offer is fixed — `advisor/backends.py` is its registry). `--epsilon`,
+`--retrain`, `--cfg`/`--nn-*` were removed and are rejected with pointers to their
+replacements.
 
     open http://127.0.0.1:8777          # watch it
     python babysit.py --loop 300        # supervise: relaunch a dead session, same config
     python runctl.py down               # stop everything
 
-`babysit.RUN` is the authoritative description of the run. A relaunch reproduces it
-exactly; a supervisor that quietly brings the run back in a different shape is worse than
-none, because the corpus keeps growing either way.
+The run is engineered for throughput measured in turns per hour, wall-clock honest. Each
+campaign kills the game when its fate is sealed (defeat, growth gate, stall) and the next
+one boots fresh — no state is ever inherited across campaigns, and no action starts on an
+uncleared screen. A turn whose end-turn cannot advance within the settle budget ends the
+campaign rather than waiting. Blocking screens the handlers do not recognise are treated
+as panel-handling bugs: each gets a hardcoded per-screen rule (exact title and node
+paths), never an early generalisation.
+
+Every wait and retry in the stack logs its use and outcome — greppable `WAIT`, `TRY` and
+`PHASE` lines in the service `.err` files, every line ISO-timestamped. "Where did the
+seconds go" is always one grep.
 
 `check.py` marks which gates need a live game or a populated corpus. The rest run on a
 fresh clone.

@@ -9,7 +9,7 @@
    streams: logs · input · shots ·       │              executor registry, nav,      │
    ui-capture · actions · decisions ─────┘              interrupts, screen/ps) ──────┘
                  │                                              ▲
-   run dirs  <TWDATA>/runs/human/<ts>/  + CURRENT_RUN           │ execute picked action
+   run dir  <TWDATA>/runs/human/run/  + CURRENT_RUN             │ execute picked action
                  │                                              │
    advisor (BACKEND: session → loop → policy/model)  ───────────┘
    strategy portfolio: greedy_catboost (argmax of the E1-E2 advantage) · marwil_gnn (MARWIL/AWR
@@ -57,8 +57,34 @@
    decides; the **UI** reads.
 3. An action is taken only when `executed AND confirmed` — unverified clicks are voided.
 4. **No logs, data, DBs, or models in this repo.** Everything a run produces lives under
-   `TWDATA` (see README): `runs/` `models/{global,local,interrupt}/` `reference/`
-   `logs/{advisor,launcher,services}/` `scratch/` `tmp/catboost/` `repo_archive/`.
+   `TWDATA` (see README): `runs/` `models/{global,local,interrupt,mapgraph,mapgraph_interrupt}/`
+   `reference/` `logs/{advisor,launcher,services}/` `scratch/` `tmp/catboost/` `repo_archive/`.
    The exception is `rules/` — a rule set is an INPUT that decides how the agent plays, so
    a run is not reproducible elsewhere if it lives outside the checkout. `<TWDATA>/rules/`
    is still searched first, as a local override for trying a variant.
+
+## Lifecycle & guardrails
+- **A campaign kills the game itself** the moment its fate is sealed — defeat, growth gate,
+  stall, or any error. The single kill site is `run_campaign`'s `finally`, and the kill
+  confirms the process is gone before it returns. **The next campaign always boots fresh**
+  (presave restore → `load_save`, or `start_game`) and never references, recovers, or
+  cleans up after the previous one — not even a game sitting at the main menu.
+- **Trainable arms are hard dependencies.** A model gate at session start refuses to run if
+  any trainable arm in the mix (`greedy_catboost`, `marwil_gnn`, main and interrupt) cannot
+  load a usable model; a retrain that raises or reports `trained: false` kills the session;
+  a predict failure raises `ModelUnavailable` and ends the run. Only `--cold` runs
+  modelless. Retraining is opt-in (`--retrain-every N`); a launch never refits by default.
+- **Stalls die fast.** A turn whose end-turn cannot advance within the settle budget is a
+  verdict (`turn_stalled`), a controlless overlay persisting across resolve sweeps is a
+  verdict, an unclaimed clickable screen across two passes is a verdict — each ends the
+  campaign immediately instead of waiting anything out. Screens the handlers cannot clear
+  are panel-handling bugs and get hardcoded per-screen rules (exact title + node paths),
+  never early generalisation.
+- **Every wait and retry logs its use and outcome** — `WAIT`/`TRY`/`PHASE` lines via
+  `common.wait/waitlog/trylog/phaselog`, and all service output is ISO-timestamped by
+  `common.install_stamped_logs()`. Fixed sleeps are converted to condition-polls capped at
+  the old duration; wait budgets only ever go down, and never to accommodate slow interrupt
+  handling — slow click-through is the thing to fix.
+- The exploit scorer (backend) is fixed and internal (`advisor/backends.py`); the CLI's only
+  model surface is `--strategies`. `run_config.RUN` is the authoritative run description
+  for both `runctl` and `babysit`.
