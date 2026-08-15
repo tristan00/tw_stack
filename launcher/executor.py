@@ -173,11 +173,26 @@ class Executor:
                 return bool(r.get("is_us"))
             return turn_before is None or (r.get("turn") or 0) > turn_before
 
+        def _bus_silent():
+            common.waitlog("settle_between_turns", time.time() - t0, False,
+                           "bus silent x%d -- defeat modal or crash" % self.bus.consec_timeouts)
+            sys.stderr.write("executor: settle -- the bus went silent, the defeat "
+                             "modal or a crash owns the game now\n")
+            return {"turn": None, "steps": steps + ["bus_silent"],
+                    "waited_s": round(time.time() - t0, 1)}
+
         rounds = 0
-        dead_pings = 0
         while time.time() - t0 < timeout:
             if _aborted():
                 return _bail()
+            if getattr(self.bus, "consec_timeouts", 0) >= 3:
+                if self.defeated_row_seen():
+                    common.waitlog("settle_between_turns", time.time() - t0, False,
+                                   "defeated row")
+                    sys.stderr.write("executor: settle -- the faction is DEAD (row)\n")
+                    return {"turn": None, "steps": steps + ["defeated"],
+                            "waited_s": round(time.time() - t0, 1), "defeated": True}
+                return _bus_silent()
             row, off = self.bus.wait_row(("turn_start", "faction_destroyed"),
                                          timeout=poll, offset=off, pred=_row_wanted)
             if row is not None:
@@ -201,16 +216,9 @@ class Executor:
                         "waited_s": round(time.time() - t0, 1), "defeated": True}
             try:
                 self.bus.send("roots", "", timeout=1.5)
-                dead_pings = 0
             except Exception:
-                dead_pings += 1
-                if dead_pings >= 3:
-                    common.waitlog("settle_between_turns", time.time() - t0, False,
-                                   "bus silent x3 -- defeat modal or crash")
-                    sys.stderr.write("executor: settle -- the bus went silent, the defeat "
-                                     "modal or a crash owns the game now\n")
-                    return {"turn": None, "steps": steps + ["bus_silent"],
-                            "waited_s": round(time.time() - t0, 1)}
+                if self.bus.consec_timeouts >= 3:
+                    return _bus_silent()
                 continue
             s = self.resolve_interrupts()
             if s:
@@ -228,6 +236,8 @@ class Executor:
                     sys.stderr.write("executor: settle -- the faction is DEAD (probe)\n")
                     return {"turn": None, "steps": steps + ["defeated"],
                             "waited_s": round(time.time() - t0, 1), "defeated": True}
+        if getattr(self.bus, "consec_timeouts", 0) >= 3:
+            return _bus_silent()
         common.waitlog("settle_between_turns", time.time() - t0, False, "timeout")
         sys.stderr.write("executor: turn did not advance within %ss (steps=%s)\n" % (timeout, steps))
         return {"turn": None, "steps": steps, "waited_s": round(time.time() - t0, 1)}

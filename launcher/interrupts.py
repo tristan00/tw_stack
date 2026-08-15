@@ -1609,6 +1609,11 @@ def resolve(bus, max_rounds=4):
     waited = 0
     watch = {"at": None, "seen": set(), "now": (), "polls": 0, "waited_s": 0.0}
     for _ in range(max_rounds):
+        if getattr(bus, "consec_timeouts", 0) >= 3:
+            sys.stderr.write("interrupts: resolve bailing -- bus silent x%d, nothing left "
+                             "to sweep\n" % bus.consec_timeouts)
+            steps.append("bus_silent")
+            break
         before = tuple(roots(bus))
         watch["now"] = before
         watch["polls"] += 1

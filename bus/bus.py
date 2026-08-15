@@ -127,6 +127,7 @@ class Bus:
         self._seq = self._max_existing_seq()
         self._seq_lock = threading.Lock()
         self._proc_lock = _ProcLock(cmd_path + ".lock")
+        self.consec_timeouts = 0
 
     def _tail_seq(self) -> int:
         try:
@@ -258,6 +259,7 @@ class Bus:
         while time.time() < deadline:
             result = self._scan_result(offset, seq, channel)
             if result is not None:
+                self.consec_timeouts = 0
                 common.waitlog("send_reply_poll", time.time() - t0, True,
                                "seq=%d %s" % (seq, channel))
                 return result
@@ -271,8 +273,9 @@ class Bus:
                                   % (seq, channel, timeout))
                 next_alive = now + 2.0
             time.sleep(self.poll_seconds)
+        self.consec_timeouts += 1
         common.waitlog("send_reply_poll", time.time() - t0, False,
-                       "timeout seq=%d %s" % (seq, channel))
+                       "timeout seq=%d %s consec=%d" % (seq, channel, self.consec_timeouts))
         raise TWError("bus timeout: no result for seq %d cmd %s" % (seq, channel))
 
     def send_batch(self, requests, timeout: float = DEFAULT_TIMEOUT) -> list:
