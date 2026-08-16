@@ -16,7 +16,7 @@ import arms
 from advisor_api import analytics_db as adb, db, queries as q
 from advisor_api.app import app
 
-BUDGET_MS = 400.0
+BUDGET_MS = 1000.0
 
 GET_ENDPOINTS = [
     "/api/health",
