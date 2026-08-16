@@ -141,9 +141,10 @@ def _ro(path):
 def generation_gains(run_dir=None, min_trials=GAINS_MIN_TRIALS):
     run_dir = common.native(run_dir or common.RUN_DIR)
     an = _ro(os.path.join(run_dir, "analytics.sqlite"))
-    segs = an.execute("SELECT trial, generation, seg_from_ts, seg_to_ts, corpus_decisions"
-                      " FROM model_generations ORDER BY seg_from_ts").fetchall()
+    trains = an.execute("SELECT trial, seg_from_ts, corpus_decisions FROM model_generations"
+                        " WHERE retrained=1 ORDER BY seg_from_ts").fetchall()
     an.close()
+    models = [("baseline", float("-inf"), None)] + [tuple(r) for r in trains]
     con = _ro(os.path.join(run_dir, "decisions.sqlite"))
     camps = con.execute(_GAINS_SQL).fetchall()
     con.close()
@@ -151,24 +152,21 @@ def generation_gains(run_dir=None, min_trials=GAINS_MIN_TRIALS):
     for cid, t0, s0, s1, l0, l1, a0, a1, v0, v1 in camps:
         if t0 is None:
             continue
-        seg = None
-        for trial, gen, lo, hi, corpus in segs:
-            if lo <= t0 < hi:
-                seg = (trial, gen, lo, corpus)
-                break
-        if seg is None:
-            continue
-        b = agg.setdefault(seg, {"n": 0, "s": 0.0, "l": 0.0, "a": 0.0, "v": 0.0})
+        model = None
+        for trial, lo, corpus in models:
+            if t0 >= lo:
+                model = (trial, lo, corpus)
+        b = agg.setdefault(model, {"n": 0, "s": 0.0, "l": 0.0, "a": 0.0, "v": 0.0})
         b["n"] += 1
         b["s"] += (s1 or 0) - (s0 or 0)
         b["l"] += (l1 or 0) - (l0 or 0)
         b["a"] += (a1 or 0) - (a0 or 0)
         b["v"] += (v1 or 0) - (v0 or 0)
     out = []
-    for (trial, gen, lo, corpus), b in sorted(agg.items(), key=lambda kv: kv[0][2]):
+    for (trial, lo, corpus), b in sorted(agg.items(), key=lambda kv: kv[0][1]):
         if b["n"] < min_trials:
             continue
-        out.append({"trial": trial, "generation": gen, "from_ts": lo,
+        out.append({"trial": trial, "trained_ts": None if lo == float("-inf") else lo,
                     "train_records": corpus, "n": b["n"],
                     "settlements_gained": round(b["s"] / b["n"], 2),
                     "levels_gained": round(b["l"] / b["n"], 2),
@@ -178,14 +176,15 @@ def generation_gains(run_dir=None, min_trials=GAINS_MIN_TRIALS):
 
 
 def _gains_table(rows):
-    head = ("%-24s %-4s %-12s %10s %5s %12s %8s %8s %8s"
-            % ("trial", "gen", "from", "train_rows", "n", "settlements", "levels",
+    head = ("%-24s %-12s %10s %5s %12s %8s %8s %8s"
+            % ("model (retrain)", "trained", "train_rows", "n", "settlements", "levels",
                "allies", "vassals"))
     lines = [head]
     for r in rows:
-        day = time.strftime("%m-%d %H:%M", time.localtime(r["from_ts"]))
-        lines.append("%-24s %-4s %-12s %10s %5d %12.2f %8.2f %8.2f %8.2f"
-                     % (r["trial"][:24], r["generation"], day,
+        day = (time.strftime("%m-%d %H:%M", time.localtime(r["trained_ts"]))
+               if r["trained_ts"] else "-")
+        lines.append("%-24s %-12s %10s %5d %12.2f %8.2f %8.2f %8.2f"
+                     % (r["trial"][:24], day,
                         r["train_records"] if r["train_records"] is not None else "-",
                         r["n"], r["settlements_gained"], r["levels_gained"],
                         r["allies_gained"], r["vassals_gained"]))
