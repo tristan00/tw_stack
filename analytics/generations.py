@@ -111,3 +111,87 @@ def step(src, an, lo, hi):
         " :corpus_decisions, :campaigns, :computed_ts)",
         [dict(r, computed_ts=now) for r in rows])
     return max(hi, len(rows)), len(rows)
+
+
+GAINS_MIN_TRIALS = 10
+
+_GAINS_SQL = """
+SELECT campaign_id, MIN(ts) t0,
+       (SELECT settlements FROM target_rows x WHERE x.campaign_id=t.campaign_id
+        ORDER BY ts LIMIT 1) s0,
+       MAX(settlements) s1,
+       (SELECT lord_level FROM target_rows x WHERE x.campaign_id=t.campaign_id
+        ORDER BY ts LIMIT 1) l0,
+       MAX(lord_level) l1,
+       (SELECT allies FROM target_rows x WHERE x.campaign_id=t.campaign_id
+        ORDER BY ts LIMIT 1) a0,
+       MAX(allies) a1,
+       (SELECT vassals FROM target_rows x WHERE x.campaign_id=t.campaign_id
+        ORDER BY ts LIMIT 1) v0,
+       MAX(vassals) v1
+FROM target_rows t GROUP BY campaign_id
+"""
+
+
+def _ro(path):
+    import sqlite3
+    return sqlite3.connect("file:%s?mode=ro" % path.replace("\\", "/"), uri=True, timeout=5)
+
+
+def generation_gains(run_dir=None, min_trials=GAINS_MIN_TRIALS):
+    run_dir = common.native(run_dir or common.RUN_DIR)
+    an = _ro(os.path.join(run_dir, "analytics.sqlite"))
+    segs = an.execute("SELECT trial, generation, seg_from_ts, seg_to_ts, corpus_decisions"
+                      " FROM model_generations ORDER BY seg_from_ts").fetchall()
+    an.close()
+    con = _ro(os.path.join(run_dir, "decisions.sqlite"))
+    camps = con.execute(_GAINS_SQL).fetchall()
+    con.close()
+    agg = {}
+    for cid, t0, s0, s1, l0, l1, a0, a1, v0, v1 in camps:
+        if t0 is None:
+            continue
+        seg = None
+        for trial, gen, lo, hi, corpus in segs:
+            if lo <= t0 < hi:
+                seg = (trial, gen, lo, corpus)
+                break
+        if seg is None:
+            continue
+        b = agg.setdefault(seg, {"n": 0, "s": 0.0, "l": 0.0, "a": 0.0, "v": 0.0})
+        b["n"] += 1
+        b["s"] += (s1 or 0) - (s0 or 0)
+        b["l"] += (l1 or 0) - (l0 or 0)
+        b["a"] += (a1 or 0) - (a0 or 0)
+        b["v"] += (v1 or 0) - (v0 or 0)
+    out = []
+    for (trial, gen, lo, corpus), b in sorted(agg.items(), key=lambda kv: kv[0][2]):
+        if b["n"] < min_trials:
+            continue
+        out.append({"trial": trial, "generation": gen, "from_ts": lo,
+                    "train_records": corpus, "n": b["n"],
+                    "settlements_gained": round(b["s"] / b["n"], 2),
+                    "levels_gained": round(b["l"] / b["n"], 2),
+                    "allies_gained": round(b["a"] / b["n"], 2),
+                    "vassals_gained": round(b["v"] / b["n"], 2)})
+    return out
+
+
+def _gains_table(rows):
+    head = ("%-24s %-4s %-12s %10s %5s %12s %8s %8s %8s"
+            % ("trial", "gen", "from", "train_rows", "n", "settlements", "levels",
+               "allies", "vassals"))
+    lines = [head]
+    for r in rows:
+        day = time.strftime("%m-%d %H:%M", time.localtime(r["from_ts"]))
+        lines.append("%-24s %-4s %-12s %10s %5d %12.2f %8.2f %8.2f %8.2f"
+                     % (r["trial"][:24], r["generation"], day,
+                        r["train_records"] if r["train_records"] is not None else "-",
+                        r["n"], r["settlements_gained"], r["levels_gained"],
+                        r["allies_gained"], r["vassals_gained"]))
+    return lines
+
+
+if __name__ == "__main__":
+    for _line in _gains_table(generation_gains()):
+        print(_line)
