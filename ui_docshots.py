@@ -10,7 +10,10 @@ OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docs", "ui")
 SHOTS = (("run", "/run", "text=turns/hr", True),
          ("experiment-ledger", "/models?view=training", "text=experiment ledger", False),
          ("decisions", "/decisions", "text=every action", False),
-         ("decision-detail", "/decisions/21558", "text=where the time went", False))
+         ("decision-detail", "/decisions/21558", "text=where the time went", False),
+         ("campaigns-starts", "/campaigns?view=starts", "text=one row per playable start", False),
+         ("campaigns-all", "/campaigns?view=all", "text=growth (first", False),
+         ("models-disk", "/models", "text=models on disk", True))
 WINDOW = {"width": 1600, "height": 1100}
 CONTENT_TIMEOUT_MS = 20000
 SETTLE_S = 2.0

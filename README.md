@@ -161,6 +161,18 @@ were, and the full scored offer list with the taken row marked:
 
 ![decision detail](docs/ui/decision-detail.png)
 
+The starts — one row per map × faction combination, with how far each start ever got:
+
+![starts](docs/ui/campaigns-starts.png)
+
+Every campaign — one row per campaign played, its map, growth, and volume:
+
+![all campaigns](docs/ui/campaigns-all.png)
+
+The models on disk — what is trained right now, with its fit metrics and configuration:
+
+![models on disk](docs/ui/models-disk.png)
+
 ## Where things live
 
 Code is here. Everything a run produces lives under `TWDATA` — run directories and the
