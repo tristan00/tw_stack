@@ -2,9 +2,9 @@ from __future__ import annotations
 
 
 RUN = {
-    "campaigns": 500,
+    "campaigns": 1000,
     "turns": 20,
-    "retrain_every": 40,
+    "retrain_every": 100,
     "retrain_first": False,
     "strategies": "marwil_gnn=0.4,greedy_catboost=0.4,random=0.1,ruleset=0.1",
     "ruleset": "probe_gaps",
