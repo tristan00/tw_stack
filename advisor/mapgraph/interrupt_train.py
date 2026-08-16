@@ -23,7 +23,7 @@ MODEL_DIR = common.MODEL_MAPGRAPH_INTERRUPT
 
 MIN_ROWS = 120
 
-CFG = dict(T.CFG, time_budget_s=60, batch=64, patience=15)
+CFG = dict(T.CFG, time_budget_s=120, batch=64, patience=15)
 
 
 def context_for(store, rows):
