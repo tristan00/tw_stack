@@ -86,6 +86,17 @@ def run(trials=60, budget_s=600.0):
             _, fit, _, _ = T.fit_net(datas, ys, groups, cfg,
                                      log=lambda s: _log("  t%d %s" % (trial.number, s)),
                                      on_epoch=on_epoch)
+        except optuna.TrialPruned:
+            torch.cuda.empty_cache()
+            raise
+        except RuntimeError as e:
+            msg = repr(e)[:200]
+            _log("TRIAL %d FAILED %s" % (trial.number, msg))
+            e = None
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
+            raise RuntimeError(msg) from None
         finally:
             torch.cuda.empty_cache()
         row = {"trial": trial.number, "params": p, "seconds": round(time.time() - t0, 1),
