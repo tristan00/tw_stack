@@ -46,10 +46,7 @@ class Ranker:
                     % (str(meta.get("schema_hash"))[:12], S.schema_hash()[:12]))
                 self.meta = meta
                 return
-            try:
-                from advisor.mapgraph import net as N
-            except ImportError:
-                import net as N
+            from advisor.mapgraph import net as N
             cfg = meta.get("cfg") or {}
             net = N.from_cfg(cfg)
             net.encoder.load_state_dict(blob["encoder"])
@@ -57,17 +54,15 @@ class Ranker:
             net.eval()
             self.net, self.meta, self.ready = net, meta, True
         except Exception as e:
-            sys.stderr.write("mapgraph.rank: load failed -> %s -- unready, gnn draws "
-                             "fall back to random\n" % repr(e)[:160])
+            sys.stderr.write("mapgraph.rank: load failed -> %s -- unready; the model "
+                             "gate refuses trainable arms without a usable model\n"
+                             % repr(e)[:160])
 
     def score_elig(self, offers, record):
         if not self.ready:
             raise RuntimeError("mapgraph.rank: score_elig on an unready Ranker")
         import torch
-        try:
-            from advisor.mapgraph import net as N
-        except ImportError:
-            import net as N
+        from advisor.mapgraph import net as N
         g = B.build_graph(record)
         if g is None:
             raise ValueError("mapgraph.rank: record produced no graph")

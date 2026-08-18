@@ -279,10 +279,7 @@ _DENSE_CACHE = {}
 
 def _dense(kind):
     if not _DENSE_CACHE:
-        try:
-            from advisor.mapgraph import catalogue as _cat
-        except ImportError:
-            import catalogue as _cat
+        from advisor.mapgraph import catalogue as _cat
         _DENSE_CACHE.update(_cat.dense_ids())
         _DENSE_CACHE.setdefault("__loaded__", True)
     return _DENSE_CACHE.get(kind) or {}

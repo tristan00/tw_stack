@@ -24,6 +24,7 @@ CFG = {"hidden": 256, "entity_layers": 1, "action_rounds": 3,
        "map_aggr": "max", "act_aggr": "add+mean", "attn": "act",
        "conv": "sage", "conv_map": None, "conv_a2e": None, "conv_e2a": "rel",
        "dst_dim": 48, "update": "linear", "self_transform": False,
+       "dropout": 0.15,
        "lr": 3.501e-4, "weight_decay": 4.320e-3, "batch": 384, "epochs": 30, "patience": 10,
        "grad_clip": 5.0, "adv_tau": 1.0, "adv_clip": 20.0, "value_weight": 0.1351, "bf16": True,
        "seed": 0, "time_budget_s": 1200, "device": "cuda"}
@@ -86,10 +87,7 @@ def walk(runs_root=None, limit=None, log=print, workers=None):
     runs_root = runs_root or RUNS_ROOT
     dbs = common.run_dbs(runs_root)
 
-    try:
-        from advisor.mapgraph import corpus as CO
-    except ImportError:
-        import corpus as CO
+    from advisor.mapgraph import corpus as CO
 
     series, skipped, live = {}, [], []
     for db in dbs:
@@ -183,14 +181,16 @@ def _tensorize(examples):
 
 def _device(cfg, log):
     import torch
-    want = str(cfg.get("device") or "auto")
-    if want != "cpu" and torch.cuda.is_available():
+    want = str(cfg.get("device") or "")
+    if want == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError("mapgraph.train: device=cuda requested, CUDA unavailable")
         log("mapgraph.train: device cuda (%s)" % torch.cuda.get_device_name(0))
         return torch.device("cuda")
-    if want == "cuda":
-        raise RuntimeError("mapgraph.train: device=cuda requested, CUDA unavailable")
-    log("mapgraph.train: device cpu")
-    return torch.device("cpu")
+    if want == "cpu":
+        log("mapgraph.train: device cpu")
+        return torch.device("cpu")
+    raise RuntimeError("mapgraph.train: device must be cuda or cpu, got %r" % want)
 
 
 def _corpus_bytes(batches):
@@ -214,10 +214,7 @@ def _collate(items, size, dev, log, tag):
 def fit_net(datas, ys, groups, cfg, log=print, on_epoch=None):
     import torch
     from base_model import stable_split
-    try:
-        from advisor.mapgraph import net as N
-    except ImportError:
-        import net as N
+    from advisor.mapgraph import net as N
 
     torch.set_num_threads(THREADS)
     torch.manual_seed(cfg["seed"])
@@ -377,10 +374,7 @@ def train(runs_root=None, cfg=None, log=None):
 def _overfit(limit=8):
     import torch
     from torch_geometric.data import Batch
-    try:
-        from advisor.mapgraph import net as N
-    except ImportError:
-        import net as N
+    from advisor.mapgraph import net as N
     w = walk(limit=limit)
     ex = w["examples"]
     if not ex:

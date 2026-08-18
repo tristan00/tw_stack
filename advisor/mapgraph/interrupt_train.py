@@ -59,10 +59,7 @@ def walk(runs_root=None, limit=None, log=print):
     import torch
     from base_model import RUNS_ROOT, decision_deltas, target
     from store import DecisionStore, IncompatibleStore
-    try:
-        from advisor.mapgraph import net as N
-    except ImportError:
-        import net as N
+    from advisor.mapgraph import net as N
 
     runs_root = runs_root or RUNS_ROOT
     examples = []
