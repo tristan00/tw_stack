@@ -113,10 +113,7 @@ def _held_out():
 
 def discrim():
     import torch
-    try:
-        from advisor.mapgraph import net as N
-    except ImportError:
-        import net as N
+    from advisor.mapgraph import net as N
     r, val = _held_out()
     per = {}
     for row, c in val:
@@ -180,10 +177,7 @@ def _rewire(g, group, rng):
 
 def ablate(seed=0):
     import torch
-    try:
-        from advisor.mapgraph import net as N
-    except ImportError:
-        import net as N
+    from advisor.mapgraph import net as N
     r, val = _held_out()
     rng = random.Random(seed)
     res = {}

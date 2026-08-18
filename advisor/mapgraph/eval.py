@@ -50,10 +50,7 @@ def _load(limit=120):
 
 def _net():
     import torch
-    try:
-        from advisor.mapgraph import net as N
-    except ImportError:
-        import net as N
+    from advisor.mapgraph import net as N
     blob = torch.load(os.path.join(S.MODEL_DIR, "model.pt"), map_location="cpu")
     meta = blob["meta"]
     cfg = meta.get("cfg") or {}
