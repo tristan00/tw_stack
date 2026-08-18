@@ -111,6 +111,7 @@ class RelConv(MessagePassing):
 
 
 _NT = len(S.NODE_TYPES)
+_NORM_SAMPLE = 2_000_000
 
 
 class TypeEncoders(nn.Module):
@@ -141,6 +142,9 @@ class TypeEncoders(nn.Module):
                 v = torch.cat(cols[t][c])
                 if v.numel() < 8:
                     continue
+                if v.numel() > _NORM_SAMPLE:
+                    gen = torch.Generator().manual_seed(t * S.MAX_FIELDS + c)
+                    v = v[torch.randint(0, v.numel(), (_NORM_SAMPLE,), generator=gen)]
                 q = torch.quantile(v, torch.tensor([0.25, 0.5, 0.75], dtype=v.dtype))
                 iqr = float(q[2] - q[0])
                 sd = float(v.std(unbiased=False))
