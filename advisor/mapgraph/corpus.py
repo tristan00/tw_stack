@@ -108,6 +108,11 @@ def save(d, slots, dirty, log=print):
                "shards": sorted(by_shard), "n": len(slots),
                "watermark": max(slots) if slots else 0},
               open(os.path.join(d, "manifest.json"), "w"))
+    fp = os.path.basename(os.path.dirname(d))
+    for stale in os.listdir(CACHE_ROOT):
+        if stale != fp:
+            shutil.rmtree(os.path.join(CACHE_ROOT, stale), ignore_errors=True)
+            log("mapgraph.corpus: pruned stale cache generation %s" % stale)
     log("mapgraph.corpus: cache holds %d graphs; rewrote %d of %d shard(s)"
         % (len(slots), len(touched & set(by_shard)), len(by_shard)))
 
