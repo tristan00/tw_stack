@@ -54,13 +54,12 @@ def _net():
         from advisor.mapgraph import net as N
     except ImportError:
         import net as N
-    meta = json.load(open(os.path.join(S.MODEL_DIR, "meta.json"), encoding="utf-8"))
+    blob = torch.load(os.path.join(S.MODEL_DIR, "model.pt"), map_location="cpu")
+    meta = blob["meta"]
     cfg = meta.get("cfg") or {}
     net = N.from_cfg(cfg)
-    net.encoder.load_state_dict(torch.load(os.path.join(S.MODEL_DIR, "encoder.pt"),
-                                           map_location="cpu"))
-    net.head.load_state_dict(torch.load(os.path.join(S.MODEL_DIR, "head.pt"),
-                                        map_location="cpu"))
+    net.encoder.load_state_dict(blob["encoder"])
+    net.head.load_state_dict(blob["head"])
     net.eval()
     return net, meta, N
 

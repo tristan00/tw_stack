@@ -26,11 +26,14 @@ class Ranker:
         self.errors = 0
         self.last_value = None
         self._warned = False
-        meta_path = os.path.join(model_dir, "meta.json")
-        if not os.path.exists(meta_path):
+        model_path = os.path.join(model_dir, "model.pt")
+        if not os.path.exists(model_path):
             return
         try:
-            meta = json.load(open(meta_path, encoding="utf-8"))
+            import torch
+            torch.set_num_threads(THREADS_INFER)
+            blob = torch.load(model_path, map_location="cpu")
+            meta = blob["meta"]
             if meta.get("schema_hash") != S.schema_hash():
                 sys.stderr.write(
                     "mapgraph.interrupt_rank: meta schema hash %s != code %s -- trained on "
@@ -38,18 +41,14 @@ class Ranker:
                     % (str(meta.get("schema_hash"))[:12], S.schema_hash()[:12]))
                 self.meta = meta
                 return
-            import torch
-            torch.set_num_threads(THREADS_INFER)
             try:
                 from advisor.mapgraph import net as N
             except ImportError:
                 import net as N
             cfg = meta.get("cfg") or {}
             net = N.from_cfg(cfg)
-            net.encoder.load_state_dict(
-                torch.load(os.path.join(model_dir, "encoder.pt"), map_location="cpu"))
-            net.head.load_state_dict(
-                torch.load(os.path.join(model_dir, "head.pt"), map_location="cpu"))
+            net.encoder.load_state_dict(blob["encoder"])
+            net.head.load_state_dict(blob["head"])
             net.eval()
             self.net, self.meta, self.ready = net, meta, True
         except Exception as e:

@@ -911,7 +911,7 @@ def _model_cards() -> list:
                 status = "incomplete"
                 note = "meta.json is missing or unreadable"
         if status == "ready":
-            want = ("encoder.pt", "head.pt") if family == "mapgraph" else ("e1.cbm",)
+            want = ("model.pt",) if family == "mapgraph" else ("e1.cbm",)
             missing = [f for f in want if not os.path.exists(os.path.join(d, f))]
             if missing:
                 status, note = "incomplete", "missing on disk: %s" % ", ".join(missing)

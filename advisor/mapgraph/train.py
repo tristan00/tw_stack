@@ -371,11 +371,16 @@ def train(runs_root=None, cfg=None, log=None):
     shutil.rmtree(stage, ignore_errors=True)
     os.makedirs(stage)
     os.makedirs(S.MODEL_DIR, exist_ok=True)
-    torch.save(net.encoder.state_dict(), os.path.join(stage, "encoder.pt"))
-    torch.save(net.head.state_dict(), os.path.join(stage, "head.pt"))
+    torch.save({"encoder": net.encoder.state_dict(), "head": net.head.state_dict(),
+                "meta": meta}, os.path.join(stage, "model.pt"))
     json.dump(meta, open(os.path.join(stage, "meta.json"), "w"))
-    for name in ("encoder.pt", "head.pt", "meta.json"):
-        os.replace(os.path.join(stage, name), os.path.join(S.MODEL_DIR, name))
+    os.replace(os.path.join(stage, "model.pt"), os.path.join(S.MODEL_DIR, "model.pt"))
+    os.replace(os.path.join(stage, "meta.json"), os.path.join(S.MODEL_DIR, "meta.json"))
+    for name in ("encoder.pt", "head.pt"):
+        try:
+            os.remove(os.path.join(S.MODEL_DIR, name))
+        except OSError:
+            pass
     shutil.rmtree(stage, ignore_errors=True)
     return {"trained": True, "backend": "mapgraph", "rows": len(datas), "fit": fit,
             "campaigns": len(meta["campaigns"]), "tally": w["tally"],
