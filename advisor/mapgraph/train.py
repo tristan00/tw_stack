@@ -202,25 +202,13 @@ def _corpus_bytes(batches):
 def _collate(items, size, dev, log, tag):
     import torch
     from torch_geometric.data import Batch
-    batches = [Batch.from_data_list(items[k:k + size])
+    batches = [Batch.from_data_list(items[k:k + size]).to(dev, non_blocking=True)
                for k in range(0, len(items), size)]
-    if dev.type != "cuda" or not batches:
-        return batches, False
-    need, free = _corpus_bytes(batches), torch.cuda.mem_get_info()[0]
-    if need >= free * 0.5:
-        log("mapgraph.train: %s corpus %.2fGB vs %.2fGB free -- streaming batches"
-            % (tag, need / 1e9, free / 1e9))
-        return batches, False
-    try:
-        out = [b.to(dev, non_blocking=True) for b in batches]
+    if dev.type == "cuda" and batches:
         torch.cuda.synchronize()
-        log("mapgraph.train: %s %d batches resident on gpu (%.2fGB of %.2fGB free)"
-            % (tag, len(out), need / 1e9, free / 1e9))
-        return out, True
-    except torch.cuda.OutOfMemoryError:
-        torch.cuda.empty_cache()
-        log("mapgraph.train: %s did not fit VRAM -- streaming batches" % tag)
-        return batches, False
+        log("mapgraph.train: %s %d batches resident on %s (%.2fGB)"
+            % (tag, len(batches), dev.type, _corpus_bytes(batches) / 1e9))
+    return batches
 
 
 def fit_net(datas, ys, groups, cfg, log=print, on_epoch=None):
@@ -251,15 +239,13 @@ def fit_net(datas, ys, groups, cfg, log=print, on_epoch=None):
 
     order0 = torch.randperm(len(trn_idx), generator=gen).tolist()
     trn = [datas[trn_idx[i]] for i in order0]
-    loader, resident = _collate(trn, cfg["batch"], dev, log, "train")
-    vloader, v_resident = (_collate([datas[i] for i in val_idx], cfg["batch"], dev, log,
-                                    "val") if val_idx else ([], False))
+    loader = _collate(trn, cfg["batch"], dev, log, "train")
+    vloader = _collate([datas[i] for i in val_idx], cfg["batch"], dev, log,
+                       "val") if val_idx else []
 
     amp = (dev.type == "cuda") and bool(cfg.get("bf16", True))
 
     def step(b, train):
-        if b.x.device != dev:
-            b = b.to(dev, non_blocking=True)
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=amp):
             out = net(b)
         q = out["q"].float()
@@ -335,7 +321,6 @@ def fit_net(datas, ys, groups, cfg, log=print, on_epoch=None):
            "val_value_mse": round(best_v, 5) if best_v is not None else None,
            "epochs_run": epoch + 1, "stopped_by": stopped, "device": dev.type,
            "val_rows": len(val_idx), "train_rows": len(trn_idx),
-           "resident": bool(resident and v_resident),
            "curve": curve,
            "seconds": round(time.time() - t0, 1)}
     return net, fit, y_mean, y_sd
