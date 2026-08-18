@@ -31,10 +31,10 @@ def _log(msg):
 def _space(trial):
     p = {"lr": trial.suggest_float("lr", 5e-5, 3e-3, log=True),
          "weight_decay": trial.suggest_float("weight_decay", 1e-5, 3e-2, log=True),
-         "hidden": trial.suggest_categorical("hidden", [128, 192, 256, 384, 512]),
+         "hidden": trial.suggest_categorical("hidden", [32, 64, 128, 256]),
          "batch": trial.suggest_categorical("batch", [192, 384, 768]),
          "dropout": trial.suggest_float("dropout", 0.0, 0.3),
-         "entity_layers": trial.suggest_int("entity_layers", 1, 3),
+         "entity_layers": trial.suggest_int("entity_layers", 1, 2),
          "action_rounds": trial.suggest_int("action_rounds", 1, 4),
          "attn": trial.suggest_categorical("attn", ["none", "act", "map", "all"]),
          "conv": trial.suggest_categorical("conv", ["sage", "rel"]),
