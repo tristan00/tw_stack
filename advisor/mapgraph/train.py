@@ -20,16 +20,20 @@ sys.path.insert(0, common.DECISIONS)
 
 THREADS = max(1, os.cpu_count() or 8)
 
-CFG = {"hidden": 256, "entity_layers": 1, "action_rounds": 3,
-       "map_aggr": "max", "act_aggr": "add+mean", "attn": "act",
+CFG = {"hidden": 256, "entity_layers": 2, "action_rounds": 4,
+       "map_aggr": "add+mean", "act_aggr": "max", "attn": "map",
        "conv": "sage", "conv_map": None, "conv_a2e": None, "conv_e2a": "rel",
-       "dst_dim": 48, "update": "linear", "self_transform": False,
-       "dropout": 0.15,
-       "lr": 3.501e-4, "weight_decay": 4.320e-3, "batch": 384, "epochs": 30, "patience": 10,
-       "grad_clip": 5.0, "adv_tau": 1.0, "adv_clip": 20.0, "value_weight": 0.1351, "bf16": True,
+       "dst_dim": 48, "update": "mlp", "self_transform": False,
+       "dropout": 0.06192520934541921,
+       "lr": 5.080538494368399e-4, "weight_decay": 2.0445827041089856e-4,
+       "batch": 192, "epochs": 60, "patience": 10,
+       "grad_clip": 5.0, "adv_tau": 2.8374483478817054, "adv_clip": 25.785867256047393,
+       "value_weight": 0.044261620878658973, "bf16": True,
        "seed": 0, "time_budget_s": 1200, "device": "cuda"}
 
 MIN_FIT_S = 30
+VAL_TAU = 1.0
+VAL_CLIP = 20.0
 
 
 def _shard(args):
@@ -253,11 +257,11 @@ def fit_net(datas, ys, groups, cfg, log=print, on_epoch=None):
         adv = (b.y_z - v.detach()) / cfg["adv_tau"]
         w = torch.exp(adv.clamp(max=3.0)).clamp(max=cfg["adv_clip"])
         rank = (nll * w).mean()
-        return rank + cfg["value_weight"] * vloss, nll.mean(), vloss
+        return rank + cfg["value_weight"] * vloss, nll, vloss
 
     best, best_state, bad, stopped = None, None, 0, "epochs"
     out_of_time = False
-    best_v, curve = None, []
+    best_v, best_unweighted, curve = None, None, []
     val_s = None
     VAL_S_GUESS = 6.0
     t0 = time.time()
@@ -277,28 +281,37 @@ def fit_net(datas, ys, groups, cfg, log=print, on_epoch=None):
             net.eval()
             t_val = time.time()
             tot_n = torch.zeros((), device=dev)
+            tot_wn = torch.zeros((), device=dev)
+            tot_w = torch.zeros((), device=dev)
             tot_v = torch.zeros((), device=dev)
             n = 0
             with torch.no_grad():
                 for b in vloader:
                     _, nll, vl = step(b, False)
                     k = int(b.n_actions.numel())
-                    tot_n += nll.detach() * k
+                    vw = torch.exp((b.y_z / VAL_TAU).clamp(max=3.0)).clamp(max=VAL_CLIP)
+                    tot_n += nll.detach().sum()
+                    tot_wn += (vw * nll.detach()).sum()
+                    tot_w += vw.sum()
                     tot_v += vl.detach() * k
                     n += k
-            score = float(tot_n) / max(n, 1)
+            score = float(tot_wn) / max(float(tot_w), 1e-9)
+            unweighted = float(tot_n) / max(n, 1)
             val_s = max(val_s or 0.0, time.time() - t_val)
-            curve.append([epoch + 1, round(time.time() - t0, 1), round(score, 5)])
+            curve.append([epoch + 1, round(time.time() - t0, 1), round(score, 5),
+                          round(unweighted, 5)])
             improved = best is None or score < best - 1e-5
             if improved:
                 best, bad = score, 0
+                best_unweighted = unweighted
                 best_v = float(tot_v) / max(n, 1)
                 best_state = {k: v.detach().cpu().clone()
                               for k, v in net.state_dict().items()}
             else:
                 bad += 1
-            log("mapgraph.train: epoch %3d  val_nll %.4f  best %.4f  gate %s  %s  %.0fs"
-                % (epoch + 1, score, best,
+            log("mapgraph.train: epoch %3d  val_nll_w %.4f (unw %.4f)  best %.4f  gate %s"
+                "  %s  %.0fs"
+                % (epoch + 1, score, unweighted, best,
                    [round(float(v), 4) for v in net.encoder.a2e_gate],
                    "*" if improved else " ", time.time() - t0))
             if on_epoch is not None:
@@ -314,7 +327,10 @@ def fit_net(datas, ys, groups, cfg, log=print, on_epoch=None):
     net = net.cpu()
     if best_state:
         net.load_state_dict(best_state)
-    fit = {"val_listwise_nll": round(best, 5) if best is not None else None,
+    fit = {"val_listwise_nll_w": round(best, 5) if best is not None else None,
+           "val_listwise_nll": (round(best_unweighted, 5)
+                                if best_unweighted is not None else None),
+           "val_weighting": {"tau": VAL_TAU, "clip": VAL_CLIP, "source": "y_z"},
            "val_value_mse": round(best_v, 5) if best_v is not None else None,
            "epochs_run": epoch + 1, "stopped_by": stopped, "device": dev.type,
            "val_rows": len(val_idx), "train_rows": len(trn_idx),

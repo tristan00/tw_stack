@@ -100,16 +100,18 @@ def run(trials=60, budget_s=600.0):
         finally:
             torch.cuda.empty_cache()
         row = {"trial": trial.number, "params": p, "seconds": round(time.time() - t0, 1),
-               "val_nll": fit["val_listwise_nll"], "val_mse": fit["val_value_mse"],
+               "val_nll_w": fit["val_listwise_nll_w"], "val_nll": fit["val_listwise_nll"],
+               "val_mse": fit["val_value_mse"],
                "epochs": fit["epochs_run"], "stopped_by": fit["stopped_by"], "ts": time.time()}
         with open(TRIALS_JSONL, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(row) + "\n")
-        _log("TRIAL %d done val_nll=%.5f epochs=%d stopped=%s %.0fs (best so far %.5f)"
-             % (trial.number, fit["val_listwise_nll"], fit["epochs_run"],
-                fit["stopped_by"], row["seconds"],
+        _log("TRIAL %d done val_nll_w=%.5f (unw %.5f) epochs=%d stopped=%s %.0fs "
+             "(best so far %.5f)"
+             % (trial.number, fit["val_listwise_nll_w"], fit["val_listwise_nll"],
+                fit["epochs_run"], fit["stopped_by"], row["seconds"],
                 min([t.value for t in study.trials
-                     if t.value is not None] + [fit["val_listwise_nll"]])))
-        return fit["val_listwise_nll"]
+                     if t.value is not None] + [fit["val_listwise_nll_w"]])))
+        return fit["val_listwise_nll_w"]
 
     study.optimize(objective, n_trials=trials, gc_after_trial=True,
                    catch=(RuntimeError,))
