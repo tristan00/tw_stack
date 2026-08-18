@@ -186,7 +186,7 @@ class Encoder(nn.Module):
 
     def __init__(self, hidden, entity_layers, action_rounds, map_aggr, act_aggr,
                  attn, conv, conv_map, conv_a2e, conv_e2a, dst_dim, update,
-                 self_transform):
+                 self_transform, dropout=0.15):
         super().__init__()
         map_attn = attn in ("map", "all")
         act_attn = attn in ("act", "all")
@@ -221,7 +221,7 @@ class Encoder(nn.Module):
                                                c_e2a, dst_dim)
                                        for _ in range(action_rounds)])
         self.e2a_norm = nn.ModuleList([TypeNorm(hidden) for _ in range(action_rounds)])
-        self.drop = nn.Dropout(0.15)
+        self.drop = nn.Dropout(dropout)
         n_upd = n_map + 2 * action_rounds
         if update == "linear":
             self.upd = nn.ModuleList([nn.Linear(hidden * 2, hidden) for _ in range(n_upd)])
@@ -304,11 +304,12 @@ class Net(nn.Module):
 
     def __init__(self, hidden, entity_layers, action_rounds, map_aggr, act_aggr,
                  attn, conv, conv_map, conv_a2e, conv_e2a, dst_dim, update,
-                 self_transform):
+                 self_transform, dropout=0.15):
         super().__init__()
         self.encoder = Encoder(hidden, entity_layers, action_rounds,
                                map_aggr, act_aggr, attn, conv, conv_map, conv_a2e,
-                               conv_e2a, dst_dim, update, self_transform)
+                               conv_e2a, dst_dim, update, self_transform,
+                               dropout=dropout)
         self.head = Head(hidden)
 
     def forward(self, data):
@@ -338,4 +339,5 @@ def from_cfg(cfg):
                map_aggr=cfg["map_aggr"], act_aggr=cfg["act_aggr"], attn=cfg["attn"],
                conv=cfg["conv"], conv_map=cfg["conv_map"], conv_a2e=cfg["conv_a2e"],
                conv_e2a=cfg["conv_e2a"], dst_dim=cfg["dst_dim"], update=cfg["update"],
-               self_transform=cfg["self_transform"])
+               self_transform=cfg["self_transform"],
+               dropout=cfg.get("dropout", 0.15))

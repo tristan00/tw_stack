@@ -223,7 +223,7 @@ def _collate(items, size, dev, log, tag):
         return batches, False
 
 
-def fit_net(datas, ys, groups, cfg, log=print):
+def fit_net(datas, ys, groups, cfg, log=print, on_epoch=None):
     import torch
     from base_model import stable_split
     try:
@@ -318,6 +318,8 @@ def fit_net(datas, ys, groups, cfg, log=print):
                 % (epoch + 1, score, best,
                    [round(float(v), 4) for v in net.encoder.a2e_gate],
                    "*" if improved else " ", time.time() - t0))
+            if on_epoch is not None:
+                on_epoch(epoch + 1, score)
             if bad >= cfg["patience"]:
                 stopped = "patience"
                 break

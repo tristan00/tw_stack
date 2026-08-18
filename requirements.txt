@@ -30,3 +30,4 @@ optuna>=4.0
 
 # UI self-documentation screenshots (ui_docshots.py only; drives the installed Edge)
 playwright>=1.60
+optuna>=3.6
