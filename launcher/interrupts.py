@@ -851,6 +851,7 @@ def answer_diplomacy(bus):
 
 
 PROPOSAL_ROOT = "diplomacy_dropdown"
+_WAR_TRIES = {}
 PROPOSAL_ANSWER_IDS = frozenset(("button_accept", "button_cancel"))
 PROPOSAL_KNOWN_NONANSWERS = frozenset(("button_ok_war_declared", "button_ok_declare",
                                        "button_cancel_declare"))
@@ -1002,8 +1003,6 @@ def _drive_decision(bus, root, kind, opts, detail, extra, panel=None):
         return steps
     want = m["want"]
     t0 = time.time()
-    if m["tries"] == 1:
-        common.wait("%s_first_click_grace" % kind, 0.5, root)
     clicked = _click(bus, opts[want], settle=0.6)
     m["clicked"] = bool(m.get("clicked")) or clicked
     gone = _await_root_gone(bus, root)
@@ -1109,9 +1108,15 @@ def _acknowledge_war_on_proposal(bus, tree, clickable):
             for k in targets}
     key = _choose("war_declared", sorted(opts), _campaign_hint(), panel, meta=opts,
                   live=lambda: live_control_ids(bus, PROPOSAL_ROOT))
+    tries = _WAR_TRIES.get(PROPOSAL_ROOT, 0) + 1
+    _WAR_TRIES[PROPOSAL_ROOT] = tries
     t0 = time.time()
-    clicked = _click(bus, targets[key], settle=2.0)
+    if tries == 1:
+        common.wait("war_declared_first_click_grace", 0.5, PROPOSAL_ROOT)
+    clicked = _click(bus, targets[key], settle=0.6)
     gone = _await_root_gone(bus, PROPOSAL_ROOT)
+    if gone:
+        _WAR_TRIES.pop(PROPOSAL_ROOT, None)
     _record_choice("war_declared", PROPOSAL_ROOT, opts, key,
                    extra={"tree": tree, "root_context": PROPOSAL_ROOT, "panel": panel},
                    executed=clicked, confirmed=gone,
