@@ -49,6 +49,10 @@
 - **decisions** — the data layer: `store.py` (decisions.sqlite schema: decision points, offers,
   taken+confirmation law, interrupts, target rows), `collect.py`, `journal.py`.
 - **campaigns** — the campaign-boundary splitter kernel (used by manager and the logs stream).
+- **debugging** — read-only tools for reading a run after the fact. `timeline.py` merges
+  every stamped source (service logs, the store, the run-dir streams, panel dumps) into one
+  millisecond-ordered file and prints its path. See `debugging/README.md` for the
+  timestamp contract every producer is held to.
 - **input / shots / logs / ui-capture** — recorder stream packages (code only).
 
 ## Rules

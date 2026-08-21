@@ -27,21 +27,28 @@ def phaselog(tag, seconds, detail=""):
                                              (" " + str(detail)[:120]) if detail else ""))
 
 
+def stamp(t=None):
+    import time
+    t = time.time() if t is None else float(t)
+    whole = int(t)
+    ms = int(round((t - whole) * 1000))
+    if ms >= 1000:
+        whole += 1
+        ms -= 1000
+    return "%s.%03d" % (time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(whole)), ms)
+
+
 class _StampedStream:
     def __init__(self, raw):
         self._raw = raw
         self._buf = ""
 
     def write(self, s):
-        import time
         self._buf += str(s)
         while "\n" in self._buf:
             line, self._buf = self._buf.split("\n", 1)
             if line:
-                t = time.time()
-                self._raw.write("%s.%03d %s\n"
-                                % (time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(t)),
-                                   int(t % 1 * 1000), line))
+                self._raw.write("%s %s\n" % (stamp(), line))
             else:
                 self._raw.write("\n")
 
@@ -199,6 +206,7 @@ OPTUNA_DIR = os.path.join(METRICS_DIR, "optuna")
 TMP_CATBOOST = os.path.join(TWDATA, "tmp", "catboost")
 TMP_CATBOOST_TUNE = os.path.join(TWDATA, "tmp", "catboost_tune")
 ARCHIVE_DIR = os.path.join(TWDATA, "archive")
+DEBUG_DIR = os.path.join(TWDATA, "debug")
 ARCHIVE_SCRIPT_LOGS = os.path.join(ARCHIVE_DIR, "script_logs")
 ARCHIVE_BUS = os.path.join(ARCHIVE_DIR, "bus")
 
