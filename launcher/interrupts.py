@@ -876,7 +876,7 @@ def _sticky_choice(screen, root, options, panel=None, live=None, meta=None):
     return m
 
 
-def _await_root_gone(bus, root, limit=6.0):
+def _await_root_gone(bus, root, limit=3.0):
     t0 = time.time()
     deadline = t0 + limit
     while time.time() < deadline:
@@ -1002,7 +1002,9 @@ def _drive_decision(bus, root, kind, opts, detail, extra, panel=None):
         return steps
     want = m["want"]
     t0 = time.time()
-    clicked = _click(bus, opts[want], settle=2.0)
+    if m["tries"] == 1:
+        common.wait("%s_first_click_grace" % kind, 0.5, root)
+    clicked = _click(bus, opts[want], settle=0.6)
     m["clicked"] = bool(m.get("clicked")) or clicked
     gone = _await_root_gone(bus, root)
     common.trylog("%s_answer" % kind, m["tries"], _ANSWER_TRIES, bool(clicked and gone),
