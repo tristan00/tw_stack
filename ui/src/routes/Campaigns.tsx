@@ -741,6 +741,7 @@ function Picks() {
           onRowClick={(r) => setSel(r.pick_id)}
           initialSort={{ key: 'when', desc: true }}
           searchPlaceholder="search pick…"
+          pageSize={25}
           emptyWhat="no UCB pick has been recorded yet"
           emptyWhy="only runs started with --ucb record them, from the next launch onward"
         />
@@ -755,8 +756,7 @@ function Picks() {
             rowId={(r) => String(r.rank)}
             initialSort={{ key: 'rank', desc: false }}
             searchPlaceholder="search start…"
-            maxHeight={620}
-            virtualizeOver={80}
+            pageSize={25}
             emptyWhat="no ranking stored for this pick"
           />
         )}
