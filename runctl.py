@@ -430,7 +430,8 @@ def main():
         s.add_argument("--retrain-first", action="store_true",
                        default=RUN["retrain_first"],
                        help="also take the retrain window at campaign 1, instead of first "
-                            "at campaign N+1")
+                            "at campaign N+1; this is also how a warm mix bootstraps on a "
+                            "box with no models yet")
         s.add_argument("--no-retrain-first", dest="retrain_first",
                        action="store_false",
                        help="skip the campaign-1 retrain even though run_config wants it")

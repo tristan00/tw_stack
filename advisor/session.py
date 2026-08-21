@@ -279,7 +279,7 @@ def _postmortem(runs_root, entry, ex, log):
         log("   !! post-mortem NOT written: %s" % repr(e)[:160])
 
 
-def _require_models(mix, cold, log):
+def _require_models(mix, cold, log, bootstrap=False):
     if cold:
         return
     import model as M
@@ -303,9 +303,15 @@ def _require_models(mix, cold, log):
             problems.append("marwil_gnn: mapgraph interrupt model did not load from %s"
                             % common.MODEL_MAPGRAPH_INTERRUPT)
     if problems:
+        if bootstrap:
+            log("model gate DEFERRED: --retrain-first trains before campaign 1 is played, "
+                "and the retrain's own trained=false check kills the session if it does "
+                "not produce usable models. Missing now:\n  " + "\n  ".join(problems))
+            return
         raise SystemExit(
             "REFUSING TO START: the mix needs trained models that are not usable, and only "
-            "--cold may run without models.\n  " + "\n  ".join(problems))
+            "--cold may run without models. Add --retrain-first to build them before "
+            "campaign 1.\n  " + "\n  ".join(problems))
     log("model gate: every trainable arm in the mix loaded a usable model")
 
 
@@ -368,7 +374,8 @@ def run_campaigns(n=3, turns=20, plan="all",
     if ruleset and "ruleset" not in mix:
         raise SystemExit("--ruleset %r given but 'ruleset' is not in the strategy mix %s"
                          % (ruleset, json.dumps(mix)))
-    _require_models(mix, cold, log)
+    _require_models(mix, cold, log,
+                    bootstrap=bool(retrain_every and retrain_first))
     ruleset_meta = None
     if ruleset:
         import ruleset as RS
