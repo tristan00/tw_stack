@@ -355,13 +355,6 @@ class Executor:
         sys.stderr.write("executor: disable_ui_hotkeys -> %s\n" % (out,))
         return out
 
-    def start_game(self, plan, campaign="Immortal Empires", boot_timeout=30):
-        import bus_launcher
-        bl = bus_launcher.BusLauncher()
-        started = bl.launch(plan, campaign=campaign, boot_timeout=boot_timeout)
-        self.bus = bl.bus or self.bus
-        return started
-
     def kill_game(self):
         import subprocess
         import bus as _bus

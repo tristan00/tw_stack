@@ -39,24 +39,23 @@ def _spawn(args, log_path, merge_err=False, env=None):
 def _presave_radius(v):
     s = str(v).strip().lower()
     if s in ("none", "off"):
-        return None
+        raise argparse.ArgumentTypeError(
+            "a run boots a baked start and the map comes with it; bake fresh campaigns "
+            "with bake.py")
     return float(v)
 
 
-def _selector_tag(presave_radius, width=0, ucb=None):
+def _selector_tag(width=0, ucb=None):
     if ucb is not None:
         return "ucb:%g" % ucb
     if width:
         return "width:%d" % width
-    return "uniform" if presave_radius is not None else "plan"
+    return "uniform"
 
 
 def _env_with_presave(presave_radius, selector=None):
     e = dict(os.environ)
-    if presave_radius is None:
-        e.pop("TW_PRESAVE_RADIUS", None)
-    else:
-        e["TW_PRESAVE_RADIUS"] = str(float(presave_radius))
+    e["TW_PRESAVE_RADIUS"] = str(float(presave_radius))
     if selector:
         e["TW_SELECTOR"] = selector
     else:
@@ -138,21 +137,19 @@ def rebuild_analytics():
 
 def start_session(campaigns, turns, retrain_every=0,
                   cold=False, dev=True, factions="all", strategies=None,
-                  ruleset=None, campaign=None, retrain_first=False, presave_radius=None,
+                  ruleset=None, retrain_first=False, presave_radius=None,
                   width=0, ucb=None):
     if not str(factions or "").strip():
-        raise SystemExit("--factions must be 'all', 'no-cutscene', or a comma-separated "
-                         "list of faction keys")
-    if presave_radius is not None:
-        import presaves
-        pool = presaves.list_presaves(radius=presave_radius)
-        if not pool:
-            raise SystemExit(
-                "--presave-radius %s but no baked save at that radius: %s holds %s. "
-                "Refusing to start a run that would silently fall back to fresh "
-                "campaigns on the untrimmed map."
-                % (presave_radius, presaves.presave_dir(),
-                   presaves.presave_radii() or "none"))
+        raise SystemExit("--factions must be 'all' or a comma-separated list of faction keys")
+    import presaves
+    pool = presaves.list_presaves(radius=presave_radius)
+    if not pool:
+        raise SystemExit(
+            "--presave-radius %s but no baked save at that radius: %s holds %s. "
+            "Refusing to start a run that would silently fall back to fresh "
+            "campaigns on the untrimmed map."
+            % (presave_radius, presaves.presave_dir(),
+               presaves.presave_radii() or "none"))
     ts = _stamp()
     log = os.path.join(LOG_DIR, "session_%s%sx%s_%s.log"
                        % ("cold_" if cold else "", campaigns, turns, ts))
@@ -163,14 +160,12 @@ def start_session(campaigns, turns, retrain_every=0,
             + (["--retrain-first"] if retrain_first and retrain_every and not cold else [])
             + (["--strategies", str(strategies)] if strategies else [])
             + (["--ruleset", str(ruleset)] if ruleset else [])
-            + (["--campaign", str(campaign)] if campaign else [])
-            + (["--presave-radius", str(presave_radius)]
-               if presave_radius is not None else [])
+            + ["--presave-radius", str(presave_radius)]
             + (["--width", str(width)] if width else [])
             + (["--ucb", str(ucb)] if ucb is not None else [])
             + (["--dev"] if dev else []))
     _spawn(args, log, env=_env_with_presave(presave_radius,
-                                            _selector_tag(presave_radius, width, ucb)))
+                                            _selector_tag(width, ucb)))
     os.makedirs(LOG_DIR, exist_ok=True)
     tmp = CURRENT_LOG + ".tmp"
     with open(tmp, "w", encoding="utf-8", newline="") as fh:
@@ -183,7 +178,7 @@ def start_session(campaigns, turns, retrain_every=0,
 
 def up(campaigns, turns, retrain_every=0, cold=False,
        dev=True, shots=DEFAULT_SHOTS, port=DEFAULT_PORT, with_ui=True,
-       factions="all", strategies=None, ruleset=None, campaign=None, retrain_first=False,
+       factions="all", strategies=None, ruleset=None, retrain_first=False,
        presave_radius=None, width=0, ucb=None):
     steps = [kill_session(), kill_recorder()]
     if with_ui:
@@ -195,7 +190,7 @@ def up(campaigns, turns, retrain_every=0, cold=False,
         raise SystemExit("REFUSING to start a second session -- session.py is still "
                          "alive after the kill pass: %s" % "; ".join(leftover)[:200])
     steps.append(start_recorder(shots=shots, dev=dev, presave_radius=presave_radius,
-                                selector=_selector_tag(presave_radius, width, ucb)))
+                                selector=_selector_tag(width, ucb)))
     common.wait("runctl_recorder_spawn_grace", 3.0)
     if with_ui:
         steps.append(start_ui(port=port))
@@ -205,7 +200,7 @@ def up(campaigns, turns, retrain_every=0, cold=False,
                                                  retrain_every=retrain_every,
                                                  cold=cold, dev=dev,
                                                  factions=factions, strategies=strategies,
-                                                 ruleset=ruleset, campaign=campaign,
+                                                 ruleset=ruleset,
                                                  retrain_first=retrain_first,
                                                  presave_radius=presave_radius,
                                                  width=width, ucb=ucb))
@@ -355,8 +350,8 @@ def harness_tick():
                        retrain_first=RUN.get("retrain_first", False),
                        dev=RUN.get("dev", True), with_ui=True,
                        strategies=RUN["strategies"], ruleset=RUN["ruleset"],
-                       factions=RUN["factions"], campaign=RUN["campaign"],
-                       presave_radius=RUN.get("presave_radius")):
+                       factions=RUN["factions"],
+                       presave_radius=RUN["presave_radius"]):
             _harness_note(step)
     except SystemExit as e:
         _harness_note("relaunch refused: %s" % e)
@@ -429,10 +424,8 @@ def main():
         s.add_argument("campaigns", type=int, nargs="?", default=RUN["campaigns"])
         s.add_argument("turns", nargs="?", default=str(RUN["turns"]))
         s.add_argument("--factions", default=RUN["factions"],
-                       help="all | no-cutscene | key,key,... | map:key,...;map:key,...  "
-                            "('no-cutscene' drops the 14 starts that open on an intro "
-                            "movie; see launcher/cutscene_starts.py; the map:... form "
-                            "gives each map in a --campaign mix its own list)")
+                       help="all | key,key,...  ('all' plays every start baked at "
+                            "--presave-radius; each start carries its own map)")
         s.add_argument("--retrain-every", type=int, default=RUN["retrain_every"])
         s.add_argument("--retrain-first", action="store_true",
                        default=RUN["retrain_first"],
@@ -443,21 +436,19 @@ def main():
                        help="skip the campaign-1 retrain even though run_config wants it")
         s.add_argument("--strategies", default=None)
         s.add_argument("--ruleset", default=None)
-        s.add_argument("--campaign", default=RUN["campaign"])
         s.add_argument("--presave-radius", type=_presave_radius,
                        default=RUN["presave_radius"],
-                       help="sample starts from baked trimmed saves of exactly this "
-                            "radius instead of starting fresh campaigns; fails if none "
-                            "are baked at that radius; 'none' turns presaves off and "
-                            "starts fresh")
+                       help="sample starts from the baked trimmed saves of exactly this "
+                            "radius; fails if none are baked at that radius. Fresh "
+                            "campaigns are baked by bake.py, never played here")
         s.add_argument("--cold", action="store_true")
         s.add_argument("--width", type=int, default=0,
-                       help="with --presave-radius: sample only starts whose (map, "
-                            "faction) has fewer than N recorded campaigns, re-checked "
-                            "per campaign; the session ends when none remain")
+                       help="sample only starts whose (map, faction) has fewer than N "
+                            "recorded campaigns, re-checked per campaign; the session "
+                            "ends when none remain")
         s.add_argument("--ucb", type=float, default=None,
-                       help="with --presave-radius: UCB1 start selector over the four "
-                            "gain metrics summed; C is the exploration constant")
+                       help="UCB1 start selector over settlements and lord levels "
+                            "gained; C is the exploration constant")
         s.add_argument("--no-dev", action="store_true",
                        help="turn the diagnostic streams OFF -- they are on by default")
         if name == "up":
@@ -483,8 +474,7 @@ def main():
     common = dict(retrain_every=a.retrain_every, retrain_first=a.retrain_first,
                   cold=a.cold, dev=not a.no_dev,
                   factions=a.factions, strategies=strategies, ruleset=ruleset,
-                  campaign=a.campaign, presave_radius=a.presave_radius, width=a.width,
-                  ucb=a.ucb)
+                  presave_radius=a.presave_radius, width=a.width, ucb=a.ucb)
     if a.cmd == "session":
         print("session -> %s" % start_session(a.campaigns, a.turns, **common))
         return
