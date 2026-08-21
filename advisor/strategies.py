@@ -12,7 +12,7 @@ TRAINABLE = arms.TRAINABLE
 ModelUnavailable = arms.ModelUnavailable
 
 
-TYPE_WEIGHTS = {"building_dismantle": 0.2, "item_unequip": 0.2, "end_turn": 1.0}
+TYPE_WEIGHTS = {"building_dismantle": 0.2, "item_unequip": 0.2, "end_turn": 0.5}
 
 
 class Random:
