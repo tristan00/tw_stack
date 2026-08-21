@@ -1,10 +1,9 @@
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { DataTable, type Col } from '@/components/DataTable'
 import {
   Bar,
-  Card,
   Chip,
-  CountText,
   ErrorState,
   IdentLabel,
   RateText,
@@ -20,22 +19,34 @@ import {
   type Schemas,
   type StartsPage,
 } from '@/lib/api'
-import { n, stateText } from '@/lib/format'
+import { clock, n, stateText } from '@/lib/format'
 
 const VIEWS = [
   { key: 'all', label: 'every campaign', asks: 'which campaign ended how' },
   { key: 'starts', label: 'starts', asks: 'which starting factions produce good campaigns' },
   { key: 'matrix', label: 'action types', asks: 'which action types fail' },
+  { key: 'picks', label: 'picks', asks: 'why the selector played this start' },
 ]
 
 
 const campaignCols: Col<CampaignRow>[] = [
   {
     key: 'campaign',
-    label: 'campaign',
+    label: 'lord',
     group: 'campaign',
-    value: (r) => r.campaign.label,
-    render: (r) => <IdentLabel ident={r.campaign} />,
+    value: (r) => r.leader ?? r.campaign.label,
+    render: (r) => (
+      <IdentLabel
+        ident={{ ...r.campaign, label: r.leader ?? r.campaign.label, culture: null }}
+      />
+    ),
+  },
+  {
+    key: 'race',
+    label: 'race',
+    group: 'campaign',
+    value: (r) => r.campaign.culture ?? '',
+    render: (r) => <span className="text-dim">{r.campaign.culture ?? '—'}</span>,
   },
   {
     key: 'map',
@@ -269,20 +280,6 @@ function AllCampaigns() {
           </Chip>
         ))}
       </div>
-      <div className="mb-3 grid gap-2 sm:grid-cols-3">
-        <Card className="px-3 py-2">
-          <CountText count={data.suspicious} />
-        </Card>
-        <Card className="px-3 py-2">
-          <CountText count={data.unjoined} />
-        </Card>
-        {}
-        <Card className="px-3 py-2">
-          <div className="text-dim text-2xs">growth measurable</div>
-          <Bar rate={data.growth_coverage} />
-          <div className="text-dim mt-0.5 text-2xs">{data.growth_coverage.population}</div>
-        </Card>
-      </div>
       <DataTable
         rows={data.rows}
         cols={campaignCols}
@@ -300,9 +297,19 @@ type StartRow = Schemas['StartRow']
 const startCols: Col<StartRow>[] = [
   {
     key: 'faction',
-    label: 'start',
-    value: (r) => r.faction.label,
-    render: (r) => <IdentLabel ident={r.faction} />,
+    label: 'lord',
+    value: (r) => r.leader ?? r.faction.label,
+    render: (r) => (
+      <IdentLabel
+        ident={{ ...r.faction, label: r.leader ?? r.faction.label, culture: null }}
+      />
+    ),
+  },
+  {
+    key: 'culture',
+    label: 'race',
+    value: (r) => r.faction.culture ?? '',
+    render: (r) => <span className="text-dim">{r.faction.culture ?? '—'}</span>,
   },
   {
     key: 'map',
@@ -314,19 +321,8 @@ const startCols: Col<StartRow>[] = [
     key: 'n',
     label: 'campaigns',
     align: 'right',
-
-
     value: (r) => r.n,
-    render: (r) => (
-      <span className="flex items-center justify-end gap-1.5">
-        <span className="num">{r.n}</span>
-        {r.single_sample && (
-          <Chip state="warn" title="one or two campaigns — treat the aggregates as anecdotes">
-            low n
-          </Chip>
-        )}
-      </span>
-    ),
+    render: (r) => <span className="num">{r.n}</span>,
   },
   {
     key: 'avg_turns',
@@ -336,37 +332,95 @@ const startCols: Col<StartRow>[] = [
     render: (r) => n(r.avg_turns, 1),
   },
   {
-    key: 'best_turns',
-    label: 'turns',
+    key: 'sec_per_turn',
+    label: 's/turn',
     align: 'right',
-    group: 'best reached',
-    value: (r) => r.best_turns ?? 0,
-    render: (r) => n(r.best_turns),
+    value: (r) => r.sec_per_turn ?? 0,
+    render: (r) => n(r.sec_per_turn, 1),
   },
   {
-    key: 'best_setts',
-    label: 'settlements',
+    key: 'sett_best',
+    label: 'best',
     align: 'right',
-    group: 'best reached',
-    value: (r) => r.best_settlements ?? 0,
-    render: (r) => n(r.best_settlements),
+    group: 'settlements gained',
+    value: (r) => r.settlements_gained_best ?? 0,
+    render: (r) => n(r.settlements_gained_best),
   },
   {
-    key: 'best_rank',
-    label: 'power rank',
+    key: 'sett_avg',
+    label: 'avg',
     align: 'right',
-    group: 'best reached',
-    direction: 'down',
-    value: (r) => r.best_power_rank ?? 0,
-    render: (r) => n(r.best_power_rank),
+    group: 'settlements gained',
+    value: (r) => r.settlements_gained_avg ?? 0,
+    render: (r) => n(r.settlements_gained_avg, 1),
   },
   {
-    key: 'best_lord',
-    label: 'lord level',
+    key: 'levels_best',
+    label: 'best',
     align: 'right',
-    group: 'best reached',
-    value: (r) => r.best_lord_level ?? 0,
-    render: (r) => n(r.best_lord_level),
+    group: 'levels gained',
+    value: (r) => r.levels_gained_best ?? 0,
+    render: (r) => n(r.levels_gained_best),
+  },
+  {
+    key: 'levels_avg',
+    label: 'avg',
+    align: 'right',
+    group: 'levels gained',
+    value: (r) => r.levels_gained_avg ?? 0,
+    render: (r) => n(r.levels_gained_avg, 1),
+  },
+  {
+    key: 'allies_best',
+    label: 'best',
+    align: 'right',
+    optional: true,
+    group: 'allies gained',
+    value: (r) => r.allies_gained_best ?? 0,
+    render: (r) => n(r.allies_gained_best),
+  },
+  {
+    key: 'allies_avg',
+    label: 'avg',
+    align: 'right',
+    optional: true,
+    group: 'allies gained',
+    value: (r) => r.allies_gained_avg ?? 0,
+    render: (r) => n(r.allies_gained_avg, 1),
+  },
+  {
+    key: 'vassals_best',
+    label: 'best',
+    align: 'right',
+    optional: true,
+    group: 'vassals gained',
+    value: (r) => r.vassals_gained_best ?? 0,
+    render: (r) => n(r.vassals_gained_best),
+  },
+  {
+    key: 'vassals_avg',
+    label: 'avg',
+    align: 'right',
+    optional: true,
+    group: 'vassals gained',
+    value: (r) => r.vassals_gained_avg ?? 0,
+    render: (r) => n(r.vassals_gained_avg, 1),
+  },
+  {
+    key: 'total_best',
+    label: 'best',
+    align: 'right',
+    group: 'total gained',
+    value: (r) => r.total_gained_best ?? 0,
+    render: (r) => n(r.total_gained_best),
+  },
+  {
+    key: 'total_avg',
+    label: 'avg',
+    align: 'right',
+    group: 'total gained',
+    value: (r) => r.total_gained_avg ?? 0,
+    render: (r) => n(r.total_gained_avg, 1),
   },
   {
     key: 'allied',
@@ -387,6 +441,7 @@ const startCols: Col<StartRow>[] = [
   {
     key: 'confirm',
     label: 'confirmed',
+    optional: true,
     value: (r) => (r.confirm_rate?.of ? r.confirm_rate.n / r.confirm_rate.of : -1),
     render: (r) => <Bar rate={r.confirm_rate ?? null} />,
   },
@@ -398,14 +453,11 @@ function Starts() {
   if (loading || !data) return <Skeleton rows={10} />
   return (
     <Section title="starts" scope={data.scope}>
-      <Card className="mb-3 px-3 py-2">
-        <CountText count={data.low_sample} />
-      </Card>
       <DataTable
         rows={data.rows}
         cols={startCols}
         rowId={(r) => `${r.campaign_map?.raw ?? ''}|${r.faction.raw}`}
-        initialSort={{ key: 'n', desc: true }}
+        initialSort={{ key: 'total_avg', desc: true }}
         searchPlaceholder="search start…"
         emptyWhat="no start has recorded a campaign yet"
       />
@@ -525,6 +577,194 @@ function Matrix() {
   )
 }
 
+type UcbPick = Schemas['UcbPick']
+type UcbRow = Schemas['UcbRow']
+type UcbPicksPage = Schemas['UcbPicksPage']
+type UcbPickPage = Schemas['UcbPickPage']
+
+const num = (v: number | null | undefined, digits = 3) => (v == null ? 'inf' : n(v, digits))
+
+const pickCols: Col<UcbPick>[] = [
+  {
+    key: 'when',
+    label: 'when',
+    value: (r) => r.ts ?? 0,
+    render: (r) => <span className="tabular">{clock(r.ts)}</span>,
+  },
+  {
+    key: 'lord',
+    label: 'legendary lord',
+    value: (r) => r.leader ?? r.faction.label,
+    render: (r) => r.leader ?? r.faction.label,
+  },
+  {
+    key: 'faction',
+    label: 'faction',
+    value: (r) => r.faction.label,
+    render: (r) => <IdentLabel ident={r.faction} />,
+  },
+  {
+    key: 'map',
+    label: 'map',
+    value: (r) => r.campaign_map?.label ?? '',
+    render: (r) => (r.campaign_map ? <IdentLabel ident={r.campaign_map} /> : '-'),
+  },
+  { key: 'c', label: 'C', align: 'right', value: (r) => r.c ?? 0, render: (r) => n(r.c, 2) },
+  {
+    key: 'plays',
+    label: 'plays',
+    align: 'right',
+    help: 'total campaigns the selector divided by at this pick',
+    value: (r) => r.total_plays,
+    render: (r) => n(r.total_plays),
+  },
+  { key: 'n', label: 'n', align: 'right', value: (r) => r.n, render: (r) => n(r.n) },
+  {
+    key: 'mean',
+    label: 'mean',
+    align: 'right',
+    group: 'winning score',
+    value: (r) => r.mean ?? 0,
+    render: (r) => num(r.mean),
+  },
+  {
+    key: 'explore',
+    label: 'explore',
+    align: 'right',
+    group: 'winning score',
+    value: (r) => r.explore ?? Number.MAX_SAFE_INTEGER,
+    render: (r) => num(r.explore),
+  },
+  {
+    key: 'score',
+    label: 'score',
+    align: 'right',
+    group: 'winning score',
+    value: (r) => r.score ?? Number.MAX_SAFE_INTEGER,
+    render: (r) => <strong>{num(r.score)}</strong>,
+  },
+  {
+    key: 'tied',
+    label: 'tied',
+    align: 'right',
+    help: 'how many starts shared the top score; the winner was drawn at random among them',
+    value: (r) => r.tied,
+    render: (r) => (r.tied > 1 ? <Chip state="warn">{n(r.tied)}</Chip> : n(r.tied)),
+  },
+  {
+    key: 'ranked',
+    label: 'ranked',
+    align: 'right',
+    optional: true,
+    value: (r) => r.starts,
+    render: (r) => n(r.starts),
+  },
+]
+
+const rankCols: Col<UcbRow>[] = [
+  {
+    key: 'rank',
+    label: '#',
+    align: 'right',
+    value: (r) => r.rank,
+    render: (r) => (r.chosen ? <strong>{n(r.rank)}</strong> : n(r.rank)),
+  },
+  {
+    key: 'lord',
+    label: 'legendary lord',
+    value: (r) => r.leader ?? r.faction.label,
+    render: (r) => r.leader ?? r.faction.label,
+  },
+  {
+    key: 'faction',
+    label: 'faction',
+    value: (r) => r.faction.label,
+    render: (r) => <IdentLabel ident={r.faction} />,
+  },
+  {
+    key: 'map',
+    label: 'map',
+    value: (r) => r.campaign_map?.label ?? '',
+    render: (r) => (r.campaign_map ? <IdentLabel ident={r.campaign_map} /> : '-'),
+  },
+  {
+    key: 'n',
+    label: 'n',
+    align: 'right',
+    help: 'campaigns this start has recorded, counting only those with two or more decisions',
+    value: (r) => r.n,
+    render: (r) => n(r.n),
+  },
+  {
+    key: 'mean',
+    label: 'mean',
+    align: 'right',
+    help: 'average reward: settlements gained plus lord levels gained',
+    value: (r) => r.mean ?? 0,
+    render: (r) => num(r.mean),
+  },
+  {
+    key: 'explore',
+    label: 'explore',
+    align: 'right',
+    help: 'C * sqrt(ln(total plays) / n); infinite for a start never played',
+    value: (r) => r.explore ?? Number.MAX_SAFE_INTEGER,
+    render: (r) => num(r.explore),
+  },
+  {
+    key: 'score',
+    label: 'score',
+    align: 'right',
+    value: (r) => r.score ?? Number.MAX_SAFE_INTEGER,
+    render: (r) => (r.chosen ? <strong>{num(r.score)}</strong> : num(r.score)),
+  },
+]
+
+function Picks() {
+  const { data, error, loading, reload } = useApi<UcbPicksPage>('/api/campaigns/picks?limit=200')
+  const [sel, setSel] = useState<number | null>(null)
+  const picks = data?.picks ?? []
+  const pickId = sel ?? picks[0]?.pick_id ?? null
+  const detail = useApi<UcbPickPage>(
+    pickId == null ? null : `/api/campaigns/picks/${pickId}`,
+    [pickId],
+  )
+  if (error) return <ErrorState error={error} onRetry={reload} />
+  if (loading || !data) return <Skeleton rows={10} />
+  return (
+    <div>
+      <Section title="ucb picks" scope={data.scope}>
+        <DataTable
+          rows={picks}
+          cols={pickCols}
+          rowId={(r) => String(r.pick_id)}
+          onRowClick={(r) => setSel(r.pick_id)}
+          initialSort={{ key: 'when', desc: true }}
+          searchPlaceholder="search pick…"
+          emptyWhat="no UCB pick has been recorded yet"
+          emptyWhy="only runs started with --ucb record them, from the next launch onward"
+        />
+      </Section>
+      <Section title="the ranking at that pick" scope={detail.data?.scope}>
+        {detail.error && <ErrorState error={detail.error} onRetry={detail.reload} />}
+        {!detail.error && (detail.loading || !detail.data) && <Skeleton rows={8} />}
+        {!detail.error && detail.data && (
+          <DataTable
+            rows={detail.data.rows ?? []}
+            cols={rankCols}
+            rowId={(r) => String(r.rank)}
+            initialSort={{ key: 'rank', desc: false }}
+            searchPlaceholder="search start…"
+            maxHeight={620}
+            virtualizeOver={80}
+            emptyWhat="no ranking stored for this pick"
+          />
+        )}
+      </Section>
+    </div>
+  )
+}
+
 export function Campaigns() {
   const view = useSubView(VIEWS)
   return (
@@ -533,6 +773,7 @@ export function Campaigns() {
       {view === 'all' && <AllCampaigns />}
       {view === 'starts' && <Starts />}
       {view === 'matrix' && <Matrix />}
+      {view === 'picks' && <Picks />}
     </div>
   )
 }

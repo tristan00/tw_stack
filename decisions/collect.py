@@ -75,30 +75,6 @@ def _num(x):
         return None
 
 
-_LUA_TARGET = (_G +
-    "local f=cm:get_local_faction(true) local me=f:name() local fc=cco('CcoCampaignFaction',"
-    "tostring(f:command_queue_index())) local allies=0 local vassals=0 "
-    "local fl=cm:model():world():faction_list() "
-    "for i=0,fl:num_items()-1 do local o=fl:item_at(i) if o:name()~=me then "
-    "local ok1,al=pcall(function() return f:allied_with(o) end) if ok1 and al then allies=allies+1 end "
-    "local ok2,va=pcall(function() return o:is_vassal_of(f) end) if ok2 and va then vassals=vassals+1 end end end "
-    "return me..'|'..cm:model():turn_number()..'|'..f:income()..'|'..f:region_list():num_items()"
-    "..'|'..allies..'|'..vassals..'|'..ts(g(fc,'StrengthRank'))"
-    "..'|'..(function() local l=f:faction_leader() "
-    "if not l or l:is_null_interface() then return 'nil' end "
-    "local ok,v=pcall(function() return l:rank() end) return tv(ok,v) end)()")
-
-
-def target_row(bus):
-    p = str(_ev(bus, _LUA_TARGET, timeout=60.0)).split("|")
-    if len(p) < 8:
-        raise CollectError("target row malformed: %r" % p)
-    return {"campaign_id": p[0], "campaign_uuid": campaign_uuid(bus),
-            "turn": _num(p[1]), "income": _num(p[2]), "settlements": _num(p[3]),
-            "allies": _num(p[4]), "vassals": _num(p[5]), "power_rank": _num(p[6]),
-            "lord_level": _num(p[7]), "ts": time.time()}
-
-
 _LUA_FACTION_RESOURCES = (
     "local f=cm:get_local_faction(true) "
     "if not f or f:is_null_interface() then return '' end "
@@ -177,6 +153,10 @@ def _presave_radius():
             "recording an unknown radius." % v)
 
 
+def _selector():
+    return os.environ.get("TW_SELECTOR", "").strip() or None
+
+
 def campaign_map(bus, uuid=None):
     key = str(uuid or "")
     if key in _MAP_CACHE:
@@ -220,7 +200,18 @@ _LUA_CAMPAIGN = (_G + "local okc,t0=pcall(os.clock) "
                  "local ok,v=pcall(function() return l:is_wounded() end) "
                  "return tv(ok,v) end)()"
                  "..'|'..(function() local ok,v=pcall(function() return f:is_dead() end) "
-                 "return tv(ok,v) end)()")
+                 "return tv(ok,v) end)()"
+                 "..'|'..(function() local ok,v=pcall(function() "
+                 "return cm:model():combined_difficulty_level() end) "
+                 "if ok and v~=nil then return tostring(v) end return 'nil' end)()"
+                 "..'|'..(function() local l=f:faction_leader() "
+                 "if not l or l:is_null_interface() then return 'nil' end "
+                 "local ok,v=pcall(function() "
+                 "local fn=common.get_localised_string(l:get_forename()) "
+                 "local sn='' pcall(function() "
+                 "sn=common.get_localised_string(l:get_surname()) end) "
+                 "if sn and sn~='' then return fn..' '..sn end return fn end) "
+                 "if ok and v and v~='' then return v end return 'nil' end)()")
 
 
 _GAME_VERSION = ["unread"]
@@ -278,7 +269,10 @@ def _parse_campaign(raw):
             "ll_wounded": (p[14] == "true") if len(p) > 14 and p[14] in ("true", "false") else None,
             "game_version": _game_version(),
             "defeated": ((p[15] == "true") if len(p) > 15 and p[15] in ("true", "false")
-                         else None)}
+                         else None),
+            "difficulty": _num(p[16]) if len(p) > 16 else None,
+            "leader": (p[17].strip() if len(p) > 17 and p[17].strip()
+                       and p[17].strip() != "nil" else None)}
 
 
 _LUA_REGIONS = (_G +
@@ -362,25 +356,6 @@ def _parse_war_graph(raw):
         if peers:
             out.append({"faction": subj, "at_war_with": peers})
     return out
-
-
-_LUA_DIPLO_WORLD = (
-    "local me=cm:get_local_faction(true) local ml=me:factions_met() local met={} "
-    "for i=0,ml:num_items()-1 do met[#met+1]=ml:item_at(i):name() end "
-    "local fl=cm:model():world():faction_list() local out={} "
-    "for i=0,fl:num_items()-1 do local f=fl:item_at(i) "
-    "  local ok,wl=pcall(function() return f:factions_at_war_with() end) "
-    "  if ok and wl and wl:num_items()>0 then local e={} "
-    "    for j=0,wl:num_items()-1 do e[#e+1]=wl:item_at(j):name() end "
-    "    out[#out+1]=f:name()..'>'..table.concat(e,'|') end end "
-    "return table.concat(met,',')..'||'..table.concat(out,',')")
-
-
-def diplo_world(bus):
-    raw = str(_ev(bus, _LUA_DIPLO_WORLD, timeout=40.0, allow_nil=True) or "")
-    met_raw, _, war_raw = raw.partition("||")
-    known = [f for f in met_raw.split(",") if f]
-    return known, _parse_war_graph(war_raw)
 
 
 _LUA_ENEMY_AGENTS = (
@@ -758,43 +733,6 @@ def _parse_province(raw, region):
             "income": (_num(p[16]) if len(p) > 16 else None),
             "has_port": (p[17] == "true") if len(p) > 17 else None,
             "has_walls": (p[18] == "true") if len(p) > 18 else None}
-
-
-_LUA_ENTITY_TARGETS = (_G +
-    "local f=cm:get_local_faction(true) local o={} "
-    "local cl=f:character_list() "
-    "for i=0,cl:num_items()-1 do local c=cl:item_at(i) "
-    "  local ok,rk=pcall(function() return c:rank() end) "
-    "  local oc,ac=pcall(function() return c:military_force():is_armed_citizenry() end) "
-    "  if ok and rk and not (oc and ac) then "
-    "    local kind='lord' "
-    "    if not c:has_military_force() then kind='hero' end "
-    "    o[#o+1]=kind..'~'..ts(c:command_queue_index())..'~'..ts(rk) end end "
-    "local rl=f:region_list() "
-    "for i=0,rl:num_items()-1 do local r=rl:item_at(i) local reg=r:name() "
-    "  local st=cco('CcoCampaignSettlement','settlement:'..reg) "
-    "  if st then local slots=g(st,'BuildingSlotList') local n=0 "
-    "    if type(slots)=='table' then for j=1,#slots do "
-    "      local bc=g(slots[j],'BuildingContext') "
-    "      local lv=bc and g(bc,'BuildingLevelRecordContext') "
-    "      local k=lv and ts(g(lv,'Key')) or '' "
-    "      if k~='' and string.find(k,'settlement') then n=n+(tonumber(g(lv,'Level')) or 0) end "
-    "    end end "
-    "    o[#o+1]='province~'..reg..'~'..ts(n) end end "
-    "return table.concat(o,',')")
-
-
-def entity_target_rows(bus):
-    raw = str(_ev(bus, _LUA_ENTITY_TARGETS, timeout=30.0, allow_nil=True) or "")
-    out = []
-    for chunk in raw.split(","):
-        p = chunk.split("~")
-        if len(p) != 3 or not p[1]:
-            continue
-        v = _num(p[2])
-        if v is not None:
-            out.append({"context_kind": p[0], "context_id": p[1], "value": v})
-    return out
 
 
 _LUA_MOVE_CANDIDATES = (
@@ -1431,6 +1369,7 @@ def snapshot(bus, active=None):
     camp["resources"] = _parse_resources(_bres(ra[1], "faction_resources", allow_nil=True))
     camp["campaign_map"] = campaign_map(bus, camp.get("campaign_uuid"))
     camp["presave_radius"] = _presave_radius()
+    camp["selector"] = _selector()
     regs = _parse_regions(_bres(ra[2], "regions", allow_nil=True))
     rs = _ruins_of(regs)
     ruin_keys = {r["region"] for r in rs}

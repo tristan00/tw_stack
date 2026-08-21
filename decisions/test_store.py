@@ -25,7 +25,8 @@ def check(cond, what):
         FAILED.append(what)
 
 
-def _snapshot(turn, faction="wh_main_emp", uuid="camp-1", n_lords=2):
+def _snapshot(turn, faction="wh_main_emp", uuid="camp-1", n_lords=2, settlements=2.0,
+              lord_level=3.0):
     ents = []
     for i in range(n_lords):
         ents.append({
@@ -45,8 +46,11 @@ def _snapshot(turn, faction="wh_main_emp", uuid="camp-1", n_lords=2):
                  "state": {"turn": turn, "faction": faction, "defeated": False},
                  "offers": [{"action_type": "end_turn", "key": "end_turn",
                              "params": {}}]})
-    return {"ts": 1000.0 + turn, "campaign": {"faction": faction, "campaign_uuid": uuid,
-                                              "turn": turn, "treasury": 2500 + turn},
+    return {"ts": 1000.0 + turn,
+            "campaign": {"faction": faction, "campaign_uuid": uuid, "turn": turn,
+                         "treasury": 2500 + turn, "settlements": settlements,
+                         "lord_level": lord_level, "income": 100.0 + turn,
+                         "allies": 0.0, "vassals": 0.0, "power_rank": -40.0},
             "world": {"hostiles": [{"kind": "army", "cqi": 9, "faction": "orcs"}],
                       "relations": [{"faction": "orcs", "at_war": True}]},
             "entities": ents}
@@ -192,12 +196,11 @@ def main():
         check(con.execute("SELECT tree_json FROM interrupt_decisions").fetchone()[0] is None,
               "tree_json is accepted and not stored")
 
-        st.write_target_row({"campaign_id": "wh_main_emp", "campaign_uuid": "camp-1",
-                             "turn": 1, "income": 100.0, "settlements": 2.0, "allies": 0.0,
-                             "vassals": 0.0, "power_rank": 40.0, "lord_level": 3.0})
-        check(st.target_series()["camp-1"][1]["income"] == 100.0, "target_series")
-        st.write_entity_target_rows("camp-1", 1, [{"context_kind": "lord",
-                                                   "context_id": 100, "value": 3.0}])
+        series = st.target_series()["camp-1"]
+        check(set(series) == {1, 2, 3, 4, 5}, "target_series has one row per turn")
+        check(series[1]["income"] == 101.0 and series[1]["settlements"] == 2.0
+              and series[1]["lord_level"] == 3.0 and series[1]["power_rank"] == -40.0,
+              "target_series derives from the turn_open snapshot, sign untouched")
         check(st.entity_series()["camp-1"][("lord", "100")][1] == 3.0, "entity_series")
         seq = st.action_sequence()
         check(len(seq) == 2 and seq[0][0] == "camp-1", "action_sequence")
@@ -209,6 +212,36 @@ def main():
 
         av = st.con.execute("PRAGMA auto_vacuum").fetchone()[0]
         check(av == 2, "auto_vacuum is INCREMENTAL (2), got %s" % av)
+
+        _write(_snapshot(7, uuid="camp-2", settlements=2.0), decision_seq=0, policy="random")
+        _write(_snapshot(7, uuid="camp-2", settlements=2.0), decision_seq=1, policy="random")
+        _write(_snapshot(7, uuid="camp-2", settlements=3.0), decision_seq=2, policy="random")
+        _write(_snapshot(8, uuid="camp-2", settlements=3.0), decision_seq=3, policy="random")
+        to = {int(r[0]): r for r in con.execute(
+            "SELECT turn, settlements, decision_id FROM turn_open"
+            " WHERE campaign_id='camp-2'")}
+        tc = {int(r[0]): r for r in con.execute(
+            "SELECT turn, settlements, decision_id FROM turn_close"
+            " WHERE campaign_id='camp-2'")}
+        check(to[7][1] == 2.0, "turn_open is the FIRST snapshot of the turn (2, not 3)")
+        check(tc[7][1] == 3.0, "turn_close is the LAST snapshot of the turn (3, not 2)")
+        check(8 in to and 8 in tc, "a single-decision terminal turn is present in both views")
+        check(to[8][2] == tc[8][2], "single-decision turn: open and close are the same row")
+        check(st.target_series()["camp-2"][7]["settlements"] == 2.0,
+              "target_series reads turn_open, not turn_close")
+        by_id, = con.execute(
+            "SELECT tb.open_id FROM turn_bounds tb JOIN campaigns c"
+            " ON c.campaign_id=tb.campaign_id WHERE c.campaign_key='camp-2' AND tb.turn=7"
+        ).fetchone()
+        by_seq, = con.execute(
+            "SELECT d.decision_id FROM decisions d JOIN campaigns c"
+            " ON c.campaign_id=d.campaign_id WHERE c.campaign_key='camp-2' AND d.turn=7"
+            " ORDER BY d.decision_seq LIMIT 1").fetchone()
+        check(by_id == by_seq, "decision_id order and decision_seq order agree on turn open")
+        views = {r[0] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='view'")}
+        check({"turn_bounds", "turn_open", "turn_close"} <= views,
+              "turn_bounds/turn_open/turn_close exist as VIEWS")
 
         st.close()
         con.close()
@@ -226,7 +259,7 @@ def main():
             check(True, "a v1 store raises IncompatibleStore")
 
         st2 = DecisionStore(run)
-        check(st2.summary()["decisions"] == 5, "reopen keeps the rows")
+        check(st2.summary()["decisions"] == 9, "reopen keeps the rows")
         check(st2.layout_violations() == 0, "reopen: layout invariant still holds")
         st2.close()
     finally:

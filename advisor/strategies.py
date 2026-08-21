@@ -12,6 +12,9 @@ TRAINABLE = arms.TRAINABLE
 ModelUnavailable = arms.ModelUnavailable
 
 
+TYPE_WEIGHTS = {"building_dismantle": 0.2, "item_unequip": 0.2, "end_turn": 1.0}
+
+
 class Random:
 
     def __init__(self, rng):
@@ -22,7 +25,9 @@ class Random:
         pools = {}
         for r in elig:
             pools.setdefault(r["action_type"], []).append(r)
-        return self.rng.choice(pools[self.rng.choice(sorted(pools))])
+        types = sorted(pools)
+        weights = [TYPE_WEIGHTS.get(t, 1.0) for t in types]
+        return self.rng.choice(pools[self.rng.choices(types, weights=weights)[0]])
 
 
 class GreedyCatboost:

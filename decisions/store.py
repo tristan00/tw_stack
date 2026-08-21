@@ -87,7 +87,11 @@ class DecisionStore:
         self.con.commit()
 
     _ADD_COLUMNS = (("campaigns", "campaign_map", "TEXT"),
-                    ("campaigns", "presave_radius", "REAL"))
+                    ("campaigns", "presave_radius", "REAL"),
+                    ("campaigns", "selector", "TEXT"),
+                    ("campaigns", "picked_ts", "REAL"),
+                    ("campaigns", "difficulty", "INTEGER"),
+                    ("campaigns", "leader", "TEXT"))
 
     def _add_missing_columns(self):
         for table, col, decl in self._ADD_COLUMNS:
@@ -163,7 +167,8 @@ class DecisionStore:
     def campaign_key(self, faction, uuid=None):
         return str(uuid) if uuid else "%s@%s" % (faction, self.run_id)
 
-    def _campaign_id(self, key, faction=None, campaign_map=None, presave_radius=None):
+    def _campaign_id(self, key, faction=None, campaign_map=None, presave_radius=None,
+                     selector=None, difficulty=None, leader=None):
         hit = self._campaign_cache.get(key)
         if hit is not None:
             if campaign_map:
@@ -176,11 +181,27 @@ class DecisionStore:
                     "UPDATE campaigns SET presave_radius=? "
                     "WHERE campaign_id=? AND presave_radius IS NULL",
                     (presave_radius, hit))
+            if selector:
+                self.con.execute(
+                    "UPDATE campaigns SET selector=? "
+                    "WHERE campaign_id=? AND selector IS NULL",
+                    (selector, hit))
+            if difficulty is not None:
+                self.con.execute(
+                    "UPDATE campaigns SET difficulty=? "
+                    "WHERE campaign_id=? AND difficulty IS NULL",
+                    (difficulty, hit))
+            if leader:
+                self.con.execute(
+                    "UPDATE campaigns SET leader=? "
+                    "WHERE campaign_id=? AND leader IS NULL",
+                    (leader, hit))
             return hit
         self.con.execute(
-            "INSERT OR IGNORE INTO campaigns(campaign_key,faction,campaign_map,presave_radius) "
-            "VALUES(?,?,?,?)",
-            (key, faction, campaign_map, presave_radius))
+            "INSERT OR IGNORE INTO campaigns"
+            "(campaign_key,faction,campaign_map,presave_radius,selector,difficulty,leader) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (key, faction, campaign_map, presave_radius, selector, difficulty, leader))
         cid = self.con.execute("SELECT campaign_id FROM campaigns WHERE campaign_key=?",
                                (key,)).fetchone()[0]
         self._campaign_cache[key] = cid
@@ -216,7 +237,8 @@ class DecisionStore:
         cid = self._campaign_id(self.campaign_key(camp.get("faction"),
                                                   camp.get("campaign_uuid")),
                                 camp.get("faction"), camp.get("campaign_map"),
-                                camp.get("presave_radius"))
+                                camp.get("presave_radius"), camp.get("selector"),
+                                _int_or_none(camp.get("difficulty")), camp.get("leader"))
         cur = self.con.execute(
             "INSERT INTO decisions(campaign_id,ts,turn,decision_seq,policy,version_id,"
             "n_entities,n_offers,campaign_blob,world_blob)"
@@ -349,33 +371,27 @@ class DecisionStore:
         self.con.commit()
         return seq is not None
 
-    def write_target_row(self, row):
-        self._assert_writable("write_target_row")
+    def write_ucb_pick(self, rec):
+        self._assert_writable("write_ucb_pick")
+        rec = dict(rec or {})
+        rows = rec.get("rows") or []
+        chosen = rec.get("chosen") or {}
         cur = self.con.execute(
-            "INSERT OR IGNORE INTO target_rows"
-            "(campaign_id,turn,ts,income,settlements,allies,vassals,power_rank,lord_level)"
-            " VALUES(?,?,?,?,?,?,?,?,?)",
-            (self.campaign_key(row.get("campaign_id"), row.get("campaign_uuid")),
-             int(row.get("turn") or 0), row.get("ts") or time.time(),
-             row.get("income"), row.get("settlements"), row.get("allies"),
-             row.get("vassals"), row.get("power_rank"), row.get("lord_level")))
+            "INSERT INTO ucb_picks(ts,c,total_plays,campaign_map,faction,n,mean,explore,"
+            "score,tied) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (rec.get("ts") or time.time(), rec.get("c"), _int_or_none(rec.get("total_plays")),
+             chosen.get("campaign_map"), chosen.get("faction"),
+             _int_or_none(chosen.get("n")), chosen.get("mean"), chosen.get("explore"),
+             chosen.get("score"), _int_or_none(rec.get("tied"))))
+        pid = cur.lastrowid
+        self.con.executemany(
+            "INSERT INTO ucb_pick_rows(pick_id,rank,campaign_map,faction,n,mean,explore,"
+            "score,chosen) VALUES(?,?,?,?,?,?,?,?,?)",
+            [(pid, i + 1, r.get("campaign_map"), r.get("faction"), _int_or_none(r.get("n")),
+              r.get("mean"), r.get("explore"), r.get("score"),
+              1 if r.get("chosen") else 0) for i, r in enumerate(rows)])
         self.con.commit()
-        return cur.rowcount > 0
-
-    def write_entity_target_rows(self, campaign_id, turn, rows):
-        self._assert_writable("write_entity_target_rows")
-        n = 0
-        for r in rows or []:
-            if r.get("value") is None:
-                continue
-            cur = self.con.execute(
-                "INSERT OR IGNORE INTO entity_target_rows"
-                "(campaign_id,turn,context_kind,context_id,value,ts) VALUES(?,?,?,?,?,?)",
-                (campaign_id, int(turn or 0), r["context_kind"], str(r["context_id"]),
-                 float(r["value"]), time.time()))
-            n += cur.rowcount or 0
-        self.con.commit()
-        return n
+        return pid
 
     def write_postmortem(self, rec):
         self._assert_writable("write_postmortem")
@@ -395,6 +411,11 @@ class DecisionStore:
             self.con.execute(
                 "UPDATE campaigns SET outcome=?, defeated=? WHERE campaign_key=?",
                 (outcome, defeated, key))
+            if rec.get("picked_ts") is not None:
+                self.con.execute(
+                    "UPDATE campaigns SET picked_ts=? "
+                    "WHERE campaign_key=? AND picked_ts IS NULL",
+                    (rec["picked_ts"], key))
         self.con.commit()
         return True
 
@@ -447,19 +468,6 @@ class DecisionStore:
         out.reverse()
         return out
 
-    def write_diplo_state(self, campaign_id, turn, known_factions, war_graph):
-        self._assert_writable("write_diplo_state")
-        if not campaign_id or war_graph is None:
-            return False
-        kb = self._blob(json.dumps(known_factions or [], sort_keys=True))
-        wb = self._blob(json.dumps(war_graph or [], sort_keys=True))
-        cur = self.con.execute(
-            "INSERT OR IGNORE INTO diplo_state(campaign_id,turn,ts,known_blob,war_blob)"
-            " VALUES(?,?,?,?,?)",
-            (campaign_id, int(turn or 0), time.time(), kb, wb))
-        self.con.commit()
-        return cur.rowcount > 0
-
     @staticmethod
     def _flag(v):
         return None if v is None else (1 if v else 0)
@@ -494,7 +502,7 @@ class DecisionStore:
 
     def summary(self):
         q = lambda s: self.con.execute(s).fetchone()[0]
-        return {"target_rows": q("SELECT COUNT(*) FROM target_rows"),
+        return {"turns": q("SELECT COUNT(*) FROM turn_bounds"),
                 "decisions": q("SELECT COUNT(*) FROM decisions"),
                 "snapshots": q("SELECT COUNT(*) FROM entities"),
                 "offers": q("SELECT COUNT(*) FROM offers"),
@@ -669,18 +677,33 @@ class DecisionStore:
         out = {}
         for camp, turn, inc, setl, allies, vass, rank, lvl in self.con.execute(
                 "SELECT campaign_id,turn,income,settlements,allies,vassals,power_rank,lord_level"
-                " FROM target_rows"):
+                " FROM turn_open"):
             out.setdefault(camp, {})[int(turn)] = {
                 "income": inc or 0.0, "settlements": setl or 0.0,
-                "power_rank": (-rank if rank is not None else -50.0),
+                "power_rank": (rank if rank is not None else -50.0),
                 "allies": allies or 0.0, "vassals": vass or 0.0,
                 "lord_level": lvl or 0.0}
         return out
 
     def entity_series(self):
         out = {}
-        for camp, turn, kind, cid, val in self.con.execute(
-                "SELECT campaign_id,turn,context_kind,context_id,value FROM entity_target_rows"):
+        for camp, turn, kind, cid, feats in self.con.execute(
+                "SELECT c.campaign_key,d.turn,e.context_kind,e.context_id,unz(b.z)"
+                " FROM turn_bounds tb"
+                " JOIN decisions d ON d.decision_id=tb.open_id"
+                " JOIN entities e ON e.decision_id=d.decision_id"
+                " JOIN blobs b ON b.blob_id=e.features_blob"
+                " LEFT JOIN campaigns c ON c.campaign_id=d.campaign_id"):
+            if kind in ("lord", "hero"):
+                key = "rank"
+            elif kind == "province":
+                key = "settlement_level"
+            else:
+                continue
+            try:
+                val = (json.loads(feats or "{}")).get(key)
+            except ValueError:
+                continue
             if val is None:
                 continue
             out.setdefault(camp, {}).setdefault((kind, str(cid)), {})[int(turn)] = float(val)

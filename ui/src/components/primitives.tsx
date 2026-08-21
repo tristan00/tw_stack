@@ -86,7 +86,7 @@ export function IdentLabel({
       className={cn('text-left hover:underline decoration-dotted underline-offset-2', className)}
     >
       <span>{ident.label}</span>
-      {showCulture && ident.culture && (
+      {showCulture && ident.culture && ident.culture.toLowerCase() !== ident.label.toLowerCase() && (
         <span className="text-dim text-2xs ml-1.5">{ident.culture}</span>
       )}
     </button>

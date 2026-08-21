@@ -64,10 +64,12 @@ class Metric(BaseModel):
 
 class Current(BaseModel):
     campaign: Ident | None = None
+    leader: str | None = None
     turn: int | None = None
     settlements: float | None = None
     power_rank: float | None = None
     lord_level: float | None = None
+    stored_campaigns: int | None = None
     age_seconds: float | None = None
 
 
@@ -86,13 +88,22 @@ class RunPage(BaseModel):
     totals: list[Count]
     collect_timing: list[TimingRow]
     cycle_timing: list[TimingRow]
-    log_tail: list[str]
-    log_name: str | None = None
+
+
+class LogPage(BaseModel):
+    scope: Scope
+    file: str | None = None
+    files: list[str] = []
+    size: int = 0
+    lines: list[str] = []
+    cursor: int | None = None
+    scanned: int = 0
 
 
 class CampaignRow(BaseModel):
     campaign_id: int
     campaign: Ident
+    leader: str | None = None
     campaign_map: Ident | None = None
     presave_radius: float | None = None
     turns: int | None = None
@@ -144,16 +155,63 @@ class CampaignsPage(BaseModel):
     rows: list[CampaignRow]
 
 
-class StartRow(BaseModel):
+class UcbPick(BaseModel):
+    pick_id: int
+    ts: float | None = None
+    c: float | None = None
+    total_plays: int = 0
+    leader: str | None = None
     faction: Ident
     campaign_map: Ident | None = None
+    n: int = 0
+    mean: float | None = None
+    explore: float | None = None
+    score: float | None = None
+    tied: int = 0
+    starts: int = 0
+
+
+class UcbRow(BaseModel):
+    rank: int
+    leader: str | None = None
+    faction: Ident
+    campaign_map: Ident | None = None
+    n: int = 0
+    mean: float | None = None
+    explore: float | None = None
+    score: float | None = None
+    chosen: bool = False
+
+
+class UcbPicksPage(BaseModel):
+    scope: Scope
+    picks: list[UcbPick] = []
+    cursor: int | None = None
+
+
+class UcbPickPage(BaseModel):
+    scope: Scope
+    pick: UcbPick | None = None
+    rows: list[UcbRow] = []
+
+
+class StartRow(BaseModel):
+    faction: Ident
+    leader: str | None = None
+    campaign_map: Ident | None = None
     n: int
-    single_sample: bool = False
     avg_turns: float | None = None
-    best_turns: int | None = None
-    best_settlements: float | None = None
-    best_power_rank: float | None = None
-    best_lord_level: float | None = None
+    sec_per_turn: float | None = None
+    settlements_gained_best: float | None = None
+    settlements_gained_avg: float | None = None
+    levels_gained_best: float | None = None
+    levels_gained_avg: float | None = None
+    allies_gained_best: float | None = None
+    allies_gained_avg: float | None = None
+    vassals_gained_best: float | None = None
+    vassals_gained_avg: float | None = None
+    total_gained_best: float | None = None
+    total_gained_avg: float | None = None
     ever_allied: int = 0
     ever_vassal: int = 0
     confirm_rate: Rate | None = None
@@ -161,7 +219,6 @@ class StartRow(BaseModel):
 
 class StartsPage(BaseModel):
     scope: Scope
-    low_sample: Count
     rows: list[StartRow]
 
 
@@ -639,8 +696,6 @@ class TrialRow(BaseModel):
         description="how many ledger lines this trial wrote. The ledger appends a snapshot "
                     "per campaign as a trial progresses, so one trial owns many lines; the "
                     "row shows its newest state and this says how many were folded in.")
-    backend: str | None = None
-    cfg: str | None = None
     mix: dict = Field(default_factory=dict)
     ruleset: str | None = None
     campaigns: int | None = None

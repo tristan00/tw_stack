@@ -164,6 +164,9 @@ def test_api_agrees_with_sql():
     totals = {t["noun"]: t["value"] for t in run["totals"]}
 
     sql_campaigns = con.execute(
+        "SELECT COUNT(*) FROM (SELECT campaign_id FROM decisions"
+        " GROUP BY campaign_id HAVING COUNT(*) >= 2)").fetchone()[0]
+    sql_listed = con.execute(
         "SELECT COUNT(DISTINCT campaign_id) FROM decision_points").fetchone()[0]
     sql_decisions = con.execute("SELECT COUNT(*) FROM decision_points").fetchone()[0]
     sql_offers = con.execute("SELECT COUNT(*) FROM action_offers").fetchone()[0]
@@ -176,7 +179,7 @@ def test_api_agrees_with_sql():
     assert totals["actions"] == sql_confirmed, (totals["actions"], sql_confirmed)
 
     rows = _client.get("/api/campaigns").json()["rows"]
-    assert len(rows) == sql_campaigns, (len(rows), sql_campaigns)
+    assert len(rows) == sql_listed, (len(rows), sql_listed)
 
     total = _client.get("/api/decisions").json()["total"]["value"]
     assert total == con.execute("SELECT COUNT(*) FROM action_taken").fetchone()[0]
@@ -184,14 +187,14 @@ def test_api_agrees_with_sql():
 
 def test_campaign_id_join_trap():
     con = db.connect()
-    wrong = con.execute("SELECT COUNT(*) FROM target_rows t"
+    wrong = con.execute("SELECT COUNT(*) FROM turn_open t"
                         " JOIN campaigns c ON t.campaign_id = c.campaign_id").fetchone()[0]
-    right = con.execute("SELECT COUNT(*) FROM target_rows t"
+    right = con.execute("SELECT COUNT(*) FROM turn_open t"
                         " JOIN campaigns c ON t.campaign_id = c.campaign_key").fetchone()[0]
     assert wrong == 0, ("the id/key join returned %d rows -- if the schema changed, this "
                         "test and every join in queries.py must be revisited together"
                         % wrong)
-    assert right > 0, "the key join returned nothing; target_rows is not joinable"
+    assert right > 0, "the key join returned nothing; turn_open is not joinable"
 
 
 def test_outcome_join_is_a_key():
@@ -488,14 +491,6 @@ def test_matrix_leads_with_totals_worst_first():
         assert t["rate"]["n"] == (sql[1] or 0), (t["action_type"]["raw"], t["rate"], sql)
 
 
-def test_starts_marks_single_sample_rows():
-    page = _client.get("/api/campaigns/starts").json()
-    assert page["rows"], "no starts"
-    for r in page["rows"]:
-        assert r["single_sample"] == (r["n"] <= 2), r
-    assert page["low_sample"]["population"].strip()
-
-
 def test_identifiers_carry_both_forms():
     bad = []
     for ep, r in _all_responses().items():
@@ -521,8 +516,8 @@ def test_menu_option_scores_are_data_not_hover_text():
 def test_current_campaign_has_one_source():
     con = db.connect()
     cur = q.current(con)
-    row = con.execute("SELECT campaign_id, turn FROM target_rows"
-                      " ORDER BY ts DESC LIMIT 1").fetchone()
+    row = con.execute("SELECT campaign_id, turn FROM turn_close"
+                      " ORDER BY decision_id DESC LIMIT 1").fetchone()
     if row is None:
         return
     assert cur.campaign.raw == row["campaign_id"], (cur.campaign.raw, row["campaign_id"])

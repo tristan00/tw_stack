@@ -191,12 +191,6 @@ def request_snapshot(run_dir, active=None, timeout=180.0):
     return did, rec
 
 
-def request_target(run_dir, timeout=120.0):
-    rid = _new_id("target")
-    _ask(run_dir, "target", req_id=rid)
-    return _await(run_dir, rid, timeout).get("row")
-
-
 def request_turn(run_dir, timeout=60.0):
     rid = _new_id("turn")
     _ask(run_dir, "turn", req_id=rid)
@@ -232,6 +226,10 @@ def log_verification(run_dir, decision_id, result):
 
 def log_postmortem(run_dir, rec):
     _ask(run_dir, "postmortem", dict(rec or {}))
+
+
+def log_ucb_pick(run_dir, rec):
+    _ask(run_dir, "ucb_pick", dict(rec or {}))
 
 
 def log_diplomacy(run_dir, row):

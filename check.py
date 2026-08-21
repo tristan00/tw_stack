@@ -16,6 +16,9 @@ CHECKS = [
      "record/read round-trip, view compatibility, layout invariant"),
     ("journal", ["-m", "decisions.test_journal"], False,
      "the jsonl append path, and that no module has an undefined global"),
+    ("single_stream", ["-m", "decisions.test_single_stream"], False,
+     "one state stream: no end-of-turn collection identifier exists anywhere, and "
+     "per-turn state is only ever read through the turn_open/turn_close views"),
     ("cco_audit", ["-m", "decisions.cco_audit"], False,
      "every CCO property route the collector reads exists on that context"),
     ("dilemma_audit", ["-m", "decisions.dilemma_audit"], False,
@@ -61,6 +64,9 @@ CHECKS = [
      "for bit, a formula-version bump wipes rather than mixing two definitions in one "
      "table, a dropped source row fails the pass, and a crash mid-fold cannot leave the "
      "watermark ahead of the rows it describes"),
+    ("ledger", ["test_metrics_ledger.py"], False,
+     "the experiment ledger tracks the campaign data on disk: at session boot a trial "
+     "whose campaigns are gone moves to trials_archive, matching trials survive"),
     ("client", ["ui/check_client.py"], False,
      "the dashboard client typechecks against the types generated from the API's own "
      "OpenAPI document, every colour token clears WCAG in BOTH themes, and it builds"),

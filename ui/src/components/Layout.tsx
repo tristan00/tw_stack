@@ -12,6 +12,7 @@ const NAV = [
   { to: '/campaigns', label: 'campaigns', asks: 'how are campaigns going' },
   { to: '/decisions', label: 'decisions', asks: 'what did it choose and why' },
   { to: '/models', label: 'models', asks: 'are the models learning' },
+  { to: '/log', label: 'log', asks: 'what exactly happened, second by second' },
   { to: '/infra', label: 'infra', asks: 'services and controls' },
 ]
 
@@ -39,7 +40,10 @@ function StatusLine() {
     <div className="flex min-w-0 flex-wrap items-baseline gap-x-4 gap-y-1">
       <div className="min-w-0">
         {cur?.campaign ? (
-          <IdentLabel ident={cur.campaign} className="text-lg font-semibold tracking-tight" />
+          <IdentLabel
+            ident={{ ...cur.campaign, label: cur.leader ?? cur.campaign.label }}
+            className="text-lg font-semibold tracking-tight"
+          />
         ) : (
           <span className="text-dim text-lg">no campaign running</span>
         )}
@@ -54,9 +58,9 @@ function StatusLine() {
           setts <b className="num text-fg text-sm">{cur.settlements}</b>
         </span>
       )}
-      {cur?.power_rank !== null && cur?.power_rank !== undefined && (
+      {cur?.stored_campaigns !== null && cur?.stored_campaigns !== undefined && (
         <span className="text-dim text-2xs uppercase tracking-wide">
-          rank <b className="num text-fg text-sm">{cur.power_rank}</b>
+          campaigns <b className="num text-fg text-sm">{cur.stored_campaigns}</b>
         </span>
       )}
       <span className="flex items-center gap-2.5">

@@ -22,7 +22,7 @@ from advisor_api.models import (
     CampaignReward, DecisionRow, DiploEvent, EntityState, ForcingBar, ForcingTile, Ident,
     InterruptOption, InterruptRow, Metric, ModelCard, OfferRow, OutcomeTally, PhaseSpan,
     PolicyRow, Rate, RewardPoint, Scope, Service, StartRow, TimelineAction, TimelineLane,
-    TimingRow, TrainingEvent, TrialCorr, TrialRow,
+    TimingRow, TrainingEvent, TrialCorr, TrialRow, UcbPick, UcbRow,
 )
 
 DECISIONS_PAGE = 50
@@ -185,12 +185,17 @@ def unjoined_endings(con) -> int:
 def current(con) -> Current:
     row = con.execute(
         "SELECT campaign_id, turn, settlements, power_rank, lord_level, ts"
-        " FROM target_rows ORDER BY ts DESC LIMIT 1").fetchone()
+        " FROM turn_close ORDER BY decision_id DESC LIMIT 1").fetchone()
     if not row:
         return Current()
+    leader = con.execute("SELECT leader FROM campaigns WHERE campaign_key=?",
+                         (row["campaign_id"],)).fetchone()
+    stored = con.execute("SELECT SUM(n) FROM start_counts").fetchone()
     return Current(campaign=_camp(row["campaign_id"]), turn=_i(row["turn"]),
+                   leader=leader["leader"] if leader else None,
                    settlements=_f(row["settlements"]), power_rank=_f(row["power_rank"]),
                    lord_level=_f(row["lord_level"]),
+                   stored_campaigns=_i(stored[0]) if stored else None,
                    age_seconds=max(0.0, time.time() - (_f(row["ts"]) or 0.0)))
 
 
@@ -198,8 +203,9 @@ def current(con) -> Current:
 def totals(con) -> list:
     q = lambda s: con.execute(s).fetchone()[0] or 0
     return [
-        Count(value=q("SELECT COUNT(DISTINCT campaign_id) FROM decision_points"),
-              noun="campaigns", population="with a recorded decision in this run dir"),
+        Count(value=q("SELECT COUNT(*) FROM (SELECT campaign_id FROM decisions"
+                      " GROUP BY campaign_id HAVING COUNT(*) >= 2)"),
+              noun="campaigns", population="with two or more decisions in this run dir"),
         Count(value=q("SELECT COUNT(*) FROM decision_points"),
               noun="decisions", population="recorded in this run dir"),
         Count(value=q("SELECT COUNT(*) FROM action_offers"),
@@ -350,8 +356,8 @@ def campaign_rows(con) -> list:
     growth = {g["campaign_key"]: CG.enrich(g)
               for g in adb.rows("SELECT * FROM campaign_growth")}
     meta = {r["campaign_key"]: r for r in con.execute(
-        "SELECT campaign_id, campaign_key, faction, turns, campaign_map, presave_radius "
-        "FROM campaigns")}
+        "SELECT campaign_id, campaign_key, faction, turns, campaign_map, presave_radius, "
+        "leader FROM campaigns")}
 
     outcomes = join_outcomes(con)
     out = []
@@ -366,6 +372,7 @@ def campaign_rows(con) -> list:
         row = CampaignRow(
             campaign_id=_i(m["campaign_id"], 0) if m else 0,
             campaign=_camp(ckey),
+            leader=m["leader"] if m else None,
             campaign_map=_id(ident.campaign_map(m["campaign_map"] if m else None)),
             presave_radius=(m["presave_radius"] if m else None),
             turns=_i(d["last_turn"], _i(m["turns"]) if m else None),
@@ -436,24 +443,21 @@ def starts_rows(con) -> list:
     for row in campaign_rows(con):
         fkey, _ = ident.split_campaign_key(row.campaign.raw)
         mkey = row.campaign_map.raw if row.campaign_map else ""
-        b = per.setdefault((mkey, fkey), {"n": 0, "turns": [], "sett": [], "rank": [], "lord": [],
+        b = per.setdefault((mkey, fkey), {"n": 0, "turns": [], "span_min": 0.0,
                                           "att": 0, "conf": 0})
         b["n"] += 1
         if row.turns is not None:
             b["turns"].append(row.turns)
-        for k, v in (("sett", row.peak_settlements), ("rank", row.peak_power_rank),
-                     ("lord", row.peak_lord_level)):
-            if v is not None:
-                b[k].append(v)
+        b["span_min"] += row.span_min or 0.0
         b["att"] += row.attempted
         b["conf"] += row.confirmed
 
     allied = {r["ckey"]: r["n"] for r in con.execute(
         "SELECT campaign_id ckey, SUM(CASE WHEN allies>0 THEN 1 ELSE 0 END) n"
-        " FROM target_rows GROUP BY campaign_id")}
+        " FROM turn_open GROUP BY campaign_id")}
     vassal = {r["ckey"]: r["n"] for r in con.execute(
         "SELECT campaign_id ckey, SUM(CASE WHEN vassals>0 THEN 1 ELSE 0 END) n"
-        " FROM target_rows GROUP BY campaign_id")}
+        " FROM turn_open GROUP BY campaign_id")}
     ever_a, ever_v = {}, {}
     for row in campaign_rows(con):
         fkey, _ = ident.split_campaign_key(row.campaign.raw)
@@ -462,17 +466,44 @@ def starts_rows(con) -> list:
         ever_a[k] = ever_a.get(k, 0) + (1 if (allied.get(row.campaign.raw) or 0) else 0)
         ever_v[k] = ever_v.get(k, 0) + (1 if (vassal.get(row.campaign.raw) or 0) else 0)
 
+    counts = {((r["campaign_map"] or ""), r["faction"]): r["n"] for r in con.execute(
+        "SELECT campaign_map, faction, n FROM start_counts")}
+    leaders = {((r["m"] or ""), r["f"]): r["l"] for r in con.execute(
+        "SELECT campaign_map m, faction f, MAX(leader) l FROM campaigns"
+        " WHERE leader IS NOT NULL GROUP BY campaign_map, faction")}
+    gains = {}
+    for r in con.execute(
+            "SELECT campaign_map mkey, faction fkey,"
+            "       MAX(settlements_gained) sb, AVG(settlements_gained) sa,"
+            "       MAX(levels_gained) lb, AVG(levels_gained) la,"
+            "       MAX(allies_gained) ab, AVG(allies_gained) aa,"
+            "       MAX(vassals_gained) vb, AVG(vassals_gained) va,"
+            "       MAX(settlements_gained + levels_gained) tb,"
+            "       AVG(settlements_gained + levels_gained) ta"
+            " FROM campaign_gains GROUP BY campaign_map, faction"):
+        gains[((r["mkey"] or ""), r["fkey"])] = r
     out = []
     for (mkey, fkey), b in per.items():
+        nn = counts.get((mkey, fkey), b["n"])
+        g = gains.get((mkey, fkey))
         out.append(StartRow(
             faction=_fac(fkey),
+            leader=leaders.get((mkey, fkey)),
             campaign_map=_id(ident.campaign_map(mkey)) if mkey else None,
-            n=b["n"], single_sample=b["n"] <= 2,
+            n=nn,
             avg_turns=round(sum(b["turns"]) / len(b["turns"]), 1) if b["turns"] else None,
-            best_turns=max(b["turns"]) if b["turns"] else None,
-            best_settlements=max(b["sett"]) if b["sett"] else None,
-            best_power_rank=min(b["rank"]) if b["rank"] else None,
-            best_lord_level=max(b["lord"]) if b["lord"] else None,
+            sec_per_turn=(round(b["span_min"] * 60.0 / sum(b["turns"]), 1)
+                          if sum(b["turns"]) else None),
+            settlements_gained_best=_f(g["sb"]) if g else None,
+            settlements_gained_avg=round(_f(g["sa"]) or 0, 2) if g else None,
+            levels_gained_best=_f(g["lb"]) if g else None,
+            levels_gained_avg=round(_f(g["la"]) or 0, 2) if g else None,
+            allies_gained_best=_f(g["ab"]) if g else None,
+            allies_gained_avg=round(_f(g["aa"]) or 0, 2) if g else None,
+            vassals_gained_best=_f(g["vb"]) if g else None,
+            vassals_gained_avg=round(_f(g["va"]) or 0, 2) if g else None,
+            total_gained_best=_f(g["tb"]) if g else None,
+            total_gained_avg=round(_f(g["ta"]) or 0, 2) if g else None,
             ever_allied=ever_a.get((mkey, fkey), 0), ever_vassal=ever_v.get((mkey, fkey), 0),
             confirm_rate=Rate(n=b["conf"], of=b["att"], noun="actions",
                               population="attempted across this start's campaigns")))
@@ -1367,7 +1398,7 @@ def correlations(con) -> list:
         target = {(r["campaign_id"], _i(r["turn"], 0) or 0):
                   (_f(r["settlements"]), _f(r["lord_level"]))
                   for r in con.execute("SELECT campaign_id, turn, settlements, lord_level"
-                                       " FROM target_rows")}
+                                       " FROM turn_open")}
         rows = []
         for arm, cells in sorted(per.items(), key=lambda kv: -sum(kv[1].values())):
             shares, setts, lords = [], [], []
@@ -1530,17 +1561,18 @@ def _W(part: str) -> float:
 
 
 _REWARD_SERIES = """
-    SELECT c.campaign_id AS cid, c.faction AS faction,
-           MAX(t.settlements) - MIN(t.settlements) AS sett,
-           MAX(t.lord_level)  - MIN(t.lord_level)  AS lord,
-           MAX(t.vassals)     - MIN(t.vassals)     AS vas,
-           MAX(t.allies)      - MIN(t.allies)      AS ally,
-           COUNT(*) AS turns
-      FROM campaigns c
-      JOIN target_rows t ON t.campaign_id = c.campaign_key
-     GROUP BY c.campaign_id
-    HAVING turns > 1
-     ORDER BY c.campaign_id
+    SELECT * FROM (
+      SELECT c.campaign_id AS cid, c.faction AS faction,
+             g.settlements_gained AS sett,
+             g.levels_gained      AS lord,
+             g.vassals_gained     AS vas,
+             g.allies_gained      AS ally,
+             (SELECT COUNT(DISTINCT d.turn) FROM decisions d
+               WHERE d.campaign_id = c.campaign_id) AS turns
+        FROM campaigns c
+        JOIN campaign_gains g ON g.campaign_key = c.campaign_key
+    ) WHERE turns > 1
+     ORDER BY cid
 """
 
 
@@ -1604,9 +1636,6 @@ def _trials() -> tuple:
         timing = d.get("timing") or {}
         row = TrialRow(
             trial=str(d.get("trial") or ""),
-            backend=d.get("backend"),
-            cfg=(json.dumps(d["backend_cfg"], sort_keys=True)
-                 if d.get("backend_cfg") else None),
             mix={arms.canonical(k): v for k, v in (d.get("strategies") or {}).items()},
             ruleset=_text(d.get("ruleset")),
             campaigns=_i(d.get("campaigns")),
@@ -1639,7 +1668,7 @@ def _trials() -> tuple:
 def reward_series(con, campaign_key: str):
     rows = con.execute(
         "SELECT turn, income, settlements, allies, vassals, power_rank"
-        " FROM target_rows WHERE campaign_id = ? ORDER BY turn", (campaign_key,)).fetchall()
+        " FROM turn_open WHERE campaign_id = ? ORDER BY turn", (campaign_key,)).fetchall()
     pts = [RewardPoint(turn=_i(r["turn"], 0) or 0, income=_f(r["income"]),
                        settlements=_f(r["settlements"]), allies=_f(r["allies"]),
                        vassals=_f(r["vassals"]), power_rank=_f(r["power_rank"]))
@@ -1718,6 +1747,113 @@ def session_log_path() -> str | None:
         return None
 
 
+LOG_CHUNK = 1 << 18
+LOG_SCAN_CAP = 8 << 20
+LOG_MAX_LINES = 2000
+
+
+def log_files(limit=20) -> list:
+    d = common.LOGS_ADVISOR
+    try:
+        names = [f for f in os.listdir(d)
+                 if f.startswith("session_") and f.endswith(".log")]
+    except OSError:
+        return []
+    names.sort(key=lambda f: os.path.getmtime(os.path.join(d, f)), reverse=True)
+    return names[:limit]
+
+
+def _log_stamp(line):
+    s = line[:23]
+    if len(s) >= 19 and s[4] == "-" and s[7] == "-" and s[10] == "T":
+        return s
+    return None
+
+
+def _bisect_log(fh, size, stamp):
+    lo, hi = 0, size
+    while hi - lo > LOG_CHUNK:
+        mid = (lo + hi) // 2
+        fh.seek(mid)
+        fh.readline()
+        ts = None
+        while ts is None:
+            raw = fh.readline()
+            if not raw:
+                break
+            ts = _log_stamp(raw.decode("utf-8", "replace"))
+        if ts is None or ts >= stamp:
+            hi = mid
+        else:
+            lo = mid
+    return lo
+
+
+def read_session_log(file=None, q=None, t0=None, t1=None, limit=500, cursor=None) -> dict:
+    files = log_files()
+    if file:
+        if file not in files:
+            raise ValueError("unknown log file %r -- pick one of the listed session logs"
+                             % file)
+        path = os.path.join(common.LOGS_ADVISOR, file)
+    else:
+        path = session_log_path()
+        file = os.path.basename(path) if path else None
+    if not path or not os.path.exists(path):
+        return {"file": None, "files": files, "size": 0, "lines": [],
+                "cursor": None, "scanned": 0}
+    limit = max(1, min(int(limit or 500), LOG_MAX_LINES))
+    ql = (q or "").strip().lower() or None
+    t1x = (t1 + "~") if t1 else None
+    size = os.path.getsize(path)
+    out = []
+    scanned = 0
+    with open(path, "rb") as fh:
+        end = size
+        if t1x:
+            end = min(end, _bisect_log(fh, size, t1x) + LOG_CHUNK)
+            end = min(end, size)
+        if cursor is not None:
+            end = min(end, max(0, int(cursor)))
+        start = 0
+        if t0:
+            start = max(0, _bisect_log(fh, size, t0) - LOG_CHUNK)
+        off = end
+        carry = b""
+        hit_t0 = False
+        while off > start and len(out) < limit and scanned <= LOG_SCAN_CAP:
+            take = min(LOG_CHUNK, off - start)
+            off -= take
+            fh.seek(off)
+            data = fh.read(take) + carry
+            parts = data.split(b"\n")
+            carry = parts[0]
+            first = 1 if off > start else 0
+            for raw in reversed(parts[first:]):
+                if len(out) >= limit:
+                    break
+                line = raw.decode("utf-8", "replace").rstrip("\r")
+                if not line.strip():
+                    continue
+                ts = _log_stamp(line)
+                if ts:
+                    if t1x and ts > t1x:
+                        continue
+                    if t0 and ts < t0:
+                        hit_t0 = True
+                        break
+                if ql and ql not in line.lower():
+                    continue
+                out.append(line)
+            if hit_t0:
+                break
+            scanned += take
+    out.reverse()
+    more = (off > start) and not hit_t0
+    return {"file": file, "files": files, "size": size, "lines": out,
+            "cursor": (off if more else None), "scanned": scanned}
+
+
 def session_log_tail(n=24) -> tuple:
     path = session_log_path()
     if not path:
@@ -1731,3 +1867,55 @@ def session_log_tail(n=24) -> tuple:
     except OSError:
         return [], path
     return [l for l in lines if l.strip()][-n:], path
+
+
+def _start_leaders(con) -> dict:
+    return {((r["m"] or ""), r["f"]): r["l"] for r in con.execute(
+        "SELECT campaign_map m, faction f, MAX(leader) l FROM campaigns"
+        " WHERE leader IS NOT NULL GROUP BY campaign_map, faction")}
+
+
+@db.cached
+def ucb_picks(con, limit: int = 200, before: int | None = None) -> list:
+    args = [int(limit)]
+    where = ""
+    if before is not None:
+        where = " WHERE pick_id < ?"
+        args = [int(before), int(limit)]
+    leaders = _start_leaders(con)
+    return [UcbPick(
+        leader=leaders.get(((r["campaign_map"] or ""), r["faction"])),
+        pick_id=_i(r["pick_id"], 0), ts=_f(r["ts"]), c=_f(r["c"]),
+        total_plays=_i(r["total_plays"], 0), faction=_fac(r["faction"]),
+        campaign_map=_id(ident.campaign_map(r["campaign_map"])) if r["campaign_map"] else None,
+        n=_i(r["n"], 0), mean=_f(r["mean"]), explore=_f(r["explore"]),
+        score=_f(r["score"]), tied=_i(r["tied"], 0),
+        starts=_i(r["starts"], 0))
+        for r in con.execute(
+            "SELECT p.*, (SELECT COUNT(*) FROM ucb_pick_rows w WHERE w.pick_id = p.pick_id)"
+            " AS starts FROM ucb_picks p%s ORDER BY p.pick_id DESC LIMIT ?" % where, args)]
+
+
+@db.cached
+def ucb_pick_rows(con, pick_id: int) -> tuple:
+    head = con.execute("SELECT * FROM ucb_picks WHERE pick_id = ?", (int(pick_id),)).fetchone()
+    if head is None:
+        return None, []
+    leaders = _start_leaders(con)
+    rows = [UcbRow(
+        leader=leaders.get(((r["campaign_map"] or ""), r["faction"])),
+        rank=_i(r["rank"], 0), faction=_fac(r["faction"]),
+        campaign_map=_id(ident.campaign_map(r["campaign_map"])) if r["campaign_map"] else None,
+        n=_i(r["n"], 0), mean=_f(r["mean"]), explore=_f(r["explore"]),
+        score=_f(r["score"]), chosen=bool(r["chosen"]))
+        for r in con.execute(
+            "SELECT * FROM ucb_pick_rows WHERE pick_id = ? ORDER BY rank", (int(pick_id),))]
+    pick = UcbPick(
+        leader=leaders.get(((head["campaign_map"] or ""), head["faction"])),
+        pick_id=_i(head["pick_id"], 0), ts=_f(head["ts"]), c=_f(head["c"]),
+        total_plays=_i(head["total_plays"], 0), faction=_fac(head["faction"]),
+        campaign_map=(_id(ident.campaign_map(head["campaign_map"]))
+                      if head["campaign_map"] else None),
+        n=_i(head["n"], 0), mean=_f(head["mean"]), explore=_f(head["explore"]),
+        score=_f(head["score"]), tied=_i(head["tied"], 0), starts=len(rows))
+    return pick, rows

@@ -26,7 +26,7 @@ turns 1–7, no treaties signed); the ones below are not.
 | lord hidden skills | `HiddenSkillList` — the hero probe always read it, the lord probe never did |
 | province economics | growth/development from `FactionProvinceManagerContext` (**province**-scoped), income at settlement *and* province, port, walls |
 | third-party wars | `world.war_graph`, met-clipped, O(n) via `factions_at_war_with()` |
-| world diplo state | `diplo_state` table, once per turn, with `known_factions` in the row |
+| world diplo state | removed with the end-of-turn stream (2026-08-18): it was write-only, never read, and unmet-faction data stays out of the record by design |
 | battle outcomes | structured facts off the results screen, positional rows, generic resources sweep |
 | character wounded, loyalty | fields on the existing lord/hero eval. `hero.wounded` varies; `lord.wounded` and `loyalty` carry one distinct value — see the open items below |
 | corruption | **not broken** — proven live: `vampiric=50` on Nuln. The 749 zeros were real |
@@ -91,5 +91,9 @@ will not have at play time does not transfer — it scores fine offline and is s
 in the game. Shroud-clipped regions and shroud-clipped adjacency are correct by design; a
 small known world is a campaign that has not explored yet, not a collection bug.
 
-`diplo_state` is the one place unknown-faction data is stored, and it is quarantined from the
-decision record by construction: `known_factions` sits in the row so clipping is a join.
+Since 2026-08-18 the pre-decision snapshot is the ONLY state collection. The end-of-turn
+stream (its target/entity-target tables and the whole-world diplo table) is deleted: two
+witnesses of the same campaign disagreed, and every turn-state consumer now reads the
+`turn_open`/`turn_close` views over the decision snapshots. Nothing stores unmet-faction
+data anymore. The pre-wipe corpus and models are archived at
+`<TWDATA>/archive/wipe_20260818_prewipe/`.
