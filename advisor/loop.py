@@ -9,7 +9,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 
 HUD_MISS_BUDGET = 6
 HUD_MISS_PAUSE = 5.0
-POST_ATTACK_ROW_WAIT = 22.0
+POST_ATTACK_ROW_WAIT = 3.0
 POST_ATTACK_HUD_TRIES = 3
 ATTACK_LOCOMOTION_CAP = 10.0
 LOCOMOTION_ACTIONS = frozenset(("attack_army", "attack_settlement", "colonize"))
