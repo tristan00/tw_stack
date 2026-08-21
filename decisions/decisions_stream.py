@@ -37,7 +37,7 @@ def run(ctx):
                       "from": last_uuid[0], "to": u, "same_dir": True})
         last_uuid[0] = u
         return False
-    counts = {"snapshot": 0, "target": 0, "turn": 0, "hash": 0, "pick": 0,
+    counts = {"snapshot": 0, "turn": 0, "hash": 0, "pick": 0,
               "verification": 0, "error": 0}
     t_loop = time.time()
     sys.stderr.write("decisions_stream: poll loop starting (tick %.2fs)\n" % POLL)
@@ -75,22 +75,6 @@ def run(ctx):
                                   "turn": snap["campaign"].get("turn"),
                                   "ms": int((time.time() - t0) * 1000),
                                   "profile": snap.get("profile")})
-                    elif kind == "target":
-                        r = collect.target_row(bus)
-                        wrote = store.write_target_row(r)
-                        ents = collect.entity_target_rows(bus)
-                        ckey = store.campaign_key(r.get("campaign_id"),
-                                                  r.get("campaign_uuid"))
-                        store.write_entity_target_rows(ckey, r.get("turn"), ents)
-                        try:
-                            known, wg = collect.diplo_world(bus)
-                            store.write_diplo_state(ckey, r.get("turn"), known, wg)
-                        except Exception as e:
-                            sys.stderr.write("diplo_world failed: %s\n" % repr(e)[:180])
-                        counts["target"] += 1
-                        journal.respond(out_dir, rid, row=r, inserted=bool(wrote))
-                        ctx.emit({"kind": "decisions_target", "turn": r.get("turn"),
-                                  "inserted": bool(wrote)})
                     elif kind == "turn":
                         cs = collect.campaign_state(bus)
                         campaign_changed(cs)
@@ -117,6 +101,9 @@ def run(ctx):
                     elif kind == "diplomacy":
                         store.write_diplomacy_event(row)
                         counts["diplomacy"] = counts.get("diplomacy", 0) + 1
+                    elif kind == "ucb_pick":
+                        store.write_ucb_pick(row)
+                        counts["ucb_pick"] = counts.get("ucb_pick", 0) + 1
                     elif kind == "postmortem":
                         store.write_postmortem(row)
                         counts["postmortem"] = counts.get("postmortem", 0) + 1

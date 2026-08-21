@@ -21,6 +21,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/log": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Log */
+        get: operations["get_log_api_log_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/campaigns/starts": {
         parameters: {
             query?: never;
@@ -30,6 +47,40 @@ export interface paths {
         };
         /** Get Starts */
         get: operations["get_starts_api_campaigns_starts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/picks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Picks */
+        get: operations["get_picks_api_campaigns_picks_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/picks/{pick_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Pick */
+        get: operations["get_pick_api_campaigns_picks__pick_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -701,6 +752,8 @@ export interface components {
             /** Campaign Id */
             campaign_id: number;
             campaign: components["schemas"]["Ident"];
+            /** Leader */
+            leader?: string | null;
             campaign_map?: components["schemas"]["Ident"] | null;
             /** Presave Radius */
             presave_radius?: number | null;
@@ -886,6 +939,8 @@ export interface components {
         /** Current */
         Current: {
             campaign?: components["schemas"]["Ident"] | null;
+            /** Leader */
+            leader?: string | null;
             /** Turn */
             turn?: number | null;
             /** Settlements */
@@ -894,6 +949,8 @@ export interface components {
             power_rank?: number | null;
             /** Lord Level */
             lord_level?: number | null;
+            /** Stored Campaigns */
+            stored_campaigns?: number | null;
             /** Age Seconds */
             age_seconds?: number | null;
         };
@@ -1225,6 +1282,34 @@ export interface components {
              */
             dev: boolean;
         };
+        /** LogPage */
+        LogPage: {
+            scope: components["schemas"]["Scope"];
+            /** File */
+            file?: string | null;
+            /**
+             * Files
+             * @default []
+             */
+            files: string[];
+            /**
+             * Size
+             * @default 0
+             */
+            size: number;
+            /**
+             * Lines
+             * @default []
+             */
+            lines: string[];
+            /** Cursor */
+            cursor?: number | null;
+            /**
+             * Scanned
+             * @default 0
+             */
+            scanned: number;
+        };
         /** MatrixCell */
         MatrixCell: {
             action_type: components["schemas"]["Ident"];
@@ -1448,10 +1533,6 @@ export interface components {
             collect_timing: components["schemas"]["TimingRow"][];
             /** Cycle Timing */
             cycle_timing: components["schemas"]["TimingRow"][];
-            /** Log Tail */
-            log_tail: string[];
-            /** Log Name */
-            log_name?: string | null;
         };
         /** Scope */
         Scope: {
@@ -1484,24 +1565,35 @@ export interface components {
         /** StartRow */
         StartRow: {
             faction: components["schemas"]["Ident"];
+            /** Leader */
+            leader?: string | null;
             campaign_map?: components["schemas"]["Ident"] | null;
             /** N */
             n: number;
-            /**
-             * Single Sample
-             * @default false
-             */
-            single_sample: boolean;
             /** Avg Turns */
             avg_turns?: number | null;
-            /** Best Turns */
-            best_turns?: number | null;
-            /** Best Settlements */
-            best_settlements?: number | null;
-            /** Best Power Rank */
-            best_power_rank?: number | null;
-            /** Best Lord Level */
-            best_lord_level?: number | null;
+            /** Sec Per Turn */
+            sec_per_turn?: number | null;
+            /** Settlements Gained Best */
+            settlements_gained_best?: number | null;
+            /** Settlements Gained Avg */
+            settlements_gained_avg?: number | null;
+            /** Levels Gained Best */
+            levels_gained_best?: number | null;
+            /** Levels Gained Avg */
+            levels_gained_avg?: number | null;
+            /** Allies Gained Best */
+            allies_gained_best?: number | null;
+            /** Allies Gained Avg */
+            allies_gained_avg?: number | null;
+            /** Vassals Gained Best */
+            vassals_gained_best?: number | null;
+            /** Vassals Gained Avg */
+            vassals_gained_avg?: number | null;
+            /** Total Gained Best */
+            total_gained_best?: number | null;
+            /** Total Gained Avg */
+            total_gained_avg?: number | null;
             /**
              * Ever Allied
              * @default 0
@@ -1517,7 +1609,6 @@ export interface components {
         /** StartsPage */
         StartsPage: {
             scope: components["schemas"]["Scope"];
-            low_sample: components["schemas"]["Count"];
             /** Rows */
             rows: components["schemas"]["StartRow"][];
         };
@@ -1654,10 +1745,6 @@ export interface components {
              * @default 1
              */
             snapshots: number;
-            /** Backend */
-            backend?: string | null;
-            /** Cfg */
-            cfg?: string | null;
             /** Mix */
             mix?: {
                 [key: string]: unknown;
@@ -1702,6 +1789,91 @@ export interface components {
                 [key: string]: components["schemas"]["TrialCorr"];
             };
         };
+        /** UcbPick */
+        UcbPick: {
+            /** Pick Id */
+            pick_id: number;
+            /** Ts */
+            ts?: number | null;
+            /** C */
+            c?: number | null;
+            /**
+             * Total Plays
+             * @default 0
+             */
+            total_plays: number;
+            /** Leader */
+            leader?: string | null;
+            faction: components["schemas"]["Ident"];
+            campaign_map?: components["schemas"]["Ident"] | null;
+            /**
+             * N
+             * @default 0
+             */
+            n: number;
+            /** Mean */
+            mean?: number | null;
+            /** Explore */
+            explore?: number | null;
+            /** Score */
+            score?: number | null;
+            /**
+             * Tied
+             * @default 0
+             */
+            tied: number;
+            /**
+             * Starts
+             * @default 0
+             */
+            starts: number;
+        };
+        /** UcbPickPage */
+        UcbPickPage: {
+            scope: components["schemas"]["Scope"];
+            pick?: components["schemas"]["UcbPick"] | null;
+            /**
+             * Rows
+             * @default []
+             */
+            rows: components["schemas"]["UcbRow"][];
+        };
+        /** UcbPicksPage */
+        UcbPicksPage: {
+            scope: components["schemas"]["Scope"];
+            /**
+             * Picks
+             * @default []
+             */
+            picks: components["schemas"]["UcbPick"][];
+            /** Cursor */
+            cursor?: number | null;
+        };
+        /** UcbRow */
+        UcbRow: {
+            /** Rank */
+            rank: number;
+            /** Leader */
+            leader?: string | null;
+            faction: components["schemas"]["Ident"];
+            campaign_map?: components["schemas"]["Ident"] | null;
+            /**
+             * N
+             * @default 0
+             */
+            n: number;
+            /** Mean */
+            mean?: number | null;
+            /** Explore */
+            explore?: number | null;
+            /** Score */
+            score?: number | null;
+            /**
+             * Chosen
+             * @default false
+             */
+            chosen: boolean;
+        };
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -1744,6 +1916,42 @@ export interface operations {
             };
         };
     };
+    get_log_api_log_get: {
+        parameters: {
+            query?: {
+                file?: string | null;
+                q_text?: string | null;
+                t0?: string | null;
+                t1?: string | null;
+                limit?: number;
+                cursor?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LogPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_starts_api_campaigns_starts_get: {
         parameters: {
             query?: never;
@@ -1760,6 +1968,69 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["StartsPage"];
+                };
+            };
+        };
+    };
+    get_picks_api_campaigns_picks_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                before?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UcbPicksPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_pick_api_campaigns_picks__pick_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pick_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UcbPickPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

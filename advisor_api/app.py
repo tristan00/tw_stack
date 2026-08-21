@@ -17,9 +17,10 @@ from advisor_api import db, ident, proc, queries as q
 from advisor_api.models import (
     ActionsPage, AgreementBreakdownPage, AgreementPage, AgreementSeriesPage, AnalyticsPage,
     CampaignDetail, CampaignsPage, ControlResult, Count,
-    DecisionDetail, DecisionsPage, ForcingPage, InfraPage, LaunchDefaults, MatrixCell,
+    DecisionDetail, DecisionsPage, ForcingPage, InfraPage, LaunchDefaults, LogPage,
+    MatrixCell,
     MatrixPage, MatrixRow, MatrixTotal, MenusPage, ModelsPage, Rate, RunPage, Scope,
-    StartsPage, TimelinePage, TrainingPage, CorrelationsPage,
+    StartsPage, TimelinePage, TrainingPage, CorrelationsPage, UcbPickPage, UcbPicksPage,
 )
 
 UI_DIST = os.path.join(common.ROOT, "ui", "dist")
@@ -49,7 +50,6 @@ def _scope(text, detail=None) -> Scope:
 @app.get("/api/run", response_model=RunPage, tags=["run"])
 def get_run() -> RunPage:
     con = _con()
-    tail, log_path = q.session_log_tail()
     return RunPage(
         scope=_scope("this run dir", common.RUN_DIR),
         services=proc.services(),
@@ -57,23 +57,57 @@ def get_run() -> RunPage:
         throughput=q.throughput(con),
         totals=q.totals(con),
         collect_timing=q.collect_timing(con),
-        cycle_timing=q.cycle_timing(con),
-        log_tail=tail,
-        log_name=os.path.basename(log_path) if log_path else None)
+        cycle_timing=q.cycle_timing(con))
+
+
+@app.get("/api/log", response_model=LogPage, tags=["log"])
+def get_log(file: str | None = None, q_text: str | None = None, t0: str | None = None,
+            t1: str | None = None, limit: int = 500, cursor: int | None = None) -> LogPage:
+    try:
+        r = q.read_session_log(file=file, q=q_text, t0=t0, t1=t1,
+                               limit=limit, cursor=cursor)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return LogPage(
+        scope=_scope("the session log, oldest first within the window",
+                     "chunked reads from disk; nothing loads whole"),
+        **r)
 
 
 @app.get("/api/campaigns/starts", response_model=StartsPage, tags=["campaigns"])
 def get_starts() -> StartsPage:
     con = _con()
-    rows = q.starts_rows(con)
-    low = sum(1 for r in rows if r.single_sample)
     return StartsPage(
         scope=_scope("one row per playable start, most-played first",
-                     "peaks are the best value that start ever reached across its campaigns"),
-        low_sample=Count(value=low, noun="starts",
-                         population="with two or fewer campaigns, where an average is one "
-                                    "or two observations"),
-        rows=rows)
+                     "gained columns are per-campaign first-to-peak deltas: best is the "
+                     "single strongest campaign, avg is across all of that start's campaigns"),
+        rows=q.starts_rows(con))
+
+
+@app.get("/api/campaigns/picks", response_model=UcbPicksPage, tags=["campaigns"])
+def get_picks(limit: int = 200, before: int | None = None) -> UcbPicksPage:
+    con = _con()
+    lim = max(1, min(int(limit), 500))
+    picks = q.ucb_picks(con, lim, before)
+    return UcbPicksPage(
+        scope=_scope("one row per UCB start pick, newest first",
+                     "what the selector scored at that instant: C, the plays it divided "
+                     "by, and the winner's mean and explore term"),
+        picks=picks,
+        cursor=(picks[-1].pick_id if len(picks) >= lim else None))
+
+
+@app.get("/api/campaigns/picks/{pick_id}", response_model=UcbPickPage, tags=["campaigns"])
+def get_pick(pick_id: int) -> UcbPickPage:
+    con = _con()
+    pick, rows = q.ucb_pick_rows(con, pick_id)
+    if pick is None:
+        raise HTTPException(status_code=404, detail="no UCB pick %d" % pick_id)
+    return UcbPickPage(
+        scope=_scope("every start the selector ranked at this pick, best score first",
+                     "score = mean + C*sqrt(ln(total plays)/n); an unplayed start has an "
+                     "infinite bonus and is shown without a score"),
+        pick=pick, rows=rows)
 
 
 @app.get("/api/campaigns/matrix", response_model=MatrixPage, tags=["campaigns"])

@@ -38,6 +38,7 @@ class Executor:
                "params": pick.get("params") or {}, "policy": pick.get("policy")}
         if run["action_type"] == "end_turn":
             self._end_turn_offset = self.bus.out_offset()
+            self.screenshot("pre_end_turn_%d" % int(time.time()))
         trace.launcher("execute_start", action_type=run["action_type"], key=run["key"],
                        context_kind=pick.get("context_kind"), context_id=str(pick.get("context_id")),
                        params=run["params"], policy=run["policy"])

@@ -16,7 +16,7 @@ SELECT ckey,
        MAX(CASE WHEN rn_lo = 1 THEN lord_level END)   AS first_lord_level,
        MAX(CASE WHEN rn_hi = 1 THEN lord_level END)   AS final_lord_level,
        MAX(lord_level)                                AS peak_lord_level,
-       MIN(power_rank)                                AS peak_power_rank,
+       MAX(power_rank)                                AS peak_power_rank,
        MAX(CASE WHEN rn_hi = 1 THEN power_rank END)   AS final_power_rank,
        MAX(CASE WHEN rn_hi = 1 THEN income END)       AS final_income
   FROM (SELECT campaign_id AS ckey,

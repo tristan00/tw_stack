@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import math
 import os
+import sqlite3
 import sys
 import threading
 import time
@@ -93,6 +95,67 @@ _CAMPAIGN_LABEL = {"wh3_main_combi": "Immortal Empires",
                    "wh3_main_chaos": "Realm of Chaos"}
 
 
+def _width_counts():
+    path = os.path.join(common.RUN_DIR, "decisions.sqlite")
+    if not os.path.exists(path):
+        return {}
+    con = sqlite3.connect("file:%s?mode=ro" % path.replace("\\", "/"),
+                          uri=True, timeout=10.0)
+    try:
+        return {(m, f): n for m, f, n in con.execute(
+            "SELECT campaign_map, faction, n FROM start_counts")}
+    finally:
+        con.close()
+
+
+def _start_gain_stats():
+    path = os.path.join(common.RUN_DIR, "decisions.sqlite")
+    if not os.path.exists(path):
+        return {}
+    con = dbopen.connect(path, readonly=True, timeout=10.0)
+    try:
+        return {(m, f): (n, mean) for m, f, n, mean in con.execute(
+            "SELECT campaign_map, faction, COUNT(*),"
+            " AVG(settlements_gained + levels_gained)"
+            " FROM campaign_gains GROUP BY campaign_map, faction")}
+    finally:
+        con.close()
+
+
+def _ucb_cell(score, n, mean, explore, p):
+    fin = lambda v: None if v == float("inf") else float(v)
+    return {"campaign_map": p["campaign_map"], "faction": p["faction"], "n": int(n),
+            "mean": float(mean), "explore": fin(explore), "score": fin(score)}
+
+
+def _ucb_pick(pool, stats, c, rng, log=print):
+    total = max(1, sum(n for n, _ in stats.values()))
+    scored = []
+    for p in pool:
+        n, mean = stats.get((p["campaign_map"], p["faction"])) or (0, 0.0)
+        explore = (float("inf") if not n else c * math.sqrt(math.log(total) / n))
+        scored.append(((mean or 0.0) + explore, n, mean or 0.0, explore, p))
+    scored.sort(key=lambda s: (-s[0], s[4]["file"]))
+    log("ucb table (c=%g, total plays %d): score = mean + explore | n | start" % (c, total))
+    for score, n, mean, explore, p in scored:
+        log("  %8s = %6.3f + %8s  n=%-3d %s %s"
+            % ("inf" if score == float("inf") else "%.3f" % score, mean,
+               "inf" if explore == float("inf") else "%.3f" % explore,
+               n, p["faction"], p["campaign_map"]))
+    best = scored[0][0]
+    top = [s for s in scored if s[0] == best]
+    score, n, mean, explore, p = top[rng.randrange(len(top))] if len(top) > 1 else top[0]
+    log("ucb c=%g: %s on %s -- score=%s n=%d mean=%.3f (total plays %d, %d tied)"
+        % (c, p["faction"], p["campaign_map"],
+           "inf" if score == float("inf") else "%.3f" % score, n, mean, total, len(top)))
+    journal.log_ucb_pick(common.RUN_DIR, {
+        "ts": time.time(), "c": c, "total_plays": total, "tied": len(top),
+        "chosen": _ucb_cell(score, n, mean, explore, p),
+        "rows": [dict(_ucb_cell(*row), chosen=(row[4] is p))
+                 for row in scored]})
+    return p
+
+
 def normalize_campaigns(spec):
     if isinstance(spec, dict):
         mix = dict(spec)
@@ -175,7 +238,7 @@ def _ending_evidence(rd, entry, ex):
             out["trajectory"] = [
                 {"turn": t, "settlements": s, "income": i, "power_rank": p}
                 for t, s, i, p in con.execute(
-                    "SELECT turn, settlements, income, power_rank FROM target_rows"
+                    "SELECT turn, settlements, income, power_rank FROM turn_open"
                     " WHERE campaign_id=? ORDER BY turn DESC LIMIT 6", (camp,))][::-1]
             out["recent_battles"] = [
                 {"turn": t, "kind": k, "chosen": c, "confirmed": cf}
@@ -235,6 +298,7 @@ def _postmortem(runs_root, entry, ex, log):
     rec = {"ts": time.time(), "when": time.strftime("%Y-%m-%d %H:%M:%S"),
            "campaign_key": entry.get("campaign_uuid"),
            "campaign": entry.get("index"), "faction": entry.get("plan"),
+           "picked_ts": entry.get("picked_ts"),
            "policy": entry.get("policy"), "outcome": entry.get("outcome"),
            "error": entry.get("error"), "seconds": round(time.time() - entry.get("started", 0), 1),
            "turns_played": entry.get("turns_played"), "actions": entry.get("actions"),
@@ -277,12 +341,13 @@ def _postmortem(runs_root, entry, ex, log):
         log("   !! post-mortem NOT written: %s" % repr(e)[:160])
 
 
-def _require_models(mix, cold, MB, log):
+def _require_models(mix, cold, log):
     if cold:
         return
+    import model as M
     problems = []
     if "greedy_catboost" in mix:
-        if not MB.Ranker().ready:
+        if not M.Ranker().ready:
             problems.append("greedy_catboost: main ranker did not load from %s"
                             % common.MODELS)
         if not IM.InterruptRanker(strategies=mix).ready:
@@ -308,44 +373,85 @@ def _require_models(mix, cold, MB, log):
 
 def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                   log=print, runs_root=RUNS_ROOT, retrain_every=0, seed=None,
-                  cold=False, backend=None, backend_cfg=None, strategies=None,
-                  ruleset=None, retrain_first=False, presave_radius=None):
+                  cold=False, strategies=None,
+                  ruleset=None, retrain_first=False, presave_radius=None, width=0,
+                  ucb=None):
     from bus import Bus
     from executor import Executor
 
-    import backends as B
+    import model as M
     import random
     rng = random.Random(seed)
     ex = Executor(Bus())
-    backend = backend or B.DEFAULT
-    backend_cfg = backend_cfg or {}
-    MB = B.resolve(backend)
-    mix = P.normalize_strategies(strategies)
+    mix = ({"random": 1.0} if cold and strategies is None
+           else P.normalize_strategies(strategies))
     cmix = normalize_campaigns(campaign)
     presaves = None
     if presave_radius is not None:
         sys.path.insert(0, common.ROOT)
-        import bake_saves
-        presaves = bake_saves.list_presaves(radius=presave_radius)
-        if not presaves:
+        import presaves as PS
+        pool = PS.list_presaves(radius=presave_radius)
+        if not pool:
             raise SystemExit(
                 "--presave-radius %s but nothing is baked at that radius in %s (have %s). "
                 "A run that quietly fell back to fresh untrimmed campaigns would keep "
                 "growing a corpus that does not match what was asked for."
-                % (presave_radius, bake_saves.presave_dir(),
-                   bake_saves.presave_radii() or "none"))
-        log("presaves: %d baked start(s) at radius %s -- %s"
-            % (len(presaves), presave_radius,
-               ", ".join(sorted({p["faction"] for p in presaves}))))
+                % (presave_radius, PS.presave_dir(),
+                   PS.presave_radii() or "none"))
+        mkeys = {v: k for k, v in _CAMPAIGN_LABEL.items()}
+        by_map = {}
+        for p in pool:
+            by_map.setdefault(p["campaign_map"], []).append(p)
+        presaves = {}
+        for name in sorted(cmix):
+            have = by_map.get(mkeys.get(name, name), [])
+            want = _plan_for(plan, name) if isinstance(plan, dict) else plan
+            if want in ("all", ["presave"]):
+                picked = have
+            else:
+                wanted = set([want] if isinstance(want, str) else want)
+                picked = [p for p in have if p["faction"] in wanted]
+                missing = sorted(wanted - {p["faction"] for p in picked})
+                if missing:
+                    raise SystemExit(
+                        "the presave pool at r%g holds no baked save on %s for: %s. "
+                        "Bake them first or drop them from --factions; a run that "
+                        "quietly substituted other starts would not be the run asked "
+                        "for." % (presave_radius, name, ", ".join(missing)))
+            if not picked:
+                raise SystemExit(
+                    "--campaign mixes %s but the presave pool at r%g holds nothing for "
+                    "it (maps with saves: %s)"
+                    % (name, presave_radius, sorted(by_map) or "none"))
+            presaves[name] = picked
+        for name in sorted(presaves):
+            log("presaves on %s: %d start(s) at radius %s -- %s"
+                % (name, len(presaves[name]), presave_radius,
+                   ", ".join(sorted(p["faction"] for p in presaves[name]))))
+        presaves = sorted((p for lst in presaves.values() for p in lst),
+                          key=lambda p: p["file"])
+        log("presave sampling: uniform over %d start(s), the campaign follows the draw"
+            % len(presaves))
+    if width and presaves is None:
+        raise SystemExit("--width samples under-covered starts from the presave pool "
+                         "-- it needs --presave-radius")
+    if ucb is not None and presaves is None:
+        raise SystemExit("--ucb selects starts from the presave pool -- it needs "
+                         "--presave-radius")
+    if ucb is not None and width:
+        raise SystemExit("--ucb and --width are both start selectors -- pick one")
+    if cold and set(mix) != {"random"}:
+        raise SystemExit("--cold is cold: it always plays pure random and takes no strategy "
+                         "mix -- got %s; drop --strategies or drop --cold" % json.dumps(mix))
+    if cold and ruleset:
+        raise SystemExit("--cold is cold: it always plays pure random -- drop --ruleset %r "
+                         "or drop --cold" % ruleset)
     if "ruleset" in mix and not ruleset:
         raise SystemExit("strategy mix includes 'ruleset' but no --ruleset <name> was given")
     if ruleset and "ruleset" not in mix:
         raise SystemExit("--ruleset %r given but 'ruleset' is not in the strategy mix %s"
                          % (ruleset, json.dumps(mix)))
-    if cold and "marwil_gnn" in mix:
-        raise SystemExit("--cold forces cold_random but the mix includes 'marwil_gnn' -- a cold "
-                         "run must not load a trained model; drop 'marwil_gnn' or drop --cold")
-    _require_models(mix, cold, MB, log)
+    _require_models(mix, cold, log)
     ruleset_meta = None
     if ruleset:
         import ruleset as RS
@@ -354,12 +460,7 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
         log("ruleset: %s (%d rules, sha256 %s)" % (rs.name, len(rs.rules), rs.sha256[:12]))
     log("strategy mix: %s" % json.dumps(mix))
     log("campaign mix: %s" % json.dumps(cmix))
-    log("model backend: %s -- %s%s"
-        % (backend, B.label(backend),
-           ("  cfg=%s" % json.dumps(backend_cfg)) if backend_cfg else ""))
     report = {"started": time.time(), "requested": {"campaigns": n, "turns": turns, "plan": plan,
-                                                    "backend": backend,
-                                                    "backend_cfg": backend_cfg,
                                                     "strategies": mix,
                                                     "ruleset": ruleset_meta},
               "campaigns": []}
@@ -377,17 +478,34 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
     launch_failures = 0
     stretch, generation, trained = [], 0, None
     streams_thread = None
+    ledger_reconciled = False
 
     for i in range(n):
         this_presave = None
         if presaves is not None:
-            this_presave = rng.choice(sorted(presaves, key=lambda p: p["file"]))
+            pool = presaves
+            if width:
+                counts = _width_counts()
+                pool = [p for p in presaves
+                        if counts.get((p["campaign_map"], p["faction"]), 0) < width]
+                if not pool:
+                    log("width %d reached: every start in the pool has %d+ recorded "
+                        "campaigns -- nothing left to widen, ending the session"
+                        % (width, width))
+                    break
+                log("width %d: %d of %d start(s) still below target"
+                    % (width, len(pool), len(presaves)))
+            if ucb is not None:
+                this_presave = _ucb_pick(pool, _start_gain_stats(), ucb, rng, log=log)
+            else:
+                this_presave = rng.choice(pool)
             this_campaign = _CAMPAIGN_LABEL.get(this_presave["campaign_map"],
                                                 this_presave["campaign_map"])
             this_plan = this_presave["faction"]
         else:
             this_campaign = _pick_campaign(cmix, rng)
             this_plan = _pick_plan(_plan_for(plan, this_campaign), rng)
+        picked_ts = time.time()
         this_turns = rng.randint(turns[0], turns[1]) if isinstance(turns, (tuple, list)) \
             else int(turns)
         log("\n" + "=" * 78)
@@ -395,8 +513,8 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
             % (i + 1, n, this_turns, this_campaign, this_plan,
                ", presave r%g" % this_presave["radius"] if this_presave else ""))
         log("=" * 78)
-        entry = {"index": i + 1, "started": time.time(), "plan": this_plan,
-                 "campaign": this_campaign,
+        entry = {"index": i + 1, "started": time.time(), "picked_ts": picked_ts,
+                 "plan": this_plan, "campaign": this_campaign,
                  "presave": this_presave["file"] if this_presave else None,
                  "presave_radius": this_presave["radius"] if this_presave else None,
                  "max_turns": this_turns}
@@ -413,23 +531,24 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
         except Exception as e:
             log("   out-log rotation failed: %s" % repr(e)[:90])
         if retrain_every and (i or retrain_first) and i % retrain_every == 0:
-            _flush_generation(stretch, backend, backend_cfg, generation, report, trained, log)
+            _flush_generation(stretch, generation, report, trained, log)
             stretch = []
             generation += 1
             log("retraining -- the game is down between campaigns, trainers get the whole box")
             try:
-                t0 = time.time()
-                rep = MB.train(**backend_cfg) if backend_cfg else MB.train()
-                entry["retrain"] = dict(rep, seconds=round(time.time() - t0, 1),
-                                        backend=backend)
-                trained = entry["retrain"]
-                report["_corpus"] = {"rows": rep.get("rows"), "runs": rep.get("runs"),
-                                     "campaigns": rep.get("campaigns"),
-                                     "n_decisions": rep.get("n_decisions")}
-                log("retrained before run %d: %s" % (i + 1, json.dumps(rep)[:220]))
-                irep = IM.train()
-                entry["retrain_interrupt"] = irep
-                log("   interrupt model: %s" % json.dumps(irep)[:200])
+                rep = None
+                if "greedy_catboost" in mix:
+                    t0 = time.time()
+                    rep = M.train()
+                    entry["retrain"] = dict(rep, seconds=round(time.time() - t0, 1))
+                    trained = entry["retrain"]
+                    report["_corpus"] = {"rows": rep.get("rows"), "runs": rep.get("runs"),
+                                         "campaigns": rep.get("campaigns"),
+                                         "n_decisions": rep.get("n_decisions")}
+                    log("retrained before run %d: %s" % (i + 1, json.dumps(rep)[:220]))
+                    irep = IM.train()
+                    entry["retrain_interrupt"] = irep
+                    log("   interrupt model: %s" % json.dumps(irep)[:200])
                 if "marwil_gnn" in mix:
                     if common.ROOT not in sys.path:
                         sys.path.insert(0, common.ROOT)
@@ -438,16 +557,15 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                     grep = GT.train(log=log)
                     grep["seconds"] = round(time.time() - t1, 1)
                     entry["retrain_gnn"] = grep
-                    entry["retrain"]["gnn"] = grep
                     log("   gnn model: %s" % json.dumps(grep, default=str)[:220])
                     from advisor.mapgraph import interrupt_train as GIT
                     t1 = time.time()
                     girep = GIT.train(log=log)
                     girep["seconds"] = round(time.time() - t1, 1)
                     entry["retrain_gnn_interrupt"] = girep
-                    entry["retrain"]["gnn_interrupt"] = girep
                     log("   gnn interrupt model: %s" % json.dumps(girep, default=str)[:220])
-                for what, r in (("backend", rep), ("interrupt", entry.get("retrain_interrupt")),
+                    trained = trained or entry.get("retrain_gnn")
+                for what, r in (("catboost", rep), ("interrupt", entry.get("retrain_interrupt")),
                                 ("gnn", entry.get("retrain_gnn")),
                                 ("gnn_interrupt", entry.get("retrain_gnn_interrupt"))):
                     if r is not None and not r.get("trained"):
@@ -472,7 +590,7 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
 
         def _preload_models():
             try:
-                r = MB.Ranker(B.NO_MODEL_DIR) if cold else MB.Ranker()
+                r = M.Ranker() if ("greedy_catboost" in mix and not cold) else None
                 _models["ranker"] = r
                 _models["policy"] = P.Policy(r, strategies=mix, ruleset=ruleset)
             except BaseException as e:
@@ -483,9 +601,9 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
         try:
             if this_presave is not None:
                 sys.path.insert(0, common.LAUNCHER)
-                import bake_saves
+                import presaves as PS
                 import bus_launcher
-                bake_saves.restore_presave(this_presave, log=log)
+                PS.restore_presave(this_presave, log=log)
                 bl = bus_launcher.BusLauncher()
                 state = bl.load_save(this_presave["file"])
                 ex.bus = bl.bus or ex.bus
@@ -497,6 +615,9 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
             entry["stream_watermark"] = L.stream_watermark(run_dir)
             ex.shots_dir = os.path.join(run_dir, "shots")
             log("run dir: %s" % run_dir)
+            if not ledger_reconciled:
+                _reconcile_ledger(run_dir, log)
+                ledger_reconciled = True
 
             _t_join = time.time()
             _preload.join()
@@ -505,7 +626,6 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
             ranker, pol = _models["ranker"], _models["policy"]
             log("model preload: %.1fs still to wait after the game was up" % (time.time() - _t_join))
             entry["model_preload_wait_s"] = round(time.time() - _t_join, 1)
-            entry["backend"] = backend
             if not cold:
                 if "greedy_catboost" in mix and not ranker.ready:
                     raise P.ModelUnavailable(
@@ -516,13 +636,13 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
                         "campaign %d: mapgraph model is not ready after preload (%s)"
                         % (i + 1, common.MODEL_MAPGRAPH))
             entry["policy"] = ("cold_random(forced)" if cold else
-                               "trained(%d rows)" % (ranker.meta or {}).get("rows", 0))
+                               "trained(%d rows)"
+                               % ((ranker.meta or {}).get("rows", 0) if ranker else 0))
             log("policy: %s" % entry["policy"])
             if pol.gnn is not None:
                 entry["gnn_policy"] = "trained(%d rows)" % (pol.gnn.meta or {}).get("rows", 0)
                 log("gnn: %s" % entry["gnn_policy"])
-            _checkpoint_trial(stretch + [entry], backend, backend_cfg, generation, report,
-                              trained, log)
+            _checkpoint_trial(stretch + [entry], generation, report, trained, log)
 
             def _flush_turn(so_far, _e=entry):
                 _e.update(outcome="in_progress", turns_played=len(so_far),
@@ -612,13 +732,13 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
         _write(out_path, report)
         _wr_s = time.time() - _t
         _t = time.time()
-        _checkpoint_trial(stretch, backend, backend_cfg, generation, report, trained, log)
+        _checkpoint_trial(stretch, generation, report, trained, log)
         log("   boundary bookkeeping: postmortem %.1fs, report %.1fs, trial_checkpoint %.1fs, "
             "verify_streams backgrounded" % (_pm_s, _wr_s, time.time() - _t))
 
     if streams_thread is not None and streams_thread.is_alive():
         streams_thread.join(20.0)
-    _flush_generation(stretch, backend, backend_cfg, generation, report, trained, log)
+    _flush_generation(stretch, generation, report, trained, log)
     report["seconds"] = round(time.time() - report["started"], 1)
     report["totals"] = _totals(report)
     _write(out_path, report)
@@ -637,7 +757,7 @@ TARGET_PARTS = ("settlements", "lord_level")
 
 def _uuid_of(rows):
     for r in rows or ():
-        u = (r.get("target") or {}).get("campaign_uuid")
+        u = r.get("campaign_uuid")
         if u:
             return u
     return None
@@ -672,7 +792,7 @@ def _loop_turns(run_dir):
                     continue
                 if o.get("kind") != "turn":
                     continue
-                u = (o.get("target") or {}).get("campaign_uuid")
+                u = o.get("campaign_uuid")
                 if u:
                     by_uuid.setdefault(u, []).append(o)
     except OSError:
@@ -817,7 +937,7 @@ def _gain_stats(stretch, part):
             "hist": {str(int(v)): vals.count(v) for v in sorted(set(vals))}}
 
 
-def _trial_row(stretch, backend, backend_cfg, gen_n, report, trained, log):
+def _trial_row(stretch, gen_n, report, trained, log):
     if not stretch:
         return None
     stretch = _measure(stretch, log)
@@ -840,7 +960,6 @@ def _trial_row(stretch, backend, backend_cfg, gen_n, report, trained, log):
            "started": first.get("started"),
            "campaign_index": [first.get("index"), last.get("index")],
            "campaigns": len(played),
-           "backend": backend, "backend_cfg": backend_cfg,
            "strategies": (report.get("requested") or {}).get("strategies"),
            "ruleset": (report.get("requested") or {}).get("ruleset"),
            "feature_version": _feature_version(),
@@ -865,8 +984,8 @@ def _trial_row(stretch, backend, backend_cfg, gen_n, report, trained, log):
     return row
 
 
-def _flush_generation(stretch, backend, backend_cfg, gen_n, report, trained, log):
-    row = _trial_row(stretch, backend, backend_cfg, gen_n, report, trained, log)
+def _flush_generation(stretch, gen_n, report, trained, log):
+    row = _trial_row(stretch, gen_n, report, trained, log)
     if row is None:
         return None
     _write_trial(row, log)
@@ -874,9 +993,8 @@ def _flush_generation(stretch, backend, backend_cfg, gen_n, report, trained, log
     return row
 
 
-def _checkpoint_trial(stretch, backend, backend_cfg, gen_n, report, trained, log):
-    row = _trial_row(stretch, backend, backend_cfg, gen_n,
-                     dict(report, running=True), trained, log)
+def _checkpoint_trial(stretch, gen_n, report, trained, log):
+    row = _trial_row(stretch, gen_n, dict(report, running=True), trained, log)
     if row is not None:
         _write_trial(row, log, quiet=True)
     return row
@@ -891,8 +1009,8 @@ def backfill_trials(runs_root=RUNS_ROOT, log=print, recompute=False):
             if not stretch:
                 continue
             extra = {} if rep.get("totals") else {"stopped_short": True}
-            backend, cfg, shadow, trained = _stretch_context(path, rep, gen, stretch, extra)
-            row = _trial_row(stretch, backend, cfg, gen, shadow, trained, log)
+            shadow, trained = _stretch_context(path, rep, gen, stretch, extra)
+            row = _trial_row(stretch, gen, shadow, trained, log)
             if row is None or row["trial"] in have:
                 continue
             _write_trial(row, log, quiet=True)
@@ -901,6 +1019,25 @@ def backfill_trials(runs_root=RUNS_ROOT, log=print, recompute=False):
             log("   backfilled %s: %d campaigns" % (row["trial"], row["campaigns"]))
     log("backfill: %d trial(s) written to %s" % (written, metrics_db.DB_PATH))
     return 0
+
+
+def _reconcile_ledger(run_dir, log):
+    path = os.path.join(run_dir, journal.DB_NAME)
+    have = set()
+    if os.path.exists(path):
+        con = dbopen.connect(path, readonly=True)
+        try:
+            have = {r[0] for r in con.execute("SELECT campaign_key FROM campaigns")}
+        except sqlite3.OperationalError as e:
+            if "no such table" not in str(e):
+                raise
+        finally:
+            con.close()
+    gone = metrics_db.prune_unmatched(have)
+    if gone:
+        log("ledger reconciled with %s: %d trial(s) moved to trials_archive, "
+            "%d campaign(s) on disk -- %s"
+            % (path, len(gone), len(have), ", ".join(sorted(gone))[:300]))
 
 
 def _write_trial(row, log, quiet=False):
@@ -955,8 +1092,7 @@ def _stretch_context(path, rep, gen, stretch, extra):
               if trained and not trained.get("error") else None)
     req = rep.get("requested") or {}
     shadow = dict(extra, session=path, _corpus=corpus, requested=req)
-    return (req.get("backend") or stretch[0].get("backend"), req.get("backend_cfg") or {},
-            shadow, trained)
+    return shadow, trained
 
 
 IN_FLIGHT_S = 600
@@ -1084,8 +1220,8 @@ def main():
     turns = _parse_turns(sys.argv[2]) if len(sys.argv) > 2 else 20
     for gone, hint in (("--model", "the exploit scorer is fixed; models are chosen via "
                                    "--strategies"),
-                       ("--backend", "the exploit scorer is fixed; models are chosen via "
-                                     "--strategies"),
+                       ("--backend", "backends were removed entirely; every strategy owns "
+                                     "and trains its own model"),
                        ("--epsilon", "give --strategies greedy_catboost=1-E,random=E"),
                        ("--retrain", "the cadence is --retrain-every N [--retrain-first]")):
         if gone in sys.argv:
@@ -1115,19 +1251,56 @@ def main():
                          "                 the launcher's own cinematic-key counts). Those 14\n"
                          "                 take 68-119s to reach a playable HUD against 17-30s\n"
                          "                 for the rest.\n"
-                         "  <key,...>   -- game faction keys, e.g. wh2_main_hef_nagarythe")
+                         "  <key,...>   -- game faction keys, e.g. wh2_main_hef_nagarythe\n"
+                         "  <map>:<key,...>[;<map>:<key,...>] -- per-map lists when --campaign\n"
+                         "                 mixes maps, e.g. 'Immortal Empires:wh2_main_hef_"
+                         "nagarythe;Realm of Chaos:wh3_main_cth_the_western_provinces'\n"
+                         "  --width N   -- with --presave-radius: sample only starts whose "
+                         "(map, faction) has fewer than N recorded campaigns in the store, "
+                         "re-checked per campaign; the session ends when none remain\n"
+                         "  --ucb C     -- with --presave-radius: UCB1 start selector, "
+                         "reward = settlements gained plus lord levels gained (campaign_gains view); "
+                         "unplayed starts first, then mean + C*sqrt(ln(total)/n)")
     arg = sys.argv[sys.argv.index("--factions") + 1].strip()
     _spec = (sys.argv[sys.argv.index("--campaign") + 1].strip()
              if "--campaign" in sys.argv else "Immortal Empires")
     _names = sorted(normalize_campaigns(_spec))
     keys = {}
     if "--presave-radius" in sys.argv:
-        if arg != "all":
+        if arg == "no-cutscene":
             raise SystemExit(
-                "--presave-radius samples starts from the baked save pool and ignores "
-                "faction lists entirely -- --factions %r would be silently discarded. "
-                "Give --factions all with presaves, or drop --presave-radius." % arg)
-        keys = {n: ["presave"] for n in _names}
+                "--presave-radius loads baked saves and never touches the frontend, so "
+                "the cutscene classification has nothing to filter -- give --factions "
+                "all or an explicit list")
+        if arg == "all":
+            keys = {n: "all" for n in _names}
+            _names = []
+    if ":" in arg:
+        sys.path.insert(0, common.LAUNCHER)
+        import bus_launcher
+        groups = {}
+        for part in arg.split(";"):
+            part = part.strip()
+            if not part:
+                continue
+            gname, _, body = part.partition(":")
+            groups[gname.strip()] = [k.strip() for k in body.split(",") if k.strip()]
+        if sorted(groups) != _names:
+            raise SystemExit(
+                "--factions groups maps %s but --campaign mixes %s -- every map in the "
+                "mix needs exactly one group: a group for an absent map would never "
+                "launch, and a mix map without a group has no starts to pick from"
+                % (sorted(groups), _names))
+        for _name in sorted(groups):
+            roster = set(bus_launcher.BusLauncher().startable_factions(_name))
+            absent = [k for k in groups[_name] if k not in roster]
+            if absent:
+                raise SystemExit(
+                    "--factions names %s, which are not startable on %s. A campaign mix "
+                    "draws that map for some campaigns, and those launches would fail "
+                    "one by one." % (", ".join(absent), _name))
+            keys[_name] = groups[_name]
+            print("--factions on %s: %d explicit start(s)" % (_name, len(keys[_name])))
         _names = []
     for _name in _names:
         if arg == "all":
@@ -1187,6 +1360,16 @@ def main():
     presave_radius = None
     if "--presave-radius" in sys.argv:
         presave_radius = float(sys.argv[sys.argv.index("--presave-radius") + 1])
+    width = 0
+    if "--width" in sys.argv:
+        width = int(sys.argv[sys.argv.index("--width") + 1])
+        if width < 1:
+            raise SystemExit("--width must be >= 1")
+    ucb = None
+    if "--ucb" in sys.argv:
+        ucb = float(sys.argv[sys.argv.index("--ucb") + 1])
+        if ucb <= 0:
+            raise SystemExit("--ucb needs a positive exploration constant")
     campaign = "Immortal Empires"
     if "--campaign" in sys.argv:
         i = sys.argv.index("--campaign")
@@ -1198,7 +1381,7 @@ def main():
     r = run_campaigns(n, turns, plan=keys,
                       retrain_every=every, cold=cold, strategies=strategies,
                       ruleset=ruleset, campaign=campaign, retrain_first=retrain_first,
-                      presave_radius=presave_radius)
+                      presave_radius=presave_radius, width=width, ucb=ucb)
     return 0 if r["totals"]["completed"] else 2
 
 

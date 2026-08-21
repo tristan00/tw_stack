@@ -3,7 +3,6 @@ import { CountText } from '@/components/primitives'
 import { DataTable, type Col } from '@/components/DataTable'
 import { useApi, type RunPage, type Schemas } from '@/lib/api'
 import { ms, stateText } from '@/lib/format'
-import { cn } from '@/lib/utils'
 
 type TimingRow = Schemas['TimingRow']
 
@@ -99,16 +98,6 @@ export function Run() {
         </Section>
       </div>
 
-      <Section
-        title="session log"
-        scope={{ text: data.log_name ?? 'no session log', detail: 'last lines' }}
-      >
-        <Card className="overflow-hidden">
-          <pre className={cn('num max-h-72 overflow-auto px-3 py-2 text-2xs leading-relaxed')}>
-            {data.log_tail.length ? data.log_tail.join('\n') : 'nothing written yet'}
-          </pre>
-        </Card>
-      </Section>
     </div>
   )
 }

@@ -5,6 +5,7 @@ import { CampaignDetail } from '@/routes/CampaignDetail'
 import { Decisions } from '@/routes/Decisions'
 import { DecisionDetail } from '@/routes/DecisionDetail'
 import { Infra } from '@/routes/Infra'
+import { Log } from '@/routes/Log'
 import { Models } from '@/routes/Models'
 import { Run } from '@/routes/Run'
 
@@ -20,6 +21,7 @@ export default function App() {
         <Route path="/decisions" element={<Decisions />} />
         <Route path="/decisions/:decisionId" element={<DecisionDetail />} />
         <Route path="/models" element={<Models />} />
+        <Route path="/log" element={<Log />} />
         <Route path="/infra" element={<Infra />} />
         <Route path="*" element={<Navigate to="/run" replace />} />
       </Route>

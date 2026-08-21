@@ -556,8 +556,11 @@ def _province_options(region, state, campaign):
                         "agent_type_unknown" if not agent_type else
                         "cannot_recruit_character")
             else:
-                ok = bool(_at("can", i))
-                gate = None if ok else "cannot_recruit_character"
+                armies = (campaign or {}).get("armies")
+                enough = armies is not None and armies >= 2
+                ok = bool(_at("can", i)) and not enough
+                gate = ("enough_lords" if enough else
+                        None if ok else "cannot_recruit_character")
             offers.append(_offer("recruit_hero" if is_agent else "recruit_lord",
                                  "%s@%d" % (sub, i), ok, gate,
                                  region=region, candidate_index=i, n_candidates=n,
@@ -683,7 +686,6 @@ def generate(record):
 
 FORBIDDEN_KEYS = frozenset({"button_attack", "button_spectate"})
 MAX_ACTIONS_PER_ENTITY = 6
-END_TURN_AFTER = 5
 
 FACTION_WIDE_CAPS = frozenset(("recruit_lord", "recruit_hero", "research", "rites",
                                "building_dismantle", "colonize"))
@@ -691,7 +693,7 @@ PER_TURN_CAPS = {"recruit_lord": 1, "recruit_hero": 1, "recruit_unit": 4, "edict
                  "research": 1, "rites": 1, "diplomacy": 1, "noop": 0, "stance": 1,
                  "hero_action": 3, "building_dismantle": 0, "raise_dead": 4,
                  "recruit_ror": 1, "recruit_blessed": 4, "recruit_imperial": 1,
-                 "colonize": 1, "item_unequip": 0}
+                 "colonize": 1, "item_unequip": 1}
 COSTS_MOVEMENT = frozenset(("move", "attack_army", "attack_settlement", "colonize",
                             "garrison", "leave_garrison", "hero_action"))
 
@@ -702,7 +704,7 @@ FILLS_THE_ARMY = frozenset(("recruit_unit", "raise_dead", "recruit_ror",
 ATTACK_PAIR_TYPES = frozenset(("attack_army", "attack_settlement"))
 ATTACK_PAIR_CAP = 1
 DIPLO_TARGET_CAP = 1
-DIPLO_GIFT_CAP = 0
+DIPLO_GIFT_CAP = 1
 
 
 def _is_gift(key):
@@ -789,8 +791,6 @@ class Gate:
             units = (o.get("_state") or {}).get("units")
             if units is not None and float(units) >= MAX_FORCE_UNITS:
                 return "army_full"
-        if at == "end_turn" and actions_taken < END_TURN_AFTER:
-            return "end_turn_before_6th_decision"
         if key in FORBIDDEN_KEYS:
             return "forbidden_key"
         if k in self.retired and at != "end_turn":

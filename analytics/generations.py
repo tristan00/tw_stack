@@ -27,7 +27,6 @@ CREATE TABLE IF NOT EXISTS model_generations(
   seg_to_ts        REAL NOT NULL,
   overlapped_by    TEXT,
   retrained        INTEGER NOT NULL,
-  backend          TEXT,
   feature_version  TEXT,
   corpus_decisions INTEGER,
   campaigns        INTEGER,
@@ -68,7 +67,7 @@ def _windows(run_dir):
             "trial": str(r.get("trial") or ""), "generation": r.get("generation"),
             "session": r.get("session"), "started_ts": started, "ended_ts": ended,
             "retrained": 1 if int(r.get("generation") or 0) > 0 else 0,
-            "backend": r.get("backend"), "feature_version": r.get("feature_version"),
+            "feature_version": r.get("feature_version"),
             "corpus_decisions": (r.get("corpus_at_train") or {}).get("n_decisions"),
             "campaigns": r.get("campaigns"),
         })
@@ -104,10 +103,10 @@ def step(src, an, lo, hi):
     now = time.time()
     an.executemany(
         "INSERT INTO model_generations(trial, generation, session, started_ts, ended_ts,"
-        " seg_from_ts, seg_to_ts, overlapped_by, retrained, backend, feature_version,"
+        " seg_from_ts, seg_to_ts, overlapped_by, retrained, feature_version,"
         " corpus_decisions, campaigns, computed_ts)"
         " VALUES(:trial, :generation, :session, :started_ts, :ended_ts, :seg_from_ts,"
-        " :seg_to_ts, :overlapped_by, :retrained, :backend, :feature_version,"
+        " :seg_to_ts, :overlapped_by, :retrained, :feature_version,"
         " :corpus_decisions, :campaigns, :computed_ts)",
         [dict(r, computed_ts=now) for r in rows])
     return max(hi, len(rows)), len(rows)
@@ -116,20 +115,9 @@ def step(src, an, lo, hi):
 GAINS_MIN_TRIALS = 10
 
 _GAINS_SQL = """
-SELECT campaign_id, MIN(ts) t0,
-       (SELECT settlements FROM target_rows x WHERE x.campaign_id=t.campaign_id
-        ORDER BY ts LIMIT 1) s0,
-       MAX(settlements) s1,
-       (SELECT lord_level FROM target_rows x WHERE x.campaign_id=t.campaign_id
-        ORDER BY ts LIMIT 1) l0,
-       MAX(lord_level) l1,
-       (SELECT allies FROM target_rows x WHERE x.campaign_id=t.campaign_id
-        ORDER BY ts LIMIT 1) a0,
-       MAX(allies) a1,
-       (SELECT vassals FROM target_rows x WHERE x.campaign_id=t.campaign_id
-        ORDER BY ts LIMIT 1) v0,
-       MAX(vassals) v1
-FROM target_rows t GROUP BY campaign_id
+SELECT campaign_key, first_ts, settlements_gained, levels_gained,
+       allies_gained, vassals_gained
+FROM campaign_gains
 """
 
 
@@ -145,11 +133,12 @@ def generation_gains(run_dir=None, min_trials=GAINS_MIN_TRIALS):
                         " WHERE retrained=1 ORDER BY seg_from_ts").fetchall()
     an.close()
     models = [("baseline", float("-inf"), None)] + [tuple(r) for r in trains]
-    con = _ro(os.path.join(run_dir, "decisions.sqlite"))
+    from decisions import dbopen
+    con = dbopen.connect(os.path.join(run_dir, "decisions.sqlite"), timeout=5)
     camps = con.execute(_GAINS_SQL).fetchall()
     con.close()
     agg = {}
-    for cid, t0, s0, s1, l0, l1, a0, a1, v0, v1 in camps:
+    for cid, t0, sg, lg, ag2, vg in camps:
         if t0 is None:
             continue
         model = None
@@ -158,10 +147,10 @@ def generation_gains(run_dir=None, min_trials=GAINS_MIN_TRIALS):
                 model = (trial, lo, corpus)
         b = agg.setdefault(model, {"n": 0, "s": 0.0, "l": 0.0, "a": 0.0, "v": 0.0})
         b["n"] += 1
-        b["s"] += (s1 or 0) - (s0 or 0)
-        b["l"] += (l1 or 0) - (l0 or 0)
-        b["a"] += (a1 or 0) - (a0 or 0)
-        b["v"] += (v1 or 0) - (v0 or 0)
+        b["s"] += sg or 0
+        b["l"] += lg or 0
+        b["a"] += ag2 or 0
+        b["v"] += vg or 0
     out = []
     for (trial, lo, corpus), b in sorted(agg.items(), key=lambda kv: kv[0][1]):
         if b["n"] < min_trials:

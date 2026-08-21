@@ -293,7 +293,7 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
                     raise CampaignLost("watchdog fired but the faction is DEAD -- defeat, "
                                        "not a stall (%s)" % stuck["reason"])
                 raise GameStuck("%s: %s" % (stuck["reason"], stuck["detail"]))
-            growth_hist[int(row["turn"] or 0)] = dict(row.get("state") or {})
+            growth_hist[int(row["turn"] or 0)] = dict(row.get("turn_open") or {})
             done, verdict = _growth_verdict(growth_hist, row["turn"])
             _append(report_path, dict(verdict, kind="growth_check", ts=time.time()))
             if verdict["reason"] == "no_metric_evaluable":
@@ -404,14 +404,22 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
     active = None
     no_hud = 0
     last_record = {}
+    first_record = {}
+    wounded_seen = [False]
     gate_failed = [False]
+
+    def _turn_open_row():
+        camp0 = (first_record.get("campaign") or {})
+        return {"faction": camp0.get("faction"), "settlements": camp0.get("settlements"),
+                "armies": camp0.get("armies"), "treasury": camp0.get("treasury"),
+                "income": camp0.get("income"), "lord_level": camp0.get("lord_level"),
+                "ll_wounded": bool(camp0.get("ll_wounded")) or wounded_seen[0],
+                "campaign_turn": camp0.get("turn")}
 
     def _check_gate_before_end():
         if pre_settle is None:
             return False
-        camp0 = (last_record.get("campaign") or {})
-        st = {"settlements": camp0.get("settlements"), "lord_level": camp0.get("lord_level"),
-              "ll_wounded": camp0.get("ll_wounded")}
+        st = _turn_open_row()
         try:
             failing = bool(pre_settle(st, turn))
         except Exception as e:
@@ -421,7 +429,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
             log("   growth gate: FAILING at end of turn %s -- skipping the end turn and the "
                 "inter-turn settle, the campaign ends here" % turn)
         return failing
-    while actions < pol.max_actions_per_turn:
+    while True:
         if stuck["fired"]:
             ended_by = "stuck"
             break
@@ -492,7 +500,10 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
         F.stamp_action_counts(record["campaign"], act_counts)
         I.set_snapshot(record["campaign"], record)
         last_record = record
+        if not first_record:
+            first_record.update(record)
         if (record.get("campaign") or {}).get("ll_wounded"):
+            wounded_seen[0] = True
             log("   legendary lord is WOUNDED -- no further actions this turn")
             ended_by = "ll_wounded"
             gate_failed[0] = _check_gate_before_end()
@@ -630,21 +641,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
         active = _active_from(record, pol)
         _hk_parts[0]["active_from"] = int((time.time() - _t) * 1000)
         _last_done_ts[0] = time.time()
-    else:
-        ended_by = "action_cap"
-        gate_failed[0] = _check_gate_before_end()
-        if not gate_failed[0]:
-            _force_end_turn(run_dir, executor, None, None, log)
-
     terminal = ended_by in ("stuck", "no_campaign_ui", "defeated")
-    target = None
-    doomed = stuck.get("fired") or executor.defeated_row_seen()
-    if doomed and not terminal:
-        log("   reward row skipped: %s -- the campaign tick is frozen, the read can only "
-            "time out" % ("stuck flag up" if stuck.get("fired") else "defeat row seen"))
-    if not terminal and not doomed:
-        target = journal.request_target(run_dir)
-
     if terminal:
         settle = {"turn": None, "steps": [], "waited_s": 0.0, "skipped": ended_by}
     elif gate_failed[0]:
@@ -669,17 +666,15 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
             DS.checkpoint(executor.bus)
         except Exception as e:
             log("   diplo_stream checkpoint -> %s" % repr(e)[:80])
-    camp = (last_record.get("campaign") or {})
-    state = {"faction": camp.get("faction"), "settlements": camp.get("settlements"),
-             "armies": camp.get("armies"), "treasury": camp.get("treasury"),
-             "income": camp.get("income"), "lord_level": camp.get("lord_level"),
-             "ll_wounded": camp.get("ll_wounded"), "campaign_turn": camp.get("turn")}
-    log("   state: turn=%s settlements=%s armies=%s treasury=%s income=%s lord_level=%s"
-        % (state["campaign_turn"], state["settlements"], state["armies"],
-           state["treasury"], state["income"], state["lord_level"]))
+    row_open = _turn_open_row()
+    log("   turn_open: turn=%s settlements=%s armies=%s treasury=%s income=%s lord_level=%s"
+        % (row_open["campaign_turn"], row_open["settlements"], row_open["armies"],
+           row_open["treasury"], row_open["income"], row_open["lord_level"]))
     return TurnResult({"kind": "turn", "turn": turn, "actions": actions, "confirmed": confirmed,
-                       "ended_by": ended_by, "picks": picks, "target": target,
-                       "state": state, "inter_turn": settle, "ts": time.time()})
+                       "ended_by": ended_by, "picks": picks, "turn_open": row_open,
+                       "campaign_uuid": ((first_record.get("campaign") or {}).get("campaign_uuid")
+                                         or (last_record.get("campaign") or {}).get("campaign_uuid")),
+                       "inter_turn": settle, "ts": time.time()})
 
 
 def _active_from(record, pol):
@@ -743,9 +738,9 @@ def verify_streams(run_dir, since=0, campaign=None):
         since = int(since or 0)
         out = {
             "since_decision_id": since,
-            "turns_with_reward": (q("SELECT COUNT(*) FROM target_rows WHERE campaign_id=?",
-                                    campaign) if campaign
-                                  else q("SELECT COUNT(*) FROM target_rows")),
+            "turns_recorded": (q("SELECT COUNT(*) FROM turn_open WHERE campaign_id=?",
+                                 campaign) if campaign
+                               else q("SELECT COUNT(*) FROM turn_open")),
             "decision_points": q("SELECT COUNT(*) FROM decision_points"
                                  " WHERE decision_id>?", since),
             "points_with_offers": q("SELECT COUNT(DISTINCT decision_id) FROM action_offers"

@@ -80,10 +80,7 @@ def faction(key: str) -> dict:
     code, _, rest = body.partition("_")
     names = culture_names()
     if code in names and rest:
-        label = titlecase(rest)
-        culture = names[code]
-        return {"raw": raw, "label": label,
-                "culture": None if culture.lower() == label.lower() else culture}
+        return {"raw": raw, "label": titlecase(rest), "culture": names[code]}
     return {"raw": raw, "label": titlecase(body) or raw, "culture": None}
 
 

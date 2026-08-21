@@ -15,7 +15,6 @@ import ruleset as R
 import strategies as S
 
 
-MAX_ACTIONS_PER_TURN = 6
 MAX_ACTIONS_PER_ENTITY = 6
 
 EPSILON = 0.10
@@ -57,7 +56,7 @@ def _tally(values):
 
 
 class Policy:
-    def __init__(self, ranker=None, seed=None, max_actions_per_turn=MAX_ACTIONS_PER_TURN,
+    def __init__(self, ranker=None, seed=None,
                  max_actions_per_entity=MAX_ACTIONS_PER_ENTITY, strategies=None, ruleset=None):
         self.ranker = ranker if ranker is not None else M.Ranker()
         self.rng = random.Random(seed)
@@ -75,7 +74,6 @@ class Policy:
                                       ruleset=self.ruleset, gnn=self.gnn)
                         for name in self.strategies}
         self.fallback = self.members.get("random") or S.build("random", rng=self.rng)
-        self.max_actions_per_turn = max_actions_per_turn
         self.max_actions_per_entity = max_actions_per_entity
         self.gate = O.Gate(max_actions_per_entity=max_actions_per_entity)
         self.last_drops = []
@@ -97,8 +95,9 @@ class Policy:
     def choose(self, record, actions_taken=0):
         ranked = self.ranker.score(record)
         hot = self.ranker.ready
-        for i, r in enumerate(ranked):
-            r["rank"] = i + 1
+        if hot:
+            for i, r in enumerate(ranked):
+                r["rank"] = i + 1
         gnn_scores = self._score_with_gnn(ranked, record)
         if "marwil_gnn" in self.members:
             self.members["marwil_gnn"].scored = gnn_scores
@@ -169,9 +168,13 @@ class Policy:
 
 def scores_for_store(ranked, limit=None):
     rows = ranked if limit is None else ranked[:limit]
-    return [{"context_kind": r["context_kind"], "context_id": r["context_id"],
-             "action_type": r["action_type"], "key": r["key"], "score": r.get("score"),
-             "exploit": r.get("exploit"), "rank": r.get("rank"),
-             "pct_global": r.get("pct_global"), "pct_local": r.get("pct_local"),
-             "gnn_impact": r.get("gnn_impact"), "gnn_rank": r.get("gnn_rank")}
-            for r in rows]
+    out = []
+    for r in rows:
+        vals = {f: r.get(f) for f in ("score", "exploit", "rank", "pct_global",
+                                      "pct_local", "gnn_impact", "gnn_rank")}
+        if all(v is None for v in vals.values()):
+            continue
+        out.append(dict(vals, context_kind=r["context_kind"],
+                        context_id=r["context_id"],
+                        action_type=r["action_type"], key=r["key"]))
+    return out

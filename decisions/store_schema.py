@@ -7,7 +7,7 @@ MAX_OFFERS_PER_DECISION = 1 << 20
 SCORE_FIELDS = ("score", "exploit", "rank", "pct_global", "pct_local",
                 "gnn_impact", "gnn_rank")
 
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 
 PRAGMAS = (
     "PRAGMA auto_vacuum=INCREMENTAL",
@@ -91,35 +91,6 @@ CREATE TABLE IF NOT EXISTS interrupts(
   panel_blob INTEGER REFERENCES blobs(blob_id),
   policy TEXT);
 
-CREATE TABLE IF NOT EXISTS target_rows(
-  campaign_id TEXT NOT NULL, turn INTEGER NOT NULL, ts REAL,
-  income REAL, settlements REAL, allies REAL, vassals REAL, power_rank REAL, lord_level REAL,
-  PRIMARY KEY(campaign_id, turn));
-
-CREATE TABLE IF NOT EXISTS entity_target_rows(
-  campaign_id TEXT NOT NULL, turn INTEGER NOT NULL,
-  context_kind TEXT NOT NULL, context_id TEXT NOT NULL,
-  value REAL, ts REAL,
-  PRIMARY KEY(campaign_id, turn, context_kind, context_id));
-
--- The whole world's war graph, one row per campaign turn, INCLUDING factions we have never
--- met. It is deliberately NOT in the decision record: the record is what the model may see,
--- and a model trained on relationships the player cannot observe would lean at training time
--- on information it will not have at play time -- the kind of failure that scores fine
--- offline and is silently wrong in the game.
--- `known_factions` is the filter, carried in the row itself rather than enforced by a
--- separate guard. Any consumer holds the met-set for that exact turn next to the data, so
--- clipping is a join and not a convention someone has to remember. The met set changes every
--- turn, which is precisely why it is stored per row instead of derived later.
--- Written once per TURN, not per action: two factions that are not us cannot change their
--- relationship while we are taking actions -- the AI moves between turns. PRIMARY KEY makes
--- the repeat writes within a turn a no-op.
-CREATE TABLE IF NOT EXISTS diplo_state(
-  campaign_id TEXT NOT NULL, turn INTEGER NOT NULL, ts REAL,
-  known_blob INTEGER NOT NULL REFERENCES blobs(blob_id),  -- the met set at this turn
-  war_blob INTEGER NOT NULL REFERENCES blobs(blob_id),    -- [{faction,at_war_with:[]}], ALL factions
-  PRIMARY KEY(campaign_id, turn)) WITHOUT ROWID;
-
 CREATE TABLE IF NOT EXISTS rpc_requests(
   rpc_id INTEGER PRIMARY KEY AUTOINCREMENT,
   req_id TEXT UNIQUE, kind TEXT NOT NULL, ts REAL NOT NULL, payload TEXT);
@@ -139,9 +110,27 @@ CREATE TABLE IF NOT EXISTS diplomacy_events(
   event_id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts REAL, campaign_key TEXT, turn INTEGER, kind TEXT, payload TEXT);
 
+-- What the UCB start selector saw and did, one row per pick plus the whole ranking it
+-- scored. The session logs the same table, but logs rotate and this is the record of
+-- WHY a start was played: c, the plays it divided by, and every start's mean and
+-- explore term at that instant. explore and score are NULL for an unplayed start,
+-- whose bonus is infinite. Join a pick to the campaign it produced on picked_ts.
+CREATE TABLE IF NOT EXISTS ucb_picks(
+  pick_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts REAL NOT NULL, c REAL, total_plays INTEGER,
+  campaign_map TEXT, faction TEXT,
+  n INTEGER, mean REAL, explore REAL, score REAL, tied INTEGER);
+
+CREATE TABLE IF NOT EXISTS ucb_pick_rows(
+  pick_id INTEGER NOT NULL, rank INTEGER NOT NULL,
+  campaign_map TEXT, faction TEXT,
+  n INTEGER, mean REAL, explore REAL, score REAL, chosen INTEGER,
+  PRIMARY KEY(pick_id, rank));
+
 CREATE INDEX IF NOT EXISTS ix_dec_campaign ON decisions(campaign_id, decision_id);
 CREATE INDEX IF NOT EXISTS ix_dec_turn ON decisions(turn);
 CREATE INDEX IF NOT EXISTS ix_diplo_ev ON diplomacy_events(campaign_key, event_id);
+CREATE INDEX IF NOT EXISTS ix_ucb_picks_ts ON ucb_picks(ts);
 """
 
 
@@ -207,6 +196,54 @@ SELECT t.decision_id AS taken_id, t.decision_id AS decision_id,
        t.diagnostics AS diagnostics
 FROM taken t LEFT JOIN actions a ON a.action_id = t.action_id;
 
+-- The ONLY definitions of per-turn state. Both are projections of the decision snapshots:
+-- no writer, no second collection, nothing stored that can drift. turn_bounds is the single
+-- place "first/last snapshot of a turn" is encoded; decision_id order is chronological
+-- (single-writer AUTOINCREMENT, one campaign at a time, one decision at a time).
+-- Measurement semantics:
+--   delta within turn N up to a decision  = decision's snapshot - turn_open[N]
+--   what turn N's player decisions did    = turn_close[N] - turn_open[N]
+--   turn over turn                        = turn_open[N+1] - turn_open[N]
+-- turn_close is the state at the turn's LAST DECISION, not "after all actions": a turn
+-- ended by end_turn reflects every real action; a single-decision turn (wounded lord) has
+-- turn_close == turn_open; an action-cap turn's final action lands in turn_open[N+1].
+-- power_rank keeps the snapshot convention throughout: HIGHER IS BETTER, peak = MAX.
+DROP VIEW IF EXISTS turn_bounds;
+CREATE VIEW turn_bounds AS
+SELECT campaign_id, turn,
+       MIN(decision_id) AS open_id, MAX(decision_id) AS close_id
+FROM decisions GROUP BY campaign_id, turn;
+
+DROP VIEW IF EXISTS turn_open;
+CREATE VIEW turn_open AS
+SELECT c.campaign_key AS campaign_id, d.turn AS turn, d.ts AS ts,
+       d.decision_id AS decision_id,
+       CAST(json_extract(unz(b.z), '$.income')      AS REAL) AS income,
+       CAST(json_extract(unz(b.z), '$.settlements') AS REAL) AS settlements,
+       CAST(json_extract(unz(b.z), '$.allies')      AS REAL) AS allies,
+       CAST(json_extract(unz(b.z), '$.vassals')     AS REAL) AS vassals,
+       CAST(json_extract(unz(b.z), '$.power_rank')  AS REAL) AS power_rank,
+       CAST(json_extract(unz(b.z), '$.lord_level')  AS REAL) AS lord_level
+FROM turn_bounds tb
+JOIN decisions d ON d.decision_id = tb.open_id
+LEFT JOIN campaigns c ON c.campaign_id = d.campaign_id
+LEFT JOIN blobs b ON b.blob_id = d.campaign_blob;
+
+DROP VIEW IF EXISTS turn_close;
+CREATE VIEW turn_close AS
+SELECT c.campaign_key AS campaign_id, d.turn AS turn, d.ts AS ts,
+       d.decision_id AS decision_id,
+       CAST(json_extract(unz(b.z), '$.income')      AS REAL) AS income,
+       CAST(json_extract(unz(b.z), '$.settlements') AS REAL) AS settlements,
+       CAST(json_extract(unz(b.z), '$.allies')      AS REAL) AS allies,
+       CAST(json_extract(unz(b.z), '$.vassals')     AS REAL) AS vassals,
+       CAST(json_extract(unz(b.z), '$.power_rank')  AS REAL) AS power_rank,
+       CAST(json_extract(unz(b.z), '$.lord_level')  AS REAL) AS lord_level
+FROM turn_bounds tb
+JOIN decisions d ON d.decision_id = tb.close_id
+LEFT JOIN campaigns c ON c.campaign_id = d.campaign_id
+LEFT JOIN blobs b ON b.blob_id = d.campaign_blob;
+
 DROP VIEW IF EXISTS interrupt_decisions;
 CREATE VIEW interrupt_decisions AS
 SELECT i.interrupt_id AS interrupt_id, i.ts AS ts, c.campaign_key AS campaign_id,
@@ -222,6 +259,68 @@ LEFT JOIN campaigns c ON c.campaign_id = i.campaign_id
 LEFT JOIN blobs bc ON bc.blob_id = i.campaign_blob
 LEFT JOIN blobs bw ON bw.blob_id = i.world_blob
 LEFT JOIN blobs bp ON bp.blob_id = i.panel_blob;
+
+-- The ONE definition of "campaigns recorded per start": campaigns with two or more
+-- decisions, keyed by map and faction. One decision is a failed launch, not a run --
+-- it can only ever score zero -- so it is not counted here, in campaign_gains, or in
+-- the run's campaign total. The UI starts screen and the session's --width sampler
+-- both read this view; a second counter would drift.
+DROP VIEW IF EXISTS start_counts;
+CREATE VIEW start_counts AS
+SELECT c.campaign_map AS campaign_map, c.faction AS faction, COUNT(*) AS n
+FROM campaigns c
+WHERE EXISTS (SELECT 1 FROM decisions d WHERE d.campaign_id = c.campaign_id
+               LIMIT 1 OFFSET 1)
+GROUP BY c.campaign_map, c.faction;
+
+-- The ONE definition of the reward metrics: per campaign, the
+-- campaign's first snapshot -> peak delta of settlements, lord level, allies and
+-- vassals, over EVERY decision snapshot. Turns are not a measurement boundary here:
+-- end_turn is an ordinary action the sampler may or may not draw, so "the first/last
+-- decision of a turn" is an artifact of where end_turn landed, not a state worth
+-- measuring. Reading turn_open alone hid every gain made and lost between two of its
+-- rows -- 25 of 565 campaigns at the time this was fixed.
+-- A campaign with a single decision is not a measurement: its peak IS its first
+-- snapshot, so it can only ever score zero and would drag every average it lands in
+-- toward zero. They are dropped here, matching campaign_growth.py, which has always
+-- required two or more decisions before it reports a delta.
+-- analytics/generations.py buckets these by model generation; the session's --ucb
+-- start selector averages their sum per start. A second computation would drift.
+-- The `LIMIT -1` is a no-op limit that blocks the query flattener: without it SQLite
+-- inlines the subquery and calls unz() once per extracted column, decompressing every
+-- campaign blob four times over -- 0.475s instead of 0.135s for identical rows.
+DROP VIEW IF EXISTS campaign_gains;
+CREATE VIEW campaign_gains AS
+SELECT campaign_map, faction, campaign_key, MIN(ts) AS first_ts,
+       IFNULL(MAX(turn), 0) AS turns_reached,
+       IFNULL(MAX(settlements), 0) - IFNULL(MIN(fs), 0) AS settlements_gained,
+       IFNULL(MAX(lord_level), 0) - IFNULL(MIN(fl), 0) AS levels_gained,
+       IFNULL(MAX(allies), 0) - IFNULL(MIN(fa), 0) AS allies_gained,
+       IFNULL(MAX(vassals), 0) - IFNULL(MIN(fv), 0) AS vassals_gained
+FROM (
+  SELECT campaign_map, faction, campaign_key, ts, turn,
+         settlements, lord_level, allies, vassals,
+         FIRST_VALUE(settlements) OVER w AS fs,
+         FIRST_VALUE(lord_level) OVER w AS fl,
+         FIRST_VALUE(allies) OVER w AS fa,
+         FIRST_VALUE(vassals) OVER w AS fv
+  FROM (
+    SELECT c.campaign_map AS campaign_map, c.faction AS faction,
+           c.campaign_key AS campaign_key, d.decision_id AS decision_id, d.ts AS ts,
+           d.turn AS turn,
+           CAST(json_extract(j, '$.settlements') AS REAL) AS settlements,
+           CAST(json_extract(j, '$.lord_level') AS REAL) AS lord_level,
+           CAST(json_extract(j, '$.allies') AS REAL) AS allies,
+           CAST(json_extract(j, '$.vassals') AS REAL) AS vassals
+    FROM (SELECT decision_id, campaign_id, ts, turn, unz(b.z) AS j
+          FROM decisions d LEFT JOIN blobs b ON b.blob_id = d.campaign_blob
+          LIMIT -1) d
+    LEFT JOIN campaigns c ON c.campaign_id = d.campaign_id
+  )
+  WINDOW w AS (PARTITION BY campaign_key ORDER BY decision_id)
+)
+GROUP BY campaign_key
+HAVING COUNT(*) >= 2;
 """.format(ES=MAX_ENTITIES_PER_DECISION, OS=MAX_OFFERS_PER_DECISION,
            NS=len(SCORE_FIELDS))
 

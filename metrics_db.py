@@ -15,6 +15,10 @@ CREATE TABLE IF NOT EXISTS trials(
   trial TEXT PRIMARY KEY, ts REAL NOT NULL, first_ts REAL,
   snapshots INTEGER NOT NULL DEFAULT 1, payload TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_trials_ts ON trials(ts);
+CREATE TABLE IF NOT EXISTS trials_archive(
+  trial TEXT PRIMARY KEY, ts REAL NOT NULL, first_ts REAL,
+  snapshots INTEGER NOT NULL DEFAULT 1, payload TEXT NOT NULL,
+  archived_ts REAL NOT NULL, reason TEXT);
 """
 
 
@@ -48,6 +52,32 @@ def write_trial(row):
     finally:
         con.close()
     return True
+
+
+def prune_unmatched(have, reason="campaign data gone from the run dir"):
+    now = time.time()
+    con = connect()
+    try:
+        gone = []
+        for trial, ts, first_ts, snaps, payload in con.execute(
+                "SELECT trial,ts,first_ts,snapshots,payload FROM trials").fetchall():
+            try:
+                uuids = json.loads(payload).get("campaign_uuids") or []
+            except ValueError:
+                uuids = []
+            if not any(u in have for u in uuids):
+                gone.append((trial, ts, first_ts, snaps, payload, now, reason))
+        if gone:
+            con.executemany(
+                "INSERT OR REPLACE INTO trials_archive"
+                "(trial,ts,first_ts,snapshots,payload,archived_ts,reason)"
+                " VALUES(?,?,?,?,?,?,?)", gone)
+            con.executemany("DELETE FROM trials WHERE trial=?",
+                            [(g[0],) for g in gone])
+        con.commit()
+        return [g[0] for g in gone]
+    finally:
+        con.close()
 
 
 def trials():
