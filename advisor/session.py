@@ -80,17 +80,6 @@ def _bus_sizes():
     return out
 
 
-def _pick_plan(plan, rng):
-    if isinstance(plan, (list, tuple, set)):
-        choices = sorted(plan)
-        if not choices:
-            raise RuntimeError("no faction keys to sample from")
-        return rng.choice(choices)
-    if not str(plan or "").strip():
-        raise RuntimeError("no faction key given -- session will not pick one for you")
-    return plan
-
-
 _CAMPAIGN_LABEL = {"wh3_main_combi": "Immortal Empires",
                    "wh3_main_chaos": "Realm of Chaos"}
 
@@ -154,57 +143,6 @@ def _ucb_pick(pool, stats, c, rng, log=print):
         "rows": [dict(_ucb_cell(*row), chosen=(row[4] is p))
                  for row in scored]})
     return p
-
-
-def normalize_campaigns(spec):
-    if isinstance(spec, dict):
-        mix = dict(spec)
-    else:
-        mix = {}
-        for part in str(spec or "").split(","):
-            part = part.strip()
-            if not part:
-                continue
-            name, sep, weight = part.partition("=")
-            name = name.strip()
-            if not name:
-                raise ValueError("campaign mix %r has an entry with no name" % (spec,))
-            try:
-                mix[name] = float(weight) if sep else 1.0
-            except ValueError:
-                raise ValueError("campaign %r has a non-numeric weight %r" % (name, weight))
-    if not mix:
-        raise ValueError("empty campaign mix")
-    for name, w in mix.items():
-        if w < 0.0:
-            raise ValueError("campaign %r has a negative weight %r" % (name, w))
-    total = sum(mix.values())
-    if total <= 0.0:
-        raise ValueError("campaign mix %r sums to zero" % (spec,))
-    return {k: w / total for k, w in mix.items()}
-
-
-def _pick_campaign(mix, rng):
-    names = sorted(mix)
-    if len(names) == 1:
-        return names[0]
-    r, acc = rng.random(), 0.0
-    for name in names:
-        acc += mix[name]
-        if r < acc:
-            return name
-    return names[-1]
-
-
-def _plan_for(plan, campaign):
-    if not isinstance(plan, dict):
-        return plan
-    keys = plan.get(campaign)
-    if not keys:
-        raise RuntimeError(
-            "no startable factions for campaign %r -- the roster is keyed by map and this "
-            "one is absent, so the session cannot pick a start for it" % campaign)
-    return keys
 
 
 def _tail_jsonl(path, n):
@@ -371,7 +309,7 @@ def _require_models(mix, cold, log):
     log("model gate: every trainable arm in the mix loaded a usable model")
 
 
-def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
+def run_campaigns(n=3, turns=20, plan="all",
                   log=print, runs_root=RUNS_ROOT, retrain_every=0, seed=None,
                   cold=False, strategies=None,
                   ruleset=None, retrain_first=False, presave_radius=None, width=0,
@@ -385,59 +323,38 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
     ex = Executor(Bus())
     mix = ({"random": 1.0} if cold and strategies is None
            else P.normalize_strategies(strategies))
-    cmix = normalize_campaigns(campaign)
-    presaves = None
-    if presave_radius is not None:
-        sys.path.insert(0, common.ROOT)
-        import presaves as PS
-        pool = PS.list_presaves(radius=presave_radius)
-        if not pool:
+    if presave_radius is None:
+        raise SystemExit("--presave-radius is required: a session boots a baked start and "
+                         "the map comes with it. Fresh campaigns are baked by bake.py.")
+    sys.path.insert(0, common.ROOT)
+    import presaves as PS
+    presaves = PS.list_presaves(radius=presave_radius)
+    if not presaves:
+        raise SystemExit(
+            "--presave-radius %s but nothing is baked at that radius in %s (have %s). "
+            "A run that quietly fell back to fresh untrimmed campaigns would keep "
+            "growing a corpus that does not match what was asked for."
+            % (presave_radius, PS.presave_dir(), PS.presave_radii() or "none"))
+    if plan != "all":
+        wanted = set([plan] if isinstance(plan, str) else plan)
+        picked = [p for p in presaves if p["faction"] in wanted]
+        missing = sorted(wanted - {p["faction"] for p in picked})
+        if missing:
             raise SystemExit(
-                "--presave-radius %s but nothing is baked at that radius in %s (have %s). "
-                "A run that quietly fell back to fresh untrimmed campaigns would keep "
-                "growing a corpus that does not match what was asked for."
-                % (presave_radius, PS.presave_dir(),
-                   PS.presave_radii() or "none"))
-        mkeys = {v: k for k, v in _CAMPAIGN_LABEL.items()}
-        by_map = {}
-        for p in pool:
-            by_map.setdefault(p["campaign_map"], []).append(p)
-        presaves = {}
-        for name in sorted(cmix):
-            have = by_map.get(mkeys.get(name, name), [])
-            want = _plan_for(plan, name) if isinstance(plan, dict) else plan
-            if want in ("all", ["presave"]):
-                picked = have
-            else:
-                wanted = set([want] if isinstance(want, str) else want)
-                picked = [p for p in have if p["faction"] in wanted]
-                missing = sorted(wanted - {p["faction"] for p in picked})
-                if missing:
-                    raise SystemExit(
-                        "the presave pool at r%g holds no baked save on %s for: %s. "
-                        "Bake them first or drop them from --factions; a run that "
-                        "quietly substituted other starts would not be the run asked "
-                        "for." % (presave_radius, name, ", ".join(missing)))
-            if not picked:
-                raise SystemExit(
-                    "--campaign mixes %s but the presave pool at r%g holds nothing for "
-                    "it (maps with saves: %s)"
-                    % (name, presave_radius, sorted(by_map) or "none"))
-            presaves[name] = picked
-        for name in sorted(presaves):
-            log("presaves on %s: %d start(s) at radius %s -- %s"
-                % (name, len(presaves[name]), presave_radius,
-                   ", ".join(sorted(p["faction"] for p in presaves[name]))))
-        presaves = sorted((p for lst in presaves.values() for p in lst),
-                          key=lambda p: p["file"])
-        log("presave sampling: uniform over %d start(s), the campaign follows the draw"
-            % len(presaves))
-    if width and presaves is None:
-        raise SystemExit("--width samples under-covered starts from the presave pool "
-                         "-- it needs --presave-radius")
-    if ucb is not None and presaves is None:
-        raise SystemExit("--ucb selects starts from the presave pool -- it needs "
-                         "--presave-radius")
+                "the presave pool at r%g holds no baked save for: %s. Bake them first or "
+                "drop them from --factions; a run that quietly substituted other starts "
+                "would not be the run asked for." % (presave_radius, ", ".join(missing)))
+        presaves = picked
+    presaves = sorted(presaves, key=lambda p: p["file"])
+    by_map = {}
+    for p in presaves:
+        by_map.setdefault(p["campaign_map"], []).append(p)
+    for m in sorted(by_map):
+        log("presaves on %s: %d start(s) at radius %s -- %s"
+            % (_CAMPAIGN_LABEL.get(m, m), len(by_map[m]), presave_radius,
+               ", ".join(sorted(p["faction"] for p in by_map[m]))))
+    log("presave sampling: uniform over %d start(s), the campaign follows the draw"
+        % len(presaves))
     if ucb is not None and width:
         raise SystemExit("--ucb and --width are both start selectors -- pick one")
     if cold and set(mix) != {"random"}:
@@ -459,17 +376,10 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
         ruleset_meta = {"name": rs.name, "sha256": rs.sha256}
         log("ruleset: %s (%d rules, sha256 %s)" % (rs.name, len(rs.rules), rs.sha256[:12]))
     log("strategy mix: %s" % json.dumps(mix))
-    log("campaign mix: %s" % json.dumps(cmix))
     report = {"started": time.time(), "requested": {"campaigns": n, "turns": turns, "plan": plan,
                                                     "strategies": mix,
                                                     "ruleset": ruleset_meta},
               "campaigns": []}
-    if isinstance(plan, dict):
-        for _c in sorted(plan):
-            log("sampling the start on %s from %d: %s"
-                % (_c, len(plan[_c]), ", ".join(sorted(plan[_c]))))
-    elif isinstance(plan, (list, tuple, set)):
-        log("sampling the start per campaign from: %s" % ", ".join(sorted(plan)))
     stamp = time.strftime("%Y%m%d_%H%M%S")
     out_path = os.path.join(runs_root, "session_%s.json" % stamp)
     report["session"] = out_path
@@ -481,42 +391,37 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
     ledger_reconciled = False
 
     for i in range(n):
-        this_presave = None
-        if presaves is not None:
-            pool = presaves
-            if width:
-                counts = _width_counts()
-                pool = [p for p in presaves
-                        if counts.get((p["campaign_map"], p["faction"]), 0) < width]
-                if not pool:
-                    log("width %d reached: every start in the pool has %d+ recorded "
-                        "campaigns -- nothing left to widen, ending the session"
-                        % (width, width))
-                    break
-                log("width %d: %d of %d start(s) still below target"
-                    % (width, len(pool), len(presaves)))
-            if ucb is not None:
-                this_presave = _ucb_pick(pool, _start_gain_stats(), ucb, rng, log=log)
-            else:
-                this_presave = rng.choice(pool)
-            this_campaign = _CAMPAIGN_LABEL.get(this_presave["campaign_map"],
-                                                this_presave["campaign_map"])
-            this_plan = this_presave["faction"]
+        pool = presaves
+        if width:
+            counts = _width_counts()
+            pool = [p for p in presaves
+                    if counts.get((p["campaign_map"], p["faction"]), 0) < width]
+            if not pool:
+                log("width %d reached: every start in the pool has %d+ recorded "
+                    "campaigns -- nothing left to widen, ending the session"
+                    % (width, width))
+                break
+            log("width %d: %d of %d start(s) still below target"
+                % (width, len(pool), len(presaves)))
+        if ucb is not None:
+            this_presave = _ucb_pick(pool, _start_gain_stats(), ucb, rng, log=log)
         else:
-            this_campaign = _pick_campaign(cmix, rng)
-            this_plan = _pick_plan(_plan_for(plan, this_campaign), rng)
+            this_presave = rng.choice(pool)
+        this_campaign = _CAMPAIGN_LABEL.get(this_presave["campaign_map"],
+                                            this_presave["campaign_map"])
+        this_plan = this_presave["faction"]
         picked_ts = time.time()
         this_turns = rng.randint(turns[0], turns[1]) if isinstance(turns, (tuple, list)) \
             else int(turns)
         log("\n" + "=" * 78)
-        log("CAMPAIGN %d/%d  (up to %d turns, map=%s, faction=%s%s)"
+        log("CAMPAIGN %d/%d  (up to %d turns, map=%s, faction=%s, presave r%g)"
             % (i + 1, n, this_turns, this_campaign, this_plan,
-               ", presave r%g" % this_presave["radius"] if this_presave else ""))
+               this_presave["radius"]))
         log("=" * 78)
         entry = {"index": i + 1, "started": time.time(), "picked_ts": picked_ts,
                  "plan": this_plan, "campaign": this_campaign,
-                 "presave": this_presave["file"] if this_presave else None,
-                 "presave_radius": this_presave["radius"] if this_presave else None,
+                 "presave": this_presave["file"],
+                 "presave_radius": this_presave["radius"],
                  "max_turns": this_turns}
         try:
             ex.mark_campaign_start()
@@ -599,16 +504,13 @@ def run_campaigns(n=3, turns=20, plan="nagarythe", campaign="Immortal Empires",
         _preload = threading.Thread(target=_preload_models, name="model-preload", daemon=True)
         _preload.start()
         try:
-            if this_presave is not None:
-                sys.path.insert(0, common.LAUNCHER)
-                import presaves as PS
-                import bus_launcher
-                PS.restore_presave(this_presave, log=log)
-                bl = bus_launcher.BusLauncher()
-                state = bl.load_save(this_presave["file"])
-                ex.bus = bl.bus or ex.bus
-            else:
-                state = ex.start_game(plan=this_plan, campaign=this_campaign)
+            sys.path.insert(0, common.LAUNCHER)
+            import presaves as PS
+            import bus_launcher
+            PS.restore_presave(this_presave, log=log)
+            bl = bus_launcher.BusLauncher()
+            state = bl.load_save(this_presave["file"])
+            ex.bus = bl.bus or ex.bus
             entry["start_state"] = state
             run_dir = journal.current_run_dir(timeout=60.0)
             entry["run_dir"] = run_dir
@@ -1231,7 +1133,7 @@ def main():
                          "nothing (backends.parse_cfg always returned {})")
     if "--factions" not in sys.argv:
         raise SystemExit("usage: session.py <campaigns> <turns|min-max> --factions "
-                         "all|<key,key,...>\n"
+                         "all|<key,key,...> --presave-radius R\n"
                          "                  [--strategies a=x,b=y[,c=z]] [--ruleset <name>]\n"
                          "  --strategies -- per-decision sampling mix over %s\n"
                          "                 (default greedy_catboost=0.8,random=0.2; weights "
@@ -1241,103 +1143,27 @@ def main():
                          "(required when 'ruleset' is in the mix)\n"
                          % (",".join(ST.NAMES), ",".join(ST.TRAINABLE))
                          + "\n"
-                         "  all         -- sample from every playable start ON THE MAP --campaign\n"
-                         "                 selects, read from launcher/startable_factions.json\n"
-                         "                 (harvested from the game's own frontend, keyed by map:\n"
-                         "                 Immortal Empires 104 starts, Realm of Chaos 25). A map\n"
-                         "                 with no harvest raises rather than borrowing another's\n"
-                         "  no-cutscene -- every start EXCEPT the 14 that open on an intro\n"
-                         "                 movie (launcher/cutscene_starts.py, measured from\n"
-                         "                 the launcher's own cinematic-key counts). Those 14\n"
-                         "                 take 68-119s to reach a playable HUD against 17-30s\n"
-                         "                 for the rest.\n"
-                         "  <key,...>   -- game faction keys, e.g. wh2_main_hef_nagarythe\n"
-                         "  <map>:<key,...>[;<map>:<key,...>] -- per-map lists when --campaign\n"
-                         "                 mixes maps, e.g. 'Immortal Empires:wh2_main_hef_"
-                         "nagarythe;Realm of Chaos:wh3_main_cth_the_western_provinces'\n"
-                         "  --width N   -- with --presave-radius: sample only starts whose "
+                         "  --presave-radius R -- required: the session boots starts\n"
+                         "                 baked at radius R, and each start carries\n"
+                         "                 its own map, so nothing here picks one.\n"
+                         "                 bake.py makes them.\n"
+                         "  all         -- every start in the baked pool\n"
+                         "  <key,...>   -- game faction keys, e.g.\n"
+                         "                 wh2_main_hef_nagarythe; every key named\n"
+                         "                 must be baked at that radius\n"
+                         "  --width N   -- sample only starts whose "
                          "(map, faction) has fewer than N recorded campaigns in the store, "
                          "re-checked per campaign; the session ends when none remain\n"
-                         "  --ucb C     -- with --presave-radius: UCB1 start selector, "
+                         "  --ucb C     -- UCB1 start selector, "
                          "reward = settlements gained plus lord levels gained (campaign_gains view); "
                          "unplayed starts first, then mean + C*sqrt(ln(total)/n)")
     arg = sys.argv[sys.argv.index("--factions") + 1].strip()
-    _spec = (sys.argv[sys.argv.index("--campaign") + 1].strip()
-             if "--campaign" in sys.argv else "Immortal Empires")
-    _names = sorted(normalize_campaigns(_spec))
-    keys = {}
-    if "--presave-radius" in sys.argv:
-        if arg == "no-cutscene":
-            raise SystemExit(
-                "--presave-radius loads baked saves and never touches the frontend, so "
-                "the cutscene classification has nothing to filter -- give --factions "
-                "all or an explicit list")
-        if arg == "all":
-            keys = {n: "all" for n in _names}
-            _names = []
-    if ":" in arg:
-        sys.path.insert(0, common.LAUNCHER)
-        import bus_launcher
-        groups = {}
-        for part in arg.split(";"):
-            part = part.strip()
-            if not part:
-                continue
-            gname, _, body = part.partition(":")
-            groups[gname.strip()] = [k.strip() for k in body.split(",") if k.strip()]
-        if sorted(groups) != _names:
-            raise SystemExit(
-                "--factions groups maps %s but --campaign mixes %s -- every map in the "
-                "mix needs exactly one group: a group for an absent map would never "
-                "launch, and a mix map without a group has no starts to pick from"
-                % (sorted(groups), _names))
-        for _name in sorted(groups):
-            roster = set(bus_launcher.BusLauncher().startable_factions(_name))
-            absent = [k for k in groups[_name] if k not in roster]
-            if absent:
-                raise SystemExit(
-                    "--factions names %s, which are not startable on %s. A campaign mix "
-                    "draws that map for some campaigns, and those launches would fail "
-                    "one by one." % (", ".join(absent), _name))
-            keys[_name] = groups[_name]
-            print("--factions on %s: %d explicit start(s)" % (_name, len(keys[_name])))
-        _names = []
-    for _name in _names:
-        if arg == "all":
-            sys.path.insert(0, common.LAUNCHER)
-            import bus_launcher
-            keys[_name] = bus_launcher.BusLauncher().startable_factions(_name)
-            print("--factions all on %s: %d startable starts" % (_name, len(keys[_name])))
-        elif arg == "no-cutscene":
-            sys.path.insert(0, common.LAUNCHER)
-            import bus_launcher
-            import cutscene_starts
-            _map = bus_launcher.BusLauncher.CAMPAIGN_KEYS.get(_name, _name)
-            r = cutscene_starts.classify(campaign_map=_map)
-            keys[_name] = [x["faction"] for x in r["clean"]]
-            if not keys[_name]:
-                raise SystemExit(
-                    "--factions no-cutscene found no classified starts on %s. It is derived "
-                    "from the launcher's own logs under %s; with none on disk there is "
-                    "nothing to filter, and silently falling back to every start would hide "
-                    "that." % (_map, common.TWDATA))
-            print("--factions no-cutscene on %s: %d clean starts, excluding %d with a "
-                  "cutscene and %d unclassified"
-                  % (_map, len(keys[_name]), len(r["cutscene"]), len(r["unknown"])))
-        else:
-            explicit = [k.strip() for k in arg.split(",") if k.strip()]
-            if len(_names) > 1:
-                sys.path.insert(0, common.LAUNCHER)
-                import bus_launcher
-                roster = set(bus_launcher.BusLauncher().startable_factions(_name))
-                absent = [k for k in explicit if k not in roster]
-                if absent:
-                    raise SystemExit(
-                        "--factions names %s, which are not startable on %s. A campaign mix "
-                        "draws that map for some campaigns, and those launches would fail "
-                        "one by one." % (", ".join(absent), _name))
-            keys[_name] = explicit
-    if not keys or not all(keys.values()):
+    if arg == "no-cutscene":
+        raise SystemExit(
+            "--factions no-cutscene classifies frontend starts by their intro movie, and a "
+            "session boots a baked save instead -- give --factions all or an explicit list")
+    plan = "all" if arg == "all" else [k.strip() for k in arg.split(",") if k.strip()]
+    if not plan:
         raise SystemExit("--factions given but empty")
     every = 0
     if "--retrain-every" in sys.argv:
@@ -1357,9 +1183,10 @@ def main():
                          "deliberately ignores the fitted model, so retraining it is wasted work")
     strategies = _parse_strategies(sys.argv)
     ruleset = _parse_ruleset(sys.argv)
-    presave_radius = None
-    if "--presave-radius" in sys.argv:
-        presave_radius = float(sys.argv[sys.argv.index("--presave-radius") + 1])
+    if "--presave-radius" not in sys.argv:
+        raise SystemExit("--presave-radius R is required: a session boots a start baked at "
+                         "that radius and the map comes with it. bake.py makes them.")
+    presave_radius = float(sys.argv[sys.argv.index("--presave-radius") + 1])
     width = 0
     if "--width" in sys.argv:
         width = int(sys.argv[sys.argv.index("--width") + 1])
@@ -1370,17 +1197,9 @@ def main():
         ucb = float(sys.argv[sys.argv.index("--ucb") + 1])
         if ucb <= 0:
             raise SystemExit("--ucb needs a positive exploration constant")
-    campaign = "Immortal Empires"
-    if "--campaign" in sys.argv:
-        i = sys.argv.index("--campaign")
-        if i + 1 >= len(sys.argv):
-            raise SystemExit("--campaign needs a value: a friendly name "
-                             "('Immortal Empires', 'Realm of Chaos', 'Prologue') or a raw "
-                             "campaign key such as wh3_main_chaos")
-        campaign = sys.argv[i + 1]
-    r = run_campaigns(n, turns, plan=keys,
+    r = run_campaigns(n, turns, plan=plan,
                       retrain_every=every, cold=cold, strategies=strategies,
-                      ruleset=ruleset, campaign=campaign, retrain_first=retrain_first,
+                      ruleset=ruleset, retrain_first=retrain_first,
                       presave_radius=presave_radius, width=width, ucb=ucb)
     return 0 if r["totals"]["completed"] else 2
 
