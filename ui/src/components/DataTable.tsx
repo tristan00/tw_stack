@@ -72,6 +72,7 @@ export interface DataTableProps<T extends RowData> {
   virtualizeOver?: number
   maxHeight?: number
   dense?: boolean
+  pageSize?: number
 
   pinnedTop?: ReactNode
 }
@@ -88,9 +89,11 @@ export function DataTable<T extends RowData>({
   virtualizeOver = 120,
   maxHeight = 620,
   dense = false,
+  pageSize,
   pinnedTop,
 }: DataTableProps<T>) {
   const [globalFilter, setGlobalFilter] = useState('')
+  const [page, setPage] = useState(0)
   const [sorting, setSorting] = useState(
     initialSort ? [{ id: initialSort.key, desc: initialSort.desc }] : [],
   )
@@ -129,11 +132,15 @@ export function DataTable<T extends RowData>({
 
   const visible = cols.filter((c) => columnVisibility[c.key] !== false)
   const modelRows = table.getRowModel().rows as unknown as { original: T }[]
+  const pageCount = pageSize ? Math.max(1, Math.ceil(modelRows.length / pageSize)) : 1
+  const cur = Math.min(page, pageCount - 1)
+  const from = pageSize ? cur * pageSize : 0
+  const shownRows = pageSize ? modelRows.slice(from, from + pageSize) : modelRows
   const scrollRef = useRef<HTMLDivElement>(null)
-  const shouldVirtualize = modelRows.length > virtualizeOver
+  const shouldVirtualize = !pageSize && modelRows.length > virtualizeOver
 
   const virtualizer = useVirtualizer({
-    count: modelRows.length,
+    count: shownRows.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => (dense ? 28 : 34),
     overscan: 12,
@@ -160,7 +167,10 @@ export function DataTable<T extends RowData>({
               <Search className="text-dim size-3.5 shrink-0" />
               <input
                 value={globalFilter}
-                onChange={(e) => setGlobalFilter(e.target.value)}
+                onChange={(e) => {
+                  setGlobalFilter(e.target.value)
+                  setPage(0)
+                }}
                 placeholder={searchPlaceholder}
                 className="min-w-0 flex-1 bg-transparent text-xs outline-none"
               />
@@ -263,14 +273,14 @@ export function DataTable<T extends RowData>({
               {shouldVirtualize ? (
                 <VirtualBody
                   virtualizer={virtualizer}
-                  modelRows={modelRows}
+                  modelRows={shownRows}
                   visible={visible}
                   rowId={rowId}
                   onRowClick={onRowClick}
                   pad={pad}
                 />
               ) : (
-                modelRows.map((r, i) => (
+                shownRows.map((r, i) => (
                   <tr
                     key={rowId(r.original, i)}
                     onClick={onRowClick ? () => onRowClick(r.original) : undefined}
@@ -298,6 +308,35 @@ export function DataTable<T extends RowData>({
           </table>
         </div>
       </Card>
+
+      {pageSize != null && pageCount > 1 && (
+        <div className="text-dim text-2xs mt-2 flex items-center justify-between gap-2">
+          <span className="num">
+            {from + 1}-{from + shownRows.length} of {modelRows.length}
+          </span>
+          <span className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setPage(cur - 1)}
+              disabled={cur === 0}
+              className="border-line bg-surface hover:text-fg rounded-md border px-2 py-0.5 disabled:opacity-40"
+            >
+              prev
+            </button>
+            <span className="num">
+              page {cur + 1} of {pageCount}
+            </span>
+            <button
+              type="button"
+              onClick={() => setPage(cur + 1)}
+              disabled={cur >= pageCount - 1}
+              className="border-line bg-surface hover:text-fg rounded-md border px-2 py-0.5 disabled:opacity-40"
+            >
+              next
+            </button>
+          </span>
+        </div>
+      )}
     </div>
   )
 }
