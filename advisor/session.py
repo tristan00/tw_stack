@@ -97,7 +97,10 @@ def _width_counts():
         con.close()
 
 
-def _start_gain_stats():
+UCB_WINDOW = 400
+
+
+def _start_gain_stats(window=UCB_WINDOW):
     path = os.path.join(common.RUN_DIR, "decisions.sqlite")
     if not os.path.exists(path):
         return {}
@@ -105,8 +108,10 @@ def _start_gain_stats():
     try:
         return {(m, f): (n, mean) for m, f, n, mean in con.execute(
             "SELECT campaign_map, faction, COUNT(*),"
-            " AVG(settlements_gained + levels_gained)"
-            " FROM campaign_gains GROUP BY campaign_map, faction")}
+            " AVG(settlements_gained + levels_gained) FROM"
+            " (SELECT campaign_map, faction, settlements_gained, levels_gained"
+            "    FROM campaign_gains ORDER BY first_ts DESC LIMIT ?)"
+            " GROUP BY campaign_map, faction", (int(window),))}
     finally:
         con.close()
 
@@ -125,7 +130,8 @@ def _ucb_pick(pool, stats, c, rng, log=print):
         explore = (float("inf") if not n else c * math.sqrt(math.log(total) / n))
         scored.append(((mean or 0.0) + explore, n, mean or 0.0, explore, p))
     scored.sort(key=lambda s: (-s[0], s[4]["file"]))
-    log("ucb table (c=%g, total plays %d): score = mean + explore | n | start" % (c, total))
+    log("ucb table (c=%g, %d plays over the trailing %d campaigns): "
+        "score = mean + explore | n | start" % (c, total, UCB_WINDOW))
     for score, n, mean, explore, p in scored:
         log("  %8s = %6.3f + %8s  n=%-3d %s %s"
             % ("inf" if score == float("inf") else "%.3f" % score, mean,
@@ -134,7 +140,7 @@ def _ucb_pick(pool, stats, c, rng, log=print):
     best = scored[0][0]
     top = [s for s in scored if s[0] == best]
     score, n, mean, explore, p = top[rng.randrange(len(top))] if len(top) > 1 else top[0]
-    log("ucb c=%g: %s on %s -- score=%s n=%d mean=%.3f (total plays %d, %d tied)"
+    log("ucb c=%g: %s on %s -- score=%s n=%d mean=%.3f (%d plays in window, %d tied)"
         % (c, p["faction"], p["campaign_map"],
            "inf" if score == float("inf") else "%.3f" % score, n, mean, total, len(top)))
     journal.log_ucb_pick(common.RUN_DIR, {
@@ -1162,8 +1168,9 @@ def main():
                          "(map, faction) has fewer than N recorded campaigns in the store, "
                          "re-checked per campaign; the session ends when none remain\n"
                          "  --ucb C     -- UCB1 start selector, "
-                         "reward = settlements gained plus lord levels gained (campaign_gains view); "
-                         "unplayed starts first, then mean + C*sqrt(ln(total)/n)")
+                         "reward = settlements gained plus lord levels gained (campaign_gains view) "
+                         "over the trailing %d campaigns; unplayed starts first, then "
+                         "mean + C*sqrt(ln(total)/n)" % UCB_WINDOW)
     arg = sys.argv[sys.argv.index("--factions") + 1].strip()
     if arg == "no-cutscene":
         raise SystemExit(
