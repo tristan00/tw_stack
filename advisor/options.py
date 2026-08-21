@@ -506,7 +506,16 @@ def _slot_action_offers(region, slots):
     return offers
 
 
-def _province_options(region, state, campaign):
+def _own_lords(world):
+    armies = (world or {}).get("armies")
+    if armies is None:
+        return None
+    garrison = {str(c) for c in ((world or {}).get("citizenry") or [])}
+    return sum(1 for a in armies
+               if a.get("has_army") and str(a.get("cqi")) not in garrison)
+
+
+def _province_options(region, state, campaign, world):
     offers = []
     lord_pools = (campaign or {}).get("lord_pools") or {}
     slot_states = state.get("slot_states")
@@ -556,8 +565,8 @@ def _province_options(region, state, campaign):
                         "agent_type_unknown" if not agent_type else
                         "cannot_recruit_character")
             else:
-                armies = (campaign or {}).get("armies")
-                enough = armies is not None and armies >= 2
+                lords = _own_lords(world)
+                enough = lords is not None and lords >= 2
                 ok = bool(_at("can", i)) and not enough
                 gate = ("enough_lords" if enough else
                         None if ok else "cannot_recruit_character")
@@ -673,7 +682,7 @@ def generate(record):
         elif ck == "hero":
             offers = _hero_options(cid, st, world, campaign)
         elif ck == "province":
-            offers = _province_options(cid, st, campaign)
+            offers = _province_options(cid, st, campaign, world)
         elif ck == "campaign":
             offers = _campaign_options(st, world)
         else:
