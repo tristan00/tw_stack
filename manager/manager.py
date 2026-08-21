@@ -63,6 +63,8 @@ class _Writer:
         self._errs = 0
 
     def __call__(self, row):
+        if isinstance(row, dict) and "ts" not in row:
+            row = {"ts": time.time(), **row}
         try:
             with self._lock:
                 self._f.write(json.dumps(row) + "\n")
@@ -92,8 +94,8 @@ def _errlog(out_dir):
     def on_error(where, exc):
         try:
             with open(os.path.join(out_dir, "errors.log"), "a", encoding="utf-8") as f:
-                f.write("%s %s: %s\n%s\n" % (time.strftime("%H:%M:%S"), where, exc,
-                                             "".join(traceback.format_exception(exc))))
+                f.write("%s %s: %s\n%s\n" % (common.stamp(), where, exc,
+                                                "".join(traceback.format_exception(exc))))
         except Exception as e:
             _errs[0] += 1
             if _errs[0] == 1:

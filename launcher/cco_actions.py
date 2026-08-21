@@ -105,16 +105,22 @@ class _Tee:
     def __init__(self, stream):
         self.stream = stream
         self.parts = []
+        self._buf = ""
 
     def write(self, s):
-        self.parts.append(s)
+        self._buf += str(s)
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            if line:
+                self.parts.append("%s %s\n" % (common.stamp(), line))
         return self.stream.write(s)
 
     def flush(self):
         self.stream.flush()
 
     def text(self):
-        return "".join(self.parts)
+        rest = self._buf.strip()
+        return "".join(self.parts) + ("%s %s\n" % (common.stamp(), rest) if rest else "")
 
 
 def execute_confirmed(bus, ctx, pick):
