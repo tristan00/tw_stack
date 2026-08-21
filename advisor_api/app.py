@@ -91,8 +91,8 @@ def get_picks(limit: int = 200, before: int | None = None) -> UcbPicksPage:
     picks = q.ucb_picks(con, lim, before)
     return UcbPicksPage(
         scope=_scope("one row per UCB start pick, newest first",
-                     "what the selector scored at that instant: C, the plays it divided "
-                     "by, and the winner's mean and explore term"),
+                     "what the selector scored at that instant: C, the plays inside its "
+                     "trailing campaign window, and the winner's mean and explore term"),
         picks=picks,
         cursor=(picks[-1].pick_id if len(picks) >= lim else None))
 
