@@ -851,7 +851,6 @@ def answer_diplomacy(bus):
 
 
 PROPOSAL_ROOT = "diplomacy_dropdown"
-_WAR_TRIES = {}
 PROPOSAL_ANSWER_IDS = frozenset(("button_accept", "button_cancel"))
 PROPOSAL_KNOWN_NONANSWERS = frozenset(("button_ok_war_declared", "button_ok_declare",
                                        "button_cancel_declare"))
@@ -1108,15 +1107,9 @@ def _acknowledge_war_on_proposal(bus, tree, clickable):
             for k in targets}
     key = _choose("war_declared", sorted(opts), _campaign_hint(), panel, meta=opts,
                   live=lambda: live_control_ids(bus, PROPOSAL_ROOT))
-    tries = _WAR_TRIES.get(PROPOSAL_ROOT, 0) + 1
-    _WAR_TRIES[PROPOSAL_ROOT] = tries
     t0 = time.time()
-    if tries == 1:
-        common.wait("war_declared_first_click_grace", 0.5, PROPOSAL_ROOT)
     clicked = _click(bus, targets[key], settle=0.6)
     gone = _await_root_gone(bus, PROPOSAL_ROOT)
-    if gone:
-        _WAR_TRIES.pop(PROPOSAL_ROOT, None)
     _record_choice("war_declared", PROPOSAL_ROOT, opts, key,
                    extra={"tree": tree, "root_context": PROPOSAL_ROOT, "panel": panel},
                    executed=clicked, confirmed=gone,
@@ -1157,6 +1150,9 @@ def _cancel_declare_on_proposal(bus, tree, clickable):
             else ["declare_war_cancel_stuck:%s" % PROPOSAL_ROOT])
 
 
+PROPOSAL_SKIP_BLOCKERS = frozenset(PROPOSAL_KNOWN_NONANSWERS) - {"button_ok_war_declared"}
+
+
 def _proposal_buttons(tree):
     return sorted({str(n.get("id")) for n in tree
                    if n.get("visible") and str(n.get("state")) in _CLICKABLE
@@ -1172,7 +1168,7 @@ def answer_incoming_proposal(bus):
     steps = []
     clickable = _clickable_ids(tree)
     if ("button_skip" in clickable and not (PROPOSAL_ANSWER_IDS & set(clickable))
-            and not (set(PROPOSAL_KNOWN_NONANSWERS) & set(clickable))):
+            and not (PROPOSAL_SKIP_BLOCKERS & set(clickable))):
         if _click(bus, clickable["button_skip"], settle=2.0):
             steps.append("diplomacy_dialogue_skipped:%s" % PROPOSAL_ROOT)
         if PROPOSAL_ROOT not in roots(bus):
