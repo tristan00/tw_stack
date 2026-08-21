@@ -97,7 +97,7 @@ def _width_counts():
         con.close()
 
 
-UCB_WINDOW = 400
+UCB_WINDOW = 1000
 
 
 def _start_gain_stats(window=UCB_WINDOW):
