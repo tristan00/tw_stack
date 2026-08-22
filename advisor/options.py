@@ -566,7 +566,7 @@ def _province_options(region, state, campaign, world):
                         "cannot_recruit_character")
             else:
                 lords = _own_lords(world)
-                enough = lords is not None and lords >= 2
+                enough = lords is not None and lords >= 3
                 ok = bool(_at("can", i)) and not enough
                 gate = ("enough_lords" if enough else
                         None if ok else "cannot_recruit_character")

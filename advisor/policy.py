@@ -47,6 +47,10 @@ def normalize_strategies(strategies, allowed=None):
         total += w
     if total <= 0.0:
         raise ValueError("strategy mix %r sums to zero" % (strategies,))
+    if abs(total - 1.0) > 1e-6:
+        raise ValueError(
+            "strategy mix %r sums to %.4f, not 1 -- the weights are the shares the run will "
+            "play, so they must add up; nothing is renormalised for you" % (strategies, total))
     return {k: w / total for k, w in mix.items()}
 
 

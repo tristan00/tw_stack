@@ -57,11 +57,15 @@ PERSISTENT_ROOTS = frozenset((
 
 _CLICKABLE_STATES = frozenset(("active", "default", "NewState", "selected", "hover", "down"))
 
+TOOLTIP_ROOTS = frozenset(("province_publicorder_tooltip", "TechTooltipPopup",
+                           "tooltip_corruption_breakdown",
+                           "tooltip_pooled_resource_breakdown"))
+
 BENIGN_PANELS = frozenset(("units_panel", "settlement_panel", "recruitment_options",
                            "influence_gained", "dlc27_hef_sotwt_scrolls_gained",
-                           "province_publicorder_tooltip", "skaven_revealed_anim",
+                           "skaven_revealed_anim",
                            "cinematic_bars", "advice_interface",
-                           "movie_overlay_intro_movie"))
+                           "movie_overlay_intro_movie")) | TOOLTIP_ROOTS
 
 DECISION_ROOTS = frozenset(("diplomacy_dropdown", "ally_attacked"))
 
