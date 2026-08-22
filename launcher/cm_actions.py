@@ -94,11 +94,15 @@ register("attack_army", {
 })
 
 
+_POS = "tostring(c:logical_position_x())..','..tostring(c:logical_position_y())"
+
+
 def _attack_sett_snapshot(bus, ctx, pick):
     cqi, region = ctx["entity_id"], pick["key"]
     return {"ap": _char_scalar(bus, cqi, "c:action_points_remaining_percent()"),
             "acted": _char_scalar(bus, cqi, "c:performed_action_this_turn()"),
             "besieging": _char_scalar(bus, cqi, "c:is_besieging()"),
+            "pos": _char_scalar(bus, cqi, _POS),
             "captured": _captured(bus),
             "can_reach": _ev(bus, "local c=cm:get_character_by_cqi(%s); local s=cm:get_region('%s'):settlement(); "
                                   "local ok,v=pcall(function() return cm:character_can_reach_settlement(c,s) end); "
@@ -123,13 +127,42 @@ def _attack_sett_confirm(bus, ctx, pick, before):
               or (acted == "true" and before.get("acted") != "true"))
     return landed, {"pre_battle": pb, "captured": cap, "captured_before": before.get("captured"),
                     "besieging": bes, "besieging_before": before.get("besieging"),
-                    "acted": acted, "acted_before": before.get("acted")}
+                    "acted": acted, "acted_before": before.get("acted"),
+                    "pos": _char_scalar(bus, ctx["entity_id"], _POS),
+                    "pos_before": before.get("pos"),
+                    "roots": sorted(r) if isinstance(r, (list, set, tuple)) else r}
+
+
+_SETT_DOOM_POLLS = 2
+
+
+def _attack_sett_doomed(bus, ctx, pick, before, after):
+    if not after or after.get("pre_battle") is True or after.get("captured") is True \
+            or after.get("besieging") == "true":
+        before["doom_streak"] = 0
+        return None
+    if after.get("acted") != before.get("acted"):
+        before["doom_streak"] = 0
+        return None
+    pos = after.get("pos")
+    if pos in (None, "no-char") or pos != before.get("pos"):
+        before["doom_streak"] = 0
+        return None
+    before["doom_streak"] = before.get("doom_streak", 0) + 1
+    if before["doom_streak"] < _SETT_DOOM_POLLS:
+        return None
+    return ("character still at %s, no pre-battle, capture or siege, acted still %r after %d "
+            "polls -- the order never took (roots=%s)"
+            % (pos, after.get("acted"), before["doom_streak"],
+               ",".join(after.get("roots") or []) if isinstance(after.get("roots"), list)
+               else after.get("roots")))
 
 
 register("attack_settlement", {
     "layer": "cm", "signal": "pre_battle_or_captured_or_is_besieging",
     "snapshot": _attack_sett_snapshot, "prechecks": [],
     "execute": _attack_sett_execute, "confirm": _attack_sett_confirm,
+    "doomed": _attack_sett_doomed,
     "timeout_s": 20.0, "poll_s": 2.0, "retryable": False,
 })
 
@@ -138,6 +171,7 @@ register("colonize", {
     "layer": "cm", "signal": "pre_battle_or_captured_or_is_besieging",
     "snapshot": _attack_sett_snapshot, "prechecks": [],
     "execute": _attack_sett_execute, "confirm": _attack_sett_confirm,
+    "doomed": _attack_sett_doomed,
     "timeout_s": 20.0, "poll_s": 2.0, "retryable": False,
 })
 

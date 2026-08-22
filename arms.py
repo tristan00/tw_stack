@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 
-NAMES = ("random", "greedy_catboost", "ruleset", "marwil_gnn")
+NAMES = ("random", "greedy_catboost", "ruleset", "marwil_gnn", "greedy_gnn")
 
-TRAINABLE = ("greedy_catboost", "marwil_gnn")
+TRAINABLE = ("greedy_catboost", "marwil_gnn", "greedy_gnn")
+
+INTERRUPT_NAMES = ("random", "greedy_catboost", "ruleset")
 
 
 class ModelUnavailable(RuntimeError):
@@ -13,6 +15,7 @@ ALIASES = {
     "exploit_tree": "greedy_catboost",
     "gnn_marwil": "marwil_gnn",
     "gnn": "marwil_gnn",
+    "gnn_greedy": "greedy_gnn",
 }
 
 NOT_A_DRAW = ("forced_end_turn",)

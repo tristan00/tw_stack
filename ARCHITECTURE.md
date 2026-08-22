@@ -12,9 +12,11 @@
    run dir  <TWDATA>/runs/human/run/  + CURRENT_RUN             │ execute picked action
                  │                                              │
    advisor (BACKEND: session → loop → policy/model)  ───────────┘
-   strategy portfolio: greedy_catboost (argmax of the E1-E2 advantage) · marwil_gnn (MARWIL/AWR
-   on the graph encoder) · ruleset · random
-   interrupt model · watchdog
+   action mix: greedy_catboost (argmax of the E1-E2 advantage) · marwil_gnn (MARWIL/AWR
+   on the graph encoder) · greedy_gnn (argmax of one reward regression on the same
+   encoder) · ruleset · random
+   interrupt mix: greedy_catboost (the catboost interrupt model) · ruleset · random
+   watchdog
    features ← reference/features_db ← <TWDATA>/reference/reference.sqlite
                  │
    advisor_api (FRONTEND: :8777 — typed JSON API over decisions.sqlite + SSE,
@@ -31,8 +33,10 @@
   decision loop, `policy.py` selection, `model.py` E1/E2 global+local ranking,
   `interrupt_model.py` for blocking screens, `watchdog.py`.
   `reference/` is the offline game-data lookup layer (`features_db.py`, rebuilt by
-  `build_reference.py` from the WH3 packs). `mapgraph/` is the graph ranker — one model, no
-  version suffix; it lives here because it is an advisor model, not a peer of the recorder.
+  `build_reference.py` from the WH3 packs). `mapgraph/` holds the graph models: `net.py`/`train.py`/`rank.py` are
+  `marwil_gnn`, `greedy_net.py`/`greedy_train.py`/`greedy_rank.py` are `greedy_gnn` on the
+  same encoder and corpus cache; no version suffix. They live here because they are advisor
+  models, not peers of the recorder.
 - **advisor_api** — the frontend's server half. `python -m advisor_api.app [port]` (:8777):
   a typed JSON API over the corpus, an SSE channel that emits when the corpus grows, and
   the built client served from `ui/dist`. Pydantic models are the contract; the client's
@@ -61,7 +65,7 @@
    decides; the **UI** reads.
 3. An action is taken only when `executed AND confirmed` — unverified clicks are voided.
 4. **No logs, data, DBs, or models in this repo.** Everything a run produces lives under
-   `TWDATA` (see README): `runs/` `models/{global,local,interrupt,mapgraph,mapgraph_interrupt}/`
+   `TWDATA` (see README): `runs/` `models/{global,local,interrupt,mapgraph,mapgraph_greedy}/`
    `reference/` `logs/{advisor,launcher,services}/` `scratch/` `tmp/catboost/` `repo_archive/`.
    The exception is `rules/` — a rule set is an INPUT that decides how the agent plays, so
    a run is not reproducible elsewhere if it lives outside the checkout. `<TWDATA>/rules/`
@@ -74,8 +78,9 @@
   (presave restore → `load_save`, or `start_game`) and never references, recovers, or
   cleans up after the previous one — not even a game sitting at the main menu.
 - **Trainable arms are hard dependencies.** A model gate at session start refuses to run if
-  any trainable arm in the mix (`greedy_catboost`, `marwil_gnn`, main and interrupt) cannot
-  load a usable model; a retrain that raises or reports `trained: false` kills the session;
+  any trainable arm in either mix (`greedy_catboost`, `marwil_gnn`, `greedy_gnn` on
+  actions; `greedy_catboost` on blocking screens -- the graph arms have no interrupt model)
+  cannot load a usable model; a retrain that raises or reports `trained: false` kills the session;
   a predict failure raises `ModelUnavailable` and ends the run. Only `--cold` runs
   modelless. Retraining is opt-in (`--retrain-every N`); a launch never refits by default.
 - **Stalls die fast.** A turn whose end-turn cannot advance within the settle budget is a

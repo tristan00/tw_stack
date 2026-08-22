@@ -45,15 +45,19 @@ recorder streams.
 
 ## The models
 
-Two learned rankers compete inside one strategy portfolio, alongside a hand-written ruleset
-and a random arm, so the corpus keeps a coverage tail while the models take over:
+Three learned rankers compete inside one strategy portfolio, alongside a hand-written
+ruleset and a random arm, so the corpus keeps a coverage tail while the models take over:
 
 - **greedy_catboost** — CatBoost on an E1/E2 advantage formulation, global and local.
 - **marwil_gnn** — MARWIL/AWR over a graph encoder that sees the campaign as a graph of
   factions, regions, armies and the relations between them.
+- **greedy_gnn** — the same graph encoder with a reward head: one regression of the return
+  per action node, fit by MSE on the action that was taken; the arm plays the argmax. No
+  state-only model, no advantage, no value head.
 
-A separate interrupt model answers blocking screens (pre-battle, occupation, dilemmas,
-diplomacy) as its own ranking problem.
+Blocking screens (pre-battle, occupation, dilemmas, diplomacy) are their own decision
+family with their own mix (`--interrupt-strategies`): `greedy_catboost` has an interrupt
+model, `random` and `ruleset` need none, and the graph arms have no interrupt model.
 
 Campaigns are abandoned early when they stop growing, so the run spends its time on
 trajectories that are still going somewhere rather than on 20 turns of nothing.
@@ -69,8 +73,8 @@ waits, screen handling — live in `CLAUDE.md`.
 - Python 3.11+ (3.13 here; `tomllib` is used to read the config)
 - Node LTS, for the dashboard client
 - An NVIDIA GPU with a CUDA build of torch — the graph models train on CUDA, and a CPU-only
-  torch wheel leaves `marwil_gnn` unable to retrain (the session refuses rather than
-  degrading silently)
+  torch wheel leaves `marwil_gnn` and `greedy_gnn` unable to retrain (the session refuses
+  rather than degrading silently)
 
 ## Setup
 
@@ -116,10 +120,12 @@ play session. It builds and installs the mod pack, boots the game, and drives it
 there — nothing else to click. Any RUN value can be overridden per launch, e.g.:
 
     python runctl.py up 500 20 --campaign "Realm of Chaos=0.5,Immortal Empires=0.5" \
-        --strategies marwil_gnn=0.4,greedy_catboost=0.4,random=0.1,ruleset=0.1 \
-        --ruleset probe_gaps --factions all --presave-radius 150
+        --strategies greedy_catboost=0.2,greedy_gnn=0.2,marwil_gnn=0.2,random=0.4 \
+        --interrupt-strategies greedy_catboost=0.5,random=0.5 \
+        --factions all --presave-radius 150
 
-Models are chosen only through `--strategies`; there is no model flag (the exploit scorer
+Models are chosen only through the two mixes — `--strategies` for actions,
+`--interrupt-strategies` for blocking screens; there is no model flag (the exploit scorer
 that ranks every offer is fixed — `advisor/backends.py` is its registry). `--epsilon`,
 `--retrain`, `--cfg`/`--nn-*` were removed and are rejected with pointers to their
 replacements.
@@ -151,13 +157,13 @@ of it:
 
 ![experiment ledger](docs/ui/experiment-ledger.png)
 
-The decision log — every action the run took, what both models thought of it, and which
-arm picked it:
+The decision log — every action the run took, what the two stored rankings
+(greedy_catboost and marwil_gnn) made of it, and which arm picked it:
 
 ![decisions](docs/ui/decisions.png)
 
-One decision, drilled in — where its milliseconds went, how alike the two models' rankings
-were, and the full scored offer list with the taken row marked:
+One decision, drilled in — where its milliseconds went, how alike greedy_catboost's and
+marwil_gnn's rankings were, and the full scored offer list with the taken row marked:
 
 ![decision detail](docs/ui/decision-detail.png)
 

@@ -58,12 +58,12 @@ class Ranker:
                              "gate refuses trainable arms without a usable model\n"
                              % repr(e)[:160])
 
-    def score_elig(self, offers, record):
+    def score_elig(self, offers, record, graph=None):
         if not self.ready:
             raise RuntimeError("mapgraph.rank: score_elig on an unready Ranker")
         import torch
         from advisor.mapgraph import net as N
-        g = B.build_graph(record)
+        g = graph if graph is not None else B.build_graph(record)
         if g is None:
             raise ValueError("mapgraph.rank: record produced no graph")
         if not g.action_nodes:

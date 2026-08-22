@@ -7,6 +7,23 @@ MAX_OFFERS_PER_DECISION = 1 << 20
 SCORE_FIELDS = ("score", "exploit", "rank", "pct_global", "pct_local",
                 "gnn_impact", "gnn_rank")
 
+MODEL_SCORE_FIELDS = ("score", "rank")
+
+RANKED_ARMS = ("greedy_catboost", "marwil_gnn", "greedy_gnn")
+RANK_SOURCE = {"greedy_catboost": ("scores", SCORE_FIELDS.index("rank")),
+               "marwil_gnn": ("scores", SCORE_FIELDS.index("gnn_rank")),
+               "greedy_gnn": ("model_scores", MODEL_SCORE_FIELDS.index("rank"))}
+PAIRS = tuple((a, b) for i, a in enumerate(RANKED_ARMS) for b in RANKED_ARMS[i + 1:])
+
+
+def pair_key(a, b):
+    return "%s|%s" % (a, b)
+
+
+def pair_of(key):
+    a, _, b = str(key or "").partition("|")
+    return (a, b) if (a, b) in PAIRS else None
+
 SCHEMA_VERSION = "3"
 
 PRAGMAS = (
@@ -79,6 +96,13 @@ CREATE TABLE IF NOT EXISTS taken(
 -- model that ranked a decision, not of the decision.
 CREATE TABLE IF NOT EXISTS scores(
   decision_id INTEGER PRIMARY KEY, packed BLOB NOT NULL) WITHOUT ROWID;
+
+-- Per-offer scores of the arms that came after the packed `scores` row was laid out: one
+-- packed (score, rank) row per (decision, arm). Additive -- the legacy layout above is
+-- never re-shaped, so every older decision keeps reading exactly as it was written.
+CREATE TABLE IF NOT EXISTS model_scores(
+  decision_id INTEGER NOT NULL, model TEXT NOT NULL, packed BLOB NOT NULL,
+  PRIMARY KEY(decision_id, model)) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS interrupts(
   interrupt_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -178,7 +202,11 @@ SELECT (o.decision_id * {OS} + o.offer_seq) AS offer_id, o.decision_id AS decisi
        f32((SELECT packed FROM scores WHERE decision_id=o.decision_id),
            o.offer_seq * {NS} + 5) AS gnn_impact,
        f32((SELECT packed FROM scores WHERE decision_id=o.decision_id),
-           o.offer_seq * {NS} + 6) AS gnn_rank
+           o.offer_seq * {NS} + 6) AS gnn_rank,
+       f32((SELECT packed FROM model_scores WHERE decision_id=o.decision_id
+             AND model='greedy_gnn'), o.offer_seq * {MS} + 0) AS ggnn_score,
+       f32((SELECT packed FROM model_scores WHERE decision_id=o.decision_id
+             AND model='greedy_gnn'), o.offer_seq * {MS} + 1) AS ggnn_rank
 FROM offers o
 LEFT JOIN actions a ON a.action_id = o.action_id;
 
@@ -322,7 +350,7 @@ FROM (
 GROUP BY campaign_key
 HAVING COUNT(*) >= 2;
 """.format(ES=MAX_ENTITIES_PER_DECISION, OS=MAX_OFFERS_PER_DECISION,
-           NS=len(SCORE_FIELDS))
+           NS=len(SCORE_FIELDS), MS=len(MODEL_SCORE_FIELDS))
 
 
 LAYOUT_INVARIANT = (

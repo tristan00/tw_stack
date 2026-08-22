@@ -20,6 +20,7 @@ sys.path.insert(0, common.BUS)
 sys.path.insert(0, common.LAUNCHER)
 sys.path.insert(0, common.DECISIONS)
 
+import arms
 import interrupt_model as IM
 import journal
 import loop as L
@@ -97,7 +98,7 @@ def _width_counts():
         con.close()
 
 
-UCB_WINDOW = 1000
+UCB_WINDOW = 500
 
 
 def _start_gain_stats(window=UCB_WINDOW):
@@ -285,29 +286,29 @@ def _postmortem(runs_root, entry, ex, log):
         log("   !! post-mortem NOT written: %s" % repr(e)[:160])
 
 
-def _require_models(mix, cold, log, bootstrap=False):
+def _require_models(mix, imix, cold, log, bootstrap=False):
     if cold:
         return
     import model as M
     problems = []
-    if "greedy_catboost" in mix:
-        if not M.Ranker().ready:
-            problems.append("greedy_catboost: main ranker did not load from %s"
-                            % common.MODELS)
-        if not IM.InterruptRanker(strategies=mix).ready:
-            problems.append("greedy_catboost: interrupt model did not load from %s"
-                            % IM.MODEL_DIR)
-    if "marwil_gnn" in mix:
+    if "greedy_catboost" in mix and not M.Ranker().ready:
+        problems.append("greedy_catboost: main ranker did not load from %s" % common.MODELS)
+    if "greedy_catboost" in imix and not IM.InterruptRanker(strategies=imix).ready:
+        problems.append("greedy_catboost: interrupt model did not load from %s"
+                        % IM.MODEL_DIR)
+    if "marwil_gnn" in mix or "greedy_gnn" in mix:
         if common.ROOT not in sys.path:
             sys.path.insert(0, common.ROOT)
-        from advisor.mapgraph import interrupt_rank as GIR
+    if "marwil_gnn" in mix:
         from advisor.mapgraph import rank as GR
         if not GR.Ranker().ready:
             problems.append("marwil_gnn: mapgraph model did not load from %s"
                             % common.MODEL_MAPGRAPH)
-        if not GIR.Ranker().ready:
-            problems.append("marwil_gnn: mapgraph interrupt model did not load from %s"
-                            % common.MODEL_MAPGRAPH_INTERRUPT)
+    if "greedy_gnn" in mix:
+        from advisor.mapgraph import greedy_rank as GGR
+        if not GGR.Ranker().ready:
+            problems.append("greedy_gnn: mapgraph greedy model did not load from %s"
+                            % common.MODEL_MAPGRAPH_GREEDY)
     if problems:
         if bootstrap:
             log("model gate DEFERRED: --retrain-first trains before campaign 1 is played, "
@@ -323,7 +324,7 @@ def _require_models(mix, cold, log, bootstrap=False):
 
 def run_campaigns(n=3, turns=20, plan="all",
                   log=print, runs_root=RUNS_ROOT, retrain_every=0, seed=None,
-                  cold=False, strategies=None,
+                  cold=False, strategies=None, interrupt_strategies=None,
                   ruleset=None, retrain_first=False, presave_radius=None, width=0,
                   ucb=None):
     from bus import Bus
@@ -335,6 +336,8 @@ def run_campaigns(n=3, turns=20, plan="all",
     ex = Executor(Bus())
     mix = ({"random": 1.0} if cold and strategies is None
            else P.normalize_strategies(strategies))
+    imix = ({"random": 1.0} if cold and interrupt_strategies is None
+            else P.interrupt_strategies_for(mix, interrupt_strategies))
     if presave_radius is None:
         raise SystemExit("--presave-radius is required: a session boots a baked start and "
                          "the map comes with it. Fresh campaigns are baked by bake.py.")
@@ -372,15 +375,20 @@ def run_campaigns(n=3, turns=20, plan="all",
     if cold and set(mix) != {"random"}:
         raise SystemExit("--cold is cold: it always plays pure random and takes no strategy "
                          "mix -- got %s; drop --strategies or drop --cold" % json.dumps(mix))
+    if cold and set(imix) != {"random"}:
+        raise SystemExit("--cold is cold: it always plays pure random on blocking screens "
+                         "too -- got %s; drop --interrupt-strategies or drop --cold"
+                         % json.dumps(imix))
     if cold and ruleset:
         raise SystemExit("--cold is cold: it always plays pure random -- drop --ruleset %r "
                          "or drop --cold" % ruleset)
-    if "ruleset" in mix and not ruleset:
-        raise SystemExit("strategy mix includes 'ruleset' but no --ruleset <name> was given")
-    if ruleset and "ruleset" not in mix:
-        raise SystemExit("--ruleset %r given but 'ruleset' is not in the strategy mix %s"
-                         % (ruleset, json.dumps(mix)))
-    _require_models(mix, cold, log,
+    if ("ruleset" in mix or "ruleset" in imix) and not ruleset:
+        raise SystemExit("a strategy mix includes 'ruleset' but no --ruleset <name> was given")
+    if ruleset and "ruleset" not in mix and "ruleset" not in imix:
+        raise SystemExit("--ruleset %r given but 'ruleset' is in neither the action mix %s "
+                         "nor the interrupt mix %s"
+                         % (ruleset, json.dumps(mix), json.dumps(imix)))
+    _require_models(mix, imix, cold, log,
                     bootstrap=bool(retrain_every and retrain_first))
     ruleset_meta = None
     if ruleset:
@@ -389,8 +397,10 @@ def run_campaigns(n=3, turns=20, plan="all",
         ruleset_meta = {"name": rs.name, "sha256": rs.sha256}
         log("ruleset: %s (%d rules, sha256 %s)" % (rs.name, len(rs.rules), rs.sha256[:12]))
     log("strategy mix: %s" % json.dumps(mix))
+    log("interrupt mix: %s" % json.dumps(imix))
     report = {"started": time.time(), "requested": {"campaigns": n, "turns": turns, "plan": plan,
                                                     "strategies": mix,
+                                                    "interrupt_strategies": imix,
                                                     "ruleset": ruleset_meta},
               "campaigns": []}
     stamp = time.strftime("%Y%m%d_%H%M%S")
@@ -464,28 +474,32 @@ def run_campaigns(n=3, turns=20, plan="all",
                                          "campaigns": rep.get("campaigns"),
                                          "n_decisions": rep.get("n_decisions")}
                     log("retrained before run %d: %s" % (i + 1, json.dumps(rep)[:220]))
+                if "greedy_catboost" in imix:
                     irep = IM.train()
                     entry["retrain_interrupt"] = irep
                     log("   interrupt model: %s" % json.dumps(irep)[:200])
-                if "marwil_gnn" in mix:
+                if "marwil_gnn" in mix or "greedy_gnn" in mix:
                     if common.ROOT not in sys.path:
                         sys.path.insert(0, common.ROOT)
+                if "marwil_gnn" in mix:
                     from advisor.mapgraph import train as GT
                     t1 = time.time()
                     grep = GT.train(log=log)
                     grep["seconds"] = round(time.time() - t1, 1)
                     entry["retrain_gnn"] = grep
                     log("   gnn model: %s" % json.dumps(grep, default=str)[:220])
-                    from advisor.mapgraph import interrupt_train as GIT
-                    t1 = time.time()
-                    girep = GIT.train(log=log)
-                    girep["seconds"] = round(time.time() - t1, 1)
-                    entry["retrain_gnn_interrupt"] = girep
-                    log("   gnn interrupt model: %s" % json.dumps(girep, default=str)[:220])
                     trained = trained or entry.get("retrain_gnn")
+                if "greedy_gnn" in mix:
+                    from advisor.mapgraph import greedy_train as GGT
+                    t1 = time.time()
+                    ggrep = GGT.train(log=log)
+                    ggrep["seconds"] = round(time.time() - t1, 1)
+                    entry["retrain_greedy_gnn"] = ggrep
+                    log("   greedy gnn model: %s" % json.dumps(ggrep, default=str)[:220])
+                    trained = trained or entry.get("retrain_greedy_gnn")
                 for what, r in (("catboost", rep), ("interrupt", entry.get("retrain_interrupt")),
                                 ("gnn", entry.get("retrain_gnn")),
-                                ("gnn_interrupt", entry.get("retrain_gnn_interrupt"))):
+                                ("greedy_gnn", entry.get("retrain_greedy_gnn"))):
                     if r is not None and not r.get("trained"):
                         raise P.ModelUnavailable(
                             "retrain %d: %s trainer reported trained=false (rows=%s need=%s "
@@ -550,6 +564,10 @@ def run_campaigns(n=3, turns=20, plan="all",
                     raise P.ModelUnavailable(
                         "campaign %d: mapgraph model is not ready after preload (%s)"
                         % (i + 1, common.MODEL_MAPGRAPH))
+                if pol.ggnn is not None and not pol.ggnn.ready:
+                    raise P.ModelUnavailable(
+                        "campaign %d: mapgraph greedy model is not ready after preload (%s)"
+                        % (i + 1, common.MODEL_MAPGRAPH_GREEDY))
             entry["policy"] = ("cold_random(forced)" if cold else
                                "trained(%d rows)"
                                % ((ranker.meta or {}).get("rows", 0) if ranker else 0))
@@ -557,6 +575,10 @@ def run_campaigns(n=3, turns=20, plan="all",
             if pol.gnn is not None:
                 entry["gnn_policy"] = "trained(%d rows)" % (pol.gnn.meta or {}).get("rows", 0)
                 log("gnn: %s" % entry["gnn_policy"])
+            if pol.ggnn is not None:
+                entry["greedy_gnn_policy"] = ("trained(%d rows)"
+                                              % (pol.ggnn.meta or {}).get("rows", 0))
+                log("greedy gnn: %s" % entry["greedy_gnn_policy"])
             _checkpoint_trial(stretch + [entry], generation, report, trained, log)
 
             def _flush_turn(so_far, _e=entry):
@@ -567,7 +589,7 @@ def run_campaigns(n=3, turns=20, plan="all",
                 _write(out_path, dict(report, campaigns=report["campaigns"] + [_e]))
 
             rows = L.run_campaign(run_dir, ex, pol, turns=this_turns, log=log, cold=cold,
-                                  on_turn=_flush_turn)
+                                  on_turn=_flush_turn, interrupt_strategies=imix)
             entry.update(outcome="completed", turns_played=len(rows),
                          actions=sum(r["actions"] for r in rows),
                          confirmed=sum(r["confirmed"] for r in rows),
@@ -876,6 +898,7 @@ def _trial_row(stretch, gen_n, report, trained, log):
            "campaign_index": [first.get("index"), last.get("index")],
            "campaigns": len(played),
            "strategies": (report.get("requested") or {}).get("strategies"),
+           "interrupt_strategies": (report.get("requested") or {}).get("interrupt_strategies"),
            "ruleset": (report.get("requested") or {}).get("ruleset"),
            "feature_version": _feature_version(),
            "corpus_at_train": report.get("_corpus"),
@@ -1076,29 +1099,29 @@ def _write(path, report):
         sys.stderr.write("session: could not write the report -> %s\n" % repr(e)[:90])
 
 
-def _parse_strategies(argv):
-    if "--strategies" not in argv:
+def _parse_strategies(argv, flag="--strategies", normalize=None):
+    if flag not in argv:
         return None
     try:
-        raw = argv[argv.index("--strategies") + 1].strip()
+        raw = argv[argv.index(flag) + 1].strip()
     except IndexError:
-        raise SystemExit("--strategies needs a value: name=weight[,name=weight...]")
+        raise SystemExit("%s needs a value: name=weight[,name=weight...]" % flag)
     if not raw or raw.startswith("--"):
-        raise SystemExit("--strategies needs a value: name=weight[,name=weight...]")
+        raise SystemExit("%s needs a value: name=weight[,name=weight...]" % flag)
     mix = {}
     for part in raw.split(","):
         name, sep, w = part.partition("=")
         name, w = name.strip(), w.strip()
         if not sep or not name or not w:
-            raise SystemExit("--strategies expects name=weight[,name=weight...], got %r" % part)
+            raise SystemExit("%s expects name=weight[,name=weight...], got %r" % (flag, part))
         if name in mix:
-            raise SystemExit("--strategies names %r twice" % name)
+            raise SystemExit("%s names %r twice" % (flag, name))
         try:
             mix[name] = float(w)
         except ValueError:
-            raise SystemExit("--strategies weight for %r is not a number: %r" % (name, w))
+            raise SystemExit("%s weight for %r is not a number: %r" % (flag, name, w))
     try:
-        return P.normalize_strategies(mix)
+        return (normalize or P.normalize_strategies)(mix)
     except ValueError as e:
         raise SystemExit(str(e))
 
@@ -1147,14 +1170,19 @@ def main():
     if "--factions" not in sys.argv:
         raise SystemExit("usage: session.py <campaigns> <turns|min-max> --factions "
                          "all|<key,key,...> --presave-radius R\n"
-                         "                  [--strategies a=x,b=y[,c=z]] [--ruleset <name>]\n"
+                         "                  [--strategies a=x,b=y[,c=z]]\n"
+                         "                  [--interrupt-strategies a=x,b=y] [--ruleset <name>]\n"
                          "  --strategies -- per-decision sampling mix over %s\n"
                          "                 (default greedy_catboost=0.8,random=0.2; weights "
                          "normalized). Trainable arms (%s) require their trained models and "
                          "hard-crash without them; only --cold runs modelless\n"
+                         "  --interrupt-strategies -- the mix for blocking screens, over %s "
+                         "only (the gnn arms have no interrupt model); defaults to the "
+                         "action mix when that mix has no gnn arm, else required\n"
                          "  --ruleset   -- rule file name under <TWDATA>/rules\\<name>.json "
-                         "(required when 'ruleset' is in the mix)\n"
-                         % (",".join(ST.NAMES), ",".join(ST.TRAINABLE))
+                         "(required when 'ruleset' is in a mix)\n"
+                         % (",".join(ST.NAMES), ",".join(ST.TRAINABLE),
+                            ",".join(arms.INTERRUPT_NAMES))
                          + "\n"
                          "  --presave-radius R -- required: the session boots starts\n"
                          "                 baked at radius R, and each start carries\n"
@@ -1196,6 +1224,8 @@ def main():
         raise SystemExit("--cold cannot be combined with --retrain-every: a cold run "
                          "deliberately ignores the fitted model, so retraining it is wasted work")
     strategies = _parse_strategies(sys.argv)
+    interrupt_strategies = _parse_strategies(sys.argv, "--interrupt-strategies",
+                                             P.normalize_interrupt_strategies)
     ruleset = _parse_ruleset(sys.argv)
     if "--presave-radius" not in sys.argv:
         raise SystemExit("--presave-radius R is required: a session boots a start baked at "
@@ -1213,6 +1243,7 @@ def main():
             raise SystemExit("--ucb needs a positive exploration constant")
     r = run_campaigns(n, turns, plan=plan,
                       retrain_every=every, cold=cold, strategies=strategies,
+                      interrupt_strategies=interrupt_strategies,
                       ruleset=ruleset, retrain_first=retrain_first,
                       presave_radius=presave_radius, width=width, ucb=ucb)
     return 0 if r["totals"]["completed"] else 2

@@ -318,12 +318,58 @@ export function RangeMeter({
 }
 
 
-export function ModelKey({ model, children }: { model: 'cat' | 'gnn'; children: ReactNode }) {
+export type ModelTag = 'cat' | 'gnn' | 'ggnn'
+
+export const MODEL_ARM: Record<ModelTag, string> = {
+  cat: 'greedy_catboost',
+  gnn: 'marwil_gnn',
+  ggnn: 'greedy_gnn',
+}
+
+const MODEL_BAR: Record<ModelTag, string> = { cat: 'bg-cat', gnn: 'bg-gnn', ggnn: 'bg-ggnn' }
+
+export function armTag(arm: string | null | undefined): ModelTag {
+  if (arm === 'marwil_gnn') return 'gnn'
+  if (arm === 'greedy_gnn') return 'ggnn'
+  return 'cat'
+}
+
+export function PairPicker({
+  pairs,
+  value,
+  onChange,
+}: {
+  pairs: { key: string; a: string; b: string; comparable: { value: number } }[]
+  value: string
+  onChange: (key: string) => void
+}) {
+  if (pairs.length <= 1) return null
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      {pairs.map((p) => (
+        <button
+          key={p.key}
+          onClick={() => onChange(p.key)}
+          className={cn(
+            'text-2xs rounded px-1.5 py-0.5 whitespace-nowrap',
+            value === p.key ? 'bg-raised text-fg font-semibold' : 'text-dim hover:text-fg',
+          )}
+          title={`${p.comparable.value} comparable decisions`}
+        >
+          <ModelKey model={armTag(p.a)}>{p.a}</ModelKey>
+          <span className="text-dim mx-1">vs</span>
+          <ModelKey model={armTag(p.b)}>{p.b}</ModelKey>
+          <span className="num text-dim ml-1">{p.comparable.value}</span>
+        </button>
+      ))}
+    </div>
+  )
+}
+
+export function ModelKey({ model, children }: { model: ModelTag; children: ReactNode }) {
   return (
     <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
-      <span
-        className={cn('inline-block h-0.5 w-3 rounded-full', model === 'cat' ? 'bg-cat' : 'bg-gnn')}
-      />
+      <span className={cn('inline-block h-0.5 w-3 rounded-full', MODEL_BAR[model])} />
       {children}
     </span>
   )

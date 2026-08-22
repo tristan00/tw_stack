@@ -319,10 +319,13 @@ def test_analytics_cannot_go_stale_silently():
         assert f["state"] != "ok", "analytics is behind but reports ok"
     n_src = con.execute("SELECT COUNT(*) FROM decisions WHERE decision_id <= ?",
                         (watermark,)).fetchone()[0]
-    n_fact = acon.execute("SELECT COUNT(*) FROM model_agreement").fetchone()[0]
-    assert n_src == n_fact == rows, (
-        "the precomputed table covers %d of %d decisions at or below its own watermark -- "
-        "it is short, and every aggregate built on it is short with it" % (n_fact, n_src))
+    n_fact = acon.execute("SELECT COUNT(DISTINCT decision_id) FROM model_agreement"
+                          ).fetchone()[0]
+    n_rows = acon.execute("SELECT COUNT(*) FROM model_agreement").fetchone()[0]
+    assert n_src == n_fact and n_rows == rows, (
+        "the precomputed table covers %d of %d decisions at or below its own watermark "
+        "(%d pair rows, state says %d) -- it is short, and every aggregate built on it is "
+        "short with it" % (n_fact, n_src, n_rows, rows))
 
 
 def test_rho_is_the_headline_not_a_secondary():
@@ -391,10 +394,19 @@ def test_no_column_is_empty_in_every_row():
             "the reason if one had, and it is the good case",
         ("$.rows", "gnn_impact"):
             "the log page's offers carry rank but impact is only stored for scored arms",
+        ("$.rows", "ggnn_score"):
+            "greedy_gnn stores a per-offer score only for decisions made after it joined "
+            "the mix; a run dir from before then has none",
+        ("$.rows", "ggnn_rank"):
+            "greedy_gnn stores a per-offer rank only for decisions made after it joined "
+            "the mix; a run dir from before then has none",
         ("$.trials", "cfg"):
             "no trial has run with a backend config override",
         ("$.trials", "notes"):
             "notes are only written for trials with a recorded outcome tally",
+        ("$.trials", "ruleset"):
+            "no trial in the ledger played the ruleset arm in either mix -- the column "
+            "carries a name only when a trial does",
         ("$.services", "started"):
             "the process probe reports a start time only for processes it matched",
         ("$.rows", "presave_radius"):

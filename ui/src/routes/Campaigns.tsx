@@ -459,6 +459,7 @@ function Starts() {
         rowId={(r) => `${r.campaign_map?.raw ?? ''}|${r.faction.raw}`}
         initialSort={{ key: 'total_avg', desc: true }}
         searchPlaceholder="search start…"
+        pageSize={10}
         emptyWhat="no start has recorded a campaign yet"
       />
     </Section>
@@ -741,7 +742,7 @@ function Picks() {
           onRowClick={(r) => setSel(r.pick_id)}
           initialSort={{ key: 'when', desc: true }}
           searchPlaceholder="search pick…"
-          pageSize={25}
+          pageSize={10}
           emptyWhat="no UCB pick has been recorded yet"
           emptyWhy="only runs started with --ucb record them, from the next launch onward"
         />
@@ -756,7 +757,7 @@ function Picks() {
             rowId={(r) => String(r.rank)}
             initialSort={{ key: 'rank', desc: false }}
             searchPlaceholder="search start…"
-            pageSize={25}
+            pageSize={10}
             emptyWhat="no ranking stored for this pick"
           />
         )}

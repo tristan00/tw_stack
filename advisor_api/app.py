@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
 
+import arms
 import common
 from advisor_api import db, ident, proc, queries as q
 from advisor_api.models import (
@@ -237,7 +238,9 @@ def get_decisions(offset: int = 0, limit: int = Query(q.DECISIONS_PAGE, ge=1, le
     facets = q.decision_facets(con)
     return DecisionsPage(
         scope=_scope("every action the run took, newest first",
-                     "filters narrow the population; the count follows the filter"),
+                     "filters narrow the population; the count follows the filter. Each "
+                     "ranking arm's rank of the taken action is a column; how the arms "
+                     "agree is on the models view and on each decision"),
         total=Count(value=total, noun="actions",
                     population="matching the current filter in this run dir"),
         offset=offset, limit=limit, rows=rows,
@@ -259,20 +262,21 @@ def get_forcing() -> ForcingPage:
 
 
 @app.get("/api/models/agreement", response_model=AgreementPage, tags=["models"])
-def get_agreement() -> AgreementPage:
-    return q.agreement_page()
+def get_agreement(pair: str | None = None) -> AgreementPage:
+    return q.agreement_page(pair)
 
 
 @app.get("/api/models/agreement/series", response_model=AgreementSeriesPage,
          tags=["models"])
-def get_agreement_series(axis: str = "window") -> AgreementSeriesPage:
-    return q.agreement_series(axis)
+def get_agreement_series(axis: str = "window", pair: str | None = None) -> AgreementSeriesPage:
+    return q.agreement_series(axis, pair)
 
 
 @app.get("/api/models/agreement/breakdown", response_model=AgreementBreakdownPage,
          tags=["models"])
-def get_agreement_breakdown(dim: str = "action_type") -> AgreementBreakdownPage:
-    return q.agreement_breakdown(dim)
+def get_agreement_breakdown(dim: str = "action_type",
+                            pair: str | None = None) -> AgreementBreakdownPage:
+    return q.agreement_breakdown(dim, pair)
 
 
 @app.get("/api/analytics", response_model=AnalyticsPage, tags=["infra"])
@@ -316,18 +320,41 @@ def get_models() -> ModelsPage:
                       cards=q.model_cards(), fit=q.fit_config())
 
 
+def _launch_defaults() -> LaunchDefaults:
+    import run_config
+    run = run_config.RUN
+    turns = str(run["turns"])
+    lo, hi = turns.split("-", 1) if "-" in turns else (turns, turns)
+    return LaunchDefaults(
+        campaigns=int(run["campaigns"]), turns_min=int(lo), turns_max=int(hi),
+        factions=str(run.get("factions") or "all"),
+        retrain_every=int(run.get("retrain_every") or 0),
+        retrain_first=bool(run.get("retrain_first")),
+        strategies=str(run.get("strategies") or ""),
+        interrupt_strategies=str(run.get("interrupt_strategies") or ""),
+        ruleset=str(run.get("ruleset") or ""),
+        presave_radius=float(run["presave_radius"]),
+        ucb=(float(run["ucb"]) if run.get("ucb") else None), dev=bool(run.get("dev", True)))
+
+
 @app.get("/api/infra", response_model=InfraPage, tags=["infra"])
 def get_infra() -> InfraPage:
     tail, _ = q.session_log_tail(14)
+    defaults = _launch_defaults()
     return InfraPage(
         scope=_scope("services, streams and controls", common.RUN_DIR),
         services=proc.services(), activity=q.activity(),
-        policy_note="Picks are drawn from the run's strategy mix; the mix is recorded on "
-                    "the trial and shown on the models view.",
-        models=["catboost", "gnn"],
-        defaults=LaunchDefaults(),
+        policy_note="Picks are drawn from two strategy mixes -- one over actions, one over "
+                    "blocking screens. Both are recorded on the trial and shown on the "
+                    "models view; the defaults below are run_config.RUN.",
+        arms=list(arms.NAMES), interrupt_arms=list(arms.INTERRUPT_NAMES),
+        trainable=list(arms.TRAINABLE),
+        defaults=defaults,
         cold_defaults=LaunchDefaults(campaigns=10, turns_min=2, turns_max=40,
-                                     retrain_first=False),
+                                     retrain_every=0, retrain_first=False,
+                                     strategies="", interrupt_strategies="", ruleset="",
+                                     presave_radius=defaults.presave_radius,
+                                     dev=defaults.dev),
         log_tail=tail)
 
 

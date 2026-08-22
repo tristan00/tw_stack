@@ -114,7 +114,7 @@ export function RhoTrend({
       ref={ref}
       tabIndex={0}
       role="img"
-      aria-label="median rank correlation between the two models over the run; arrow keys step through buckets"
+      aria-label="median rank correlation between the two picked arms over the run; arrow keys step through buckets"
       onKeyDown={(e) => {
         if (e.key === 'ArrowLeft') setCursor((c) => Math.max(0, (c ?? points.length - 1) - 1))
         if (e.key === 'ArrowRight')
@@ -439,6 +439,101 @@ export function RhoHistogram({ bins, median }: { bins: RhoBin[]; median: number 
   )
 }
 
+export interface RhoMatrixCell {
+  a: string
+  b: string
+  pair: string
+  rho_median?: number | null
+  decisions: { value: number }
+  note?: string | null
+}
+
+export function RhoMatrix({
+  arms,
+  cells,
+  selected,
+  onSelect,
+}: {
+  arms: string[]
+  cells: RhoMatrixCell[]
+  selected?: string
+  onSelect?: (pair: string) => void
+}) {
+  const byKey = new Map<string, RhoMatrixCell>()
+  for (const c of cells) {
+    byKey.set(`${c.a}|${c.b}`, c)
+    byKey.set(`${c.b}|${c.a}`, c)
+  }
+  const tint = (rho: number) => {
+    const pole = rho >= 0 ? 'var(--rho-pos)' : 'var(--rho-neg)'
+    const pct = Math.round(Math.min(1, Math.abs(rho)) * 55)
+    return `color-mix(in oklab, ${pole} ${pct}%, var(--surface))`
+  }
+  const short = (s: string) => s.replace('greedy_', 'g.').replace('marwil_', 'm.')
+  return (
+    <table className="border-separate border-spacing-0.5 text-2xs" role="grid">
+      <thead>
+        <tr>
+          <th className="text-dim h-7 w-20 text-left font-normal" />
+          {arms.map((b) => (
+            <th key={b} className="text-dim h-7 w-20 truncate text-center font-normal" title={b}>
+              {short(b)}
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {arms.map((a) => (
+          <tr key={a}>
+            <th className="text-dim h-11 w-20 truncate pr-1 text-left font-normal" title={a}>
+              {short(a)}
+            </th>
+            {arms.map((b) => {
+              if (a === b)
+                return (
+                  <td key={b} className="bg-raised/60 h-11 w-20 rounded text-center">
+                    <span className="text-dim">—</span>
+                  </td>
+                )
+              const c = byKey.get(`${a}|${b}`)
+              const rho = c?.rho_median
+              const has = rho !== null && rho !== undefined
+              const isSel = c && selected === c.pair
+              return (
+                <td
+                  key={b}
+                  className={`h-11 w-20 rounded text-center align-middle ${
+                    onSelect && c ? 'cursor-pointer' : ''
+                  } ${isSel ? 'ring-accent ring-2' : ''}`}
+                  style={{ background: has ? tint(rho as number) : 'var(--raised)' }}
+                  title={
+                    c
+                      ? `${c.a} vs ${c.b}: ${has ? `median rho ${(rho as number).toFixed(3)}` : 'no rho'} over ${c.decisions.value} decisions${c.note ? ` — ${c.note}` : ''}`
+                      : ''
+                  }
+                  onClick={() => c && onSelect?.(c.pair)}
+                >
+                  {has ? (
+                    <>
+                      <div className="num leading-tight font-semibold">
+                        {(rho as number) >= 0 ? '+' : ''}
+                        {(rho as number).toFixed(2)}
+                      </div>
+                      <div className="num text-dim leading-tight">n={c!.decisions.value}</div>
+                    </>
+                  ) : (
+                    <span className="text-dim">{c && c.decisions.value ? `n=${c.decisions.value}` : '—'}</span>
+                  )}
+                </td>
+              )
+            })}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}
+
 export interface RankPair {
   cat: number
   gnn: number
@@ -447,7 +542,17 @@ export interface RankPair {
 }
 
 
-export function RankScatter({ pairs, size = 236 }: { pairs: RankPair[]; size?: number }) {
+export function RankScatter({
+  pairs,
+  size = 236,
+  aLabel = 'a',
+  bLabel = 'b',
+}: {
+  pairs: RankPair[]
+  size?: number
+  aLabel?: string
+  bLabel?: string
+}) {
   const [hover, setHover] = useState<number | null>(null)
   if (!pairs.length) return null
   const N = Math.max(2, ...pairs.map((p) => Math.max(p.cat, p.gnn)))
@@ -493,7 +598,7 @@ export function RankScatter({ pairs, size = 236 }: { pairs: RankPair[]; size?: n
       <div className="text-dim mt-1 text-2xs">
         {hover !== null ? (
           <>
-            {pairs[hover].label} · tree <b className="num">{pairs[hover].cat}</b> · graph{' '}
+            {pairs[hover].label} · {aLabel} <b className="num">{pairs[hover].cat}</b> · {bLabel}{' '}
             <b className="num">{pairs[hover].gnn}</b>
           </>
         ) : (

@@ -302,10 +302,16 @@ class DecisionRow(BaseModel):
     cat_rank: int | None = None
     gnn_impact: float | None = None
     gnn_rank: int | None = None
-    delta_pct: float | None = None
-    rho: float | None = None
-    rho_n: int | None = None
+    ggnn_score: float | None = None
+    ggnn_rank: int | None = None
     latency_ms: float | None = None
+
+
+class PairOption(BaseModel):
+    key: str
+    a: str
+    b: str
+    comparable: Count
 
 
 class DecisionsPage(BaseModel):
@@ -329,6 +335,8 @@ class OfferRow(BaseModel):
     pct_local: float | None = None
     gnn_impact: float | None = None
     gnn_rank: int | None = None
+    ggnn_score: float | None = None
+    ggnn_rank: int | None = None
     taken: bool = False
 
 
@@ -341,7 +349,7 @@ class EntityState(BaseModel):
 class DecisionDetail(BaseModel):
     scope: Scope
     row: DecisionRow
-    agreement: "DecisionAgreement | None" = None
+    agreement: list["DecisionAgreement"] = Field(default_factory=list)
     offers: list[OfferRow]
     entities: list[EntityState]
     phases: list["PhaseSpan"]
@@ -399,9 +407,11 @@ class InterruptRow(BaseModel):
 class ArmCoverage(BaseModel):
     screen: Ident
     rows: int
-    tree_scored: int
-    graph_scored: int
-    both: int
+    scored: dict[str, int] = Field(
+        default_factory=dict,
+        description="per arm, how many of this screen's rows carry that arm's scores; an "
+                    "arm with no interrupt model never appears")
+    compared: int = 0
     agree: Rate | None = None
 
 
@@ -500,10 +510,10 @@ class AgreementSummary(BaseModel):
 class AgreementRankRow(BaseModel):
     picked_by: Ident
     decisions: int
-    cat_rank: float | None = None
-    cat_pct: float | None = None
-    gnn_rank: float | None = None
-    gnn_pct: float | None = None
+    a_rank: float | None = None
+    a_pct: float | None = None
+    b_rank: float | None = None
+    b_pct: float | None = None
     delta_pct: float | None = None
     rho_median: float | None = None
     fell_back: int = 0
@@ -549,6 +559,9 @@ class CorrelationSummary(BaseModel):
 
 
 class DecisionAgreement(BaseModel):
+    pair: str
+    a: str
+    b: str
     n: Count
     status: str
     rho: float | None = None
@@ -556,8 +569,8 @@ class DecisionAgreement(BaseModel):
     rbo: float | None = None
     top1_same: bool | None = None
     top3_overlap: float | None = None
-    cat_top_in_gnn: int | None = None
-    gnn_top_in_cat: int | None = None
+    a_top_in_b: int | None = None
+    b_top_in_a: int | None = None
     note: str | None = None
 
 
@@ -597,6 +610,10 @@ class GenerationRow(BaseModel):
 class AgreementSeriesPage(BaseModel):
     scope: Scope
     freshness: AnalyticsFreshness
+    pair: str
+    a: str
+    b: str
+    pairs: list[PairOption] = Field(default_factory=list)
     axis: Literal["window", "generation"]
     is_alignment: bool = False
     caveat: str | None = None
@@ -621,6 +638,10 @@ class AgreementBreakdownRow(BaseModel):
 class AgreementBreakdownPage(BaseModel):
     scope: Scope
     freshness: AnalyticsFreshness
+    pair: str
+    a: str
+    b: str
+    pairs: list[PairOption] = Field(default_factory=list)
     dim: Literal["arm", "action_type", "context_kind"]
     rows: list[AgreementBreakdownRow] = Field(default_factory=list)
     empty_reason: str | None = None
@@ -646,9 +667,31 @@ class AnalyticsPage(BaseModel):
     runner_hint: str
 
 
+class AgreementMatrixCell(BaseModel):
+    a: str
+    b: str
+    pair: str
+    rho_median: float | None = None
+    decisions: Count
+    note: str | None = None
+
+
+class AgreementMatrix(BaseModel):
+    key: Literal["generation", "all"]
+    title: str
+    detail: str | None = None
+    arms: list[str]
+    cells: list[AgreementMatrixCell] = Field(default_factory=list)
+
+
 class AgreementPage(BaseModel):
     scope: Scope
     freshness: AnalyticsFreshness
+    pair: str
+    a: str
+    b: str
+    pairs: list[PairOption] = Field(default_factory=list)
+    matrices: list[AgreementMatrix] = Field(default_factory=list)
     correlation: CorrelationSummary | None = None
     rho_bins: list[RhoBin] = Field(default_factory=list)
     summary: list[AgreementSummary]
@@ -697,6 +740,10 @@ class TrialRow(BaseModel):
                     "per campaign as a trial progresses, so one trial owns many lines; the "
                     "row shows its newest state and this says how many were folded in.")
     mix: dict = Field(default_factory=dict)
+    interrupt_mix: dict = Field(
+        default_factory=dict,
+        description="the mix drawn on blocking screens. Trials older than the split "
+                    "played the action mix there, so they carry it here too.")
     ruleset: str | None = None
     campaigns: int | None = None
     corpus: int | None = None
@@ -709,6 +756,10 @@ class TrialRow(BaseModel):
         description="which definition this row was measured on. Rows written before the "
                     "clamp was removed are not comparable with rows written after it.")
     lord_per_campaign: float | None = None
+    reward_per_campaign: float | None = Field(
+        default=None,
+        description="settlements gained plus legendary lord levels gained, per campaign -- "
+                    "the same reward the UCB start selector averages")
     turns_per_campaign: float | None = None
     seconds_per_campaign: float | None = None
     seconds_per_turn: float | None = None
@@ -760,13 +811,16 @@ class LaunchDefaults(BaseModel):
     campaigns: int = 100
     turns_min: int = 2
     turns_max: int = 20
-    retrain_first: bool = True
+    factions: str = "all"
     retrain_every: int = 0
-    model: str = "catboost"
-    cfg: str = ""
+    retrain_first: bool = False
     strategies: str = ""
+    interrupt_strategies: str = ""
     ruleset: str = ""
-    dev: bool = False
+    presave_radius: float = 150.0
+    width: int = 0
+    ucb: float | None = None
+    dev: bool = True
 
 
 class InfraPage(BaseModel):
@@ -774,7 +828,9 @@ class InfraPage(BaseModel):
     services: list[Service]
     activity: list[ActivityRow]
     policy_note: str
-    models: list[str]
+    arms: list[str]
+    interrupt_arms: list[str]
+    trainable: list[str]
     defaults: LaunchDefaults
     cold_defaults: LaunchDefaults
     log_tail: list[str]

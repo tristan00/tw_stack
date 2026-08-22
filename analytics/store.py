@@ -124,9 +124,16 @@ def rebuild_reason(tenant, src, an) -> str | None:
 
 
 def ensure(tenant, src, an) -> str | None:
-    an.executescript(tenant.DDL)
-    why = rebuild_reason(tenant, src, an)
+    try:
+        an.executescript(tenant.DDL)
+    except sqlite3.OperationalError as e:
+        why = "the tenant's DDL no longer fits the table on disk (%s)" % str(e)[:80]
+    else:
+        why = rebuild_reason(tenant, src, an)
     if why:
+        for name in getattr(tenant, "TABLES", (tenant.NAME,)):
+            an.execute("DROP TABLE IF EXISTS %s" % name)
+        an.executescript(tenant.DDL)
         an.execute("BEGIN")
         try:
             an.execute("DELETE FROM %s" % tenant.NAME)

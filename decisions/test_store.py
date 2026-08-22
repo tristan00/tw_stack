@@ -131,20 +131,27 @@ def main():
 
         st.attach_scores(dids[0], [
             {"context_kind": "lord", "context_id": 100, "action_type": "building",
-             "key": "b_a", "score": 0.75, "rank": 1, "gnn_impact": 0.5},
+             "key": "b_a", "score": 0.75, "rank": 1, "gnn_impact": 0.5,
+             "models": {"greedy_gnn": {"score": 2.5, "rank": 2}}},
             {"context_kind": "lord", "context_id": 100, "action_type": "move",
-             "key": "xy:1,0", "score": 0.25, "rank": 2},
+             "key": "xy:1,0", "score": 0.25, "rank": 2,
+             "models": {"greedy_gnn": {"score": 3.5, "rank": 1}}},
         ])
         con = dbopen.connect(os.path.join(run, "decisions.sqlite"))
         rows = con.execute(
-            "SELECT action_key,params,score,rank FROM action_offers WHERE decision_id=?"
-            " AND context_id='100' AND action_type='building' ORDER BY offer_id",
-            (dids[0],)).fetchall()
+            "SELECT action_key,params,score,rank,ggnn_score,ggnn_rank FROM action_offers"
+            " WHERE decision_id=? AND context_id='100' AND action_type='building'"
+            " ORDER BY offer_id", (dids[0],)).fetchall()
         scored = [r for r in rows if r[2] is not None]
         check(len(rows) == 2 and len(scored) == 1,
               "a score reaches one of two identically-keyed offers, not both")
         check(abs(scored[0][2] - 0.75) < 1e-6 and scored[0][3] == 1.0,
               "score and rank survive the float32 packing")
+        check(abs(scored[0][4] - 2.5) < 1e-6 and scored[0][5] == 2.0,
+              "a model_scores row lands beside the legacy packed row, same offer")
+        unscored = [r for r in rows if r[2] is None]
+        check(unscored and unscored[0][4] is None and unscored[0][5] is None,
+              "the offer the scorer did not name reads NULL in model_scores too")
 
         lab = st.labelled_decisions()
         check(len(lab) == 2, "labelled_decisions returns the labelled ones")

@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import arms
 
-NAMES = ("random", "greedy_catboost", "ruleset", "marwil_gnn")
+NAMES = arms.NAMES
 TRAINABLE = arms.TRAINABLE
 ModelUnavailable = arms.ModelUnavailable
 
@@ -97,7 +97,37 @@ class MarwilGnn:
         return best
 
 
-def build(name, rng=None, ranker=None, ruleset=None, gnn=None):
+class GreedyGnn:
+
+    def __init__(self, ggnn):
+        self.ggnn = ggnn
+        self.graph = None
+        self.scored = None
+        self.last_reward = None
+
+    @property
+    def ready(self):
+        return bool(self.ggnn is not None and self.ggnn.ready)
+
+    def pick(self, elig, record):
+        graph, self.graph = self.graph, None
+        scored, self.scored = self.scored, None
+        self.last_reward = None
+        if scored:
+            best, best_v = None, None
+            for r in elig:
+                v = scored.get(offer_key(r))
+                if v is not None and (best_v is None or v > best_v):
+                    best, best_v = r, v
+            if best is not None:
+                self.last_reward = best_v
+                return best
+        best = self.ggnn.pick(elig, record, graph=graph)
+        self.last_reward = self.ggnn.last_reward
+        return best
+
+
+def build(name, rng=None, ranker=None, ruleset=None, gnn=None, ggnn=None):
     name = arms.canonical(name)
     if name == "random":
         return Random(rng)
@@ -107,4 +137,6 @@ def build(name, rng=None, ranker=None, ruleset=None, gnn=None):
         return Ruleset(ruleset)
     if name == "marwil_gnn":
         return MarwilGnn(gnn)
+    if name == "greedy_gnn":
+        return GreedyGnn(ggnn)
     raise ValueError("unknown strategy %r -- known: %s" % (name, ", ".join(NAMES)))

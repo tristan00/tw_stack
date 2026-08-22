@@ -138,7 +138,7 @@ def rebuild_analytics():
 def start_session(campaigns, turns, retrain_every=0,
                   cold=False, dev=True, factions="all", strategies=None,
                   ruleset=None, retrain_first=False, presave_radius=None,
-                  width=0, ucb=None):
+                  width=0, ucb=None, interrupt_strategies=None):
     if not str(factions or "").strip():
         raise SystemExit("--factions must be 'all' or a comma-separated list of faction keys")
     import presaves
@@ -159,6 +159,8 @@ def start_session(campaigns, turns, retrain_every=0,
             + (["--retrain-every", str(retrain_every)] if retrain_every and not cold else [])
             + (["--retrain-first"] if retrain_first and retrain_every and not cold else [])
             + (["--strategies", str(strategies)] if strategies else [])
+            + (["--interrupt-strategies", str(interrupt_strategies)]
+               if interrupt_strategies else [])
             + (["--ruleset", str(ruleset)] if ruleset else [])
             + ["--presave-radius", str(presave_radius)]
             + (["--width", str(width)] if width else [])
@@ -179,7 +181,7 @@ def start_session(campaigns, turns, retrain_every=0,
 def up(campaigns, turns, retrain_every=0, cold=False,
        dev=True, shots=DEFAULT_SHOTS, port=DEFAULT_PORT, with_ui=True,
        factions="all", strategies=None, ruleset=None, retrain_first=False,
-       presave_radius=None, width=0, ucb=None):
+       presave_radius=None, width=0, ucb=None, interrupt_strategies=None):
     steps = [kill_session(), kill_recorder()]
     if with_ui:
         steps.append(kill_ui())
@@ -203,7 +205,8 @@ def up(campaigns, turns, retrain_every=0, cold=False,
                                                  ruleset=ruleset,
                                                  retrain_first=retrain_first,
                                                  presave_radius=presave_radius,
-                                                 width=width, ucb=ucb))
+                                                 width=width, ucb=ucb,
+                                                 interrupt_strategies=interrupt_strategies))
     return steps
 
 
@@ -350,8 +353,10 @@ def harness_tick():
                        retrain_first=RUN.get("retrain_first", False),
                        dev=RUN.get("dev", True), with_ui=True,
                        strategies=RUN["strategies"], ruleset=RUN["ruleset"],
+                       interrupt_strategies=RUN["interrupt_strategies"],
                        factions=RUN["factions"],
-                       presave_radius=RUN["presave_radius"]):
+                       presave_radius=RUN["presave_radius"],
+                       ucb=RUN.get("ucb") or None):
             _harness_note(step)
     except SystemExit as e:
         _harness_note("relaunch refused: %s" % e)
@@ -436,6 +441,9 @@ def main():
                        action="store_false",
                        help="skip the campaign-1 retrain even though run_config wants it")
         s.add_argument("--strategies", default=None)
+        s.add_argument("--interrupt-strategies", default=None,
+                       help="the mix for blocking screens (random, greedy_catboost, "
+                            "ruleset); defaults to run_config")
         s.add_argument("--ruleset", default=None)
         s.add_argument("--presave-radius", type=_presave_radius,
                        default=RUN["presave_radius"],
@@ -447,9 +455,10 @@ def main():
                        help="sample only starts whose (map, faction) has fewer than N "
                             "recorded campaigns, re-checked per campaign; the session "
                             "ends when none remain")
-        s.add_argument("--ucb", type=float, default=None,
+        s.add_argument("--ucb", type=float, default=RUN.get("ucb"),
                        help="UCB1 start selector over settlements and lord levels "
-                            "gained; C is the exploration constant")
+                            "gained; C is the exploration constant (run_config sets "
+                            "the default; --ucb 0 turns it off)")
         s.add_argument("--no-dev", action="store_true",
                        help="turn the diagnostic streams OFF -- they are on by default")
         if name == "up":
@@ -471,11 +480,15 @@ def main():
         raise SystemExit(harness(a.every))
     strategies = a.strategies if a.strategies is not None else (
         None if a.cold else RUN["strategies"])
+    interrupt_strategies = a.interrupt_strategies if a.interrupt_strategies is not None \
+        else (None if a.cold else RUN["interrupt_strategies"])
     ruleset = a.ruleset if a.ruleset is not None else (None if a.cold else RUN["ruleset"])
+    ucb = a.ucb if (a.ucb is not None and a.ucb > 0) else None
     common = dict(retrain_every=a.retrain_every, retrain_first=a.retrain_first,
                   cold=a.cold, dev=not a.no_dev,
                   factions=a.factions, strategies=strategies, ruleset=ruleset,
-                  presave_radius=a.presave_radius, width=a.width, ucb=a.ucb)
+                  interrupt_strategies=interrupt_strategies,
+                  presave_radius=a.presave_radius, width=a.width, ucb=ucb)
     if a.cmd == "session":
         print("session -> %s" % start_session(a.campaigns, a.turns, **common))
         return

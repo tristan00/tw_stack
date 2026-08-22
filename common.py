@@ -190,7 +190,7 @@ MODEL_GLOBAL = os.path.join(MODELS, "global")
 MODEL_LOCAL = os.path.join(MODELS, "local")
 MODEL_INTERRUPT = os.path.join(MODELS, "interrupt")
 MODEL_MAPGRAPH = os.path.join(MODELS, "mapgraph")
-MODEL_MAPGRAPH_INTERRUPT = os.path.join(MODELS, "mapgraph_interrupt")
+MODEL_MAPGRAPH_GREEDY = os.path.join(MODELS, "mapgraph_greedy")
 MODEL_COLD_START = os.path.join(MODELS, "__cold_start__")
 
 REFERENCE_DIR = os.path.join(TWDATA, "reference")

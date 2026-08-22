@@ -9,12 +9,14 @@ import {
   ErrorState,
   Help,
   ModelKey,
+  PairPicker,
   RangeMeter,
+  armTag,
   RateText,
   Section,
   Skeleton,
 } from '@/components/primitives'
-import { ChartFrame, RewardTrend, RhoHistogram, RhoTrend } from '@/components/charts'
+import { ChartFrame, RewardTrend, RhoHistogram, RhoMatrix, RhoTrend } from '@/components/charts'
 import { SubNav, useSubView } from '@/components/SubNav'
 import {
   useApi,
@@ -34,8 +36,8 @@ import { cn } from '@/lib/utils'
 const VIEWS = [
   { key: 'disk', label: 'on disk', asks: 'what is trained right now' },
   { key: 'forcing', label: 'what each wants', asks: 'what does each arm pick' },
-  { key: 'agreement', label: 'agreement', asks: 'do the two models rank alike' },
-  { key: 'drift', label: 'over time', asks: 'has their agreement changed as they retrained' },
+  { key: 'agreement', label: 'agreement', asks: 'do any two ranking arms rank alike' },
+  { key: 'drift', label: 'over time', asks: 'has that agreement changed as they retrained' },
   { key: 'correlations', label: 'does it help', asks: 'does an arm track how it went' },
   { key: 'training', label: 'training', asks: 'what has been tried, and did the retrain help' },
 ]
@@ -47,12 +49,15 @@ const CURRENT_GROWTH_BASELINE = 'first_decision_snapshot->peak'
 const MIX_ARMS: { key: string; model: boolean; cls: string }[] = [
   { key: 'greedy_catboost', model: true, cls: 'bg-cat' },
   { key: 'marwil_gnn', model: true, cls: 'bg-gnn' },
+  { key: 'greedy_gnn', model: true, cls: 'bg-ggnn' },
   { key: 'random', model: false, cls: 'bg-dim' },
   { key: 'ruleset', model: false, cls: 'bg-warn' },
 ]
 
-function MixBar({ mix }: { mix: Record<string, unknown> | undefined }) {
-  const vals = MIX_ARMS.map((a) => {
+const INTERRUPT_ARMS = MIX_ARMS.filter((a) => ['greedy_catboost', 'random', 'ruleset'].includes(a.key))
+
+function MixBar({ mix, arms = MIX_ARMS }: { mix: Record<string, unknown> | undefined; arms?: typeof MIX_ARMS }) {
+  const vals = arms.map((a) => {
     const v = mix?.[a.key]
     return typeof v === 'number' ? v : 0
   })
@@ -61,7 +66,7 @@ function MixBar({ mix }: { mix: Record<string, unknown> | undefined }) {
   return (
     <span className="flex items-center gap-2">
       <span className="flex h-2.5 w-24 overflow-hidden rounded">
-        {MIX_ARMS.map((a, i) => (
+        {arms.map((a, i) => (
           <span
             key={a.key}
             className={a.cls}
@@ -157,6 +162,14 @@ function Forcing() {
                   <span className="text-dim text-2xs">favours {t.favours.label}</span>
                 )}
               </div>
+              {!t.bars.length && (
+                <div className="mt-3">
+                  <EmptyState
+                    what="no decision drawn by this arm yet"
+                    why="its first pick in this run dir puts a bar here"
+                  />
+                </div>
+              )}
               <div className="mt-3 space-y-1.5">
                 {t.bars.map((b) => {
                   const pctv = b.share.of ? (100 * b.share.n) / b.share.of : 0
@@ -202,9 +215,14 @@ function Forcing() {
 type AgreementRankRow = Schemas['AgreementRankRow']
 
 function Agreement() {
-  const { data, error, loading, reload } = useApi<AgreementPage>('/api/models/agreement')
+  const [pair, setPair] = useState<string>('')
+  const { data, error, loading, reload } = useApi<AgreementPage>(
+    `/api/models/agreement${pair ? `?pair=${encodeURIComponent(pair)}` : ''}`,
+  )
   if (error) return <ErrorState error={error} onRetry={reload} />
   if (loading || !data) return <Skeleton rows={6} />
+  const a = data.a
+  const b = data.b
 
   const cols: Col<AgreementRankRow>[] = [
     {
@@ -221,36 +239,36 @@ function Agreement() {
       render: (r) => n(r.decisions),
     },
     {
-      key: 'cat_rank',
+      key: 'a_rank',
       label: 'rank',
       align: 'right',
-      group: 'tree model',
-      value: (r) => r.cat_rank ?? 0,
-      render: (r) => n(r.cat_rank, 1),
+      group: a,
+      value: (r) => r.a_rank ?? 0,
+      render: (r) => n(r.a_rank, 1),
     },
     {
-      key: 'cat_pct',
+      key: 'a_pct',
       label: 'percentile',
       align: 'right',
-      group: 'tree model',
-      value: (r) => r.cat_pct ?? 0,
-      render: (r) => n(r.cat_pct, 1),
+      group: a,
+      value: (r) => r.a_pct ?? 0,
+      render: (r) => n(r.a_pct, 1),
     },
     {
-      key: 'gnn_rank',
+      key: 'b_rank',
       label: 'rank',
       align: 'right',
-      group: 'graph model',
-      value: (r) => r.gnn_rank ?? 0,
-      render: (r) => n(r.gnn_rank, 1),
+      group: b,
+      value: (r) => r.b_rank ?? 0,
+      render: (r) => n(r.b_rank, 1),
     },
     {
-      key: 'gnn_pct',
+      key: 'b_pct',
       label: 'percentile',
       align: 'right',
-      group: 'graph model',
-      value: (r) => r.gnn_pct ?? 0,
-      render: (r) => n(r.gnn_pct, 1),
+      group: b,
+      value: (r) => r.b_pct ?? 0,
+      render: (r) => n(r.b_pct, 1),
     },
     {
       key: 'rho',
@@ -305,20 +323,44 @@ function Agreement() {
   const bins = data.rho_bins ?? []
   const secondary = data.secondary ?? []
   const excluded = c?.excluded ?? []
+  const matrices = data.matrices ?? []
   return (
     <div className="space-y-7">
+      {matrices.length > 0 && (
+        <Section
+          title="how alike the ranking arms are, pair by pair"
+          scope={{
+            text: 'median Spearman rho of each pair, over the decisions both ranked',
+            detail: 'click a cell to open that pair below; blue is alike, amber is reversed, n is how many decisions the median stands on',
+          }}
+        >
+          <div className="grid gap-3 md:grid-cols-2">
+            {matrices.map((m) => (
+              <Card key={m.key} className="p-3.5">
+                <div className="text-sm font-semibold">{m.title}</div>
+                {m.detail && <div className="text-dim mb-2 text-2xs">{m.detail}</div>}
+                <RhoMatrix arms={m.arms} cells={m.cells ?? []} selected={data.pair} onSelect={setPair} />
+              </Card>
+            ))}
+          </div>
+        </Section>
+      )}
       <Section
-        title="do the two models rank alike"
+        title={`do ${a} and ${b} rank alike`}
         scope={data.scope}
         right={
-          <Help>
-            Spearman rho compares the two models' whole orderings of one decision, not just
-            the action that was taken. Near +1 they are ranking on the same thing and the
-            second model is close to redundant; near 0 they are ranking on effectively
-            unrelated criteria; near −1 one is the other reversed. None of the three is a
-            fault by itself — which one you want is a question about the run. A decision the
-            graph model never scored cannot appear here at all.
-          </Help>
+          <div className="flex items-center gap-3">
+            <PairPicker pairs={data.pairs ?? []} value={data.pair} onChange={setPair} />
+            <Help>
+              Spearman rho compares the two arms' whole orderings of one decision, not just the
+              action that was taken. Near +1 they are ranking on the same thing and the second
+              is close to redundant; near 0 they are ranking on effectively unrelated criteria;
+              near −1 one is the other reversed. None of the three is a fault by itself — which
+              one you want is a question about the run. Every arm that stores a per-offer
+              ranking can be paired with every other; a decision one of the pair never scored
+              cannot appear.
+            </Help>
+          </div>
         }
       >
         <Freshness f={data.freshness} />
@@ -388,8 +430,8 @@ function Agreement() {
           }}
           right={
             <div className="text-dim flex items-center gap-3 text-2xs">
-              <ModelKey model="cat">tree model</ModelKey>
-              <ModelKey model="gnn">graph model</ModelKey>
+              <ModelKey model={armTag(a)}>{a}</ModelKey>
+              <ModelKey model={armTag(b)}>{b}</ModelKey>
             </div>
           }
         >
@@ -399,7 +441,7 @@ function Agreement() {
             rowId={(r) => r.picked_by.raw}
             dense
             emptyWhat="no decision carries both ranks"
-            emptyWhy="a decision is only comparable once the graph model has weights and has scored the same offers"
+            emptyWhy={`a decision is only comparable once both ${a} and ${b} have scored the same offers`}
           />
         </Section>
       )}
@@ -528,8 +570,9 @@ const trendCols: Col<AgreementSeriesPoint>[] = [
 
 function Drift() {
   const [axis, setAxis] = useState<'window' | 'generation'>('window')
+  const [pair, setPair] = useState<string>('')
   const { data, error, loading, reload } = useApi<AgreementSeriesPage>(
-    `/api/models/agreement/series?axis=${axis}`,
+    `/api/models/agreement/series?axis=${axis}${pair ? `&pair=${encodeURIComponent(pair)}` : ''}`,
   )
   if (error) return <ErrorState error={error} onRetry={reload} />
   if (loading || !data) return <Skeleton rows={6} />
@@ -539,10 +582,12 @@ function Drift() {
   return (
     <div className="space-y-7">
       <Section
-        title="has their agreement changed"
+        title={`has the agreement of ${data.a} and ${data.b} changed`}
         scope={data.scope}
         right={
-          <div className="flex items-center gap-1">
+          <div className="flex flex-wrap items-center gap-3">
+            <PairPicker pairs={data.pairs ?? []} value={data.pair} onChange={setPair} />
+            <div className="flex items-center gap-1">
             {(['window', 'generation'] as const).map((a) => (
               <button
                 key={a}
@@ -555,6 +600,7 @@ function Drift() {
                 {a === 'window' ? 'over the run' : 'by generation'}
               </button>
             ))}
+            </div>
           </div>
         }
       >
@@ -718,9 +764,17 @@ function Training() {
     },
     {
       key: 'mix',
-      label: 'strategy mix',
+      label: 'action mix',
       value: (r) => JSON.stringify(r.mix ?? {}),
       render: (r) => <MixBar mix={r.mix as Record<string, unknown> | undefined} />,
+    },
+    {
+      key: 'interrupt_mix',
+      label: 'interrupt mix',
+      value: (r) => JSON.stringify(r.interrupt_mix ?? {}),
+      render: (r) => (
+        <MixBar mix={r.interrupt_mix as Record<string, unknown> | undefined} arms={INTERRUPT_ARMS} />
+      ),
     },
     {
       key: 'campaigns',
@@ -735,8 +789,23 @@ function Training() {
       label: 'corpus rows',
       align: 'right',
       group: 'what it played',
+      optional: true,
       value: (r) => r.corpus ?? 0,
       render: (r) => n(r.corpus),
+    },
+    {
+      key: 'reward_camp',
+      label: 'reward',
+      unit: 'per campaign',
+      align: 'right',
+      group: 'result',
+      value: (r) => r.reward_per_campaign ?? undefined,
+      sortUndefined: 'last',
+      render: (r) => (
+        <span title="settlements gained + legendary lord levels gained, per campaign — the UCB reward">
+          {n(r.reward_per_campaign, 2)}
+        </span>
+      ),
     },
     {
       key: 'sett_camp',
@@ -746,6 +815,15 @@ function Training() {
       group: 'result',
       value: (r) => r.settlements_per_campaign ?? 0,
       render: (r) => n(r.settlements_per_campaign, 2),
+    },
+    {
+      key: 'lord_camp',
+      label: 'lord levels',
+      unit: 'per campaign',
+      align: 'right',
+      group: 'result',
+      value: (r) => r.lord_per_campaign ?? 0,
+      render: (r) => n(r.lord_per_campaign, 2),
     },
     {
       key: 'turns_camp',
@@ -806,7 +884,7 @@ function Training() {
         unit: 'r vs growth',
         align: 'right',
         group: 'share tracks growth',
-        optional: !a.model,
+        optional: true,
         value: (r) => r.growth_corr?.[a.key]?.r ?? undefined,
         sortUndefined: 'last',
         render: (r) => {
@@ -832,6 +910,7 @@ function Training() {
       key: 'notes',
       label: 'outcomes',
       group: 'result',
+      optional: true,
       value: (r) => r.notes ?? '',
       render: (r) => <span className="text-dim text-2xs">{r.notes ?? '—'}</span>,
     },
@@ -859,6 +938,15 @@ function Training() {
 
   return (
     <div className="space-y-6">
+      <div className="text-dim flex flex-wrap items-center gap-3 text-2xs">
+        <span>mix bars, left to right:</span>
+        {MIX_ARMS.map((a) => (
+          <span key={a.key} className="flex items-center gap-1.5">
+            <span className={cn('inline-block h-2.5 w-4 rounded-sm', a.cls)} />
+            {a.key}
+          </span>
+        ))}
+      </div>
       <Section title="reward per campaign">
         <ChartFrame
           table={
@@ -880,6 +968,7 @@ function Training() {
           cols={cols}
           rowId={(r, i) => `${r.trial}-${i}`}
           searchPlaceholder="search trial, ruleset…"
+          pageSize={10}
           emptyWhat="no trial recorded yet"
           emptyWhy="the ledger is written when a run completes"
         />

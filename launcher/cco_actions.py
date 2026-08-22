@@ -1328,6 +1328,11 @@ def _await_pending_attack(bus, cap=20.0, poll=0.5):
                 sys.stderr.write("cco_actions: end_turn blocked by PENDING_ATTACK -- "
                                  "resolved the in-flight battle: %s\n" % steps[:4])
             continue
+        steps = interrupts.cancel_declare_war_panel(bus)
+        if steps:
+            sys.stderr.write("cco_actions: end_turn blocked by PENDING_ATTACK -- cancelled "
+                             "the declare-war confirmation: %s\n" % steps[:2])
+            continue
         time.sleep(poll)
     common.waitlog("pending_attack_resolve", time.time() - t0, False,
                    "still pending after %d battles" % battles)

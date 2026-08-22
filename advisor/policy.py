@@ -9,6 +9,7 @@ sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.dirname(_HERE))
 import common
 
+import arms
 import model as M
 import options as O
 import ruleset as R
@@ -25,14 +26,15 @@ DEFAULT_STRATEGIES = {"greedy_catboost": 0.8, "random": 0.2}
 ModelUnavailable = S.ModelUnavailable
 
 
-def normalize_strategies(strategies):
+def normalize_strategies(strategies, allowed=None):
+    names = tuple(allowed) if allowed is not None else S.NAMES
     mix = dict(strategies if strategies is not None else DEFAULT_STRATEGIES)
     if not mix:
-        raise ValueError("empty strategy mix -- known strategies: %s" % ", ".join(S.NAMES))
-    unknown = sorted(k for k in mix if k not in S.NAMES)
+        raise ValueError("empty strategy mix -- known strategies: %s" % ", ".join(names))
+    unknown = sorted(k for k in mix if k not in names)
     if unknown:
         raise ValueError("unknown strategy name(s) %s -- known: %s"
-                         % (unknown, ", ".join(S.NAMES)))
+                         % (unknown, ", ".join(names)))
     total = 0.0
     for k, v in mix.items():
         try:
@@ -46,6 +48,28 @@ def normalize_strategies(strategies):
     if total <= 0.0:
         raise ValueError("strategy mix %r sums to zero" % (strategies,))
     return {k: w / total for k, w in mix.items()}
+
+
+def normalize_interrupt_strategies(strategies):
+    mix = dict(strategies if strategies is not None else DEFAULT_STRATEGIES)
+    modelless = sorted(k for k in mix if k in S.NAMES and k not in arms.INTERRUPT_NAMES)
+    if modelless:
+        raise ValueError(
+            "interrupt mix names %s, which have no interrupt model -- blocking screens are "
+            "answered by %s only" % (modelless, ", ".join(arms.INTERRUPT_NAMES)))
+    return normalize_strategies(mix, allowed=arms.INTERRUPT_NAMES)
+
+
+def interrupt_strategies_for(action_mix, interrupt_strategies):
+    if interrupt_strategies is not None:
+        return normalize_interrupt_strategies(interrupt_strategies)
+    spill = sorted(k for k in (action_mix or {}) if k not in arms.INTERRUPT_NAMES)
+    if spill:
+        raise ValueError(
+            "the action mix plays %s, which have no interrupt model, so blocking screens "
+            "need their own mix -- give --interrupt-strategies over %s"
+            % (spill, ", ".join(arms.INTERRUPT_NAMES)))
+    return normalize_strategies(action_mix, allowed=arms.INTERRUPT_NAMES)
 
 
 def _tally(values):
@@ -65,13 +89,18 @@ class Policy:
         if "ruleset" in self.strategies and self.ruleset is None:
             raise ValueError("strategy mix includes 'ruleset' but no ruleset name was given")
         self.gnn = None
-        if "marwil_gnn" in self.strategies:
+        self.ggnn = None
+        if "marwil_gnn" in self.strategies or "greedy_gnn" in self.strategies:
             if common.ROOT not in sys.path:
                 sys.path.insert(0, common.ROOT)
+        if "marwil_gnn" in self.strategies:
             from advisor.mapgraph import rank as GNN
             self.gnn = GNN.Ranker()
+        if "greedy_gnn" in self.strategies:
+            from advisor.mapgraph import greedy_rank as GGNN
+            self.ggnn = GGNN.Ranker()
         self.members = {name: S.build(name, rng=self.rng, ranker=self.ranker,
-                                      ruleset=self.ruleset, gnn=self.gnn)
+                                      ruleset=self.ruleset, gnn=self.gnn, ggnn=self.ggnn)
                         for name in self.strategies}
         self.fallback = self.members.get("random") or S.build("random", rng=self.rng)
         self.max_actions_per_entity = max_actions_per_entity
@@ -98,9 +127,15 @@ class Policy:
         if hot:
             for i, r in enumerate(ranked):
                 r["rank"] = i + 1
-        gnn_scores = self._score_with_gnn(ranked, record)
+        graph = (self._graph(record)
+                 if (ranked and (self.gnn is not None or self.ggnn is not None)) else None)
+        gnn_scores = self._score_with_gnn(ranked, record, graph)
+        ggnn_scores = self._score_with_greedy(ranked, record, graph)
         if "marwil_gnn" in self.members:
             self.members["marwil_gnn"].scored = gnn_scores
+        if "greedy_gnn" in self.members:
+            self.members["greedy_gnn"].scored = ggnn_scores
+            self.members["greedy_gnn"].graph = graph
         elig = ranked
         self.last_drops = list(self.gate.last_drops)
         self.last_choice = {"hot": bool(hot), "n_ranked": len(ranked), "n_eligible": len(elig),
@@ -108,6 +143,7 @@ class Policy:
                             "drop_reasons": _tally(d["reason"] for d in self.last_drops),
                             "eligible_types": _tally(r["action_type"] for r in elig),
                             "gnn_scored": len(gnn_scores or {}),
+                            "ggnn_scored": len(ggnn_scores or {}),
                             "mix": dict(self.strategies), "mode": None, "roll": None}
         if not elig:
             return None, ranked
@@ -130,6 +166,8 @@ class Policy:
             mode = "ruleset(%s)" % member.last_rule
         else:
             mode = drawn
+        if drawn == "greedy_gnn" and member.last_reward is not None:
+            self.last_choice["greedy_gnn_reward"] = round(float(member.last_reward), 4)
         pick = {"context_kind": best["context_kind"], "context_id": best["context_id"],
                 "action_type": best["action_type"], "key": best["key"],
                 "params": best.get("params") or {},
@@ -139,11 +177,25 @@ class Policy:
         self.last_choice["roll"] = round(roll, 4)
         return pick, ranked
 
-    def _score_with_gnn(self, ranked, record):
+    def _graph(self, record):
+        from advisor.mapgraph import build as B
+        return B.build_graph(record)
+
+    def _score_with_gnn(self, ranked, record, graph=None):
         if self.gnn is None or not ranked:
             return None
-        impact = self.gnn.score_elig(ranked, record)
-        scored = {S.offer_key(r): float(v) for r, v in zip(ranked, impact)}
+        impact = self.gnn.score_elig(ranked, record, graph=graph)
+        return self._stamp(ranked, impact, "gnn_impact", "gnn_rank")
+
+    def _score_with_greedy(self, ranked, record, graph=None):
+        if self.ggnn is None or not ranked:
+            return None
+        reward = self.ggnn.score_elig(ranked, record, graph=graph)
+        return self._stamp(ranked, reward, "ggnn_score", "ggnn_rank")
+
+    @staticmethod
+    def _stamp(ranked, values, score_field, rank_field):
+        scored = {S.offer_key(r): float(v) for r, v in zip(ranked, values)}
         if not scored:
             return None
         rank_of = {}
@@ -152,8 +204,8 @@ class Policy:
         for r in ranked:
             v = scored.get(S.offer_key(r))
             if v is not None:
-                r["gnn_impact"] = round(v, 5)
-                r["gnn_rank"] = rank_of[v]
+                r[score_field] = round(v, 5)
+                r[rank_field] = rank_of[v]
         return scored
 
     def _draw(self, roll):
@@ -172,9 +224,12 @@ def scores_for_store(ranked, limit=None):
     for r in rows:
         vals = {f: r.get(f) for f in ("score", "exploit", "rank", "pct_global",
                                       "pct_local", "gnn_impact", "gnn_rank")}
-        if all(v is None for v in vals.values()):
+        models = {}
+        if r.get("ggnn_score") is not None or r.get("ggnn_rank") is not None:
+            models["greedy_gnn"] = {"score": r.get("ggnn_score"), "rank": r.get("ggnn_rank")}
+        if all(v is None for v in vals.values()) and not models:
             continue
-        out.append(dict(vals, context_kind=r["context_kind"],
+        out.append(dict(vals, models=models, context_kind=r["context_kind"],
                         context_id=r["context_id"],
                         action_type=r["action_type"], key=r["key"]))
     return out

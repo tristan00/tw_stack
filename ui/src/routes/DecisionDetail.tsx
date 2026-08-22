@@ -13,6 +13,7 @@ import {
   RangeMeter,
   Section,
   Skeleton,
+  armTag,
 } from '@/components/primitives'
 import { useApi, type DecisionDetail as Detail, type Schemas } from '@/lib/api'
 import { clock, ms, n } from '@/lib/format'
@@ -55,7 +56,7 @@ const offerCols: Col<OfferRow>[] = [
     key: 'exploit',
     label: 'exploit',
     align: 'right',
-    group: 'tree model',
+    group: 'greedy_catboost',
     value: (r) => r.exploit ?? 0,
     render: (r) => n(r.exploit, 3),
   },
@@ -64,7 +65,7 @@ const offerCols: Col<OfferRow>[] = [
     label: 'global',
     unit: 'pct',
     align: 'right',
-    group: 'tree model',
+    group: 'greedy_catboost',
     value: (r) => r.pct_global ?? 0,
     render: (r) => n(r.pct_global, 1),
   },
@@ -73,7 +74,7 @@ const offerCols: Col<OfferRow>[] = [
     label: 'local',
     unit: 'pct',
     align: 'right',
-    group: 'tree model',
+    group: 'greedy_catboost',
     optional: true,
     value: (r) => r.pct_local ?? 0,
     render: (r) => n(r.pct_local, 1),
@@ -82,7 +83,7 @@ const offerCols: Col<OfferRow>[] = [
     key: 'gnn_impact',
     label: 'impact',
     align: 'right',
-    group: 'graph model',
+    group: 'marwil_gnn',
     value: (r) => r.gnn_impact ?? 0,
     render: (r) => n(r.gnn_impact, 4),
   },
@@ -90,18 +91,40 @@ const offerCols: Col<OfferRow>[] = [
     key: 'gnn_rank',
     label: 'rank',
     align: 'right',
-    group: 'graph model',
+    group: 'marwil_gnn',
     value: (r) => r.gnn_rank ?? 9999,
     render: (r) => (r.gnn_rank === null || r.gnn_rank === undefined ? '—' : r.gnn_rank),
   },
   {
+    key: 'ggnn_score',
+    label: 'reward',
+    align: 'right',
+    group: 'greedy_gnn',
+    value: (r) => r.ggnn_score ?? 0,
+    render: (r) => n(r.ggnn_score, 3),
+  },
+  {
+    key: 'ggnn_rank',
+    label: 'rank',
+    align: 'right',
+    group: 'greedy_gnn',
+    value: (r) => r.ggnn_rank ?? 9999,
+    render: (r) => (r.ggnn_rank === null || r.ggnn_rank === undefined ? '—' : r.ggnn_rank),
+  },
+  {
     key: 'taken',
     label: '',
-    group: 'graph model',
+    group: 'taken',
     value: (r) => (r.taken ? 1 : 0),
     render: (r) => (r.taken ? <Chip state="ok">taken</Chip> : null),
   },
 ]
+
+const RANK_FIELD: Record<string, keyof OfferRow> = {
+  greedy_catboost: 'rank',
+  marwil_gnn: 'gnn_rank',
+  greedy_gnn: 'ggnn_rank',
+}
 
 export function DecisionDetail() {
   const { decisionId = '' } = useParams()
@@ -162,68 +185,88 @@ export function DecisionDetail() {
       </Section>
 
       <Section
-        title="how alike the two rankings were"
+        title="how alike the ranking arms ranked it"
         scope={{
-          text: "both models' orderings of this decision's offers, over the offers both scored",
+          text: "each pair's orderings of this decision's offers, over the offers both scored",
           detail: 'every dot is a row in the ranking below',
         }}
       >
-        {!data.agreement || data.agreement.rho === null || data.agreement.rho === undefined ? (
+        {!(data.agreement ?? []).length ? (
           <EmptyState
             what="this decision has no rank correlation"
-            why={
-              data.agreement?.note ??
-              'fewer than three offers carry both ranks, and a rho over two points can only be +1 or -1'
-            }
+            why="no pair of arms stored a ranking over it, or the analytics service has not folded it in yet"
           />
         ) : (
-          <Card className="flex flex-wrap items-start gap-6 p-3.5">
-            <div className="min-w-0 flex-1 space-y-2">
-              <div>
-                <div className="text-dim text-2xs uppercase tracking-wide">spearman rho</div>
-                <div className="num text-xl leading-tight">
-                  {data.agreement.rho >= 0 ? '+' : ''}
-                  {data.agreement.rho.toFixed(3)}
-                </div>
-                <RangeMeter value={data.agreement.rho} width={180} />
-              </div>
-              <CountText count={data.agreement.n} />
-              <div className="text-2xs">
-                {data.agreement.top1_same
-                  ? 'both models put the same offer first'
-                  : 'the two models put different offers first'}
-              </div>
-              {(data.agreement.cat_top_in_gnn || data.agreement.gnn_top_in_cat) && (
-                <div className="text-dim text-2xs">
-                  the tree model's first choice was the graph model's{' '}
-                  <b className="num text-fg">#{data.agreement.cat_top_in_gnn}</b>; the graph
-                  model's was the tree model's{' '}
-                  <b className="num text-fg">#{data.agreement.gnn_top_in_cat}</b>
-                </div>
-              )}
-              <div className="text-dim flex flex-wrap gap-3 text-2xs">
-                <ModelKey model="cat">tree model rank →</ModelKey>
-                <ModelKey model="gnn">graph model rank ↓</ModelKey>
-              </div>
-            </div>
-            <RankScatter
-              pairs={data.offers
-                .filter((o) => o.rank !== null && o.rank !== undefined && o.gnn_rank !== null && o.gnn_rank !== undefined)
+          <div className="grid gap-3 xl:grid-cols-2">
+            {(data.agreement ?? []).map((ag) => {
+              const fa = RANK_FIELD[ag.a]
+              const fb = RANK_FIELD[ag.b]
+              const dots = data.offers
+                .filter(
+                  (o) =>
+                    fa && fb &&
+                    o[fa] !== null && o[fa] !== undefined &&
+                    o[fb] !== null && o[fb] !== undefined,
+                )
                 .map((o) => ({
-                  cat: o.rank as number,
-                  gnn: o.gnn_rank as number,
+                  cat: o[fa] as number,
+                  gnn: o[fb] as number,
                   taken: Boolean(o.taken),
                   label: o.action_key ?? '',
-                }))}
-            />
-          </Card>
+                }))
+              return (
+                <Card key={ag.pair} className="flex flex-wrap items-start gap-6 p-3.5">
+                  <div className="min-w-0 flex-1 space-y-2">
+                    <div className="text-dim flex flex-wrap gap-3 text-2xs">
+                      <ModelKey model={armTag(ag.a)}>{ag.a} rank →</ModelKey>
+                      <ModelKey model={armTag(ag.b)}>{ag.b} rank ↓</ModelKey>
+                    </div>
+                    {ag.rho === null || ag.rho === undefined ? (
+                      <EmptyState
+                        what="no rank correlation for this pair"
+                        why={
+                          ag.note ??
+                          'fewer than three offers carry both ranks, and a rho over two points can only be +1 or -1'
+                        }
+                      />
+                    ) : (
+                      <>
+                        <div>
+                          <div className="text-dim text-2xs uppercase tracking-wide">spearman rho</div>
+                          <div className="num text-xl leading-tight">
+                            {ag.rho >= 0 ? '+' : ''}
+                            {ag.rho.toFixed(3)}
+                          </div>
+                          <RangeMeter value={ag.rho} width={180} />
+                        </div>
+                        <CountText count={ag.n} />
+                        <div className="text-2xs">
+                          {ag.top1_same
+                            ? 'both arms put the same offer first'
+                            : 'the two arms put different offers first'}
+                        </div>
+                        {(ag.a_top_in_b || ag.b_top_in_a) && (
+                          <div className="text-dim text-2xs">
+                            {ag.a}'s first choice was {ag.b}'s{' '}
+                            <b className="num text-fg">#{ag.a_top_in_b}</b>; {ag.b}'s was {ag.a}'s{' '}
+                            <b className="num text-fg">#{ag.b_top_in_a}</b>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                  {dots.length > 0 && <RankScatter pairs={dots} aLabel={ag.a} bLabel={ag.b} />}
+                </Card>
+              )
+            })}
+          </div>
         )}
       </Section>
 
       <Section
         title="the ranking it produced"
         scope={{
-          text: 'every offer both models scored for this decision',
+          text: 'every offer scored for this decision, with each stored ranking',
           detail: 'the row the game accepted is marked',
         }}
       >

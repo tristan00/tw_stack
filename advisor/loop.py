@@ -176,8 +176,10 @@ def _verify_action_catalogues(log):
 
 
 def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
-                 stuck_seconds=None, on_stuck=None, cold=False, on_turn=None):
+                 stuck_seconds=None, on_stuck=None, cold=False, on_turn=None,
+                 interrupt_strategies=None):
     pol = pol or P.Policy()
+    imix = P.interrupt_strategies_for(pol.strategies, interrupt_strategies)
     TR.set_run_dir(run_dir)
     import diplo_stream as DS
     DS.reset(run_dir)
@@ -191,9 +193,8 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
     import interrupt_model as IM
     import interrupts as I
     _verify_action_catalogues(log)
-    ranker = (IM.InterruptRanker(NO_MODEL_DIR, strategies=pol.strategies,
-                                 ruleset=pol.ruleset) if cold
-              else IM.InterruptRanker(strategies=pol.strategies, ruleset=pol.ruleset))
+    ranker = (IM.InterruptRanker(NO_MODEL_DIR, strategies=imix, ruleset=pol.ruleset)
+              if cold else IM.InterruptRanker(strategies=imix, ruleset=pol.ruleset))
     act_hist = []
     act_counts = {}
     I.reset_answers()
@@ -206,11 +207,6 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
             "interrupt policy: greedy_catboost is in the mix but the interrupt model did "
             "not load from %s -- a run that needs a model must not silently play random"
             % IM.MODEL_DIR)
-    if not cold and "marwil_gnn" in ranker.strategies \
-            and not (ranker.gnn and ranker.gnn.ready):
-        raise P.ModelUnavailable(
-            "interrupt policy: marwil_gnn is in the mix but the interrupt graph model is "
-            "not ready -- a run that needs a model must not silently play random")
     if ranker.ready:
         log("interrupt policy: mix %s, trained(%d rows, screens=%s)"
             % (json.dumps(ranker.strategies), (ranker.meta or {}).get("rows", 0),
@@ -218,11 +214,6 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
     else:
         log("interrupt policy: mix %s, greedy_catboost unready -> random fallback "
             "(FORCED -- cold start)" % json.dumps(ranker.strategies))
-    if "marwil_gnn" in ranker.strategies:
-        gm = (ranker.gnn.meta or {}) if ranker.gnn else {}
-        gf = gm.get("fit") or {}
-        log("interrupt graph arm: trained(%d screens, val_nll %s vs uniform %s)"
-            % (gm.get("rows", 0), gf.get("val_listwise_nll"), gm.get("uniform_nll")))
 
     def _stuck(reason, detail):
         stuck.update(fired=True, reason=reason, detail=detail)
