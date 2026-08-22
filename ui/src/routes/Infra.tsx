@@ -45,11 +45,15 @@ function Field({
 function LaunchForm({
   defaults,
   kind,
-  models,
+  arms,
+  interruptArms,
+  trainable,
 }: {
   defaults: LaunchDefaults
   kind: 'run' | 'cold'
-  models: string[]
+  arms: string[]
+  interruptArms: string[]
+  trainable: string[]
 }) {
   const storeKey = `launch.${kind}`
   const [form, setForm] = useState<LaunchDefaults>(() => {
@@ -119,63 +123,85 @@ function LaunchForm({
             onChange={(e) => set('turns_max', Number(e.target.value))}
           />
         </Field>
-        <Field label="model">
-          <select
+        <Field label="factions" help="all, or a comma-separated list of faction keys baked at this radius">
+          <input
             className={input}
-            value={form.model ?? ''}
-            onChange={(e) => set('model', e.target.value)}
-          >
-            {models.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </select>
+            value={form.factions ?? 'all'}
+            onChange={(e) => set('factions', e.target.value)}
+          />
         </Field>
-        <Field
-          label="retrain every"
-          help="0 = never. N = retrain before every Nth campaign, but NOT before campaign 1 — tick 'retrain first' for that."
-        >
+        <Field label="presave radius" help="starts are sampled from the baked saves at exactly this radius">
           <input
             type="number"
             className={input}
-            value={form.retrain_every ?? 0}
-            onChange={(e) => set('retrain_every', Number(e.target.value))}
+            value={form.presave_radius ?? 0}
+            onChange={(e) => set('presave_radius', Number(e.target.value))}
           />
         </Field>
-        <Field label="ruleset">
+        <Field label="ucb" help="blank = uniform over the starts; a number is the UCB1 exploration constant">
           <input
             className={input}
-            placeholder="v1"
-            value={form.ruleset ?? ''}
-            onChange={(e) => set('ruleset', e.target.value)}
+            placeholder="uniform"
+            value={form.ucb === null || form.ucb === undefined ? '' : String(form.ucb)}
+            onChange={(e) => set('ucb', e.target.value.trim() === '' ? null : Number(e.target.value))}
           />
         </Field>
-        <Field label="strategies">
-          <input
-            className={input}
-            placeholder="greedy_catboost=0.3,marwil_gnn=0.3,random=0.3,ruleset=0.1"
-            value={form.strategies ?? ''}
-            onChange={(e) => set('strategies', e.target.value)}
-          />
-        </Field>
-        <Field label="cfg">
-          <input
-            className={input}
-            placeholder="bottleneck=64 lr=0.01"
-            value={form.cfg ?? ''}
-            onChange={(e) => set('cfg', e.target.value)}
-          />
-        </Field>
+        {kind === 'run' && (
+          <>
+            <Field
+              label="retrain every"
+              help="0 = never. N = retrain before every Nth campaign, but NOT before campaign 1 — tick 'retrain first' for that."
+            >
+              <input
+                type="number"
+                className={input}
+                value={form.retrain_every ?? 0}
+                onChange={(e) => set('retrain_every', Number(e.target.value))}
+              />
+            </Field>
+            <Field
+              label="action strategies"
+              help={`the per-decision mix over ${arms.join(', ')}; ${trainable.join(', ')} need their trained models`}
+            >
+              <input
+                className={input}
+                placeholder={trainable.map((a) => `${a}=0.2`).join(',') + ',random=0.4'}
+                value={form.strategies ?? ''}
+                onChange={(e) => set('strategies', e.target.value)}
+              />
+            </Field>
+            <Field
+              label="interrupt strategies"
+              help={`the mix on blocking screens, over ${interruptArms.join(', ')} only — the graph arms have no interrupt model`}
+            >
+              <input
+                className={input}
+                placeholder="greedy_catboost=0.5,random=0.5"
+                value={form.interrupt_strategies ?? ''}
+                onChange={(e) => set('interrupt_strategies', e.target.value)}
+              />
+            </Field>
+            <Field label="ruleset" help="required when 'ruleset' is in either mix">
+              <input
+                className={input}
+                placeholder="probe_gaps"
+                value={form.ruleset ?? ''}
+                onChange={(e) => set('ruleset', e.target.value)}
+              />
+            </Field>
+          </>
+        )}
         <div className="flex items-end gap-4">
-          <label className="flex items-center gap-1.5 text-xs">
-            <input
-              type="checkbox"
-              checked={!!form.retrain_first}
-              onChange={(e) => set('retrain_first', e.target.checked)}
-            />
-            retrain first
-          </label>
+          {kind === 'run' && (
+            <label className="flex items-center gap-1.5 text-xs">
+              <input
+                type="checkbox"
+                checked={!!form.retrain_first}
+                onChange={(e) => set('retrain_first', e.target.checked)}
+              />
+              retrain first
+            </label>
+          )}
           <label className="flex items-center gap-1.5 text-xs">
             <input
               type="checkbox"
@@ -267,8 +293,20 @@ export function Infra() {
               stops the advisor session and Warhammer3. The recorder is left alone.
             </span>
           </Card>
-          <LaunchForm defaults={data.defaults} kind="run" models={data.models} />
-          <LaunchForm defaults={data.cold_defaults} kind="cold" models={data.models} />
+          <LaunchForm
+            defaults={data.defaults}
+            kind="run"
+            arms={data.arms}
+            interruptArms={data.interrupt_arms}
+            trainable={data.trainable}
+          />
+          <LaunchForm
+            defaults={data.cold_defaults}
+            kind="cold"
+            arms={data.arms}
+            interruptArms={data.interrupt_arms}
+            trainable={data.trainable}
+          />
         </div>
       </Section>
 

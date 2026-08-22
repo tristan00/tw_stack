@@ -435,8 +435,34 @@ def _cancel_declare_root(bus, root, tree):
     return ["declare_war_cancelled:%s" % root] if clicked else []
 
 
+def cancel_declare_war_panel(bus):
+    hit = nav.declare_war_panel(bus)
+    if not hit:
+        return []
+    opts = {"button_cancel_declare": {
+        "context": None, "text": hit["label"], "dilemma_id": nav.DECLARE_WAR_ROOT,
+        "option_id": "button_cancel_declare", "payload": [], "subtree": []}}
+    key = _choose("declare_war_cancel", sorted(opts), _campaign_hint(), meta=opts,
+                  live=lambda: ({"button_cancel_declare"} if nav.declare_war_panel(bus)
+                                else set()))
+    t0 = time.time()
+    clicked = _click(bus, hit["cancel"], settle=1.0)
+    gone = nav.declare_war_panel(bus) is None
+    _record_choice("declare_war_cancel", nav.DECLARE_WAR_ROOT, opts, key,
+                   extra={"tree": hit["nodes"], "root_context": nav.DECLARE_WAR_ROOT},
+                   executed=clicked, confirmed=gone,
+                   refusal=_refusal(gone, clicked),
+                   latency_ms=int((time.time() - t0) * 1000))
+    sys.stderr.write("interrupts: %r panel CANCELLED (clicked=%s gone=%s) -- it sits under "
+                     "panel_manager, never among the visible roots, and leaves the engine on "
+                     "PENDING_ATTACK; war is declared through diplomacy or not at all\n"
+                     % (nav.DECLARE_WAR_TITLE, clicked, gone))
+    return (["declare_war_cancelled:%s" % nav.DECLARE_WAR_ROOT] if clicked
+            else ["declare_war_cancel_stuck:%s" % nav.DECLARE_WAR_ROOT])
+
+
 def cancel_declare_war(bus):
-    steps = []
+    steps = list(cancel_declare_war_panel(bus))
     for root in [x for x in roots(bus)
                  if x not in nav.BASE_ROOTS and x not in DIPLOMACY_HUD_ROOTS
                  and x not in BENIGN_PANELS]:

@@ -11,11 +11,14 @@ of model predictive performance. Rank every improvement by projected turns/hour.
 
 ## Models
 
-- Trainable arms (`greedy_catboost`, `marwil_gnn`, main and interrupt) are hard
-  dependencies. Missing/unloadable models refuse to start; a retrain that raises or
-  reports `trained: false` kills the session; predict failures raise `ModelUnavailable`.
-  Never let a run silently play random in a trainable arm's place. Only `--cold` runs
-  modelless.
+- Trainable arms (`greedy_catboost`, `marwil_gnn`, `greedy_gnn` on actions;
+  `greedy_catboost` on blocking screens) are hard dependencies. Missing/unloadable models
+  refuse to start; a retrain that raises or reports `trained: false` kills the session;
+  predict failures raise `ModelUnavailable`. Never let a run silently play random in a
+  trainable arm's place. Only `--cold` runs modelless.
+- Two mixes, not one: `--strategies` draws the action arm per decision,
+  `--interrupt-strategies` draws the blocking-screen arm. The graph arms have no interrupt
+  model, so the interrupt mix is `greedy_catboost` / `random` / `ruleset` only.
 - The GNN trains on CUDA. A CPU-only torch wheel is a broken environment to fix, never a
   fallback to accept.
 - **Never retrain the owner's models unrequested.** `run_config` keeps retraining off;

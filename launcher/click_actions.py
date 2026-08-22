@@ -96,6 +96,11 @@ def clear_screen(bus, where=None):
     t_clear = time.time()
     inflight = sys.exc_info()[1]
     pending_before = nav.engine_pending(bus)
+    if str(pending_before or "").split("|")[-1] in nav.ORDER_PENDINGS:
+        cancelled = interrupts.cancel_declare_war_panel(bus)
+        if cancelled:
+            sys.stderr.write("click_actions: clear_screen(%s) -- %s\n" % (where, cancelled))
+            pending_before = nav.engine_pending(bus)
     roots_before = nav.visible_roots(bus) or []
     if not [r for r in roots_before if r not in nav.BASE_ROOTS
             and r not in nav.BENIGN_PANELS] and not nav.pending_blocks(pending_before):

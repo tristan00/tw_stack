@@ -531,6 +531,14 @@ export interface components {
         AgreementBreakdownPage: {
             scope: components["schemas"]["Scope"];
             freshness: components["schemas"]["AnalyticsFreshness"];
+            /** Pair */
+            pair: string;
+            /** A */
+            a: string;
+            /** B */
+            b: string;
+            /** Pairs */
+            pairs?: components["schemas"]["PairOption"][];
             /**
              * Dim
              * @enum {string}
@@ -555,10 +563,50 @@ export interface components {
             rbo_mean?: number | null;
             same_top: components["schemas"]["Rate"];
         };
+        /** AgreementMatrix */
+        AgreementMatrix: {
+            /**
+             * Key
+             * @enum {string}
+             */
+            key: "generation" | "all";
+            /** Title */
+            title: string;
+            /** Detail */
+            detail?: string | null;
+            /** Arms */
+            arms: string[];
+            /** Cells */
+            cells?: components["schemas"]["AgreementMatrixCell"][];
+        };
+        /** AgreementMatrixCell */
+        AgreementMatrixCell: {
+            /** A */
+            a: string;
+            /** B */
+            b: string;
+            /** Pair */
+            pair: string;
+            /** Rho Median */
+            rho_median?: number | null;
+            decisions: components["schemas"]["Count"];
+            /** Note */
+            note?: string | null;
+        };
         /** AgreementPage */
         AgreementPage: {
             scope: components["schemas"]["Scope"];
             freshness: components["schemas"]["AnalyticsFreshness"];
+            /** Pair */
+            pair: string;
+            /** A */
+            a: string;
+            /** B */
+            b: string;
+            /** Pairs */
+            pairs?: components["schemas"]["PairOption"][];
+            /** Matrices */
+            matrices?: components["schemas"]["AgreementMatrix"][];
             correlation?: components["schemas"]["CorrelationSummary"] | null;
             /** Rho Bins */
             rho_bins?: components["schemas"]["RhoBin"][];
@@ -578,14 +626,14 @@ export interface components {
             picked_by: components["schemas"]["Ident"];
             /** Decisions */
             decisions: number;
-            /** Cat Rank */
-            cat_rank?: number | null;
-            /** Cat Pct */
-            cat_pct?: number | null;
-            /** Gnn Rank */
-            gnn_rank?: number | null;
-            /** Gnn Pct */
-            gnn_pct?: number | null;
+            /** A Rank */
+            a_rank?: number | null;
+            /** A Pct */
+            a_pct?: number | null;
+            /** B Rank */
+            b_rank?: number | null;
+            /** B Pct */
+            b_pct?: number | null;
             /** Delta Pct */
             delta_pct?: number | null;
             /** Rho Median */
@@ -600,6 +648,14 @@ export interface components {
         AgreementSeriesPage: {
             scope: components["schemas"]["Scope"];
             freshness: components["schemas"]["AnalyticsFreshness"];
+            /** Pair */
+            pair: string;
+            /** A */
+            a: string;
+            /** B */
+            b: string;
+            /** Pairs */
+            pairs?: components["schemas"]["PairOption"][];
             /**
              * Axis
              * @enum {string}
@@ -703,12 +759,18 @@ export interface components {
             screen: components["schemas"]["Ident"];
             /** Rows */
             rows: number;
-            /** Tree Scored */
-            tree_scored: number;
-            /** Graph Scored */
-            graph_scored: number;
-            /** Both */
-            both: number;
+            /**
+             * Scored
+             * @description per arm, how many of this screen's rows carry that arm's scores; an arm with no interrupt model never appears
+             */
+            scored?: {
+                [key: string]: number;
+            };
+            /**
+             * Compared
+             * @default 0
+             */
+            compared: number;
             agree?: components["schemas"]["Rate"] | null;
         };
         /** CampaignDetail */
@@ -956,6 +1018,12 @@ export interface components {
         };
         /** DecisionAgreement */
         DecisionAgreement: {
+            /** Pair */
+            pair: string;
+            /** A */
+            a: string;
+            /** B */
+            b: string;
             n: components["schemas"]["Count"];
             /** Status */
             status: string;
@@ -969,10 +1037,10 @@ export interface components {
             top1_same?: boolean | null;
             /** Top3 Overlap */
             top3_overlap?: number | null;
-            /** Cat Top In Gnn */
-            cat_top_in_gnn?: number | null;
-            /** Gnn Top In Cat */
-            gnn_top_in_cat?: number | null;
+            /** A Top In B */
+            a_top_in_b?: number | null;
+            /** B Top In A */
+            b_top_in_a?: number | null;
             /** Note */
             note?: string | null;
         };
@@ -980,7 +1048,8 @@ export interface components {
         DecisionDetail: {
             scope: components["schemas"]["Scope"];
             row: components["schemas"]["DecisionRow"];
-            agreement?: components["schemas"]["DecisionAgreement"] | null;
+            /** Agreement */
+            agreement?: components["schemas"]["DecisionAgreement"][];
             /** Offers */
             offers: components["schemas"]["OfferRow"][];
             /** Entities */
@@ -1025,12 +1094,10 @@ export interface components {
             gnn_impact?: number | null;
             /** Gnn Rank */
             gnn_rank?: number | null;
-            /** Delta Pct */
-            delta_pct?: number | null;
-            /** Rho */
-            rho?: number | null;
-            /** Rho N */
-            rho_n?: number | null;
+            /** Ggnn Score */
+            ggnn_score?: number | null;
+            /** Ggnn Rank */
+            ggnn_rank?: number | null;
             /** Latency Ms */
             latency_ms?: number | null;
         };
@@ -1181,8 +1248,12 @@ export interface components {
             activity: components["schemas"]["ActivityRow"][];
             /** Policy Note */
             policy_note: string;
-            /** Models */
-            models: string[];
+            /** Arms */
+            arms: string[];
+            /** Interrupt Arms */
+            interrupt_arms: string[];
+            /** Trainable */
+            trainable: string[];
             defaults: components["schemas"]["LaunchDefaults"];
             cold_defaults: components["schemas"]["LaunchDefaults"];
             /** Log Tail */
@@ -1247,38 +1318,50 @@ export interface components {
              */
             turns_max: number;
             /**
-             * Retrain First
-             * @default true
+             * Factions
+             * @default all
              */
-            retrain_first: boolean;
+            factions: string;
             /**
              * Retrain Every
              * @default 0
              */
             retrain_every: number;
             /**
-             * Model
-             * @default catboost
+             * Retrain First
+             * @default false
              */
-            model: string;
-            /**
-             * Cfg
-             * @default
-             */
-            cfg: string;
+            retrain_first: boolean;
             /**
              * Strategies
              * @default
              */
             strategies: string;
             /**
+             * Interrupt Strategies
+             * @default
+             */
+            interrupt_strategies: string;
+            /**
              * Ruleset
              * @default
              */
             ruleset: string;
             /**
+             * Presave Radius
+             * @default 150
+             */
+            presave_radius: number;
+            /**
+             * Width
+             * @default 0
+             */
+            width: number;
+            /** Ucb */
+            ucb?: number | null;
+            /**
              * Dev
-             * @default false
+             * @default true
              */
             dev: boolean;
         };
@@ -1447,6 +1530,10 @@ export interface components {
             gnn_impact?: number | null;
             /** Gnn Rank */
             gnn_rank?: number | null;
+            /** Ggnn Score */
+            ggnn_score?: number | null;
+            /** Ggnn Rank */
+            ggnn_rank?: number | null;
             /**
              * Taken
              * @default false
@@ -1464,6 +1551,16 @@ export interface components {
              * @enum {string}
              */
             state: "ok" | "warn" | "bad" | "neutral";
+        };
+        /** PairOption */
+        PairOption: {
+            /** Key */
+            key: string;
+            /** A */
+            a: string;
+            /** B */
+            b: string;
+            comparable: components["schemas"]["Count"];
         };
         /** PhaseSpan */
         PhaseSpan: {
@@ -1749,6 +1846,13 @@ export interface components {
             mix?: {
                 [key: string]: unknown;
             };
+            /**
+             * Interrupt Mix
+             * @description the mix drawn on blocking screens. Trials older than the split played the action mix there, so they carry it here too.
+             */
+            interrupt_mix?: {
+                [key: string]: unknown;
+            };
             /** Ruleset */
             ruleset?: string | null;
             /** Campaigns */
@@ -1768,6 +1872,11 @@ export interface components {
             growth_baseline?: string | null;
             /** Lord Per Campaign */
             lord_per_campaign?: number | null;
+            /**
+             * Reward Per Campaign
+             * @description settlements gained plus legendary lord levels gained, per campaign -- the same reward the UCB start selector averages
+             */
+            reward_per_campaign?: number | null;
             /** Turns Per Campaign */
             turns_per_campaign?: number | null;
             /** Seconds Per Campaign */
@@ -2267,7 +2376,9 @@ export interface operations {
     };
     get_agreement_api_models_agreement_get: {
         parameters: {
-            query?: never;
+            query?: {
+                pair?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -2283,12 +2394,22 @@ export interface operations {
                     "application/json": components["schemas"]["AgreementPage"];
                 };
             };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
         };
     };
     get_agreement_series_api_models_agreement_series_get: {
         parameters: {
             query?: {
                 axis?: string;
+                pair?: string | null;
             };
             header?: never;
             path?: never;
@@ -2320,6 +2441,7 @@ export interface operations {
         parameters: {
             query?: {
                 dim?: string;
+                pair?: string | null;
             };
             header?: never;
             path?: never;

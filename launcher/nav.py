@@ -190,8 +190,25 @@ WHITE_TIGER_CONFIRM_PATH = ("events|event_layouts|incident_large|incident_large|
                             "footer|text_button")
 
 DECLARE_WAR_TITLE = "Declare War?"
+DECLARE_WAR_ROOT = "move_options"
 DECLARE_WAR_TITLE_PATH = "move_options|header|panel_title|title_frame"
 DECLARE_WAR_CANCEL_PATH = "move_options|panel|options_bar3|button_txt"
+
+
+def declare_war_panel(bus):
+    tr = bus.send("tree", "%s 24 4000" % DECLARE_WAR_ROOT, timeout=_TREE_T) or {}
+    if not tr.get("found"):
+        return None
+    nodes = tr.get("nodes") or []
+    by_path = {str(n.get("path") or ""): n for n in nodes}
+    title = by_path.get(DECLARE_WAR_TITLE_PATH)
+    cancel = by_path.get(DECLARE_WAR_CANCEL_PATH)
+    if (title is not None and title.get("visible")
+            and str(title.get("text") or "").strip() == DECLARE_WAR_TITLE
+            and cancel is not None and cancel.get("visible")):
+        return {"nodes": nodes, "cancel": DECLARE_WAR_CANCEL_PATH,
+                "label": str(cancel.get("text") or "cancel").strip() or "cancel"}
+    return None
 
 
 def find_dismiss_buttons(bus, root, max_depth=24, max_nodes=4000):

@@ -178,19 +178,8 @@ class InterruptRanker:
         self.meta = {}
         self.e1 = self.e2 = None
         self.rng = random.Random(seed)
-        self.strategies = P.normalize_strategies(strategies)
+        self.strategies = P.normalize_interrupt_strategies(strategies)
         self.ruleset = ruleset
-        self.gnn = None
-        self.gnn_score_errors = 0
-        if "marwil_gnn" in self.strategies and model_dir != common.MODEL_COLD_START:
-            try:
-                if common.ROOT not in sys.path:
-                    sys.path.insert(0, common.ROOT)
-                from advisor.mapgraph import interrupt_rank as GNN
-                self.gnn = GNN.Ranker()
-            except Exception as e:
-                sys.stderr.write("interrupt_model: graph arm unavailable -> %s -- gnn "
-                                 "draws fall back to random\n" % repr(e)[:160])
         try:
             from catboost import CatBoostRegressor
             p1 = os.path.join(model_dir, "e1.cbm")
@@ -247,11 +236,6 @@ class InterruptRanker:
                 return name
         return names[-1]
 
-    def _score_with_gnn(self, screen, opts, record, panel, meta):
-        if self.gnn is None or not self.gnn.ready:
-            return {}
-        return self.gnn.score(screen, opts, record, panel, meta)
-
     def _exploit_ready(self, screen):
         sr = self.meta.get("screen_rows")
         if sr is not None:
@@ -269,16 +253,7 @@ class InterruptRanker:
         usable, why = self._exploit_ready(screen)
         exploit = (self.score(screen, options, campaign, panel, world, meta)
                    if usable else {})
-        gnn = self._score_with_gnn(screen, opts, record, panel, meta)
-        rich = {}
-        for o in opts:
-            cell = {}
-            if o in exploit:
-                cell["exploit"] = exploit[o]
-            if o in gnn:
-                cell["gnn"] = gnn[o]
-            if cell:
-                rich[o] = cell
+        rich = {o: {"exploit": exploit[o]} for o in opts if o in exploit}
 
         drawn = self._draw()
         if drawn == "random":
@@ -288,14 +263,6 @@ class InterruptRanker:
             if hit:
                 return hit[0], "ruleset(%s)" % hit[1], rich
             return self.rng.choice(opts), "ruleset_random_fallback", rich
-        if drawn == "marwil_gnn":
-            if not gnn:
-                if self.gnn is not None and self.gnn.ready:
-                    raise P.ModelUnavailable(
-                        "interrupt_model: marwil_gnn drawn with a ready model but no scores "
-                        "for screen %r -- refusing to silently play random" % (screen,))
-                return self.rng.choice(opts), "marwil_gnn_random_fallback", rich
-            return max(gnn, key=gnn.get), "marwil_gnn", rich
         if drawn != "greedy_catboost":
             raise RuntimeError("interrupt_model: drawn strategy %r has no interrupt branch -- "
                                "refusing to silently play greedy_catboost" % (drawn,))

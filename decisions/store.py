@@ -323,6 +323,8 @@ class DecisionStore:
         if row is not None and len(row[0]) == len(buf):
             buf = bytearray(row[0])
         seqs = self._seq_by_identity(decision_id)
+        nm = len(S.MODEL_SCORE_FIELDS)
+        per_model = {}
         n = 0
         for s in scores:
             seq = seqs.get((s.get("context_kind"), str(s.get("context_id")),
@@ -333,9 +335,28 @@ class DecisionStore:
                 v = s.get(f)
                 struct.pack_into("<f", buf, (seq * ns + j) * 4,
                                  float("nan") if v is None else float(v))
+            for model, vals in (s.get("models") or {}).items():
+                mbuf = per_model.get(model)
+                if mbuf is None:
+                    mbuf = bytearray(struct.pack("<%df" % (n_offers * nm),
+                                                 *([float("nan")] * (n_offers * nm))))
+                    old = self.con.execute(
+                        "SELECT packed FROM model_scores WHERE decision_id=? AND model=?",
+                        (decision_id, str(model))).fetchone()
+                    if old is not None and len(old[0]) == len(mbuf):
+                        mbuf = bytearray(old[0])
+                    per_model[model] = mbuf
+                for j, f in enumerate(S.MODEL_SCORE_FIELDS):
+                    v = (vals or {}).get(f)
+                    struct.pack_into("<f", mbuf, (seq * nm + j) * 4,
+                                     float("nan") if v is None else float(v))
             n += 1
         self.con.execute("INSERT OR REPLACE INTO scores(decision_id,packed) VALUES(?,?)",
                          (decision_id, bytes(buf)))
+        for model, mbuf in per_model.items():
+            self.con.execute(
+                "INSERT OR REPLACE INTO model_scores(decision_id,model,packed) VALUES(?,?,?)",
+                (decision_id, str(model), bytes(mbuf)))
         self.con.commit()
         return n
 

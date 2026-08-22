@@ -99,7 +99,7 @@ const logCols: Col<DecisionRow>[] = [
     key: 'cat_rank',
     label: 'rank',
     align: 'right',
-    group: 'tree model',
+    group: 'greedy_catboost',
     value: (r) => r.cat_rank ?? 0,
     render: (r) => (r.cat_rank === null || r.cat_rank === undefined ? '—' : r.cat_rank),
   },
@@ -107,46 +107,26 @@ const logCols: Col<DecisionRow>[] = [
     key: 'gnn_rank',
     label: 'rank',
     align: 'right',
-    group: 'graph model',
+    group: 'marwil_gnn',
     value: (r) => r.gnn_rank ?? 0,
     render: (r) => (r.gnn_rank === null || r.gnn_rank === undefined ? '—' : r.gnn_rank),
   },
   {
-    key: 'rho',
-    label: 'rho',
+    key: 'ggnn_rank',
+    label: 'rank',
     align: 'right',
-    group: 'agree',
-
-
-    value: (r) => r.rho ?? undefined,
-    sortUndefined: 'last',
-    render: (r) =>
-      r.rho === null || r.rho === undefined ? (
-        <span className="text-dim">—</span>
-      ) : (
-        <span className="num" title={`over ${r.rho_n ?? 0} offers both models ranked`}>
-          {r.rho >= 0 ? '+' : ''}
-          {r.rho.toFixed(2)}
-        </span>
-      ),
+    group: 'greedy_gnn',
+    value: (r) => r.ggnn_rank ?? 0,
+    render: (r) => (r.ggnn_rank === null || r.ggnn_rank === undefined ? '—' : r.ggnn_rank),
   },
   {
-    key: 'delta',
-    label: 'gap',
-    unit: 'pct',
+    key: 'ggnn_score',
+    label: 'reward',
     align: 'right',
-    group: 'agree',
-
-    value: (r) => r.delta_pct ?? 0,
-    render: (r) =>
-      r.delta_pct === null || r.delta_pct === undefined ? (
-        <span className="text-dim">—</span>
-      ) : (
-        <span className={r.delta_pct > 0 ? 'text-ok' : r.delta_pct < 0 ? 'text-bad' : undefined}>
-          {r.delta_pct > 0 ? '+' : ''}
-          {r.delta_pct.toFixed(1)}
-        </span>
-      ),
+    group: 'greedy_gnn',
+    optional: true,
+    value: (r) => r.ggnn_score ?? 0,
+    render: (r) => n(r.ggnn_score, 2),
   },
   {
     key: 'policy',
@@ -411,10 +391,14 @@ function Menus() {
             >
               {o.label.label}
               {o.exploit !== null && o.exploit !== undefined && (
-                <span className="num text-cat ml-1">t {o.exploit.toFixed(2)}</span>
+                <span className="num text-cat ml-1" title="greedy_catboost exploit score">
+                  cat {o.exploit.toFixed(2)}
+                </span>
               )}
               {o.gnn !== null && o.gnn !== undefined && (
-                <span className="num text-gnn ml-1">g {o.gnn.toFixed(3)}</span>
+                <span className="num text-gnn ml-1" title="marwil_gnn impact">
+                  gnn {o.gnn.toFixed(3)}
+                </span>
               )}
             </span>
           ))}
@@ -430,26 +414,32 @@ function Menus() {
     },
   ]
 
+  const scorers = Array.from(
+    new Set(data.coverage.flatMap((c) => Object.keys(c.scored ?? {}))),
+  ).sort()
   const covCols: Col<ArmCoverage>[] = [
     { key: 'screen', label: 'screen', value: (r) => r.screen.label, render: (r) => r.screen.label },
     { key: 'rows', label: 'seen', align: 'right', value: (r) => r.rows, render: (r) => n(r.rows) },
+    ...scorers.map(
+      (arm): Col<ArmCoverage> => ({
+        key: `scored_${arm}`,
+        label: arm,
+        unit: 'scored',
+        align: 'right',
+        value: (r) => r.scored?.[arm] ?? 0,
+        render: (r) => n(r.scored?.[arm] ?? 0),
+      }),
+    ),
     {
-      key: 'tree',
-      label: 'tree scored',
+      key: 'compared',
+      label: 'two or more arms scored',
       align: 'right',
-      value: (r) => r.tree_scored,
-      render: (r) => n(r.tree_scored),
-    },
-    {
-      key: 'graph',
-      label: 'graph scored',
-      align: 'right',
-      value: (r) => r.graph_scored,
-      render: (r) => n(r.graph_scored),
+      value: (r) => r.compared ?? 0,
+      render: (r) => n(r.compared ?? 0),
     },
     {
       key: 'agree',
-      label: 'both picked the same',
+      label: 'all of them picked the same',
       value: (r) => (r.agree?.of ? r.agree.n / r.agree.of : -1),
       render: (r) => <Bar rate={r.agree ?? null} />,
     },
@@ -480,7 +470,11 @@ function Menus() {
 
       <Section
         title="arm coverage"
-        scope={{ text: 'how often each arm scored a screen, and how often they agreed' }}
+        scope={{
+          text: 'how often each arm scored a screen, and how often they agreed',
+          detail:
+            'only greedy_catboost has an interrupt model now; marwil_gnn scores here are from runs before its interrupt model was retired',
+        }}
       >
         <DataTable rows={data.coverage} cols={covCols} rowId={(r) => r.screen.raw} dense emptyWhat="no screen scored yet" />
       </Section>

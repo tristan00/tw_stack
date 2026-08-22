@@ -20,10 +20,11 @@ from advisor_api.models import (
     ActionTypeRow, ActivityRow, AgreementPage, AgreementRankRow, AgreementSummary,
     ArmCoverage, CampaignRow, Count, CorrelationRow, CorrelationTile, Current,
     CampaignReward, DecisionRow, DiploEvent, EntityState, ForcingBar, ForcingTile, Ident,
-    InterruptOption, InterruptRow, Metric, ModelCard, OfferRow, OutcomeTally, PhaseSpan,
-    PolicyRow, Rate, RewardPoint, Scope, Service, StartRow, TimelineAction, TimelineLane,
-    TimingRow, TrainingEvent, TrialCorr, TrialRow, UcbPick, UcbRow,
+    InterruptOption, InterruptRow, Metric, ModelCard, OfferRow, OutcomeTally, PairOption,
+    PhaseSpan, PolicyRow, Rate, RewardPoint, Scope, Service, StartRow, TimelineAction,
+    TimelineLane, TimingRow, TrainingEvent, TrialCorr, TrialRow, UcbPick, UcbRow,
 )
+from decisions import store_schema as SS
 
 DECISIONS_PAGE = 50
 TIMELINE_DECISIONS = 200
@@ -570,6 +571,45 @@ def _result_of(row) -> tuple:
     return "no action", "neutral"
 
 
+def ranked_pairs() -> list:
+    return [(SS.pair_key(a, b), a, b) for a, b in SS.PAIRS]
+
+
+def pair_options() -> list:
+    comparable = {}
+    try:
+        for r in adb.rows("SELECT pair, comparable FROM agreement_summary WHERE scope='all'"):
+            comparable[r["pair"]] = _i(r["comparable"], 0) or 0
+    except Exception:
+        comparable = {}
+    return [PairOption(key=k, a=a, b=b,
+                       comparable=Count(value=comparable.get(k, 0), noun="decisions",
+                                        population="where both arms ranked at least three "
+                                                   "of the same offers"))
+            for k, a, b in ranked_pairs()]
+
+
+def resolve_pair(pair=None):
+    opts = pair_options()
+    for o in opts:
+        if o.key == pair:
+            return o, opts
+    for o in opts:
+        if o.comparable.value > 0:
+            return o, opts
+    return opts[0], opts
+
+
+_RANK_FIELD = {"greedy_catboost": "rank", "marwil_gnn": "gnn_rank", "greedy_gnn": "ggnn_rank"}
+
+
+def _ggnn_cols(con) -> str:
+    cols = {r[1] for r in con.execute("PRAGMA table_info(action_offers)")}
+    if "ggnn_score" in cols:
+        return "ggnn_score, ggnn_rank"
+    return "NULL AS ggnn_score, NULL AS ggnn_rank"
+
+
 def decisions_page(con, offset=0, limit=DECISIONS_PAGE, action_type=None, policy=None,
                    result=None, campaign=None, q=None):
     where, args = [], []
@@ -617,23 +657,19 @@ def decisions_page(con, offset=0, limit=DECISIONS_PAGE, action_type=None, policy
     if ids:
         marks = ",".join("?" * len(ids))
         for o in con.execute(
-                "SELECT offer_id, exploit, pct_global, pct_local, rank, gnn_impact, gnn_rank"
-                " FROM action_offers WHERE offer_id IN (%s)" % marks, ids):
+                "SELECT offer_id, exploit, pct_global, pct_local, rank, gnn_impact, gnn_rank,"
+                "       %s FROM action_offers WHERE offer_id IN (%s)"
+                % (_ggnn_cols(con), marks), ids):
             offer_by_id[o["offer_id"]] = o
-
-    rho_by_id = rho_for([r["decision_id"] for r in rows])
 
     out = []
     for r in rows:
         res, state = _result_of(r)
         o = offer_by_id.get(r["offer_id"])
-        rho, rho_n = rho_by_id.get(_i(r["decision_id"]), (None, None))
         gnn_rank = _i(o["gnn_rank"]) if o else None
         cat_rank = _i(o["rank"]) if o else None
+        ggnn_rank = _i(o["ggnn_rank"]) if o else None
         n_off = _i(r["n_offers"])
-        delta = None
-        if gnn_rank and cat_rank and n_off and n_off > 1:
-            delta = round(100.0 * (cat_rank - gnn_rank) / (n_off - 1), 1)
         out.append(DecisionRow(
             decision_id=_i(r["decision_id"], 0) or 0, ts=_f(r["ts"]),
             campaign=_camp(r["campaign_id"]), turn=_i(r["turn"]), offers=n_off,
@@ -645,8 +681,8 @@ def decisions_page(con, offset=0, limit=DECISIONS_PAGE, action_type=None, policy
             pct_global=_f(o["pct_global"]) if o else None,
             pct_local=_f(o["pct_local"]) if o else None,
             cat_rank=cat_rank, gnn_impact=_f(o["gnn_impact"]) if o else None,
-            gnn_rank=gnn_rank, delta_pct=delta, rho=rho, rho_n=rho_n,
-            latency_ms=_f(r["latency_ms"])))
+            gnn_rank=gnn_rank, ggnn_score=_f(o["ggnn_score"]) if o else None,
+            ggnn_rank=ggnn_rank, latency_ms=_f(r["latency_ms"])))
     return out, total
 
 
@@ -693,15 +729,16 @@ def decision_detail(con, decision_id: int):
     offers = []
     for o in con.execute(
             "SELECT offer_id, context_kind, context_id, action_type, action_key, exploit,"
-            "       pct_global, pct_local, rank, gnn_impact, gnn_rank"
+            "       pct_global, pct_local, rank, gnn_impact, gnn_rank, %s"
             " FROM action_offers WHERE decision_id = ?"
-            " ORDER BY COALESCE(rank, 9999), offer_id", (decision_id,)):
+            " ORDER BY COALESCE(rank, 9999), offer_id" % _ggnn_cols(con), (decision_id,)):
         offers.append(OfferRow(
             rank=_i(o["rank"]), entity="%s %s" % (o["context_kind"] or "", o["context_id"] or ""),
             action_type=_phrase(o["action_type"]), action_key=o["action_key"],
             exploit=_f(o["exploit"]), pct_global=_f(o["pct_global"]),
             pct_local=_f(o["pct_local"]), gnn_impact=_f(o["gnn_impact"]),
-            gnn_rank=_i(o["gnn_rank"]), taken=(o["offer_id"] == taken_offer)))
+            gnn_rank=_i(o["gnn_rank"]), ggnn_score=_f(o["ggnn_score"]),
+            ggnn_rank=_i(o["ggnn_rank"]), taken=(o["offer_id"] == taken_offer)))
 
     ents = []
     for e in con.execute(
@@ -793,6 +830,9 @@ def actions_summary(con):
     return tiles, rows, policies, denominators
 
 
+_INTERRUPT_SCORERS = (("greedy_catboost", "exploit"), ("marwil_gnn", "gnn"))
+
+
 @db.cached
 def menus(con):
     total = _i(con.execute("SELECT COUNT(*) FROM interrupt_decisions").fetchone()[0], 0) or 0
@@ -832,26 +872,23 @@ def menus(con):
             policy=_phrase(r["policy"]), latency_ms=_f(r["latency_ms"]), options=options))
 
     for r in con.execute("SELECT kind, options_json FROM interrupt_decisions"):
-        b = cover.setdefault(r["kind"], {"rows": 0, "tree": 0, "graph": 0, "both": 0,
-                                         "agree": 0, "cmp": 0})
+        b = cover.setdefault(r["kind"], {"rows": 0, "scored": {}, "agree": 0, "cmp": 0})
         b["rows"] += 1
         opts = _options_of(r["options_json"])
-        tree = [(k, o) for k, o in opts if o.get("exploit") is not None]
-        graph = [(k, o) for k, o in opts if o.get("gnn") is not None]
-        b["tree"] += 1 if tree else 0
-        b["graph"] += 1 if graph else 0
-        if tree and graph:
-            b["both"] += 1
+        bests = {}
+        for arm, key in _INTERRUPT_SCORERS:
+            got = [(k, o) for k, o in opts if o.get(key) is not None]
+            if got:
+                b["scored"][arm] = b["scored"].get(arm, 0) + 1
+                bests[arm] = max(got, key=lambda kv: _f(kv[1].get(key), -1e9))[0]
+        if len(bests) >= 2:
             b["cmp"] += 1
-            best_t = max(tree, key=lambda kv: _f(kv[1].get("exploit"), -1e9))
-            best_g = max(graph, key=lambda kv: _f(kv[1].get("gnn"), -1e9))
-            if best_t[0] == best_g[0]:
+            if len(set(bests.values())) == 1:
                 b["agree"] += 1
     coverage = [ArmCoverage(
-        screen=_phrase(k), rows=v["rows"], tree_scored=v["tree"], graph_scored=v["graph"],
-        both=v["both"],
+        screen=_phrase(k), rows=v["rows"], scored=v["scored"], compared=v["cmp"],
         agree=Rate(n=v["agree"], of=v["cmp"], noun="screens",
-                   population="scored by both arms")) for k, v in sorted(cover.items())]
+                   population="scored by two or more arms")) for k, v in sorted(cover.items())]
     coverage.sort(key=lambda c: -c.rows)
 
     return (Count(value=total, noun="decisions", population="on blocking menus in this run dir"),
@@ -904,21 +941,24 @@ def timeline(con) -> list:
 
 _MODEL_DIRS = (
     ("greedy_catboost global", common.MODEL_GLOBAL, "catboost",
-     "The advantage model the greedy arm ranks on: e1 predicts the return with the action, "
-     "e2 the same state without it, and e1 - e2 is the advantage. Ranks every offered "
-     "action across the whole faction."),
+     "The advantage model the greedy_catboost arm ranks on: e1 predicts the return with "
+     "the action, e2 the same state without it, and e1 - e2 is the advantage. Ranks every "
+     "offered action across the whole faction."),
     ("greedy_catboost local", common.MODEL_LOCAL, "catboost",
      "The same advantage within one entity's own option set, so a lord's choices compete "
      "against each other rather than against the whole map. Blended into the global rank."),
     ("greedy_catboost interrupt", common.MODEL_INTERRUPT, "catboost",
-     "The advantage model for blocking screens -- battles, dilemmas, occupation choices."),
+     "The advantage model for blocking screens -- battles, dilemmas, occupation choices. "
+     "The only interrupt model: the interrupt mix draws from greedy_catboost, random and "
+     "ruleset."),
     ("marwil_gnn", common.MODEL_MAPGRAPH, "mapgraph",
      "MARWIL/AWR over the graph encoder: the map and its entities as a graph, the action a "
      "node in it, trained by exponentially advantage-weighted imitation of the logged "
      "action rather than by maximising the advantage."),
-    ("marwil_gnn interrupt", common.MODEL_MAPGRAPH_INTERRUPT, "mapgraph",
-     "The same algorithm and encoder on blocking screens -- a different decision family, "
-     "its own weights."),
+    ("greedy_gnn", common.MODEL_MAPGRAPH_GREEDY, "mapgraph",
+     "The same graph encoder with a reward head: one regression of the return per action "
+     "node, fit by MSE on the action that was taken. No state-only model, no advantage, "
+     "no value head -- the arm takes the action with the highest predicted return."),
 )
 
 
@@ -946,6 +986,11 @@ def _model_cards() -> list:
             missing = [f for f in want if not os.path.exists(os.path.join(d, f))]
             if missing:
                 status, note = "incomplete", "missing on disk: %s" % ", ".join(missing)
+            elif family == "mapgraph" and meta.get("schema_hash") != _graph_schema_hash():
+                status = "stale schema"
+                note = ("trained on graph schema %s, the code builds %s -- the ranker "
+                        "refuses it until the next retrain"
+                        % (str(meta.get("schema_hash"))[:8], _graph_schema_hash()[:8]))
             try:
                 trained = time.strftime("%Y-%m-%d %H:%M",
                                         time.localtime(os.path.getmtime(meta_path)))
@@ -958,22 +1003,21 @@ def _model_cards() -> list:
             elif camps is not None:
                 rows.append(("campaigns", str(camps)))
             if family == "mapgraph":
-                loss = meta.get("loss") or {}
-                if isinstance(loss, dict):
-                    for k in ("val", "held_out", "nll"):
-                        if k in loss:
-                            rows.append(("held-out listwise NLL", "%.4f" % (_f(loss[k]) or 0)))
-                            break
+                fit = meta.get("fit") if isinstance(meta.get("fit"), dict) else {}
+                for k, label, fmt in (("val_listwise_nll", "held-out listwise NLL", "%.4f"),
+                                      ("val_value_mse", "held-out value MSE (z)", "%.4f"),
+                                      ("val_mse", "held-out reward MSE (z)", "%.4f"),
+                                      ("val_r2", "held-out R²", "%+.3f")):
+                    if fit.get(k) is not None:
+                        rows.append((label, fmt % (_f(fit[k]) or 0)))
+                if fit.get("val_rows") is not None:
+                    rows.append(("held-out rows", "{:,}".format(_i(fit["val_rows"], 0) or 0)))
+                for k, label in (("epochs_run", "epochs"), ("stopped_by", "stopped by"),
+                                 ("device", "trained on")):
+                    if fit.get(k) is not None:
+                        rows.append((label, str(fit[k])))
                 rows.append(("graph schema", "v%s %s" % (meta.get("schema_version"),
                                                          str(meta.get("schema_hash"))[:8])))
-                screens = meta.get("screens")
-                if screens:
-                    rows.append(("screens", str(len(screens) if isinstance(screens, list)
-                                                else screens)))
-                fit = meta.get("fit") or {}
-                if isinstance(fit, dict) and fit:
-                    rows.append(("fit", ", ".join("%s %s" % (k, v)
-                                                  for k, v in list(fit.items())[:3])))
             else:
                 cfit = meta.get("fit") or {}
                 for tag, label in (("e1", "held-out RMSE (state+action)"),
@@ -1006,29 +1050,46 @@ def fit_config() -> list:
     return _fit_config()
 
 
+_SCHEMA_HASH = []
+
+
+def _graph_schema_hash() -> str:
+    if not _SCHEMA_HASH:
+        sys.path.insert(0, common.ROOT)
+        from advisor.mapgraph import schema as GS
+        _SCHEMA_HASH.append(GS.schema_hash())
+    return _SCHEMA_HASH[0]
+
+
+def _meta_json(model_dir) -> dict:
+    try:
+        return json.load(open(os.path.join(common.native(model_dir), "meta.json"),
+                              encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
 @db.cached_files(os.path.join(common.native(common.MODEL_MAPGRAPH), "meta.json"),
+                 os.path.join(common.native(common.MODEL_MAPGRAPH_GREEDY), "meta.json"),
                  os.path.join(common.native(common.MODEL_GLOBAL), "meta.json"))
 def _fit_config() -> list:
     from advisor_api.models import FitConfigRow
     out = []
-    try:
-        g = json.load(open(os.path.join(common.native(common.MODEL_MAPGRAPH), "meta.json"),
-                           encoding="utf-8"))
-    except (OSError, ValueError):
-        g = {}
-    cfg = g.get("cfg") or {}
+    for arm, path, role in (
+            ("marwil_gnn", common.MODEL_MAPGRAPH,
+             "advantage-weighted imitation over the graph encoder"),
+            ("greedy_gnn", common.MODEL_MAPGRAPH_GREEDY,
+             "one reward regression per action node over the same graph encoder")):
+        g = _meta_json(path)
+        cfg = g.get("cfg") or {}
+        out.append(FitConfigRow(
+            family=arm, role=role,
+            hyperparameters={k: cfg[k] for k in sorted(cfg)},
+            compute={"device": (g.get("fit") or {}).get("device", "auto"),
+                     "rows": g.get("rows"), "schema": g.get("schema_version")}))
+    c = _meta_json(common.MODEL_GLOBAL)
     out.append(FitConfigRow(
-        family="mapgraph", role="graph ranker over the map",
-        hyperparameters={k: cfg[k] for k in sorted(cfg)},
-        compute={"device": (g.get("fit") or {}).get("device", "auto"),
-                 "rows": g.get("rows"), "schema": g.get("schema_version")}))
-    try:
-        c = json.load(open(os.path.join(common.native(common.MODEL_GLOBAL), "meta.json"),
-                           encoding="utf-8"))
-    except (OSError, ValueError):
-        c = {}
-    out.append(FitConfigRow(
-        family="catboost", role="action ranker",
+        family="greedy_catboost", role="E1 - E2 advantage ranker, global blended with local",
         hyperparameters={k: c[k] for k in ("short_horizon", "short_weight", "w_local",
                                            "exp_lo", "exp_hi", "target") if k in c},
         compute={"rows": c.get("rows"),
@@ -1047,11 +1108,9 @@ def forcing(con):
         mix = by_arm.setdefault(arm, {})
         mix[r["action_type"]] = mix.get(r["action_type"], 0) + (_i(r["n"], 0) or 0)
     tiles = []
-    for arm in ("greedy_catboost", "marwil_gnn"):
+    for arm in arms.TRAINABLE:
         mix = by_arm.get(arm) or {}
         tot = sum(mix.values())
-        if not tot:
-            continue
         bars = []
         for atype, n in sorted(mix.items(), key=lambda kv: -kv[1])[:8]:
             lo, hi = _wilson(n, tot)
@@ -1062,7 +1121,7 @@ def forcing(con):
                 ci_lo=round(100 * lo, 1), ci_hi=round(100 * hi, 1)))
         tiles.append(ForcingTile(model=arm,
                                  favours=bars[0].action_type if bars else None, bars=bars))
-    n_dec = sum(sum((by_arm.get(a) or {}).values()) for a in ("greedy_catboost", "marwil_gnn"))
+    n_dec = sum(sum((by_arm.get(a) or {}).values()) for a in arms.TRAINABLE)
     return tiles, Count(value=n_dec, noun="decisions",
                         population="drawn by a model arm in this run dir")
 
@@ -1118,16 +1177,68 @@ def _freshness(tenant: str):
         state=state, detail=detail)
 
 
-def _excluded_counts(s: dict) -> list:
+def _excluded_counts(s: dict, a: str, b: str) -> list:
     return [
-        Count(value=_i(s.get("no_gnn"), 0) or 0, noun="decisions",
-              population="recorded before the graph model had weights, so only one model "
-                         "ranked them"),
+        Count(value=_i(s.get("missing_a"), 0) or 0, noun="decisions",
+              population="where %s stored no ranking, so only %s ranked them" % (a, b)),
+        Count(value=_i(s.get("missing_b"), 0) or 0, noun="decisions",
+              population="where %s stored no ranking, so only %s ranked them" % (b, a)),
         Count(value=_i(s.get("too_few"), 0) or 0, noun="decisions",
-              population="where both models ranked fewer than three of the same offers"),
+              population="where the two arms ranked fewer than three of the same offers"),
         Count(value=_i(s.get("no_scores"), 0) or 0, noun="decisions",
               population="carrying no stored scores at all"),
     ]
+
+
+def agreement_matrices() -> list:
+    from advisor_api.models import AgreementMatrix, AgreementMatrixCell
+    arms_ = list(SS.RANKED_ARMS)
+    try:
+        summary = {r["pair"]: r for r in adb.rows(
+            "SELECT pair, rho_median, comparable FROM agreement_summary WHERE scope='all'")}
+        latest = {}
+        for r in adb.rows(
+                "SELECT pair, seq, rho_median, decisions, gate, trial, generation, from_ts,"
+                " retrained FROM agreement_series WHERE axis='generation'"
+                " ORDER BY pair, seq"):
+            latest[r["pair"]] = r
+    except Exception:
+        return []
+    all_cells, gen_cells = [], []
+    gen_from, gen_trial = None, None
+    for key, a, b in ranked_pairs():
+        s = summary.get(key) or {}
+        n_all = _i(s.get("comparable"), 0) or 0
+        all_cells.append(AgreementMatrixCell(
+            a=a, b=b, pair=key, rho_median=_f(s.get("rho_median")),
+            decisions=Count(value=n_all, noun="decisions",
+                            population="comparable, over the whole run dir"),
+            note=(None if n_all else "no decision carries both rankings yet")))
+        g = latest.get(key) or {}
+        n_gen = _i(g.get("decisions"), 0) or 0
+        if g.get("from_ts") is not None and gen_from is None:
+            gen_from, gen_trial = _f(g.get("from_ts")), g.get("trial")
+        gen_cells.append(AgreementMatrixCell(
+            a=a, b=b, pair=key, rho_median=_f(g.get("rho_median")),
+            decisions=Count(value=n_gen, noun="decisions",
+                            population="comparable, inside the current model generation"),
+            note=(g.get("gate") if g.get("gate") else
+                  (None if n_gen else "no comparable decision in this generation yet"))))
+    when = (time.strftime("%Y-%m-%d %H:%M", time.localtime(gen_from)) if gen_from else None)
+    return [
+        AgreementMatrix(
+            key="generation", title="current model generation", arms=arms_, cells=gen_cells,
+            detail=("the newest generation window, open since %s (%s)" % (when, gen_trial)
+                    if when else "no generation window recorded yet")),
+        AgreementMatrix(
+            key="all", title="all time", arms=arms_, cells=all_cells,
+            detail="every comparable decision in this run dir, across every generation"),
+    ]
+
+
+def _stale_analytics(e) -> str:
+    return ("the analytics tables predate the pair formula (%s) -- restart the analytics "
+            "service (`python -m analytics.runner`) and it rebuilds them" % str(e)[:80])
 
 
 _SECONDARY_NOTE = "a supplement to the rank correlation above, not a substitute for it"
@@ -1154,30 +1265,41 @@ def _secondary(s: dict) -> list:
 
 
 @adb.cached
-def agreement_page():
+def agreement_page(pair: str | None = None):
     from advisor_api.models import (AgreementPage, AgreementRankRow, AgreementSummary,
                                     CorrelationSummary, RhoBin)
     fresh = _freshness("model_agreement")
-    scope = Scope(text="rank correlation between the two models, over the offers both "
-                       "ranked",
-                  detail="every decision in this run dir, precomputed")
-    s = adb.one("SELECT * FROM agreement_summary WHERE scope='all'")
+    po, opts = resolve_pair(pair)
+    a, b = po.a, po.b
+    head = dict(pair=po.key, a=a, b=b, pairs=opts)
+    scope = Scope(text="rank correlation between %s and %s, over the offers both ranked"
+                       % (a, b),
+                  detail="every decision in this run dir, precomputed; pick any two of the "
+                         "arms that store a per-offer ranking")
+    try:
+        s = adb.one("SELECT * FROM agreement_summary WHERE scope='all' AND pair=?",
+                    (po.key,))
+    except Exception as e:
+        return AgreementPage(scope=scope, freshness=fresh, summary=[], rows=[],
+                             empty_reason=_stale_analytics(e), **head)
     if not s:
         return AgreementPage(
             scope=scope, freshness=fresh, summary=[], rows=[],
+            matrices=agreement_matrices(),
             empty_reason=("nothing has been folded in for this run dir yet -- the analytics "
-                          "service builds it within a few seconds of starting"))
+                          "service builds it within a few seconds of starting"), **head)
     comparable = _i(s.get("comparable"), 0) or 0
     decisions = _i(s.get("decisions"), 0) or 0
     if not comparable:
         return AgreementPage(
             scope=scope, freshness=fresh, summary=[], rows=[],
-            empty_reason=("no decision in this run dir carries both a tree rank and a graph "
-                          "rank, so there is nothing to correlate"))
+            matrices=agreement_matrices(),
+            empty_reason=("no decision in this run dir carries both a %s rank and a %s "
+                          "rank, so there is nothing to correlate" % (a, b)), **head)
     same = _i(s.get("top1_same"), 0) or 0
     corr = CorrelationSummary(
         compared=Count(value=comparable, noun="decisions",
-                       population="where both models ranked at least three of the same "
+                       population="where both arms ranked at least three of the same "
                                   "offers"),
         coverage=Rate(n=comparable, of=decisions, noun="decisions",
                       population="recorded in this run dir"),
@@ -1187,11 +1309,11 @@ def agreement_page():
         same_best=Rate(n=same, of=comparable, noun="decisions", population="comparable"),
         overlap_median=_f(s.get("overlap_median")),
         from_decision=_i(s.get("from_decision")), to_decision=_i(s.get("to_decision")),
-        excluded=_excluded_counts(s))
+        excluded=_excluded_counts(s, a, b))
     summary = [
         AgreementSummary(measure="decisions compared", value="{:,}".format(comparable),
                          help=None),
-        AgreementSummary(measure="offers both models ranked (median)",
+        AgreementSummary(measure="offers both arms ranked (median)",
                          value="{:,.0f}".format(_f(s.get("overlap_median"), 0.0))),
         AgreementSummary(measure="Spearman rho, median",
                          value="%+0.3f" % _f(s.get("rho_median"), 0.0),
@@ -1208,17 +1330,19 @@ def agreement_page():
     ]
     rows = [AgreementRankRow(
         picked_by=_phrase(r["key"]), decisions=_i(r["decisions"], 0) or 0,
-        cat_rank=_f(r["cat_rank"]), cat_pct=_f(r["cat_pct"]),
-        gnn_rank=_f(r["gnn_rank"]), gnn_pct=_f(r["gnn_pct"]),
+        a_rank=_f(r["a_rank"]), a_pct=_f(r["a_pct"]),
+        b_rank=_f(r["b_rank"]), b_pct=_f(r["b_pct"]),
         delta_pct=_f(r["delta_pct"]), rho_median=_f(r["rho_median"]),
         fell_back=_i(r["fell_back"], 0) or 0)
-        for r in adb.rows("SELECT * FROM agreement_breakdown WHERE dim='arm'"
-                          " ORDER BY decisions DESC")]
-    bins = [RhoBin(lo=_f(b["lo"], 0.0), hi=_f(b["hi"], 0.0),
-                   decisions=_i(b["decisions"], 0) or 0)
-            for b in adb.rows("SELECT * FROM agreement_hist ORDER BY bucket")]
+        for r in adb.rows("SELECT * FROM agreement_breakdown WHERE dim='arm' AND pair=?"
+                          " ORDER BY decisions DESC", (po.key,))]
+    bins = [RhoBin(lo=_f(h["lo"], 0.0), hi=_f(h["hi"], 0.0),
+                   decisions=_i(h["decisions"], 0) or 0)
+            for h in adb.rows("SELECT * FROM agreement_hist WHERE pair=? ORDER BY bucket",
+                              (po.key,))]
     return AgreementPage(scope=scope, freshness=fresh, correlation=corr, rho_bins=bins,
-                         summary=summary, rows=rows, secondary=_secondary(s))
+                         summary=summary, rows=rows, secondary=_secondary(s),
+                         matrices=agreement_matrices(), **head)
 
 
 ALIGNMENT_CAVEAT = None
@@ -1233,16 +1357,28 @@ _GENERATION_CAVEAT = (
 
 
 @adb.cached
-def agreement_series(axis: str = "window"):
+def agreement_series(axis: str = "window", pair: str | None = None):
     from advisor_api.models import (AgreementSeriesPage, AgreementSeriesPoint,
                                     GenerationRow)
     axis = "generation" if axis == "generation" else "window"
     fresh = _freshness("model_agreement")
-    pts = adb.rows("SELECT * FROM agreement_series WHERE axis=? ORDER BY seq", (axis,))
-    s = adb.one("SELECT * FROM agreement_summary WHERE scope='all'") or {}
+    po, opts = resolve_pair(pair)
+    head = dict(pair=po.key, a=po.a, b=po.b, pairs=opts)
+    try:
+        pts = adb.rows("SELECT * FROM agreement_series WHERE axis=? AND pair=? ORDER BY seq",
+                       (axis, po.key))
+        s = adb.one("SELECT * FROM agreement_summary WHERE scope='all' AND pair=?",
+                    (po.key,)) or {}
+    except Exception as e:
+        return AgreementSeriesPage(
+            scope=Scope(text="median rank correlation over the run"), freshness=fresh,
+            axis=axis, ambiguous=Count(value=0, noun="decisions", population="ambiguous"),
+            empty_reason=_stale_analytics(e), **head)
     scope = Scope(
-        text=("median rank correlation per model generation" if axis == "generation"
-              else "median rank correlation over the run, newest last"),
+        text=("median rank correlation of %s and %s per model generation" % (po.a, po.b)
+              if axis == "generation"
+              else "median rank correlation of %s and %s over the run, newest last"
+              % (po.a, po.b)),
         detail=("windows come from the training ledger's own start and flush times"
                 if axis == "generation"
                 else "equal-count buckets of decision id -- wall-clock buckets would put "
@@ -1265,7 +1401,8 @@ def agreement_series(axis: str = "window"):
             gate=r["gate"])
 
     gens = []
-    for r in adb.rows("SELECT * FROM agreement_series WHERE axis='generation' ORDER BY seq"):
+    for r in adb.rows("SELECT * FROM agreement_series WHERE axis='generation' AND pair=?"
+                      " ORDER BY seq", (po.key,)):
         n = _i(r["decisions"], 0) or 0
         gens.append(GenerationRow(
             trial=_phrase(r["trial"] or "unstamped"), generation=_i(r["generation"]),
@@ -1280,6 +1417,7 @@ def agreement_series(axis: str = "window"):
     drawable = [p for p in pts if p["rho_median"] is not None]
     return AgreementSeriesPage(
         scope=scope, freshness=fresh, axis=axis, is_alignment=(axis == "generation"),
+        **head,
         caveat=(_GENERATION_CAVEAT if axis == "generation" else None),
         bucket_decisions=(_i(pts[0]["bucket_decisions"]) if pts else None),
         ambiguous=Count(value=_i(s.get("ambiguous"), 0) or 0, noun="decisions",
@@ -1292,12 +1430,20 @@ def agreement_series(axis: str = "window"):
 
 
 @adb.cached
-def agreement_breakdown(dim: str = "action_type"):
+def agreement_breakdown(dim: str = "action_type", pair: str | None = None):
     from advisor_api.models import AgreementBreakdownPage, AgreementBreakdownRow
     if dim not in ("arm", "action_type", "context_kind"):
         dim = "action_type"
-    rows = adb.rows("SELECT * FROM agreement_breakdown WHERE dim=? ORDER BY decisions DESC",
-                    (dim,))
+    po, opts = resolve_pair(pair)
+    head = dict(pair=po.key, a=po.a, b=po.b, pairs=opts)
+    try:
+        rows = adb.rows("SELECT * FROM agreement_breakdown WHERE dim=? AND pair=?"
+                        " ORDER BY decisions DESC", (dim, po.key))
+    except Exception as e:
+        return AgreementBreakdownPage(
+            scope=Scope(text="rank correlation grouped by %s" % dim.replace("_", " ")),
+            freshness=_freshness("model_agreement"), dim=dim, rows=[],
+            empty_reason=_stale_analytics(e), **head)
     out = []
     for r in rows:
         n = _i(r["decisions"], 0) or 0
@@ -1310,10 +1456,11 @@ def agreement_breakdown(dim: str = "action_type"):
             same_top=Rate(n=_i(r["same_top"], 0) or 0, of=n, noun="decisions",
                           population="comparable, in this group")))
     return AgreementBreakdownPage(
-        scope=Scope(text="rank correlation grouped by %s" % dim.replace("_", " "),
+        scope=Scope(text="rank correlation of %s and %s grouped by %s"
+                         % (po.a, po.b, dim.replace("_", " ")),
                     detail="every comparable decision in this run dir"),
         freshness=_freshness("model_agreement"), dim=dim, rows=out,
-        empty_reason=(None if out else "nothing comparable has been folded in yet"))
+        empty_reason=(None if out else "nothing comparable has been folded in yet"), **head)
 
 
 @adb.cached
@@ -1335,38 +1482,53 @@ def analytics_status():
         tenants=out, db_path=adb.path(), runner_hint="python -m analytics.runner")
 
 
-def decision_agreement(decision_id: int):
+def decision_agreement(decision_id: int) -> list:
     from advisor_api.models import DecisionAgreement
-    r = adb.one("SELECT * FROM model_agreement WHERE decision_id=?", (int(decision_id),))
-    if not r:
-        return None
-    status = r["status"] or ""
-    note = {
-        "no_gnn": "the graph model had no weights when this decision was recorded, so only "
-                  "the tree model ranked it",
-        "too_few": "both models ranked fewer than three of the same offers -- over two, a "
-                   "rank correlation can only be +1 or -1",
-        "no_scores": "no scores were stored for this decision",
-    }.get(status)
-    return DecisionAgreement(
-        n=Count(value=_i(r["n"], 0) or 0, noun="offers",
-                population="on this decision that both models ranked"),
-        status=status, rho=_f(r["rho"]), tau_b=_f(r["tau_b"]), rbo=_f(r["rbo"]),
-        top1_same=(bool(r["top1_same"]) if r["top1_same"] is not None else None),
-        top3_overlap=_f(r["top3_overlap"]),
-        cat_top_in_gnn=_i(r["cat_top_in_gnn"]), gnn_top_in_cat=_i(r["gnn_top_in_cat"]),
-        note=note)
+    try:
+        by_pair = {r["pair"]: r for r in adb.rows(
+            "SELECT * FROM model_agreement WHERE decision_id=?", (int(decision_id),))}
+    except Exception:
+        return []
+    out = []
+    for key, a, b in ranked_pairs():
+        r = by_pair.get(key)
+        if not r:
+            continue
+        status = r["status"] or ""
+        note = {
+            "missing_a": "%s stored no ranking for this decision, so only %s ranked it"
+                         % (a, b),
+            "missing_b": "%s stored no ranking for this decision, so only %s ranked it"
+                         % (b, a),
+            "too_few": "the two arms ranked fewer than three of the same offers -- over "
+                       "two, a rank correlation can only be +1 or -1",
+            "no_scores": "no scores were stored for this decision",
+        }.get(status)
+        out.append(DecisionAgreement(
+            pair=key, a=a, b=b,
+            n=Count(value=_i(r["n"], 0) or 0, noun="offers",
+                    population="on this decision that both arms ranked"),
+            status=status, rho=_f(r["rho"]), tau_b=_f(r["tau_b"]), rbo=_f(r["rbo"]),
+            top1_same=(bool(r["top1_same"]) if r["top1_same"] is not None else None),
+            top3_overlap=_f(r["top3_overlap"]),
+            a_top_in_b=_i(r["a_top_in_b"]), b_top_in_a=_i(r["b_top_in_a"]),
+            note=note))
+    return out
 
 
-def rho_for(decision_ids) -> dict:
+def rho_for(decision_ids, pair) -> dict:
     ids = [int(i) for i in decision_ids if i is not None]
     out = {}
-    for i in range(0, len(ids), 400):
-        chunk = ids[i:i + 400]
-        marks = ",".join("?" * len(chunk))
-        for r in adb.rows("SELECT decision_id, rho, n FROM model_agreement"
-                          " WHERE decision_id IN (%s)" % marks, chunk):
-            out[_i(r["decision_id"])] = (_f(r["rho"]), _i(r["n"]))
+    try:
+        for i in range(0, len(ids), 400):
+            chunk = ids[i:i + 400]
+            marks = ",".join("?" * len(chunk))
+            for r in adb.rows("SELECT decision_id, rho, n FROM model_agreement"
+                              " WHERE pair=? AND decision_id IN (%s)" % marks,
+                              [pair] + chunk):
+                out[_i(r["decision_id"])] = (_f(r["rho"]), _i(r["n"]))
+    except Exception:
+        return {}
     return out
 
 
@@ -1462,24 +1624,29 @@ def _training_history() -> list:
         stamp = os.path.basename(path).replace("session_", "").replace(".json", "")
         gen = 0
         for camp in rep.get("campaigns") or []:
-            rt = camp.get("retrain")
-            if not rt:
+            rt = camp.get("retrain") or {}
+            irt = camp.get("retrain_interrupt") or {}
+            gnn = camp.get("retrain_gnn") or {}
+            ggnn = camp.get("retrain_greedy_gnn") or {}
+            if not (rt or irt or gnn or ggnn):
                 continue
             gen += 1
             local = rt.get("local") or {}
-            irt = camp.get("retrain_interrupt") or {}
-            gnn = camp.get("retrain_gnn") or {}
             fit = rt.get("fit") or {}
             e1, e2 = (fit.get("e1") or {}), (fit.get("e2") or {})
             r1, r2 = _f(e1.get("val_rmse")), _f(e2.get("val_rmse"))
+            gfit, ggfit = (gnn.get("fit") or {}), (ggnn.get("fit") or {})
+            corpus_rows = _i(rt.get("rows") or gnn.get("rows") or ggnn.get("rows"))
+            corpus_campaigns = _i(rt.get("campaigns") or gnn.get("campaigns")
+                                  or ggnn.get("campaigns"))
             groups = {
                 "corpus": _clean({
-                    "rows": _i(rt.get("rows")),
-                    "campaigns": _i(rt.get("campaigns")),
+                    "rows": corpus_rows,
+                    "campaigns": corpus_campaigns,
                     "decisions": _i(rt.get("n_decisions")),
                     "seconds": _f(rt.get("seconds")),
                 }),
-                "catboost global": _clean({
+                "greedy_catboost": _clean({
                     "e1 rmse": r1,
                     "e2 rmse": r2,
                     "lift": (round(r2 - r1, 4) if (r1 is not None and r2 is not None)
@@ -1488,30 +1655,41 @@ def _training_history() -> list:
                     "best iter": _i(e1.get("best_iteration")),
                     "in-sample MAE": _f(rt.get("mae_in_sample")),
                 }),
-                "local": _clean({
+                "greedy_catboost local": _clean({
                     "rows": _i(local.get("rows")),
                     "e1 rmse": _f(((local.get("fit") or {}).get("local_e1") or {})
                                   .get("val_rmse")),
                 }),
-                "interrupt": _clean({
+                "greedy_catboost interrupt": _clean({
                     "rows": _i(irt.get("rows")),
                     "screens": (len(irt.get("screens")) if isinstance(irt.get("screens"), (list, dict))
                                 else _i(irt.get("screens"))),
                 }),
-                "gnn": _clean({
+                "marwil_gnn": _clean({
                     "rows": _i(gnn.get("rows")),
-                    "listwise NLL": _f((gnn.get("fit") or {}).get("val_listwise_nll")),
-                    "epochs": _i((gnn.get("fit") or {}).get("epochs_run")),
-                    "device": (gnn.get("fit") or {}).get("device"),
-                    "stopped by": (gnn.get("fit") or {}).get("stopped_by"),
+                    "listwise NLL": _f(gfit.get("val_listwise_nll")),
+                    "value MSE": _f(gfit.get("val_value_mse")),
+                    "epochs": _i(gfit.get("epochs_run")),
+                    "device": gfit.get("device"),
+                    "stopped by": gfit.get("stopped_by"),
+                    "seconds": _f(gnn.get("seconds")),
+                }),
+                "greedy_gnn": _clean({
+                    "rows": _i(ggnn.get("rows")),
+                    "reward MSE": _f(ggfit.get("val_mse")),
+                    "R2": _f(ggfit.get("val_r2")),
+                    "epochs": _i(ggfit.get("epochs_run")),
+                    "device": ggfit.get("device"),
+                    "stopped by": ggfit.get("stopped_by"),
+                    "seconds": _f(ggnn.get("seconds")),
                 }),
             }
             out.append(TrainingEvent(
                 when=time.strftime("%Y-%m-%d %H:%M",
                                    time.localtime(_f(camp.get("started"), 0.0) or 0.0)),
                 trial="%s-g%d" % (stamp, gen),
-                corpus_rows=_i(rt.get("rows")),
-                corpus_campaigns=_i(rt.get("campaigns")),
+                corpus_rows=corpus_rows,
+                corpus_campaigns=corpus_campaigns,
                 groups={k: v for k, v in groups.items() if v}))
     out.reverse()
     return out
@@ -1637,6 +1815,8 @@ def _trials() -> tuple:
         row = TrialRow(
             trial=str(d.get("trial") or ""),
             mix={arms.canonical(k): v for k, v in (d.get("strategies") or {}).items()},
+            interrupt_mix={arms.canonical(k): v for k, v in
+                           (d.get("interrupt_strategies") or d.get("strategies") or {}).items()},
             ruleset=_text(d.get("ruleset")),
             campaigns=_i(d.get("campaigns")),
             corpus=_i(corpus.get("rows")),
@@ -1654,6 +1834,9 @@ def _trials() -> tuple:
                     if setts.get("campaigns_measured") is not None else None),
             growth_baseline=_text(d.get("baseline")),
             lord_per_campaign=_f(lord.get("mean")),
+            reward_per_campaign=(round(_f(setts.get("mean")) + _f(lord.get("mean")), 3)
+                                 if setts.get("mean") is not None
+                                 and lord.get("mean") is not None else None),
             turns_per_campaign=_f(d.get("turns_per_campaign")),
             seconds_per_campaign=_f(timing.get("s_per_campaign")),
             seconds_per_turn=_f(timing.get("s_per_turn")),

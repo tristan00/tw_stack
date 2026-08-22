@@ -118,26 +118,30 @@ def rebuild_analytics() -> list:
 
 def launch(kind: str, params: dict) -> list:
     import runctl
-    turns = params.get("turns") or "%s-%s" % (params.get("turns_min", 2),
-                                              params.get("turns_max", 20))
-    cfg = {}
-    for pair in str(params.get("cfg") or "").split():
-        k, _, v = pair.partition("=")
-        if _:
-            cfg[k.strip()] = v.strip()
+    lo, hi = params.get("turns_min") or 2, params.get("turns_max") or 20
+    turns = str(hi) if int(lo) == int(hi) else "%s-%s" % (lo, hi)
+    cold = kind == "cold"
+    ucb = params.get("ucb")
+    presave_radius = params.get("presave_radius")
+    if presave_radius in (None, ""):
+        import run_config
+        presave_radius = run_config.RUN["presave_radius"]
     steps = [runctl.kill_session(), runctl.kill_recorder()]
-    time.sleep(1.5)
-    steps.append(runctl.start_recorder(dev=bool(params.get("dev"))))
-    time.sleep(3.0)
+    common.wait("api_launch_kill_settle", 1.5)
+    steps.append(runctl.start_recorder(dev=bool(params.get("dev")),
+                                       presave_radius=float(presave_radius)))
+    common.wait("api_launch_recorder_grace", 3.0)
     steps.append("session -> %s" % runctl.start_session(
-        int(params.get("campaigns") or 10), str(turns),
-        model=params.get("model") or None,
-        cfg=cfg,
-        retrain=bool(params.get("retrain_first")) and kind != "cold",
-        retrain_every=int(params.get("retrain_every") or 0),
-        cold=(kind == "cold"),
+        int(params.get("campaigns") or 10), turns,
+        retrain_every=0 if cold else int(params.get("retrain_every") or 0),
+        retrain_first=bool(params.get("retrain_first")) and not cold,
+        cold=cold,
         dev=bool(params.get("dev")),
         factions=params.get("factions") or "all",
-        strategies=params.get("strategies") or None,
-        ruleset=params.get("ruleset") or None))
+        strategies=None if cold else (params.get("strategies") or None),
+        interrupt_strategies=None if cold else (params.get("interrupt_strategies") or None),
+        ruleset=None if cold else (params.get("ruleset") or None),
+        presave_radius=float(presave_radius),
+        width=int(params.get("width") or 0),
+        ucb=None if ucb in (None, "") else float(ucb)))
     return steps

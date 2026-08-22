@@ -72,6 +72,11 @@ def _launcher_screens():
     return out
 
 
+def _interrupt_names():
+    import arms
+    return arms.INTERRUPT_NAMES
+
+
 def check_catalogue(verbose=True):
     try:
         from advisor.mapgraph import schema as S
@@ -206,6 +211,22 @@ def check(verbose=True):
     ok("schema keeps the full node-type set",
        len(S.NODE_TYPES) >= 15,
        "%d node types, %d relations" % (len(S.NODE_TYPES), S.N_RELATIONS))
+
+    src_gnet = open(os.path.join(_HERE, "greedy_net.py"), encoding="utf-8").read()
+    code_greedy = _code_only(os.path.join(_HERE, "greedy_train.py"))
+    ok("greedy: the MARWIL encoder, reused unchanged",
+       "N.Encoder(" in src_gnet and "class Encoder" not in src_gnet)
+    ok("greedy: one reward head per action node, no value head, no listwise loss",
+       "class RewardHead" in src_gnet and "self.v " not in src_gnet
+       and "listwise" not in src_gnet and "listwise" not in code_greedy)
+    ok("greedy: fit by mse on the taken action's z-scored return only",
+       "taken_q(" in code_greedy and "mse_loss(q, b.y_z" in code_greedy
+       and "torch.exp(" not in code_greedy and "adv_tau" not in code_greedy.split(
+           "_MARWIL_ONLY", 1)[-1].split("\n", 1)[-1])
+    ok("greedy: the interrupt family has no graph model",
+       not any(os.path.exists(os.path.join(_HERE, f)) for f in
+               ("interrupt_rank.py", "interrupt_train.py", "interrupt_build.py")),
+       "blocking screens draw from %s only" % ", ".join(_interrupt_names()))
 
     launcher_screens = _launcher_screens()
     missing = sorted(launcher_screens - set(S.SCREEN_TYPES))
