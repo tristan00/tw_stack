@@ -14,6 +14,8 @@ import arms
 import campaign_growth as CG
 import common
 import metrics_db
+import run_config
+import ucb_stats as UCB
 from advisor_api import analytics_db as adb
 from advisor_api import db, ident
 from advisor_api.models import (
@@ -23,6 +25,7 @@ from advisor_api.models import (
     InterruptOption, InterruptRow, Metric, ModelCard, OfferRow, OutcomeTally, PairOption,
     PhaseSpan, PolicyRow, Rate, RewardPoint, Scope, Service, StartRow, TimelineAction,
     TimelineLane, TimingRow, TrainingEvent, TrialCorr, TrialRow, UcbPick, UcbRow,
+    HistBin, MatrixCell, ProducedCampaign, StartCampaign, StartPickPoint,
 )
 from decisions import store_schema as SS
 
@@ -361,6 +364,7 @@ def campaign_rows(con) -> list:
         "leader FROM campaigns")}
 
     outcomes = join_outcomes(con)
+    produced_by = {v: k for k, v in pick_campaigns(con).items()}
     out = []
     for ckey, d in decs.items():
         m = meta.get(ckey)
@@ -373,6 +377,7 @@ def campaign_rows(con) -> list:
         row = CampaignRow(
             campaign_id=_i(m["campaign_id"], 0) if m else 0,
             campaign=_camp(ckey),
+            faction_key=(m["faction"] if m else ident.split_campaign_key(ckey)[0]),
             leader=m["leader"] if m else None,
             campaign_map=_id(ident.campaign_map(m["campaign_map"] if m else None)),
             presave_radius=(m["presave_radius"] if m else None),
@@ -403,6 +408,11 @@ def campaign_rows(con) -> list:
             lord_per_turn=_f(g.get("lord_per_turn")),
             growth_state=g.get("growth_state") or CG.NO_TURN_ROWS,
         )
+        sg, lg = _f(g.get("settlements_growth")), _f(g.get("lord_growth"))
+        if sg is not None and lg is not None:
+            row.settlements_gained, row.levels_gained = sg, lg
+            row.reward = round(sg + lg, 3)
+        row.pick_id = produced_by.get(ckey)
         pm = outcomes.get(ckey)
         if pm:
             outcome = str(pm.get("outcome") or "")
@@ -438,6 +448,103 @@ def outcome_headline(con) -> list:
     return out
 
 
+PICK_JOIN_S = 120.0
+
+
+@db.cached_per_campaign
+def gains_all(con) -> list:
+    return [dict(r) for r in con.execute(
+        "SELECT campaign_map, faction, campaign_key, first_ts, turns_reached,"
+        " settlements_gained, levels_gained,"
+        " settlements_gained + levels_gained AS reward"
+        " FROM campaign_gains ORDER BY first_ts DESC")]
+
+
+def _pool() -> dict:
+    try:
+        import presaves as PS
+        radius = run_config.RUN.get("presave_radius")
+        return {(p["campaign_map"], p["faction"]): p
+                for p in PS.list_presaves(radius=radius)}
+    except Exception:
+        return {}
+
+
+@db.cached
+def pick_campaigns(con) -> dict:
+    by_key: dict = {}
+    for r in con.execute(
+            "SELECT picked_ts, campaign_map, faction, campaign_key FROM campaigns"
+            " WHERE picked_ts IS NOT NULL ORDER BY picked_ts"):
+        by_key.setdefault((r["campaign_map"], r["faction"]), []).append(
+            (_f(r["picked_ts"]) or 0.0, r["campaign_key"]))
+    used, out = set(), {}
+    for r in con.execute("SELECT pick_id, ts, campaign_map, faction FROM ucb_picks"
+                         " ORDER BY pick_id"):
+        ts = _f(r["ts"]) or 0.0
+        for cts, key in by_key.get((r["campaign_map"], r["faction"]), []):
+            if key in used:
+                continue
+            dt = cts - ts
+            if dt > PICK_JOIN_S:
+                break
+            if dt >= -1.0:
+                used.add(key)
+                out[_i(r["pick_id"], 0)] = key
+                break
+    return out
+
+
+@db.cached
+def ucb_context(con) -> dict:
+    rewards: dict = {}
+    for g in gains_all(con)[:UCB.WINDOW]:
+        rewards.setdefault((g["campaign_map"], g["faction"]), []).append(
+            float(g["reward"] or 0.0))
+    stats = UCB.start_stats(rewards)
+    z = UCB.zscores(stats)
+    total = max(1, sum(d["n"] for d in stats.values()))
+    last = con.execute("SELECT c FROM ucb_picks ORDER BY pick_id DESC LIMIT 1").fetchone()
+    c = _f(last["c"]) if last else _f(run_config.RUN.get("ucb"))
+    pool = _pool()
+    scored = {}
+    for key in set(pool) | set(stats):
+        d = stats.get(key) or dict(UCB.EMPTY)
+        played = d["n"] >= UCB.MIN_PLAYS
+        if c is None:
+            b, e, s = (UCB.blend(d, z) if played else None), None, None
+        else:
+            b, e, s = UCB.score(d, z, c, total)
+        scored[key] = {"d": d, "z": UCB.zparts(d, z) if played else None,
+                       "blend": b if played else None, "explore": e, "score": s}
+    order = sorted(pool, key=lambda k: (
+        -(scored[k]["score"] if scored[k]["score"] is not None else float("-inf")),
+        pool[k].get("file") or ""))
+    rank = {k: i + 1 for i, k in enumerate(order)}
+    picks = [((r["campaign_map"], r["faction"])) for r in con.execute(
+        "SELECT campaign_map, faction FROM ucb_picks ORDER BY pick_id")]
+    pick_count, last_pick = {}, {}
+    for i, key in enumerate(picks):
+        pick_count[key] = pick_count.get(key, 0) + 1
+        last_pick[key] = i
+    plays_ago = {}
+    for i, g in enumerate(gains_all(con)):
+        plays_ago.setdefault((g["campaign_map"], g["faction"]), i)
+    top = max([int(round(max(v))) for v in rewards.values()] + [0])
+    return {"rewards": rewards, "stats": stats, "z": z, "total": total, "c": c,
+            "pool": pool, "scored": scored, "rank": rank, "n_picks": len(picks),
+            "pick_count": pick_count, "last_pick": last_pick, "plays_ago": plays_ago,
+            "top_reward": top}
+
+
+def _bins(vals, top) -> list:
+    out = [0] * (top + 1)
+    for v in vals:
+        k = min(top, max(0, int(round(v))))
+        out[k] += 1
+    return out
+
+
 @db.cached
 def starts_rows(con) -> list:
     per = {}
@@ -452,64 +559,191 @@ def starts_rows(con) -> list:
         b["span_min"] += row.span_min or 0.0
         b["att"] += row.attempted
         b["conf"] += row.confirmed
-
-    allied = {r["ckey"]: r["n"] for r in con.execute(
-        "SELECT campaign_id ckey, SUM(CASE WHEN allies>0 THEN 1 ELSE 0 END) n"
-        " FROM turn_open GROUP BY campaign_id")}
-    vassal = {r["ckey"]: r["n"] for r in con.execute(
-        "SELECT campaign_id ckey, SUM(CASE WHEN vassals>0 THEN 1 ELSE 0 END) n"
-        " FROM turn_open GROUP BY campaign_id")}
-    ever_a, ever_v = {}, {}
-    for row in campaign_rows(con):
-        fkey, _ = ident.split_campaign_key(row.campaign.raw)
-        mkey = row.campaign_map.raw if row.campaign_map else ""
-        k = (mkey, fkey)
-        ever_a[k] = ever_a.get(k, 0) + (1 if (allied.get(row.campaign.raw) or 0) else 0)
-        ever_v[k] = ever_v.get(k, 0) + (1 if (vassal.get(row.campaign.raw) or 0) else 0)
-
     counts = {((r["campaign_map"] or ""), r["faction"]): r["n"] for r in con.execute(
         "SELECT campaign_map, faction, n FROM start_counts")}
-    leaders = {((r["m"] or ""), r["f"]): r["l"] for r in con.execute(
-        "SELECT campaign_map m, faction f, MAX(leader) l FROM campaigns"
-        " WHERE leader IS NOT NULL GROUP BY campaign_map, faction")}
-    gains = {}
-    for r in con.execute(
-            "SELECT campaign_map mkey, faction fkey,"
-            "       MAX(settlements_gained) sb, AVG(settlements_gained) sa,"
-            "       MAX(levels_gained) lb, AVG(levels_gained) la,"
-            "       MAX(allies_gained) ab, AVG(allies_gained) aa,"
-            "       MAX(vassals_gained) vb, AVG(vassals_gained) va,"
-            "       MAX(settlements_gained + levels_gained) tb,"
-            "       AVG(settlements_gained + levels_gained) ta"
-            " FROM campaign_gains GROUP BY campaign_map, faction"):
-        gains[((r["mkey"] or ""), r["fkey"])] = r
+    leaders = _start_leaders(con)
+    cx = ucb_context(con)
+    window = gains_all(con)[:UCB.WINDOW]
+    win_rows: dict = {}
+    for g in window:
+        win_rows.setdefault((g["campaign_map"], g["faction"]), []).append(g)
+    best = {}
+    for g in gains_all(con):
+        k = (g["campaign_map"], g["faction"])
+        best[k] = max(best.get(k, 0.0), _f(g["reward"], 0.0) or 0.0)
     out = []
-    for (mkey, fkey), b in per.items():
-        nn = counts.get((mkey, fkey), b["n"])
-        g = gains.get((mkey, fkey))
+    for key in set(per) | set(cx["pool"]) | set(cx["stats"]):
+        mkey, fkey = key
+        b = per.get(key) or {"n": 0, "turns": [], "span_min": 0.0, "att": 0, "conf": 0}
+        sc = cx["scored"].get(key) or {"d": dict(UCB.EMPTY), "z": None, "blend": None,
+                                       "explore": None, "score": None}
+        d = sc["d"]
+        rewards = cx["rewards"].get(key) or []
+        wr = win_rows.get(key) or []
+        fin = lambda v: None if v is None or v == float("inf") else round(float(v), 4)
+        z = sc["z"] or {}
         out.append(StartRow(
             faction=_fac(fkey),
-            leader=leaders.get((mkey, fkey)),
+            leader=leaders.get((mkey or "", fkey)),
             campaign_map=_id(ident.campaign_map(mkey)) if mkey else None,
-            n=nn,
+            in_pool=key in cx["pool"],
+            n=counts.get(key, b["n"]),
+            n_window=d["n"],
+            mean=round(d["mean"], 4) if d["n"] else None,
+            std=round(d["std"], 4) if d["n"] else None,
+            entropy=round(d["entropy"], 4) if d["n"] else None,
+            z_mean=fin(z.get("mean")), z_entropy=fin(z.get("entropy")),
+            z_std=fin(z.get("std")),
+            blend=fin(sc["blend"]), explore=fin(sc["explore"]), score=fin(sc["score"]),
+            rank=cx["rank"].get(key),
+            picks=cx["pick_count"].get(key, 0),
+            picks_ago=(cx["n_picks"] - 1 - cx["last_pick"][key]
+                       if key in cx["last_pick"] else None),
+            plays_ago=cx["plays_ago"].get(key),
+            best=best.get(key),
+            zero_rate=Rate(n=sum(1 for r in rewards if r <= 0), of=len(rewards),
+                           noun="campaigns",
+                           population="of this start inside the selector's window that "
+                                      "gained nothing"),
+            reward_bins=_bins(rewards, cx["top_reward"]),
+            settlements_avg=(round(sum(_f(g["settlements_gained"], 0.0) or 0.0
+                                       for g in wr) / len(wr), 3) if wr else None),
+            levels_avg=(round(sum(_f(g["levels_gained"], 0.0) or 0.0
+                                  for g in wr) / len(wr), 3) if wr else None),
             avg_turns=round(sum(b["turns"]) / len(b["turns"]), 1) if b["turns"] else None,
             sec_per_turn=(round(b["span_min"] * 60.0 / sum(b["turns"]), 1)
                           if sum(b["turns"]) else None),
-            settlements_gained_best=_f(g["sb"]) if g else None,
-            settlements_gained_avg=round(_f(g["sa"]) or 0, 2) if g else None,
-            levels_gained_best=_f(g["lb"]) if g else None,
-            levels_gained_avg=round(_f(g["la"]) or 0, 2) if g else None,
-            allies_gained_best=_f(g["ab"]) if g else None,
-            allies_gained_avg=round(_f(g["aa"]) or 0, 2) if g else None,
-            vassals_gained_best=_f(g["vb"]) if g else None,
-            vassals_gained_avg=round(_f(g["va"]) or 0, 2) if g else None,
-            total_gained_best=_f(g["tb"]) if g else None,
-            total_gained_avg=round(_f(g["ta"]) or 0, 2) if g else None,
-            ever_allied=ever_a.get((mkey, fkey), 0), ever_vassal=ever_v.get((mkey, fkey), 0),
             confirm_rate=Rate(n=b["conf"], of=b["att"], noun="actions",
                               population="attempted across this start's campaigns")))
-    out.sort(key=lambda r: (-r.n, r.faction.label))
+    out.sort(key=lambda r: (r.rank if r.rank is not None else 10 ** 6, -r.n,
+                            r.faction.label))
     return out
+
+
+def _hist(rows, field, top=None) -> list:
+    by_x: dict = {}
+    for g in rows:
+        v = _f(g[field], 0.0) or 0.0
+        x = int(round(v))
+        if top is not None:
+            x = min(top, max(0, x))
+        by_x.setdefault(x, {})
+        m = g["campaign_map"] or ""
+        by_x[x][m] = by_x[x].get(m, 0) + 1
+    if not by_x:
+        return []
+    lo, hi = min(by_x), max(by_x)
+    return [HistBin(x=x, counts=by_x.get(x, {})) for x in range(lo, hi + 1)]
+
+
+@db.cached
+def starts_page_extras(con) -> dict:
+    cx = ucb_context(con)
+    window = gains_all(con)[:UCB.WINDOW]
+    maps = sorted({g["campaign_map"] or "" for g in window} | {k[0] for k in cx["pool"]})
+    ns = [cx["stats"][k]["n"] for k in cx["pool"] if k in cx["stats"]]
+    ns_all = [cx["stats"].get(k, UCB.EMPTY)["n"] for k in cx["pool"]]
+    rewards = [_f(g["reward"], 0.0) or 0.0 for g in window]
+    zeros = sum(1 for r in rewards if r <= 0)
+    ns_sorted = sorted(ns_all, reverse=True)
+    top10 = (sum(ns_sorted[:10]) / sum(ns_sorted)) if sum(ns_sorted) else 0.0
+    blocks = []
+    asc = list(reversed(window))
+    for i in range(0, len(asc), 50):
+        chunk = asc[i:i + 50]
+        if len(chunk) >= 10:
+            blocks.append(round(sum(_f(g["reward"], 0.0) or 0.0 for g in chunk)
+                                / len(chunk), 3))
+    under = sum(1 for n_ in ns_all if n_ < UCB.MIN_PLAYS)
+    tiles = [
+        Metric(label="starts in pool", value=len(cx["pool"]),
+               sub="%d played inside the window" % len(ns)),
+        Metric(label="plays in window", value=cx["total"],
+               sub="of %d campaigns all time" % len(gains_all(con))),
+        Metric(label="plays per start", value=(statistics.median(ns) if ns else None),
+               sub=("min %d · max %d" % (min(ns), max(ns)) if ns else None)),
+        Metric(label="reward per campaign",
+               value=(round(sum(rewards) / len(rewards), 2) if rewards else None),
+               spark=blocks, sub="trailing 50-campaign means"),
+        Metric(label="zero reward", value=(round(100.0 * zeros / len(rewards)) if rewards
+                                           else None), unit="%",
+               sub="%d of %d campaigns in window" % (zeros, len(rewards))),
+        Metric(label="gini of plays", value=round(UCB.gini(ns_all), 3) if ns_all else None,
+               sub="top 10 starts hold %d%%" % round(100 * top10)),
+        Metric(label="under %d plays" % UCB.MIN_PLAYS, value=under,
+               sub="scored infinite, played first",
+               state="warn" if under else "neutral"),
+        Metric(label="C", value=cx["c"], sub="explore = C·sqrt(ln plays / n)"),
+    ]
+    return {"tiles": tiles, "maps": [_id(ident.campaign_map(m)) for m in maps if m],
+            "reward_bins": _hist(window, "reward", cx["top_reward"]),
+            "turns_bins": _hist(window, "turns_reached")}
+
+
+@db.cached
+def ucb_pick_counts(con) -> dict:
+    return {_i(r["pick_id"], 0): _i(r["n"], 0) for r in con.execute(
+        "SELECT pick_id, COUNT(*) n FROM ucb_pick_rows GROUP BY pick_id")}
+
+
+def start_detail(con, mkey: str, fkey: str):
+    row = next((r for r in starts_rows(con)
+                if (r.campaign_map.raw if r.campaign_map else "") == mkey
+                and r.faction.raw == fkey), None)
+    if row is None:
+        return None
+    by_camp = {r.campaign.raw: r for r in campaign_rows(con)}
+    produced_by = {v: k for k, v in pick_campaigns(con).items()}
+    camps = []
+    for i, g in enumerate(gains_all(con)):
+        if (g["campaign_map"] or "") != mkey or g["faction"] != fkey:
+            continue
+        cr = by_camp.get(g["campaign_key"])
+        camps.append(StartCampaign(
+            campaign=_camp(g["campaign_key"]), ts=_f(g["first_ts"]),
+            turns=(cr.turns if cr else _i(g["turns_reached"])),
+            reward=_f(g["reward"]), settlements_gained=_f(g["settlements_gained"]),
+            levels_gained=_f(g["levels_gained"]),
+            outcome=cr.outcome if cr else None,
+            outcome_state=cr.outcome_state if cr else "neutral",
+            ended_because=cr.ended_because if cr else None,
+            decisions=cr.decisions if cr else 0,
+            confirm_rate=cr.confirm_rate if cr else None,
+            pick_id=produced_by.get(g["campaign_key"]),
+            in_window=i < UCB.WINDOW))
+    counts = ucb_pick_counts(con)
+    traj = []
+    blend_col = "r.blend" if "blend" in db.columns(con, "ucb_pick_rows") else "NULL"
+    for r in con.execute(
+            "SELECT r.pick_id pick_id, p.ts ts, p.c c, r.rank rank, r.n n, r.mean mean,"
+            " %s blend, r.explore explore, r.score score, r.chosen chosen"
+            " FROM ucb_pick_rows r JOIN ucb_picks p ON p.pick_id = r.pick_id"
+            " WHERE r.campaign_map = ? AND r.faction = ? ORDER BY r.pick_id" % blend_col,
+            (mkey, fkey)):
+        score, explore = _f(r["score"]), _f(r["explore"])
+        blend = _f(r["blend"])
+        if blend is None and score is not None and explore is not None:
+            blend = round(score - explore, 4)
+        traj.append(StartPickPoint(
+            pick_id=_i(r["pick_id"], 0), ts=_f(r["ts"]), c=_f(r["c"]),
+            rank=_i(r["rank"], 0), ranked=counts.get(_i(r["pick_id"], 0), 0),
+            n=_i(r["n"], 0), mean=_f(r["mean"]), blend=blend, explore=explore,
+            score=score, chosen=bool(r["chosen"])))
+    cx = ucb_context(con)
+    pop = [0] * (cx["top_reward"] + 1)
+    for vals in cx["rewards"].values():
+        for i, c in enumerate(_bins(vals, cx["top_reward"])):
+            pop[i] += c
+    grid, _ = matrix(con, "action")
+    cells = []
+    for atype, (tried, ok, ms) in sorted((grid.get(fkey) or {}).items()):
+        rate = Rate(n=ok, of=tried, noun="actions",
+                    population="attempted of this type by this faction")
+        cells.append(MatrixCell(action_type=_phrase(atype), rate=rate,
+                                total_ms=round(ms, 0) or None,
+                                per_try_ms=round(ms / tried, 0) if tried else None))
+    cells.sort(key=lambda c: (c.rate.pct if c.rate.pct is not None else 999, -c.rate.of))
+    return row, camps, traj, pop, cells
 
 
 @db.cached
@@ -2058,47 +2292,147 @@ def _start_leaders(con) -> dict:
         " WHERE leader IS NOT NULL GROUP BY campaign_map, faction")}
 
 
+PULSE = 50
+
+
 @db.cached
-def ucb_picks(con, limit: int = 200, before: int | None = None) -> list:
-    args = [int(limit)]
-    where = ""
-    if before is not None:
-        where = " WHERE pick_id < ?"
-        args = [int(before), int(limit)]
+def ucb_pick_series(con) -> list:
     leaders = _start_leaders(con)
-    return [UcbPick(
-        leader=leaders.get(((r["campaign_map"] or ""), r["faction"])),
-        pick_id=_i(r["pick_id"], 0), ts=_f(r["ts"]), c=_f(r["c"]),
-        total_plays=_i(r["total_plays"], 0), faction=_fac(r["faction"]),
-        campaign_map=_id(ident.campaign_map(r["campaign_map"])) if r["campaign_map"] else None,
-        n=_i(r["n"], 0), mean=_f(r["mean"]), explore=_f(r["explore"]),
-        score=_f(r["score"]), tied=_i(r["tied"], 0),
-        starts=_i(r["starts"], 0))
-        for r in con.execute(
-            "SELECT p.*, (SELECT COUNT(*) FROM ucb_pick_rows w WHERE w.pick_id = p.pick_id)"
-            " AS starts FROM ucb_picks p%s ORDER BY p.pick_id DESC LIMIT ?" % where, args)]
+    top: dict = {}
+    for r in con.execute("SELECT pick_id, rank, score FROM ucb_pick_rows WHERE rank <= 2"):
+        top.setdefault(_i(r["pick_id"], 0), {})[_i(r["rank"], 0)] = _f(r["score"])
+    ns: dict = {}
+    for r in con.execute("SELECT pick_id, n FROM ucb_pick_rows"):
+        ns.setdefault(_i(r["pick_id"], 0), []).append(_i(r["n"], 0) or 0)
+    produced = pick_campaigns(con)
+    gains = {g["campaign_key"]: g for g in gains_all(con)}
+    by_camp = {r.campaign.raw: r for r in campaign_rows(con)}
+    rows = [dict(r) for r in con.execute("SELECT * FROM ucb_picks ORDER BY pick_id")]
+    keys = [(r["campaign_map"], r["faction"]) for r in rows]
+    seen: set = set()
+    out = []
+    for i, r in enumerate(rows):
+        pid = _i(r["pick_id"], 0)
+        key = keys[i]
+        seen.add(key)
+        lo = max(0, i - PULSE + 1)
+        win = keys[lo:i + 1]
+        reps = [1 if j > 0 and keys[j] == keys[j - 1] else 0 for j in range(max(1, lo), i + 1)]
+        t = top.get(pid) or {}
+        s1, s2 = t.get(1), t.get(2)
+        score, explore = _f(r["score"]), _f(r["explore"])
+        blend = _f(r.get("blend"))
+        if blend is None and score is not None and explore is not None:
+            blend = round(score - explore, 4)
+        n_list = ns.get(pid) or []
+        prod = None
+        ck = produced.get(pid)
+        if ck:
+            g = gains.get(ck) or {}
+            cr = by_camp.get(ck)
+            prod = ProducedCampaign(
+                campaign=_camp(ck), reward=_f(g.get("reward")),
+                turns=(cr.turns if cr else _i(g.get("turns_reached"))),
+                outcome=cr.outcome if cr else None,
+                outcome_state=cr.outcome_state if cr else "neutral")
+        out.append(UcbPick(
+            leader=leaders.get(((r["campaign_map"] or ""), r["faction"])),
+            pick_id=pid, ts=_f(r["ts"]), c=_f(r["c"]),
+            total_plays=_i(r["total_plays"], 0), faction=_fac(r["faction"]),
+            campaign_map=(_id(ident.campaign_map(r["campaign_map"]))
+                          if r["campaign_map"] else None),
+            n=_i(r["n"], 0), mean=_f(r["mean"]), blend=blend,
+            entropy=_f(r.get("entropy")), std=_f(r.get("std")),
+            explore=explore, score=score,
+            margin=(round(s1 - s2, 4) if s1 is not None and s2 is not None else None),
+            tied=_i(r["tied"], 0), starts=len(n_list),
+            repeat=bool(i > 0 and keys[i - 1] == key), produced=prod,
+            distinct_50=len(set(win)),
+            repeat_50=(round(sum(reps) / len(reps), 3) if reps else None),
+            cum_distinct=len(seen),
+            gini=(round(UCB.gini(n_list), 3) if n_list else None),
+            under_min=sum(1 for n_ in n_list if n_ < UCB.MIN_PLAYS)))
+    return out
+
+
+def ucb_picks(con, limit: int = 200, before: int | None = None) -> list:
+    series = ucb_pick_series(con)
+    desc = list(reversed(series))
+    if before is not None:
+        desc = [p for p in desc if p.pick_id < int(before)]
+    return desc[:int(limit)]
+
+
+@db.cached
+def ucb_tiles(con) -> list:
+    series = ucb_pick_series(con)
+    cx = ucb_context(con)
+    if not series:
+        return []
+    last = series[-1]
+    chosen = {(p.campaign_map.raw if p.campaign_map else "", p.faction.raw) for p in series}
+    never = sum(1 for k in cx["pool"] if k not in chosen)
+    tied = sum(1 for p in series if p.tied > 1)
+    reps = sum(1 for p in series if p.repeat)
+    margins = [p.margin for p in series[-PULSE:] if p.margin is not None]
+    realized = [p.produced.reward for p in series if p.produced and p.produced.reward is not None]
+    expected = [p.mean for p in series if p.produced and p.produced.reward is not None
+                and p.mean is not None]
+    return [
+        Metric(label="picks", value=len(series),
+               sub="%d produced a campaign" % sum(1 for p in series if p.produced)),
+        Metric(label="C now", value=last.c, sub="%d plays in window" % last.total_plays),
+        Metric(label="starts chosen", value=len(chosen), unit="/ %d" % len(cx["pool"]),
+               sub="%d never chosen" % never, state="warn" if never else "neutral"),
+        Metric(label="repeat of previous", value=round(100.0 * reps / len(series)), unit="%",
+               sub="%d picks" % reps),
+        Metric(label="tied at the top", value=round(100.0 * tied / len(series)), unit="%",
+               sub="%d picks drawn by lot" % tied),
+        Metric(label="margin to #2", value=(round(statistics.median(margins), 3)
+                                            if margins else None),
+               sub="median over the last %d picks" % PULSE),
+        Metric(label="realised − expected",
+               value=(round(sum(realized) / len(realized) - sum(expected) / len(expected), 2)
+                      if realized and expected else None),
+               sub="%d joined picks" % len(realized)),
+    ]
 
 
 @db.cached
 def ucb_pick_rows(con, pick_id: int) -> tuple:
-    head = con.execute("SELECT * FROM ucb_picks WHERE pick_id = ?", (int(pick_id),)).fetchone()
+    head = next((p for p in ucb_pick_series(con) if p.pick_id == int(pick_id)), None)
     if head is None:
-        return None, []
+        return None, [], 0
     leaders = _start_leaders(con)
-    rows = [UcbRow(
-        leader=leaders.get(((r["campaign_map"] or ""), r["faction"])),
-        rank=_i(r["rank"], 0), faction=_fac(r["faction"]),
-        campaign_map=_id(ident.campaign_map(r["campaign_map"])) if r["campaign_map"] else None,
-        n=_i(r["n"], 0), mean=_f(r["mean"]), explore=_f(r["explore"]),
-        score=_f(r["score"]), chosen=bool(r["chosen"]))
-        for r in con.execute(
-            "SELECT * FROM ucb_pick_rows WHERE pick_id = ? ORDER BY rank", (int(pick_id),))]
-    pick = UcbPick(
-        leader=leaders.get(((head["campaign_map"] or ""), head["faction"])),
-        pick_id=_i(head["pick_id"], 0), ts=_f(head["ts"]), c=_f(head["c"]),
-        total_plays=_i(head["total_plays"], 0), faction=_fac(head["faction"]),
-        campaign_map=(_id(ident.campaign_map(head["campaign_map"]))
-                      if head["campaign_map"] else None),
-        n=_i(head["n"], 0), mean=_f(head["mean"]), explore=_f(head["explore"]),
-        score=_f(head["score"]), tied=_i(head["tied"], 0), starts=len(rows))
-    return pick, rows
+    raw = [dict(r) for r in con.execute(
+        "SELECT * FROM ucb_pick_rows WHERE pick_id = ? ORDER BY rank", (int(pick_id),))]
+    full = all(r.get("entropy") is not None and r.get("std") is not None for r in raw)
+    stats = {i: {"n": _i(r["n"], 0) or 0, "mean": _f(r["mean"], 0.0) or 0.0,
+                 "entropy": _f(r.get("entropy"), 0.0) or 0.0,
+                 "std": _f(r.get("std"), 0.0) or 0.0} for i, r in enumerate(raw)}
+    z = UCB.zscores(stats) if full and raw else None
+    top_score = next((_f(r["score"]) for r in raw if _f(r["score"]) is not None), None)
+    rows = []
+    for i, r in enumerate(raw):
+        score, explore = _f(r["score"]), _f(r["explore"])
+        blend = _f(r.get("blend"))
+        if blend is None and score is not None and explore is not None:
+            blend = round(score - explore, 4)
+        zp = (UCB.zparts(stats[i], z) if z is not None
+              and stats[i]["n"] >= UCB.MIN_PLAYS else {})
+        rows.append(UcbRow(
+            leader=leaders.get(((r["campaign_map"] or ""), r["faction"])),
+            rank=_i(r["rank"], 0), faction=_fac(r["faction"]),
+            campaign_map=(_id(ident.campaign_map(r["campaign_map"]))
+                          if r["campaign_map"] else None),
+            n=_i(r["n"], 0), mean=_f(r["mean"]), entropy=_f(r.get("entropy")),
+            std=_f(r.get("std")),
+            z_mean=(round(zp["mean"], 4) if zp else None),
+            z_entropy=(round(zp["entropy"], 4) if zp else None),
+            z_std=(round(zp["std"], 4) if zp else None),
+            blend=blend, explore=explore, score=score,
+            delta=(round(score - top_score, 4) if score is not None
+                   and top_score is not None else None),
+            chosen=bool(r["chosen"])))
+    under = sum(1 for r in rows if r.n < UCB.MIN_PLAYS)
+    return head, rows, under

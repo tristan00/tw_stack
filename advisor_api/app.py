@@ -21,7 +21,8 @@ from advisor_api.models import (
     DecisionDetail, DecisionsPage, ForcingPage, InfraPage, LaunchDefaults, LogPage,
     MatrixCell,
     MatrixPage, MatrixRow, MatrixTotal, MenusPage, ModelsPage, Rate, RunPage, Scope,
-    StartsPage, TimelinePage, TrainingPage, CorrelationsPage, UcbPickPage, UcbPicksPage,
+    StartsPage, StartDetail, TimelinePage, TrainingPage, CorrelationsPage, UcbPickPage,
+    UcbPicksPage,
 )
 
 UI_DIST = os.path.join(common.ROOT, "ui", "dist")
@@ -78,37 +79,59 @@ def get_log(file: str | None = None, q_text: str | None = None, t0: str | None =
 @app.get("/api/campaigns/starts", response_model=StartsPage, tags=["campaigns"])
 def get_starts() -> StartsPage:
     con = _con()
+    cx = q.ucb_context(con)
+    extras = q.starts_page_extras(con)
     return StartsPage(
-        scope=_scope("one row per playable start, most-played first",
-                     "gained columns are per-campaign first-to-peak deltas: best is the "
-                     "single strongest campaign, avg is across all of that start's campaigns"),
-        rows=q.starts_rows(con))
+        scope=_scope("one row per start in the presave pool, selector rank first",
+                     "window columns are the trailing %d campaigns the selector scores; "
+                     "score = blend + explore, blend = mean z of mean, H, std"
+                     % q.UCB.WINDOW),
+        window=q.UCB.WINDOW, min_plays=q.UCB.MIN_PLAYS, c=cx["c"], total_plays=cx["total"],
+        tiles=extras["tiles"], maps=extras["maps"], reward_bins=extras["reward_bins"],
+        turns_bins=extras["turns_bins"], rows=q.starts_rows(con))
+
+
+@app.get("/api/campaigns/starts/{campaign_map}/{faction}", response_model=StartDetail,
+         tags=["campaigns"])
+def get_start(campaign_map: str, faction: str) -> StartDetail:
+    con = _con()
+    got = q.start_detail(con, campaign_map, faction)
+    if got is None:
+        raise HTTPException(404, "no start %s on %s" % (faction, campaign_map))
+    row, camps, traj, pop, cells = got
+    return StartDetail(
+        scope=_scope("one start", "%s on %s" % (row.leader or row.faction.label,
+                                                 row.campaign_map.label
+                                                 if row.campaign_map else campaign_map)),
+        start=row, window=q.UCB.WINDOW, campaigns=camps, trajectory=traj,
+        population_bins=pop, actions=cells)
 
 
 @app.get("/api/campaigns/picks", response_model=UcbPicksPage, tags=["campaigns"])
-def get_picks(limit: int = 200, before: int | None = None) -> UcbPicksPage:
+def get_picks(limit: int = 2000, before: int | None = None) -> UcbPicksPage:
     con = _con()
-    lim = max(1, min(int(limit), 500))
+    lim = max(1, min(int(limit), 5000))
     picks = q.ucb_picks(con, lim, before)
+    cx = q.ucb_context(con)
     return UcbPicksPage(
         scope=_scope("one row per UCB start pick, newest first",
-                     "what the selector scored at that instant: C, the plays inside its "
-                     "trailing campaign window, and the winner's mean and explore term"),
-        picks=picks,
+                     "score = blend + explore; produced is the campaign booted from the pick"),
+        window=q.UCB.WINDOW, min_plays=q.UCB.MIN_PLAYS, pool=len(cx["pool"]),
+        tiles=q.ucb_tiles(con), picks=picks,
         cursor=(picks[-1].pick_id if len(picks) >= lim else None))
 
 
 @app.get("/api/campaigns/picks/{pick_id}", response_model=UcbPickPage, tags=["campaigns"])
 def get_pick(pick_id: int) -> UcbPickPage:
     con = _con()
-    pick, rows = q.ucb_pick_rows(con, pick_id)
+    pick, rows, under = q.ucb_pick_rows(con, pick_id)
     if pick is None:
         raise HTTPException(status_code=404, detail="no UCB pick %d" % pick_id)
     return UcbPickPage(
         scope=_scope("every start the selector ranked at this pick, best score first",
-                     "score = mean + C*sqrt(ln(total plays)/n); an unplayed start has an "
-                     "infinite bonus and is shown without a score"),
-        pick=pick, rows=rows)
+                     "score = blend + C*sqrt(ln(plays)/n); under %d plays the score is "
+                     "infinite and shown without one" % q.UCB.MIN_PLAYS),
+        pick=pick, under_min=under, rows=rows)
 
 
 @app.get("/api/campaigns/matrix", response_model=MatrixPage, tags=["campaigns"])

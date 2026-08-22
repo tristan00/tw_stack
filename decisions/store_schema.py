@@ -138,17 +138,21 @@ CREATE TABLE IF NOT EXISTS diplomacy_events(
 -- scored. The session logs the same table, but logs rotate and this is the record of
 -- WHY a start was played: c, the plays it divided by, and every start's mean and
 -- explore term at that instant. explore and score are NULL for an unplayed start,
--- whose bonus is infinite. Join a pick to the campaign it produced on picked_ts.
+-- whose bonus is infinite. blend, entropy and std are the scored terms behind the
+-- score (blend + explore); rows written before they existed carry NULL there.
+-- A pick's ts is the campaign's picked_ts: join a pick to the campaign it produced on it.
 CREATE TABLE IF NOT EXISTS ucb_picks(
   pick_id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts REAL NOT NULL, c REAL, total_plays INTEGER,
   campaign_map TEXT, faction TEXT,
-  n INTEGER, mean REAL, explore REAL, score REAL, tied INTEGER);
+  n INTEGER, mean REAL, explore REAL, score REAL, tied INTEGER,
+  blend REAL, entropy REAL, std REAL);
 
 CREATE TABLE IF NOT EXISTS ucb_pick_rows(
   pick_id INTEGER NOT NULL, rank INTEGER NOT NULL,
   campaign_map TEXT, faction TEXT,
   n INTEGER, mean REAL, explore REAL, score REAL, chosen INTEGER,
+  blend REAL, entropy REAL, std REAL,
   PRIMARY KEY(pick_id, rank));
 
 CREATE INDEX IF NOT EXISTS ix_dec_campaign ON decisions(campaign_id, decision_id);

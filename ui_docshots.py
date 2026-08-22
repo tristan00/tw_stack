@@ -11,8 +11,11 @@ SHOTS = (("run", "/run", "text=turns/hr", True),
          ("experiment-ledger", "/models?view=training", "text=experiment ledger", False),
          ("decisions", "/decisions", "text=every action", False),
          ("decision-detail", "/decisions/21558", "text=where the time went", False),
-         ("campaigns-starts", "/campaigns?view=starts", "text=one row per playable start", False),
-         ("campaigns-all", "/campaigns?view=all", "text=growth (first", False),
+         ("campaigns-starts", "/campaigns?view=starts", "text=plays per start", False),
+         ("campaigns-selector", "/campaigns?view=selector", "text=winning score per pick", False),
+         ("campaigns-start", "/starts/wh3_main_combi/wh2_main_def_har_ganeth",
+          "text=rank over picks", False),
+         ("campaigns-all", "/campaigns?view=campaigns", "text=lord levels", False),
          ("models-disk", "/models", "text=models on disk", True))
 WINDOW = {"width": 1600, "height": 1100}
 CONTENT_TIMEOUT_MS = 20000

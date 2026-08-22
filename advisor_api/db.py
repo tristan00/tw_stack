@@ -63,32 +63,64 @@ def stamp(run: str | None = None) -> tuple:
 
 def cached_on(key_fn):
     def deco(fn):
-        state: dict = {"key": None, "vals": {}}
+        state: dict = {"key": None, "vals": {}, "inflight": {}}
         lock = threading.Lock()
 
         @functools.wraps(fn)
         def wrapper(*args):
-            k = key_fn()
-            with lock:
-                if state["key"] != k:
-                    state["key"] = k
-                    state["vals"] = {}
-                hit = state["vals"].get(args, _MISS)
-            if hit is not _MISS:
-                return hit
-            val = fn(*args)
-            with lock:
-                if state["key"] == k:
-                    state["vals"][args] = val
-            return val
+            while True:
+                k = key_fn()
+                with lock:
+                    if state["key"] != k:
+                        state["key"] = k
+                        state["vals"] = {}
+                        state["inflight"] = {}
+                    hit = state["vals"].get(args, _MISS)
+                    if hit is not _MISS:
+                        return hit
+                    ev = state["inflight"].get(args)
+                    mine = ev is None
+                    if mine:
+                        ev = state["inflight"][args] = threading.Event()
+                if not mine:
+                    ev.wait()
+                    continue
+                try:
+                    val = fn(*args)
+                except BaseException:
+                    with lock:
+                        if state["inflight"].get(args) is ev:
+                            del state["inflight"][args]
+                    ev.set()
+                    raise
+                with lock:
+                    if state["key"] == k:
+                        state["vals"][args] = val
+                    if state["inflight"].get(args) is ev:
+                        del state["inflight"][args]
+                ev.set()
+                return val
 
-        wrapper.cache_clear = lambda: state.update(key=None, vals={})
+        wrapper.cache_clear = lambda: state.update(key=None, vals={}, inflight={})
         return wrapper
     return deco
 
 
 def cached(fn):
     return cached_on(lambda: stamp())(fn)
+
+
+def campaign_stamp(run: str | None = None) -> tuple:
+    con = connect(run)
+    try:
+        row = con.execute("SELECT COUNT(*), MAX(campaign_id) FROM campaigns").fetchone()
+        return (db_path(run), (row[0] if row else 0) or 0, (row[1] if row else 0) or 0)
+    except sqlite3.Error as e:
+        return (db_path(run), "err:%s" % e)
+
+
+def cached_per_campaign(fn):
+    return cached_on(lambda: campaign_stamp())(fn)
 
 
 def file_stamp(*paths) -> tuple:

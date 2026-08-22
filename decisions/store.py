@@ -91,7 +91,13 @@ class DecisionStore:
                     ("campaigns", "selector", "TEXT"),
                     ("campaigns", "picked_ts", "REAL"),
                     ("campaigns", "difficulty", "INTEGER"),
-                    ("campaigns", "leader", "TEXT"))
+                    ("campaigns", "leader", "TEXT"),
+                    ("ucb_picks", "blend", "REAL"),
+                    ("ucb_picks", "entropy", "REAL"),
+                    ("ucb_picks", "std", "REAL"),
+                    ("ucb_pick_rows", "blend", "REAL"),
+                    ("ucb_pick_rows", "entropy", "REAL"),
+                    ("ucb_pick_rows", "std", "REAL"))
 
     def _add_missing_columns(self):
         for table, col, decl in self._ADD_COLUMNS:
@@ -399,18 +405,20 @@ class DecisionStore:
         chosen = rec.get("chosen") or {}
         cur = self.con.execute(
             "INSERT INTO ucb_picks(ts,c,total_plays,campaign_map,faction,n,mean,explore,"
-            "score,tied) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            "score,tied,blend,entropy,std) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (rec.get("ts") or time.time(), rec.get("c"), _int_or_none(rec.get("total_plays")),
              chosen.get("campaign_map"), chosen.get("faction"),
              _int_or_none(chosen.get("n")), chosen.get("mean"), chosen.get("explore"),
-             chosen.get("score"), _int_or_none(rec.get("tied"))))
+             chosen.get("score"), _int_or_none(rec.get("tied")),
+             chosen.get("blend"), chosen.get("entropy"), chosen.get("std")))
         pid = cur.lastrowid
         self.con.executemany(
             "INSERT INTO ucb_pick_rows(pick_id,rank,campaign_map,faction,n,mean,explore,"
-            "score,chosen) VALUES(?,?,?,?,?,?,?,?,?)",
+            "score,chosen,blend,entropy,std) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
             [(pid, i + 1, r.get("campaign_map"), r.get("faction"), _int_or_none(r.get("n")),
               r.get("mean"), r.get("explore"), r.get("score"),
-              1 if r.get("chosen") else 0) for i, r in enumerate(rows)])
+              1 if r.get("chosen") else 0, r.get("blend"), r.get("entropy"), r.get("std"))
+             for i, r in enumerate(rows)])
         self.con.commit()
         return pid
 

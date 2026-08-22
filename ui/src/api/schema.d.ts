@@ -55,6 +55,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/campaigns/starts/{campaign_map}/{faction}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Start */
+        get: operations["get_start_api_campaigns_starts__campaign_map___faction__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/campaigns/picks": {
         parameters: {
             query?: never;
@@ -814,6 +831,8 @@ export interface components {
             /** Campaign Id */
             campaign_id: number;
             campaign: components["schemas"]["Ident"];
+            /** Faction Key */
+            faction_key?: string | null;
             /** Leader */
             leader?: string | null;
             campaign_map?: components["schemas"]["Ident"] | null;
@@ -903,6 +922,14 @@ export interface components {
             suspicious: boolean;
             /** Ended When */
             ended_when?: string | null;
+            /** Reward */
+            reward?: number | null;
+            /** Settlements Gained */
+            settlements_gained?: number | null;
+            /** Levels Gained */
+            levels_gained?: number | null;
+            /** Pick Id */
+            pick_id?: number | null;
         };
         /** CampaignsPage */
         CampaignsPage: {
@@ -1224,6 +1251,15 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /** HistBin */
+        HistBin: {
+            /** X */
+            x: number;
+            /** Counts */
+            counts?: {
+                [key: string]: number;
+            };
         };
         /** Ident */
         Ident: {
@@ -1581,6 +1617,21 @@ export interface components {
             /** Note */
             note?: string | null;
         };
+        /** ProducedCampaign */
+        ProducedCampaign: {
+            campaign: components["schemas"]["Ident"];
+            /** Reward */
+            reward?: number | null;
+            /** Turns */
+            turns?: number | null;
+            outcome?: components["schemas"]["Ident"] | null;
+            /**
+             * Outcome State
+             * @default neutral
+             * @enum {string}
+             */
+            outcome_state: "ok" | "warn" | "bad" | "neutral";
+        };
         /** Rate */
         Rate: {
             /** N */
@@ -1659,53 +1710,181 @@ export interface components {
             /** Detail */
             detail?: string | null;
         };
+        /** StartCampaign */
+        StartCampaign: {
+            campaign: components["schemas"]["Ident"];
+            /** Ts */
+            ts?: number | null;
+            /** Turns */
+            turns?: number | null;
+            /** Reward */
+            reward?: number | null;
+            /** Settlements Gained */
+            settlements_gained?: number | null;
+            /** Levels Gained */
+            levels_gained?: number | null;
+            outcome?: components["schemas"]["Ident"] | null;
+            /**
+             * Outcome State
+             * @default neutral
+             * @enum {string}
+             */
+            outcome_state: "ok" | "warn" | "bad" | "neutral";
+            /** Ended Because */
+            ended_because?: string | null;
+            /**
+             * Decisions
+             * @default 0
+             */
+            decisions: number;
+            confirm_rate?: components["schemas"]["Rate"] | null;
+            /** Pick Id */
+            pick_id?: number | null;
+            /**
+             * In Window
+             * @default false
+             */
+            in_window: boolean;
+        };
+        /** StartDetail */
+        StartDetail: {
+            scope: components["schemas"]["Scope"];
+            start: components["schemas"]["StartRow"];
+            /** Window */
+            window: number;
+            /** Campaigns */
+            campaigns?: components["schemas"]["StartCampaign"][];
+            /** Trajectory */
+            trajectory?: components["schemas"]["StartPickPoint"][];
+            /** Population Bins */
+            population_bins?: number[];
+            /** Actions */
+            actions?: components["schemas"]["MatrixCell"][];
+        };
+        /** StartPickPoint */
+        StartPickPoint: {
+            /** Pick Id */
+            pick_id: number;
+            /** Ts */
+            ts?: number | null;
+            /** C */
+            c?: number | null;
+            /** Rank */
+            rank: number;
+            /**
+             * Ranked
+             * @default 0
+             */
+            ranked: number;
+            /**
+             * N
+             * @default 0
+             */
+            n: number;
+            /** Mean */
+            mean?: number | null;
+            /** Blend */
+            blend?: number | null;
+            /** Explore */
+            explore?: number | null;
+            /** Score */
+            score?: number | null;
+            /**
+             * Chosen
+             * @default false
+             */
+            chosen: boolean;
+        };
         /** StartRow */
         StartRow: {
             faction: components["schemas"]["Ident"];
             /** Leader */
             leader?: string | null;
             campaign_map?: components["schemas"]["Ident"] | null;
+            /**
+             * In Pool
+             * @default true
+             */
+            in_pool: boolean;
             /** N */
             n: number;
+            /**
+             * N Window
+             * @default 0
+             */
+            n_window: number;
+            /** Mean */
+            mean?: number | null;
+            /** Std */
+            std?: number | null;
+            /** Entropy */
+            entropy?: number | null;
+            /** Z Mean */
+            z_mean?: number | null;
+            /** Z Entropy */
+            z_entropy?: number | null;
+            /** Z Std */
+            z_std?: number | null;
+            /** Blend */
+            blend?: number | null;
+            /** Explore */
+            explore?: number | null;
+            /** Score */
+            score?: number | null;
+            /** Rank */
+            rank?: number | null;
+            /**
+             * Picks
+             * @default 0
+             */
+            picks: number;
+            /** Picks Ago */
+            picks_ago?: number | null;
+            /** Plays Ago */
+            plays_ago?: number | null;
+            /** Best */
+            best?: number | null;
+            zero_rate?: components["schemas"]["Rate"] | null;
+            /** Reward Bins */
+            reward_bins?: number[];
+            /** Settlements Avg */
+            settlements_avg?: number | null;
+            /** Levels Avg */
+            levels_avg?: number | null;
             /** Avg Turns */
             avg_turns?: number | null;
             /** Sec Per Turn */
             sec_per_turn?: number | null;
-            /** Settlements Gained Best */
-            settlements_gained_best?: number | null;
-            /** Settlements Gained Avg */
-            settlements_gained_avg?: number | null;
-            /** Levels Gained Best */
-            levels_gained_best?: number | null;
-            /** Levels Gained Avg */
-            levels_gained_avg?: number | null;
-            /** Allies Gained Best */
-            allies_gained_best?: number | null;
-            /** Allies Gained Avg */
-            allies_gained_avg?: number | null;
-            /** Vassals Gained Best */
-            vassals_gained_best?: number | null;
-            /** Vassals Gained Avg */
-            vassals_gained_avg?: number | null;
-            /** Total Gained Best */
-            total_gained_best?: number | null;
-            /** Total Gained Avg */
-            total_gained_avg?: number | null;
-            /**
-             * Ever Allied
-             * @default 0
-             */
-            ever_allied: number;
-            /**
-             * Ever Vassal
-             * @default 0
-             */
-            ever_vassal: number;
             confirm_rate?: components["schemas"]["Rate"] | null;
         };
         /** StartsPage */
         StartsPage: {
             scope: components["schemas"]["Scope"];
+            /**
+             * Window
+             * @default 0
+             */
+            window: number;
+            /**
+             * Min Plays
+             * @default 0
+             */
+            min_plays: number;
+            /** C */
+            c?: number | null;
+            /**
+             * Total Plays
+             * @default 0
+             */
+            total_plays: number;
+            /** Tiles */
+            tiles?: components["schemas"]["Metric"][];
+            /** Maps */
+            maps?: components["schemas"]["Ident"][];
+            /** Reward Bins */
+            reward_bins?: components["schemas"]["HistBin"][];
+            /** Turns Bins */
+            turns_bins?: components["schemas"]["HistBin"][];
             /** Rows */
             rows: components["schemas"]["StartRow"][];
         };
@@ -1922,10 +2101,18 @@ export interface components {
             n: number;
             /** Mean */
             mean?: number | null;
+            /** Blend */
+            blend?: number | null;
+            /** Entropy */
+            entropy?: number | null;
+            /** Std */
+            std?: number | null;
             /** Explore */
             explore?: number | null;
             /** Score */
             score?: number | null;
+            /** Margin */
+            margin?: number | null;
             /**
              * Tied
              * @default 0
@@ -1936,11 +2123,41 @@ export interface components {
              * @default 0
              */
             starts: number;
+            /**
+             * Repeat
+             * @default false
+             */
+            repeat: boolean;
+            produced?: components["schemas"]["ProducedCampaign"] | null;
+            /**
+             * Distinct 50
+             * @default 0
+             */
+            distinct_50: number;
+            /** Repeat 50 */
+            repeat_50?: number | null;
+            /**
+             * Cum Distinct
+             * @default 0
+             */
+            cum_distinct: number;
+            /** Gini */
+            gini?: number | null;
+            /**
+             * Under Min
+             * @default 0
+             */
+            under_min: number;
         };
         /** UcbPickPage */
         UcbPickPage: {
             scope: components["schemas"]["Scope"];
             pick?: components["schemas"]["UcbPick"] | null;
+            /**
+             * Under Min
+             * @default 0
+             */
+            under_min: number;
             /**
              * Rows
              * @default []
@@ -1950,6 +2167,23 @@ export interface components {
         /** UcbPicksPage */
         UcbPicksPage: {
             scope: components["schemas"]["Scope"];
+            /**
+             * Window
+             * @default 0
+             */
+            window: number;
+            /**
+             * Min Plays
+             * @default 0
+             */
+            min_plays: number;
+            /**
+             * Pool
+             * @default 0
+             */
+            pool: number;
+            /** Tiles */
+            tiles?: components["schemas"]["Metric"][];
             /**
              * Picks
              * @default []
@@ -1973,10 +2207,24 @@ export interface components {
             n: number;
             /** Mean */
             mean?: number | null;
+            /** Entropy */
+            entropy?: number | null;
+            /** Std */
+            std?: number | null;
+            /** Z Mean */
+            z_mean?: number | null;
+            /** Z Entropy */
+            z_entropy?: number | null;
+            /** Z Std */
+            z_std?: number | null;
+            /** Blend */
+            blend?: number | null;
             /** Explore */
             explore?: number | null;
             /** Score */
             score?: number | null;
+            /** Delta */
+            delta?: number | null;
             /**
              * Chosen
              * @default false
@@ -2077,6 +2325,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["StartsPage"];
+                };
+            };
+        };
+    };
+    get_start_api_campaigns_starts__campaign_map___faction__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_map: string;
+                faction: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StartDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

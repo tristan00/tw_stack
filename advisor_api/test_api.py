@@ -23,6 +23,7 @@ GET_ENDPOINTS = [
     "/api/run",
     "/api/campaigns",
     "/api/campaigns/starts",
+    "/api/campaigns/picks",
     "/api/campaigns/matrix?kind=action",
     "/api/campaigns/matrix?kind=interrupt",
     "/api/decisions",
@@ -82,6 +83,17 @@ def _all_responses():
     if camps.get("rows"):
         key = camps["rows"][0]["campaign"]["raw"]
         out["/api/campaigns/<key>"] = _client.get("/api/campaigns/%s" % key)
+    starts = _client.get("/api/campaigns/starts").json()
+    played = [s for s in starts.get("rows") or [] if s.get("n_window")]
+    if played:
+        s = played[0]
+        out["/api/campaigns/starts/<map>/<faction>"] = _client.get(
+            "/api/campaigns/starts/%s/%s" % ((s.get("campaign_map") or {}).get("raw", ""),
+                                             s["faction"]["raw"]))
+    picks = _client.get("/api/campaigns/picks").json()
+    if picks.get("picks"):
+        out["/api/campaigns/picks/<id>"] = _client.get(
+            "/api/campaigns/picks/%d" % picks["picks"][0]["pick_id"])
     decs = _client.get("/api/decisions").json()
     if decs.get("rows"):
         did = decs["rows"][0]["decision_id"]
@@ -374,6 +386,7 @@ def test_no_column_is_empty_in_every_row():
         ("/api/run", "$.services"),
         ("/api/campaigns", "$.rows"),
         ("/api/campaigns/starts", "$.rows"),
+        ("/api/campaigns/picks", "$.picks"),
         ("/api/campaigns/matrix?kind=action", "$.totals"),
         ("/api/decisions", "$.rows"),
         ("/api/decisions/actions", "$.by_type"),
@@ -412,6 +425,12 @@ def test_no_column_is_empty_in_every_row():
         ("$.rows", "presave_radius"):
             "a campaign carries a radius only when the run booted it from a baked "
             "presave, which is newer than every campaign in this corpus",
+        ("$.picks", "entropy"):
+            "the selector stores entropy per pick only from the blend formula onward; a "
+            "corpus of older picks carries none",
+        ("$.picks", "std"):
+            "the selector stores std per pick only from the blend formula onward; a "
+            "corpus of older picks carries none",
     }
     responses = _all_responses()
     bad = []
