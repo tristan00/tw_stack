@@ -104,7 +104,8 @@ def clear_screen(bus, where=None):
     roots_before = nav.visible_roots(bus) or []
     if not [r for r in roots_before if r not in nav.BASE_ROOTS
             and r not in nav.BENIGN_PANELS] and not nav.pending_blocks(pending_before):
-        benign = [r for r in roots_before if r in nav.BENIGN_PANELS]
+        benign = [r for r in roots_before
+                  if r in nav.BENIGN_PANELS and r not in nav.TOOLTIP_ROOTS]
         nav.deselect(bus)
         try:
             _ev(bus, 'common.call_context_command([[CloseAllPanels]]) return "sent"',
@@ -114,7 +115,8 @@ def clear_screen(bus, where=None):
                              + chr(10))
         if benign:
             _until(lambda: not [r for r in (nav.visible_roots(bus) or [])
-                                if r in nav.BENIGN_PANELS], 1.0, tag="benign_close_settle")
+                                if r in nav.BENIGN_PANELS and r not in nav.TOOLTIP_ROOTS],
+                   1.0, tag="benign_close_settle")
         common.phaselog("clear_screen_total", time.time() - t_clear,
                         "%s fast_path benign=%d" % (where, len(benign)))
         return 0

@@ -11,8 +11,7 @@ import common
 
 sys.path.insert(0, common.BUS)
 
-MOVE_SAMPLES = 8
-MOVE_CANDIDATES = 16
+MOVE_SAMPLES = 16
 MOVE_MIN_R = 3.0
 
 _G = ("local function g(c,p) local ok,v=pcall(function() return c:Call(p) end);"
@@ -773,7 +772,7 @@ _LUA_MOVE_CANDIDATES = (
 def _move_lua(cqi, state):
     if state.get("x") is None or state.get("y") is None:
         return None
-    return _LUA_MOVE_CANDIDATES % {"cqi": cqi, "minr": int(MOVE_MIN_R), "n": MOVE_CANDIDATES}
+    return _LUA_MOVE_CANDIDATES % {"cqi": cqi, "minr": int(MOVE_MIN_R), "n": MOVE_SAMPLES}
 
 
 def _parse_move_tiles(raw):
@@ -782,7 +781,7 @@ def _parse_move_tiles(raw):
     rays = [int(float(r)) for r in rays_part.split(",") if r.strip().lstrip("-").isdigit()]
     reach_max = max(rays) if rays else None
     out = []
-    for i, tile in enumerate([x for x in tiles_part.split("|") if x][:MOVE_SAMPLES]):
+    for i, tile in enumerate([x for x in tiles_part.split("|") if x]):
         mx, my = tile.split(",")
         out.append({"x": int(mx), "y": int(my), "sample_index": i,
                     "reach_rays": rays or None, "reach_max": reach_max})
