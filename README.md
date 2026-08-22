@@ -167,11 +167,25 @@ marwil_gnn's rankings were, and the full scored offer list with the taken row ma
 
 ![decision detail](docs/ui/decision-detail.png)
 
-The starts — one row per map × faction combination, with how far each start ever got:
+The starts — the presave pool as the UCB selector sees it over its trailing window:
+plays per start, the mean × entropy plane the blend is scored on, reward and turn
+distributions by map, reward by race, and one row per start with its window stats,
+blend, explore, score and rank:
 
 ![starts](docs/ui/campaigns-starts.png)
 
-Every campaign — one row per campaign played, its map, growth, and volume:
+The selector — every UCB pick in order: the winning blend + explore, coverage and
+concentration over time, pick lanes per start, expected vs realised reward, the ranking
+behind any pick, and the pick log:
+
+![selector](docs/ui/campaigns-selector.png)
+
+One start, drilled in — its reward per campaign, its reward distribution against the
+pool, where the selector ranked it at every pick, its campaigns and its action types:
+
+![start](docs/ui/campaigns-start.png)
+
+Every campaign — one row per campaign played, its outcome, reward and volume:
 
 ![all campaigns](docs/ui/campaigns-all.png)
 

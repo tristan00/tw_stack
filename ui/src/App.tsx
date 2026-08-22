@@ -8,6 +8,7 @@ import { Infra } from '@/routes/Infra'
 import { Log } from '@/routes/Log'
 import { Models } from '@/routes/Models'
 import { Run } from '@/routes/Run'
+import { StartDetail } from '@/routes/StartDetail'
 
 
 export default function App() {
@@ -18,6 +19,7 @@ export default function App() {
         <Route path="/run" element={<Run />} />
         <Route path="/campaigns" element={<Campaigns />} />
         <Route path="/campaigns/:campaignKey" element={<CampaignDetail />} />
+        <Route path="/starts/:campaignMap/:faction" element={<StartDetail />} />
         <Route path="/decisions" element={<Decisions />} />
         <Route path="/decisions/:decisionId" element={<DecisionDetail />} />
         <Route path="/models" element={<Models />} />

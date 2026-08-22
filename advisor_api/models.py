@@ -103,6 +103,7 @@ class LogPage(BaseModel):
 class CampaignRow(BaseModel):
     campaign_id: int
     campaign: Ident
+    faction_key: str | None = None
     leader: str | None = None
     campaign_map: Ident | None = None
     presave_radius: float | None = None
@@ -138,6 +139,10 @@ class CampaignRow(BaseModel):
     ended_because: str | None = None
     suspicious: bool = False
     ended_when: str | None = None
+    reward: float | None = None
+    settlements_gained: float | None = None
+    levels_gained: float | None = None
+    pick_id: int | None = None
 
 
 class OutcomeTally(BaseModel):
@@ -155,6 +160,14 @@ class CampaignsPage(BaseModel):
     rows: list[CampaignRow]
 
 
+class ProducedCampaign(BaseModel):
+    campaign: Ident
+    reward: float | None = None
+    turns: int | None = None
+    outcome: Ident | None = None
+    outcome_state: State = "neutral"
+
+
 class UcbPick(BaseModel):
     pick_id: int
     ts: float | None = None
@@ -165,10 +178,21 @@ class UcbPick(BaseModel):
     campaign_map: Ident | None = None
     n: int = 0
     mean: float | None = None
+    blend: float | None = None
+    entropy: float | None = None
+    std: float | None = None
     explore: float | None = None
     score: float | None = None
+    margin: float | None = None
     tied: int = 0
     starts: int = 0
+    repeat: bool = False
+    produced: ProducedCampaign | None = None
+    distinct_50: int = 0
+    repeat_50: float | None = None
+    cum_distinct: int = 0
+    gini: float | None = None
+    under_min: int = 0
 
 
 class UcbRow(BaseModel):
@@ -178,13 +202,24 @@ class UcbRow(BaseModel):
     campaign_map: Ident | None = None
     n: int = 0
     mean: float | None = None
+    entropy: float | None = None
+    std: float | None = None
+    z_mean: float | None = None
+    z_entropy: float | None = None
+    z_std: float | None = None
+    blend: float | None = None
     explore: float | None = None
     score: float | None = None
+    delta: float | None = None
     chosen: bool = False
 
 
 class UcbPicksPage(BaseModel):
     scope: Scope
+    window: int = 0
+    min_plays: int = 0
+    pool: int = 0
+    tiles: list[Metric] = Field(default_factory=list)
     picks: list[UcbPick] = []
     cursor: int | None = None
 
@@ -192,33 +227,55 @@ class UcbPicksPage(BaseModel):
 class UcbPickPage(BaseModel):
     scope: Scope
     pick: UcbPick | None = None
+    under_min: int = 0
     rows: list[UcbRow] = []
+
+
+class HistBin(BaseModel):
+    x: int
+    counts: dict[str, int] = Field(default_factory=dict)
 
 
 class StartRow(BaseModel):
     faction: Ident
     leader: str | None = None
     campaign_map: Ident | None = None
+    in_pool: bool = True
     n: int
+    n_window: int = 0
+    mean: float | None = None
+    std: float | None = None
+    entropy: float | None = None
+    z_mean: float | None = None
+    z_entropy: float | None = None
+    z_std: float | None = None
+    blend: float | None = None
+    explore: float | None = None
+    score: float | None = None
+    rank: int | None = None
+    picks: int = 0
+    picks_ago: int | None = None
+    plays_ago: int | None = None
+    best: float | None = None
+    zero_rate: Rate | None = None
+    reward_bins: list[int] = Field(default_factory=list)
+    settlements_avg: float | None = None
+    levels_avg: float | None = None
     avg_turns: float | None = None
     sec_per_turn: float | None = None
-    settlements_gained_best: float | None = None
-    settlements_gained_avg: float | None = None
-    levels_gained_best: float | None = None
-    levels_gained_avg: float | None = None
-    allies_gained_best: float | None = None
-    allies_gained_avg: float | None = None
-    vassals_gained_best: float | None = None
-    vassals_gained_avg: float | None = None
-    total_gained_best: float | None = None
-    total_gained_avg: float | None = None
-    ever_allied: int = 0
-    ever_vassal: int = 0
     confirm_rate: Rate | None = None
 
 
 class StartsPage(BaseModel):
     scope: Scope
+    window: int = 0
+    min_plays: int = 0
+    c: float | None = None
+    total_plays: int = 0
+    tiles: list[Metric] = Field(default_factory=list)
+    maps: list[Ident] = Field(default_factory=list)
+    reward_bins: list[HistBin] = Field(default_factory=list)
+    turns_bins: list[HistBin] = Field(default_factory=list)
     rows: list[StartRow]
 
 
@@ -249,6 +306,46 @@ class MatrixPage(BaseModel):
     totals: list[MatrixTotal]
     columns: list[Ident]
     rows: list[MatrixRow]
+
+
+class StartCampaign(BaseModel):
+    campaign: Ident
+    ts: float | None = None
+    turns: int | None = None
+    reward: float | None = None
+    settlements_gained: float | None = None
+    levels_gained: float | None = None
+    outcome: Ident | None = None
+    outcome_state: State = "neutral"
+    ended_because: str | None = None
+    decisions: int = 0
+    confirm_rate: Rate | None = None
+    pick_id: int | None = None
+    in_window: bool = False
+
+
+class StartPickPoint(BaseModel):
+    pick_id: int
+    ts: float | None = None
+    c: float | None = None
+    rank: int
+    ranked: int = 0
+    n: int = 0
+    mean: float | None = None
+    blend: float | None = None
+    explore: float | None = None
+    score: float | None = None
+    chosen: bool = False
+
+
+class StartDetail(BaseModel):
+    scope: Scope
+    start: StartRow
+    window: int
+    campaigns: list[StartCampaign] = Field(default_factory=list)
+    trajectory: list[StartPickPoint] = Field(default_factory=list)
+    population_bins: list[int] = Field(default_factory=list)
+    actions: list[MatrixCell] = Field(default_factory=list)
 
 
 class RewardPoint(BaseModel):

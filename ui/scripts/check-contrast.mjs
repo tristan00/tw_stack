@@ -71,7 +71,7 @@ function ratio(a, b) {
 
 // Roles that carry words need 4.5:1; roles that only ever draw a mark need 3:1.
 const TEXT_ROLES = ['fg', 'dim', 'ok', 'warn', 'bad', 'accent']
-const MARK_ROLES = ['cat', 'gnn', 'ggnn', 'rho-pos', 'rho-neg']
+const MARK_ROLES = ['cat', 'gnn', 'ggnn', 'rho-pos', 'rho-neg', 'map-ie', 'map-roc']
 
 const themes = [
   { name: 'light', tokens: tokensIn(blockAfter(':root {')) },

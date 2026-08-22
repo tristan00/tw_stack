@@ -29,6 +29,9 @@ export function CampaignDetail() {
 
   const row = data.row
   const constant = new Set(data.constant_columns)
+  const startHref = row.faction_key
+    ? `/starts/${encodeURIComponent(row.campaign_map?.raw ?? '')}/${encodeURIComponent(row.faction_key)}`
+    : '/campaigns?view=starts'
 
 
   const rewardCols: Col<RewardPoint>[] = [
@@ -147,9 +150,14 @@ export function CampaignDetail() {
   return (
     <div className="space-y-7">
       <div>
-        <Link to="/campaigns" className="text-dim hover:text-fg inline-flex items-center gap-1 text-xs">
-          <ArrowLeft className="size-3.5" /> every campaign
-        </Link>
+        <div className="flex flex-wrap items-center gap-3 text-xs">
+          <Link to="/campaigns?view=campaigns" className="text-dim hover:text-fg inline-flex items-center gap-1">
+            <ArrowLeft className="size-3.5" /> campaigns
+          </Link>
+          <Link to={startHref} className="text-dim hover:text-fg inline-flex items-center gap-1">
+            {row.leader ?? row.campaign.label} on {row.campaign_map?.label ?? '—'}
+          </Link>
+        </div>
         <h1 className="mt-1 flex flex-wrap items-baseline gap-3">
           <IdentLabel ident={row.campaign} className="text-lg font-semibold" />
           {row.outcome && <Chip state={row.outcome_state ?? 'neutral'}>{row.outcome.label}</Chip>}
@@ -158,6 +166,19 @@ export function CampaignDetail() {
         <div className="text-dim mt-1 flex flex-wrap gap-4 text-2xs">
           <span>reached turn <b className="num text-fg">{n(row.turns)}</b></span>
           <span>decisions <b className="num text-fg">{n(row.decisions)}</b></span>
+          {row.reward !== null && row.reward !== undefined && (
+            <span>
+              reward <b className="num text-fg">{n(row.reward)}</b>{' '}
+              <span className="opacity-80">
+                ({n(row.settlements_gained)} settlements + {n(row.levels_gained)} levels)
+              </span>
+            </span>
+          )}
+          {row.pick_id !== null && row.pick_id !== undefined && (
+            <Link to={`/campaigns?view=selector&pick=${row.pick_id}`} className="hover:text-fg">
+              UCB pick <b className="num text-fg">#{row.pick_id}</b>
+            </Link>
+          )}
           {row.ended_when && <span>{row.ended_when}</span>}
         </div>
         {}
@@ -193,10 +214,6 @@ export function CampaignDetail() {
           <Card className="mt-2 max-w-2xl px-3 py-2 text-2xs">
             <div className="text-dim uppercase tracking-wide">why the run ended this campaign</div>
             <div className="mt-0.5">{row.ended_because}</div>
-            <div className="text-dim mt-1">
-              This is the run's abandonment gate, not the campaign's growth: it looks at the
-              last 3–4 turns and is recorded only when it decided to stop.
-            </div>
           </Card>
         )}
         <div className="mt-2 max-w-md">

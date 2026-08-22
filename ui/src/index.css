@@ -29,6 +29,8 @@
   --ggnn: #0f766e;
   --rho-pos: #0550ae;
   --rho-neg: #b45309;
+  --map-ie: #0550ae;
+  --map-roc: #b45309;
   --ok-soft: #dcfce7;
   --warn-soft: #fef3c7;
   --bad-soft: #fee2e2;
@@ -53,6 +55,8 @@
     --ggnn: #2dd4bf;
     --rho-pos: #6ea8ff;
     --rho-neg: #f5a524;
+    --map-ie: #6ea8ff;
+    --map-roc: #f5a524;
     --ok-soft: #15321d;
     --warn-soft: #33270a;
     --bad-soft: #3a1717;
@@ -76,6 +80,8 @@
   --ggnn: #2dd4bf;
   --rho-pos: #6ea8ff;
   --rho-neg: #f5a524;
+  --map-ie: #6ea8ff;
+  --map-roc: #f5a524;
   --ok-soft: #15321d;
   --warn-soft: #33270a;
   --bad-soft: #3a1717;
@@ -98,6 +104,8 @@
   --color-ggnn: var(--ggnn);
   --color-rho-pos: var(--rho-pos);
   --color-rho-neg: var(--rho-neg);
+  --color-map-ie: var(--map-ie);
+  --color-map-roc: var(--map-roc);
   --color-ok-soft: var(--ok-soft);
   --color-warn-soft: var(--warn-soft);
   --color-bad-soft: var(--bad-soft);

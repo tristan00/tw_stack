@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 import sqlite3
 import sys
@@ -98,20 +97,13 @@ def _width_counts():
         con.close()
 
 
-UCB_WINDOW = 1000
+import ucb_stats as UCB
 
-
-UCB_MIN_PLAYS = 2
-
-
-def _entropy_bits(rewards):
-    n = len(rewards)
-    counts = {}
-    for r in rewards:
-        k = int(round(r))
-        counts[k] = counts.get(k, 0) + 1
-    h = -sum((k / n) * math.log2(k / n) for k in counts.values())
-    return h + (len(counts) - 1) / (2.0 * n)
+UCB_WINDOW = UCB.WINDOW
+UCB_MIN_PLAYS = UCB.MIN_PLAYS
+_entropy_bits = UCB.entropy_bits
+_zscores = UCB.zscores
+_blend = UCB.blend
 
 
 def _start_gain_stats(window=UCB_WINDOW):
@@ -120,62 +112,28 @@ def _start_gain_stats(window=UCB_WINDOW):
         return {}
     con = dbopen.connect(path, readonly=True, timeout=10.0)
     try:
-        rewards = {}
-        for m, f, r in con.execute(
-                "SELECT campaign_map, faction, settlements_gained + levels_gained FROM"
-                " (SELECT campaign_map, faction, settlements_gained, levels_gained"
-                "    FROM campaign_gains ORDER BY first_ts DESC LIMIT ?)", (int(window),)):
-            rewards.setdefault((m, f), []).append(float(r or 0.0))
+        return UCB.start_stats(UCB.window_rewards(con, window))
     finally:
         con.close()
-    out = {}
-    for key, vals in rewards.items():
-        n = len(vals)
-        mean = sum(vals) / n
-        std = (sum((v - mean) ** 2 for v in vals) / n) ** 0.5 if n > 1 else 0.0
-        out[key] = {"n": n, "mean": mean, "entropy": _entropy_bits(vals), "std": std}
-    return out
 
 
-def _zscores(stats):
-    played = [d for d in stats.values() if d["n"] >= UCB_MIN_PLAYS]
-    out = {}
-    for key in ("mean", "entropy", "std"):
-        xs = [d[key] for d in played]
-        mu = sum(xs) / len(xs) if xs else 0.0
-        sd = (sum((x - mu) ** 2 for x in xs) / len(xs)) ** 0.5 if xs else 0.0
-        out[key] = (mu, sd)
-    return out
-
-
-def _blend(d, z):
-    parts = []
-    for key in ("mean", "entropy", "std"):
-        mu, sd = z[key]
-        parts.append((d[key] - mu) / sd if sd > 0 else 0.0)
-    return sum(parts) / len(parts)
-
-
-def _ucb_cell(score, n, mean, explore, p):
+def _ucb_cell(score, n, mean, explore, p, blend=None, d=None):
     fin = lambda v: None if v == float("inf") else float(v)
+    d = d or UCB.EMPTY
     return {"campaign_map": p["campaign_map"], "faction": p["faction"], "n": int(n),
-            "mean": float(mean), "explore": fin(explore), "score": fin(score)}
+            "mean": float(mean), "explore": fin(explore), "score": fin(score),
+            "blend": (None if blend is None or int(n) < UCB_MIN_PLAYS else float(blend)),
+            "entropy": float(d["entropy"]), "std": float(d["std"])}
 
 
-def _ucb_pick(pool, stats, c, rng, log=print):
+def _ucb_pick(pool, stats, c, rng, log=print, ts=None):
     total = max(1, sum(d["n"] for d in stats.values()))
-    z = _zscores(stats)
+    z = UCB.zscores(stats)
     scored = []
     for p in pool:
-        d = stats.get((p["campaign_map"], p["faction"])) or {"n": 0, "mean": 0.0,
-                                                             "entropy": 0.0, "std": 0.0}
+        d = stats.get((p["campaign_map"], p["faction"])) or dict(UCB.EMPTY)
         n, mean = d["n"], d["mean"]
-        if n < UCB_MIN_PLAYS:
-            blend, explore, score = 0.0, float("inf"), float("inf")
-        else:
-            blend = _blend(d, z)
-            explore = c * math.sqrt(math.log(total) / n)
-            score = blend + explore
+        blend, explore, score = UCB.score(d, z, c, total)
         scored.append((score, n, mean, explore, p, blend, d))
     scored.sort(key=lambda s: (-s[0], s[4]["file"]))
     log("ucb table (c=%g, %d plays over the trailing %d campaigns): score = blend + explore, "
@@ -197,10 +155,10 @@ def _ucb_pick(pool, stats, c, rng, log=print):
            "inf" if score == float("inf") else "%.3f" % score, blend, n, mean,
            d["entropy"], d["std"], total, len(top)))
     journal.log_ucb_pick(common.RUN_DIR, {
-        "ts": time.time(), "c": c, "total_plays": total, "tied": len(top),
-        "chosen": _ucb_cell(score, n, mean, explore, p),
-        "rows": [dict(_ucb_cell(*row[:5]), chosen=(row[4] is p))
-                 for row in scored]})
+        "ts": ts if ts is not None else time.time(), "c": c, "total_plays": total,
+        "tied": len(top),
+        "chosen": _ucb_cell(score, n, mean, explore, p, blend, d),
+        "rows": [dict(_ucb_cell(*row), chosen=(row[4] is p)) for row in scored]})
     return p
 
 
@@ -478,14 +436,15 @@ def run_campaigns(n=3, turns=20, plan="all",
                 break
             log("width %d: %d of %d start(s) still below target"
                 % (width, len(pool), len(presaves)))
+        picked_ts = time.time()
         if ucb is not None:
-            this_presave = _ucb_pick(pool, _start_gain_stats(), ucb, rng, log=log)
+            this_presave = _ucb_pick(pool, _start_gain_stats(), ucb, rng, log=log,
+                                     ts=picked_ts)
         else:
             this_presave = rng.choice(pool)
         this_campaign = _CAMPAIGN_LABEL.get(this_presave["campaign_map"],
                                             this_presave["campaign_map"])
         this_plan = this_presave["faction"]
-        picked_ts = time.time()
         this_turns = rng.randint(turns[0], turns[1]) if isinstance(turns, (tuple, list)) \
             else int(turns)
         log("\n" + "=" * 78)
