@@ -11,7 +11,7 @@ RUN = {
     "ruleset": None,
     "factions": "all",
     "presave_radius": 150,
-    "ucb": 3.0,
+    "ucb": 2.0,
     "dev": True,
 }
 
