@@ -827,9 +827,6 @@ export interface RankingBarRow {
   label: string
   sub?: string
   n: number
-  zMean: number | null | undefined
-  zEntropy: number | null | undefined
-  zStd: number | null | undefined
   blend: number | null | undefined
   explore: number | null | undefined
   score: number | null | undefined
@@ -850,20 +847,12 @@ export function RankingBars({ rows, top = 15, onSelect }: { rows: RankingBarRow[
   const iw = width - L - R
   const finite = shown.filter((r) => r.score !== null && r.score !== undefined)
   const hi = Math.max(0.5, ...finite.map((r) => r.score as number))
-  const lo = Math.min(0, ...finite.map((r) => Math.min(0, (r.zMean ?? 0) / 3, (r.zEntropy ?? 0) / 3, (r.zStd ?? 0) / 3, r.blend ?? 0)))
+  const lo = Math.min(0, ...finite.map((r) => Math.min(0, r.blend ?? 0)))
   const sx = (v: number) => L + (iw * (v - lo)) / (hi - lo || 1)
-  const parts = (r: RankingBarRow) => {
-    const hasZ = r.zMean !== null && r.zMean !== undefined
-    const segs: { key: string; v: number; color: string }[] = hasZ
-      ? [
-          { key: 'z(mean)/3', v: (r.zMean ?? 0) / 3, color: 'var(--accent)' },
-          { key: 'z(H)/3', v: (r.zEntropy ?? 0) / 3, color: 'var(--ggnn)' },
-          { key: 'z(std)/3', v: (r.zStd ?? 0) / 3, color: 'var(--gnn)' },
-        ]
-      : [{ key: 'blend', v: r.blend ?? 0, color: 'var(--accent)' }]
-    segs.push({ key: 'explore', v: r.explore ?? 0, color: 'var(--dim)' })
-    return segs
-  }
+  const parts = (r: RankingBarRow) => [
+    { key: 'blend', v: r.blend ?? 0, color: 'var(--accent)' },
+    { key: 'explore', v: r.explore ?? 0, color: 'var(--dim)' },
+  ]
   return (
     <div ref={ref} className="min-w-0">
       <svg width={width} height={height} className="block">
@@ -910,17 +899,12 @@ export function RankingBars({ rows, top = 15, onSelect }: { rows: RankingBarRow[
           )
         })}
       </svg>
-      <Legend items={[{ label: 'z(mean)/3', color: 'var(--accent)', shape: 'square' }, { label: 'z(H)/3', color: 'var(--ggnn)', shape: 'square' }, { label: 'z(std)/3', color: 'var(--gnn)', shape: 'square' }, { label: 'explore', color: 'var(--dim)', shape: 'square' }]} />
+      <Legend items={[{ label: 'blend', color: 'var(--accent)', shape: 'square' }, { label: 'explore', color: 'var(--dim)', shape: 'square' }]} />
       <HoverLine fallback={`top ${Math.min(top, rows.length)} of ${rows.length} ranked`}>
         {hover !== null && shown[hover] ? (
           <>
             <b className="text-fg">{shown[hover].label}</b>
-            {shown[hover].sub ? <span> · {shown[hover].sub}</span> : null} · n <b className="num text-fg">{shown[hover].n}</b>
-            {shown[hover].zMean != null ? (
-              <>
-                {' '}· z(mean) <b className="num text-fg">{shown[hover].zMean!.toFixed(2)}</b> · z(H) <b className="num text-fg">{shown[hover].zEntropy!.toFixed(2)}</b> · z(std) <b className="num text-fg">{shown[hover].zStd!.toFixed(2)}</b>
-              </>
-            ) : null}{' '}
+            {shown[hover].sub ? <span> · {shown[hover].sub}</span> : null} · n <b className="num text-fg">{shown[hover].n}</b>{' '}
             · blend <b className="num text-fg">{shown[hover].blend == null ? '—' : shown[hover].blend!.toFixed(3)}</b> · explore <b className="num text-fg">{shown[hover].explore == null ? '∞' : shown[hover].explore!.toFixed(3)}</b>
           </>
         ) : null}

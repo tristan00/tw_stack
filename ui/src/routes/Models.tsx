@@ -141,12 +141,29 @@ function OnDisk() {
 }
 
 function Forcing() {
-  const { data, error, loading, reload } = useApi<ForcingPage>('/api/models/forcing')
+  const [version, setVersion] = useState<string>('')
+  const { data, error, loading, reload } = useApi<ForcingPage>(
+    `/api/models/forcing${version ? `?version=${encodeURIComponent(version)}` : ''}`,
+    [version],
+  )
   if (error) return <ErrorState error={error} onRetry={reload} />
   if (loading || !data) return <Skeleton rows={6} />
   return (
     <Section title="what each model wants to do" scope={data.scope}>
-      <Card className="mb-3 px-3 py-2">
+      <Card className="mb-3 flex flex-wrap items-center gap-3 px-3 py-2">
+        <label className="text-dim flex items-center gap-2 text-2xs">
+          model version
+          <select
+            value={version}
+            onChange={(e) => setVersion(e.target.value)}
+            className="bg-raised text-fg rounded border border-line px-2 py-0.5 text-2xs"
+          >
+            <option value="">every version</option>
+            {(data.versions ?? []).map((v) => (
+              <option key={v.version} value={v.version}>{v.label}</option>
+            ))}
+          </select>
+        </label>
         <CountText count={data.decisions} />
       </Card>
       {}
@@ -671,12 +688,23 @@ const corrCols: Col<CorrelationRow>[] = [
     value: (r) => r.campaigns,
     render: (r) => n(r.campaigns),
   },
-  { key: 'turns', label: 'turns', align: 'right', value: (r) => r.turns, render: (r) => n(r.turns) },
   {
     key: 'share',
     label: 'share',
     value: (r) => (r.share?.of ? r.share.n / r.share.of : -1),
     render: (r) => <Bar rate={r.share ?? null} width={70} />,
+  },
+  {
+    key: 'reward_r',
+    label: 'reward r',
+    align: 'right',
+    value: (r) => r.reward_r ?? -2,
+    render: (r) =>
+      r.reward_r === null || r.reward_r === undefined ? (
+        <span className="text-dim text-2xs">{r.reward_gate ?? '—'}</span>
+      ) : (
+        <strong className="num">{n(r.reward_r, 3)}</strong>
+      ),
   },
   {
     key: 'setts_r',
@@ -705,11 +733,30 @@ const corrCols: Col<CorrelationRow>[] = [
 ]
 
 function Correlations() {
-  const { data, error, loading, reload } = useApi<CorrelationsPage>('/api/models/correlations')
+  const [version, setVersion] = useState<string>('')
+  const { data, error, loading, reload } = useApi<CorrelationsPage>(
+    `/api/models/correlations${version ? `?version=${encodeURIComponent(version)}` : ''}`,
+    [version],
+  )
   if (error) return <ErrorState error={error} onRetry={reload} />
   if (loading || !data) return <Skeleton rows={6} />
   return (
     <Section title="does an arm's share track how the campaign went" scope={data.scope}>
+      <Card className="mb-3 flex flex-wrap items-center gap-3 px-3 py-2">
+        <label className="text-dim flex items-center gap-2 text-2xs">
+          model version
+          <select
+            value={version}
+            onChange={(e) => setVersion(e.target.value)}
+            className="bg-raised text-fg rounded border border-line px-2 py-0.5 text-2xs"
+          >
+            <option value="">every version</option>
+            {(data.versions ?? []).map((v) => (
+              <option key={v.version} value={v.version}>{v.label}</option>
+            ))}
+          </select>
+        </label>
+      </Card>
       <div className="grid gap-4 xl:grid-cols-2">
         {data.tiles.map((t) => (
           <div key={t.label}>

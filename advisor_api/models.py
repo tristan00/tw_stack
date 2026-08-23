@@ -257,6 +257,18 @@ class StartRow(BaseModel):
     levels_avg: float | None = None
     avg_turns: float | None = None
     sec_per_turn: float | None = None
+    settlements_gained_best: float | None = None
+    settlements_gained_avg: float | None = None
+    levels_gained_best: float | None = None
+    levels_gained_avg: float | None = None
+    allies_gained_best: float | None = None
+    allies_gained_avg: float | None = None
+    vassals_gained_best: float | None = None
+    vassals_gained_avg: float | None = None
+    total_gained_best: float | None = None
+    total_gained_avg: float | None = None
+    ever_allied: int = 0
+    ever_vassal: int = 0
     confirm_rate: Rate | None = None
 
 
@@ -582,9 +594,24 @@ class ForcingTile(BaseModel):
     bars: list[ForcingBar]
 
 
+class ModelVersion(BaseModel):
+    version: str
+    label: str
+    trained: bool = False
+    trained_ts: float | None = None
+    corpus_decisions: int | None = None
+    trials: int = 0
+    campaigns: int = 0
+    from_ts: float | None = None
+    to_ts: float | None = None
+    windows: list[list[float]] = Field(default_factory=list)
+
+
 class ForcingPage(BaseModel):
     scope: Scope
     decisions: Count
+    version: str | None = None
+    versions: list[ModelVersion] = Field(default_factory=list)
     tiles: list[ForcingTile]
     empty_reason: str | None = Field(
         default=None,
@@ -795,9 +822,10 @@ class AgreementPage(BaseModel):
 class CorrelationRow(BaseModel):
     arm: Ident
     campaigns: int
-    turns: int
     share: Rate | None = None
     per_campaign: float | None = None
+    reward_r: float | None = None
+    reward_gate: str | None = None
     settlements_r: float | None = None
     settlements_gate: str | None = None
     lord_r: float | None = None
@@ -811,7 +839,33 @@ class CorrelationTile(BaseModel):
 
 class CorrelationsPage(BaseModel):
     scope: Scope
+    version: str | None = None
+    versions: list[ModelVersion] = Field(default_factory=list)
     tiles: list[CorrelationTile]
+
+
+class DiplomacyCell(BaseModel):
+    source: Ident
+    attempted: int = 0
+    confirmed: int = 0
+    share: float | None = None
+
+
+class DiplomacyRow(BaseModel):
+    term: Ident
+    attempted: int = 0
+    confirmed: int = 0
+    share: Rate
+    by_source: list[DiplomacyCell] = Field(default_factory=list)
+
+
+class DiplomacyPage(BaseModel):
+    scope: Scope
+    version: str | None = None
+    versions: list[ModelVersion] = Field(default_factory=list)
+    sources: list[Ident] = Field(default_factory=list)
+    attempts: Count
+    rows: list[DiplomacyRow] = Field(default_factory=list)
 
 
 class TrialCorr(BaseModel):

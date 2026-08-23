@@ -174,6 +174,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/decisions/diplomacy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Diplomacy */
+        get: operations["get_diplomacy_api_decisions_diplomacy_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/decisions/menus": {
         parameters: {
             query?: never;
@@ -954,11 +971,13 @@ export interface components {
             arm: components["schemas"]["Ident"];
             /** Campaigns */
             campaigns: number;
-            /** Turns */
-            turns: number;
             share?: components["schemas"]["Rate"] | null;
             /** Per Campaign */
             per_campaign?: number | null;
+            /** Reward R */
+            reward_r?: number | null;
+            /** Reward Gate */
+            reward_gate?: string | null;
             /** Settlements R */
             settlements_r?: number | null;
             /** Settlements Gate */
@@ -1007,6 +1026,10 @@ export interface components {
         /** CorrelationsPage */
         CorrelationsPage: {
             scope: components["schemas"]["Scope"];
+            /** Version */
+            version?: string | null;
+            /** Versions */
+            versions?: components["schemas"]["ModelVersion"][];
             /** Tiles */
             tiles: components["schemas"]["CorrelationTile"][];
         };
@@ -1165,6 +1188,52 @@ export interface components {
              */
             state: "ok" | "warn" | "bad" | "neutral";
         };
+        /** DiplomacyCell */
+        DiplomacyCell: {
+            source: components["schemas"]["Ident"];
+            /**
+             * Attempted
+             * @default 0
+             */
+            attempted: number;
+            /**
+             * Confirmed
+             * @default 0
+             */
+            confirmed: number;
+            /** Share */
+            share?: number | null;
+        };
+        /** DiplomacyPage */
+        DiplomacyPage: {
+            scope: components["schemas"]["Scope"];
+            /** Version */
+            version?: string | null;
+            /** Versions */
+            versions?: components["schemas"]["ModelVersion"][];
+            /** Sources */
+            sources?: components["schemas"]["Ident"][];
+            attempts: components["schemas"]["Count"];
+            /** Rows */
+            rows?: components["schemas"]["DiplomacyRow"][];
+        };
+        /** DiplomacyRow */
+        DiplomacyRow: {
+            term: components["schemas"]["Ident"];
+            /**
+             * Attempted
+             * @default 0
+             */
+            attempted: number;
+            /**
+             * Confirmed
+             * @default 0
+             */
+            confirmed: number;
+            share: components["schemas"]["Rate"];
+            /** By Source */
+            by_source?: components["schemas"]["DiplomacyCell"][];
+        };
         /** EntityState */
         EntityState: {
             /** Context Kind */
@@ -1204,6 +1273,10 @@ export interface components {
         ForcingPage: {
             scope: components["schemas"]["Scope"];
             decisions: components["schemas"]["Count"];
+            /** Version */
+            version?: string | null;
+            /** Versions */
+            versions?: components["schemas"]["ModelVersion"][];
             /** Tiles */
             tiles: components["schemas"]["ForcingTile"][];
             /**
@@ -1539,6 +1612,38 @@ export interface components {
             /** Trained At */
             trained_at?: string | null;
         };
+        /** ModelVersion */
+        ModelVersion: {
+            /** Version */
+            version: string;
+            /** Label */
+            label: string;
+            /**
+             * Trained
+             * @default false
+             */
+            trained: boolean;
+            /** Trained Ts */
+            trained_ts?: number | null;
+            /** Corpus Decisions */
+            corpus_decisions?: number | null;
+            /**
+             * Trials
+             * @default 0
+             */
+            trials: number;
+            /**
+             * Campaigns
+             * @default 0
+             */
+            campaigns: number;
+            /** From Ts */
+            from_ts?: number | null;
+            /** To Ts */
+            to_ts?: number | null;
+            /** Windows */
+            windows?: number[][];
+        };
         /** ModelsPage */
         ModelsPage: {
             scope: components["schemas"]["Scope"];
@@ -1819,12 +1924,6 @@ export interface components {
             std?: number | null;
             /** Entropy */
             entropy?: number | null;
-            /** Z Mean */
-            z_mean?: number | null;
-            /** Z Entropy */
-            z_entropy?: number | null;
-            /** Z Std */
-            z_std?: number | null;
             /** Blend */
             blend?: number | null;
             /** Explore */
@@ -1855,6 +1954,36 @@ export interface components {
             avg_turns?: number | null;
             /** Sec Per Turn */
             sec_per_turn?: number | null;
+            /** Settlements Gained Best */
+            settlements_gained_best?: number | null;
+            /** Settlements Gained Avg */
+            settlements_gained_avg?: number | null;
+            /** Levels Gained Best */
+            levels_gained_best?: number | null;
+            /** Levels Gained Avg */
+            levels_gained_avg?: number | null;
+            /** Allies Gained Best */
+            allies_gained_best?: number | null;
+            /** Allies Gained Avg */
+            allies_gained_avg?: number | null;
+            /** Vassals Gained Best */
+            vassals_gained_best?: number | null;
+            /** Vassals Gained Avg */
+            vassals_gained_avg?: number | null;
+            /** Total Gained Best */
+            total_gained_best?: number | null;
+            /** Total Gained Avg */
+            total_gained_avg?: number | null;
+            /**
+             * Ever Allied
+             * @default 0
+             */
+            ever_allied: number;
+            /**
+             * Ever Vassal
+             * @default 0
+             */
+            ever_vassal: number;
             confirm_rate?: components["schemas"]["Rate"] | null;
         };
         /** StartsPage */
@@ -2211,12 +2340,6 @@ export interface components {
             entropy?: number | null;
             /** Std */
             std?: number | null;
-            /** Z Mean */
-            z_mean?: number | null;
-            /** Z Entropy */
-            z_entropy?: number | null;
-            /** Z Std */
-            z_std?: number | null;
             /** Blend */
             blend?: number | null;
             /** Explore */
@@ -2526,6 +2649,37 @@ export interface operations {
             };
         };
     };
+    get_diplomacy_api_decisions_diplomacy_get: {
+        parameters: {
+            query?: {
+                version?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiplomacyPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_menus_api_decisions_menus_get: {
         parameters: {
             query?: never;
@@ -2636,7 +2790,9 @@ export interface operations {
     };
     get_forcing_api_models_forcing_get: {
         parameters: {
-            query?: never;
+            query?: {
+                version?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -2650,6 +2806,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ForcingPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -2791,7 +2956,9 @@ export interface operations {
     };
     get_correlations_api_models_correlations_get: {
         parameters: {
-            query?: never;
+            query?: {
+                version?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -2805,6 +2972,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CorrelationsPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

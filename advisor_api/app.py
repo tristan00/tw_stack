@@ -6,10 +6,12 @@ import contextlib
 import json
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 
 import arms
@@ -18,7 +20,8 @@ from advisor_api import db, ident, proc, queries as q
 from advisor_api.models import (
     ActionsPage, AgreementBreakdownPage, AgreementPage, AgreementSeriesPage, AnalyticsPage,
     CampaignDetail, CampaignsPage, ControlResult, Count,
-    DecisionDetail, DecisionsPage, ForcingPage, InfraPage, LaunchDefaults, LogPage,
+    DecisionDetail, DecisionsPage, DiplomacyPage, ForcingPage, InfraPage, LaunchDefaults,
+    LogPage,
     MatrixCell,
     MatrixPage, MatrixRow, MatrixTotal, MenusPage, ModelsPage, Rate, RunPage, Scope,
     StartsPage, StartDetail, TimelinePage, TrainingPage, CorrelationsPage, UcbPickPage,
@@ -39,6 +42,34 @@ async def _lifespan(_app):
 
 app = FastAPI(title="advisor", version="8", lifespan=_lifespan,
               description="Telemetry for the Total War campaign-advisor harness.")
+app.add_middleware(GZipMiddleware, minimum_size=2048)
+
+UNTIMED = ("/api/events", "/api/health")
+
+
+@app.middleware("http")
+async def _timed(request, call_next):
+    path = request.url.path
+    if not path.startswith("/api/") or path in UNTIMED:
+        return await call_next(request)
+    token = db.trace_begin()
+    t0 = time.perf_counter()
+    try:
+        response = await call_next(request)
+    finally:
+        items = db.trace_end(token)
+    ms = (time.perf_counter() - t0) * 1000
+    work = sorted((i for i in items if i[2] != "hit"), key=lambda i: -i[1])
+    hits = sum(1 for i in items if i[2] == "hit")
+    url = path + ("?" + request.url.query if request.url.query else "")
+    print("API %s %s %d %.0fms cached=%d recomputed=%d %s"
+          % (request.method, url, response.status_code, ms, hits, len(work),
+             " ".join("%s=%.0fms%s" % (n, m, "" if k == "miss" else "(%s)" % k)
+                      for n, m, k in work[:8])))
+    response.headers["Server-Timing"] = ", ".join(
+        ["total;dur=%.0f" % ms]
+        + ["%s;dur=%.0f;desc=%s" % (n.strip("_"), m, k) for n, m, k in work[:8]])
+    return response
 
 
 def _con():
@@ -82,10 +113,9 @@ def get_starts() -> StartsPage:
     cx = q.ucb_context(con)
     extras = q.starts_page_extras(con)
     return StartsPage(
-        scope=_scope("one row per start in the presave pool, selector rank first",
-                     "window columns are the trailing %d campaigns the selector scores; "
-                     "score = blend + explore, blend = (mean + H + std) / 3"
-                     % q.UCB.WINDOW),
+        scope=_scope("one row per playable start, best total gained first",
+                     "gained columns are per-campaign first-to-peak deltas: best is the "
+                     "single strongest campaign, avg is across all of that start's campaigns"),
         window=q.UCB.WINDOW, min_plays=q.UCB.MIN_PLAYS, c=cx["c"], total_plays=cx["total"],
         tiles=extras["tiles"], maps=extras["maps"], reward_bins=extras["reward_bins"],
         turns_bins=extras["turns_bins"], rows=q.starts_rows(con))
@@ -115,7 +145,7 @@ def get_picks(limit: int = 2000, before: int | None = None) -> UcbPicksPage:
     cx = q.ucb_context(con)
     return UcbPicksPage(
         scope=_scope("one row per UCB start pick, newest first",
-                     "score = blend + explore; produced is the campaign booted from the pick"),
+                     "score = blend + explore, blend = (mean + H + std) / 3"),
         window=q.UCB.WINDOW, min_plays=q.UCB.MIN_PLAYS, pool=len(cx["pool"]),
         tiles=q.ucb_tiles(con), picks=picks,
         cursor=(picks[-1].pick_id if len(picks) >= lim else None))
@@ -212,6 +242,24 @@ def get_actions() -> ActionsPage:
         tiles=tiles, by_type=by_type, policies=policies, denominators=denominators)
 
 
+@app.get("/api/decisions/diplomacy", response_model=DiplomacyPage, tags=["decisions"])
+def get_diplomacy(version: str | None = None) -> DiplomacyPage:
+    con = _con()
+    versions = q.model_versions()
+    version = version if version and any(v.version == version for v in versions) else None
+    sources, total, rows = q.diplomacy_mix(con, version)
+    return DiplomacyPage(
+        scope=_scope("every diplomatic action the run attempted, by what was proposed",
+                     "attempted excludes actions still awaiting execution; confirmed is the "
+                     "game agreeing it happened; the source columns split each row by the "
+                     "arm that chose it; pick a model version to keep only the attempts "
+                     "made while it was in force"),
+        version=version, versions=versions, sources=sources,
+        attempts=Count(value=total, noun="diplomatic actions",
+                       population="attempted in this run dir"),
+        rows=rows)
+
+
 @app.get("/api/decisions/menus", response_model=MenusPage, tags=["decisions"])
 def get_menus() -> MenusPage:
     con = _con()
@@ -272,13 +320,16 @@ def get_decisions(offset: int = 0, limit: int = Query(q.DECISIONS_PAGE, ge=1, le
 
 
 @app.get("/api/models/forcing", response_model=ForcingPage, tags=["models"])
-def get_forcing() -> ForcingPage:
+def get_forcing(version: str | None = None) -> ForcingPage:
     con = _con()
-    tiles, n = q.forcing(con)
+    versions = q.model_versions()
+    version = version if version and any(v.version == version for v in versions) else None
+    tiles, n = q.forcing(con, version)
     return ForcingPage(
         scope=_scope("the action-type mix each model arm actually picked",
-                     "bars carry a 95% interval, so a small sample looks small"),
-        decisions=n, tiles=tiles,
+                     "bars carry a 95% interval, so a small sample looks small; pick a "
+                     "model version to see only the decisions taken while it was in force"),
+        decisions=n, version=version, versions=versions, tiles=tiles,
         empty_reason=(None if tiles else
                       "no decision in this run dir was drawn by a model arm yet -- the "
                       "strategy mix has only produced random and ruleset picks so far"))
@@ -313,12 +364,18 @@ def post_analytics_rebuild() -> ControlResult:
 
 
 @app.get("/api/models/correlations", response_model=CorrelationsPage, tags=["models"])
-def get_correlations() -> CorrelationsPage:
+def get_correlations(version: str | None = None) -> CorrelationsPage:
     con = _con()
+    versions = q.model_versions()
+    version = version if version and any(v.version == version for v in versions) else None
     return CorrelationsPage(
-        scope=_scope("does an arm's share of a turn track how the campaign went",
-                     "correlated per turn inside a campaign, not per campaign"),
-        tiles=q.correlations(con))
+        scope=_scope("does an arm's share of a campaign track how the campaign went",
+                     "one row per campaign: the arm's share of that campaign's decisions "
+                     "(zero when it drew none) against the campaign's reward, settlements "
+                     "gained + lord levels gained; every arm is measured over the same "
+                     "campaigns; pick a model version to keep only the campaigns that "
+                     "started while it was in force"),
+        version=version, versions=versions, tiles=q.correlations(con, version))
 
 
 @app.get("/api/models/training", response_model=TrainingPage, tags=["models"])

@@ -1,11 +1,13 @@
 
 from __future__ import annotations
 
+import contextvars
 import functools
 import os
 import sqlite3
 import sys
 import threading
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -14,6 +16,34 @@ from decisions import dbopen
 
 _local = threading.local()
 _MISS = object()
+_trace = contextvars.ContextVar("api_trace", default=None)
+
+
+def trace_begin():
+    return _trace.set([])
+
+
+def trace_end(token) -> list:
+    items = _trace.get() or []
+    _trace.reset(token)
+    return items
+
+
+def _note(name, ms, kind):
+    items = _trace.get()
+    if items is not None:
+        items.append((name, ms, kind))
+
+
+def timed(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        t0 = time.perf_counter()
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _note(fn.__name__, (time.perf_counter() - t0) * 1000, "run")
+    return wrapper
 
 
 def run_dir() -> str:
@@ -52,12 +82,6 @@ def stamp(run: str | None = None) -> tuple:
             out.append((row[0] if row else 0) or 0)
         except sqlite3.Error as e:
             out.append("err:%s" % e)
-    base = db_path(run)
-    for path in (base, base + "-wal"):
-        try:
-            out.append(os.path.getsize(path))
-        except OSError:
-            out.append(0)
     return tuple(out)
 
 
@@ -77,16 +101,21 @@ def cached_on(key_fn):
                         state["inflight"] = {}
                     hit = state["vals"].get(args, _MISS)
                     if hit is not _MISS:
+                        _note(fn.__name__, 0.0, "hit")
                         return hit
                     ev = state["inflight"].get(args)
                     mine = ev is None
                     if mine:
                         ev = state["inflight"][args] = threading.Event()
                 if not mine:
+                    t0 = time.perf_counter()
                     ev.wait()
+                    _note(fn.__name__, (time.perf_counter() - t0) * 1000, "wait")
                     continue
+                t0 = time.perf_counter()
                 try:
                     val = fn(*args)
+                    _note(fn.__name__, (time.perf_counter() - t0) * 1000, "miss")
                 except BaseException:
                     with lock:
                         if state["inflight"].get(args) is ev:
@@ -110,13 +139,22 @@ def cached(fn):
     return cached_on(lambda: stamp())(fn)
 
 
+_CAMPAIGN_STAMP_SQL = (
+    "SELECT COUNT(*), MAX(campaign_id), SUM(outcome IS NOT NULL) FROM campaigns",
+    "SELECT MAX(pick_id) FROM ucb_picks",
+)
+
+
 def campaign_stamp(run: str | None = None) -> tuple:
     con = connect(run)
-    try:
-        row = con.execute("SELECT COUNT(*), MAX(campaign_id) FROM campaigns").fetchone()
-        return (db_path(run), (row[0] if row else 0) or 0, (row[1] if row else 0) or 0)
-    except sqlite3.Error as e:
-        return (db_path(run), "err:%s" % e)
+    out = [db_path(run)]
+    for sql in _CAMPAIGN_STAMP_SQL:
+        try:
+            row = con.execute(sql).fetchone()
+            out.extend((v or 0) for v in (row or ()))
+        except sqlite3.Error as e:
+            out.append("err:%s" % e)
+    return tuple(out)
 
 
 def cached_per_campaign(fn):
