@@ -157,6 +157,9 @@ CREATE TABLE IF NOT EXISTS ucb_pick_rows(
 
 CREATE INDEX IF NOT EXISTS ix_dec_campaign ON decisions(campaign_id, decision_id);
 CREATE INDEX IF NOT EXISTS ix_dec_turn ON decisions(turn);
+CREATE INDEX IF NOT EXISTS ix_dec_ts ON decisions(ts);
+CREATE INDEX IF NOT EXISTS ix_taken_ts ON taken(ts);
+CREATE INDEX IF NOT EXISTS ix_taken_counted ON taken(counted);
 CREATE INDEX IF NOT EXISTS ix_diplo_ev ON diplomacy_events(campaign_key, event_id);
 CREATE INDEX IF NOT EXISTS ix_ucb_picks_ts ON ucb_picks(ts);
 """

@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { DataTable, type Col } from '@/components/DataTable'
 import {
@@ -28,6 +29,7 @@ import { cn } from '@/lib/utils'
 const VIEWS = [
   { key: 'log', label: 'log', asks: 'what did it choose' },
   { key: 'actions', label: 'by action type', asks: 'is the game accepting what it picks' },
+  { key: 'diplomacy', label: 'diplomacy', asks: 'what does it propose, and which arm proposes it' },
   { key: 'menus', label: 'blocking screens', asks: 'how does it answer menus' },
   { key: 'timeline', label: 'timeline', asks: 'where did the time go' },
 ]
@@ -559,6 +561,73 @@ function Timeline() {
   )
 }
 
+type DiplomacyPage = Schemas['DiplomacyPage']
+type DiplomacyRow = Schemas['DiplomacyRow']
+
+function Diplomacy() {
+  const [version, setVersion] = useState<string>('')
+  const { data, error, loading, reload } = useApi<DiplomacyPage>(
+    `/api/decisions/diplomacy${version ? `?version=${encodeURIComponent(version)}` : ''}`,
+    [version],
+  )
+  if (error) return <ErrorState error={error} onRetry={reload} />
+  if (loading || !data) return <Skeleton rows={10} />
+  const sources = data.sources ?? []
+  const rows = data.rows ?? []
+  const pct = (v: number | null | undefined) => (v == null ? <span className="text-dim">—</span> : <span className="num">{(100 * v).toFixed(1)}%</span>)
+  const cols: Col<DiplomacyRow>[] = [
+    { key: 'term', label: 'proposal', value: (r) => r.term.label, render: (r) => r.term.label },
+    {
+      key: 'all',
+      label: 'all sources',
+      group: 'distribution of attempts',
+      align: 'right',
+      value: (r) => (r.share.of ? r.share.n / r.share.of : 0),
+      render: (r) => <strong className="num">{(100 * (r.share.of ? r.share.n / r.share.of : 0)).toFixed(1)}%</strong>,
+    },
+    ...sources.map((s, i) => ({
+      key: `share_${s.raw}`,
+      label: s.label,
+      group: 'distribution of attempts',
+      align: 'right' as const,
+      value: (r: DiplomacyRow) => r.by_source?.[i]?.share ?? 0,
+      render: (r: DiplomacyRow) => pct(r.by_source?.[i]?.share),
+    })),
+    { key: 'attempted', label: 'all sources', group: 'attempts', align: 'right', optional: true, value: (r) => r.attempted ?? 0, render: (r) => n(r.attempted) },
+    ...sources.map((s, i) => ({
+      key: `n_${s.raw}`,
+      label: s.label,
+      group: 'attempts',
+      align: 'right' as const,
+      optional: true,
+      value: (r: DiplomacyRow) => r.by_source?.[i]?.attempted ?? 0,
+      render: (r: DiplomacyRow) => n(r.by_source?.[i]?.attempted ?? 0),
+    })),
+    { key: 'confirmed', label: 'confirmed', group: 'attempts', align: 'right', optional: true, value: (r) => r.confirmed ?? 0, render: (r) => n(r.confirmed) },
+  ]
+  return (
+    <Section title="diplomacy" scope={data.scope}>
+      <Card className="mb-3 flex flex-wrap items-center gap-3 px-3 py-2">
+        <label className="text-dim flex items-center gap-2 text-2xs">
+          model version
+          <select
+            value={version}
+            onChange={(e) => setVersion(e.target.value)}
+            className="bg-raised text-fg rounded border border-line px-2 py-0.5 text-2xs"
+          >
+            <option value="">every version</option>
+            {(data.versions ?? []).map((v) => (
+              <option key={v.version} value={v.version}>{v.label}</option>
+            ))}
+          </select>
+        </label>
+        <CountText count={data.attempts} />
+      </Card>
+      <DataTable rows={rows} cols={cols} rowId={(r) => r.term.raw} initialSort={{ key: 'all', desc: true }} pageSize={25} emptyWhat="no diplomatic action attempted yet" />
+    </Section>
+  )
+}
+
 export function Decisions() {
   const view = useSubView(VIEWS)
   return (
@@ -566,6 +635,7 @@ export function Decisions() {
       <SubNav views={VIEWS} />
       {view === 'log' && <Log />}
       {view === 'actions' && <Actions />}
+      {view === 'diplomacy' && <Diplomacy />}
       {view === 'menus' && <Menus />}
       {view === 'timeline' && <Timeline />}
     </div>

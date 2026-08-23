@@ -74,7 +74,7 @@ export function StartDetail() {
     { label: 'mean reward', value: s.mean == null ? null : n(s.mean, 2), sub: s.std == null ? undefined : `± ${n(s.std, 2)} std` },
     { label: 'entropy', value: s.entropy == null ? null : n(s.entropy, 2), unit: 'bits' },
     { label: 'best reward', value: s.best, sub: s.zero_rate?.of ? `${((100 * s.zero_rate.n) / s.zero_rate.of).toFixed(0)}% zero` : undefined },
-    { label: 'blend', value: s.blend == null ? null : `${s.blend >= 0 ? '+' : ''}${n(s.blend, 3)}`, sub: s.z_mean == null ? undefined : `z mean ${s.z_mean.toFixed(2)} · H ${s.z_entropy?.toFixed(2)} · std ${s.z_std?.toFixed(2)}` },
+    { label: 'blend', value: s.blend == null ? null : `${s.blend >= 0 ? '+' : ''}${n(s.blend, 3)}` },
     { label: 'explore', value: s.n_window ? inf(s.explore) : '∞' },
     { label: 'score', value: s.in_pool ? inf(s.score) : null, sub: s.rank == null ? undefined : `rank #${s.rank}` },
     { label: 'UCB picks', value: s.picks, sub: s.picks_ago == null ? 'never chosen' : `last ${s.picks_ago} picks ago` },
