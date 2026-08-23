@@ -204,9 +204,6 @@ class UcbRow(BaseModel):
     mean: float | None = None
     entropy: float | None = None
     std: float | None = None
-    z_mean: float | None = None
-    z_entropy: float | None = None
-    z_std: float | None = None
     blend: float | None = None
     explore: float | None = None
     score: float | None = None
@@ -246,9 +243,6 @@ class StartRow(BaseModel):
     mean: float | None = None
     std: float | None = None
     entropy: float | None = None
-    z_mean: float | None = None
-    z_entropy: float | None = None
-    z_std: float | None = None
     blend: float | None = None
     explore: float | None = None
     score: float | None = None

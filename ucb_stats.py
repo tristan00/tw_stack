@@ -39,38 +39,18 @@ def start_stats(rewards):
     return {key: describe(vals) for key, vals in rewards.items()}
 
 
-def zscores(stats):
-    played = [d for d in stats.values() if d["n"] >= MIN_PLAYS]
-    out = {}
-    for key in KEYS:
-        xs = [d[key] for d in played]
-        mu = sum(xs) / len(xs) if xs else 0.0
-        sd = (sum((x - mu) ** 2 for x in xs) / len(xs)) ** 0.5 if xs else 0.0
-        out[key] = (mu, sd)
-    return out
-
-
-def zparts(d, z):
-    out = {}
-    for key in KEYS:
-        mu, sd = z[key]
-        out[key] = (d[key] - mu) / sd if sd > 0 else 0.0
-    return out
-
-
-def blend(d, z):
-    parts = zparts(d, z)
-    return sum(parts.values()) / len(parts)
+def blend(d):
+    return sum(d[key] for key in KEYS) / len(KEYS)
 
 
 def explore_term(c, total, n):
     return c * math.sqrt(math.log(max(1, total)) / n)
 
 
-def score(d, z, c, total):
+def score(d, c, total):
     if d["n"] < MIN_PLAYS:
         return 0.0, float("inf"), float("inf")
-    b = blend(d, z)
+    b = blend(d)
     e = explore_term(c, total, d["n"])
     return b, e, b + e
 
