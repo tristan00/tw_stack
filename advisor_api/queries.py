@@ -502,9 +502,10 @@ def ucb_context(con) -> dict:
         rewards.setdefault((g["campaign_map"], g["faction"]), []).append(
             float(g["reward"] or 0.0))
     stats = UCB.start_stats(rewards)
+    scale = UCB.window_blend(rewards)
     total = max(1, sum(d["n"] for d in stats.values()))
-    last = con.execute("SELECT c FROM ucb_picks ORDER BY pick_id DESC LIMIT 1").fetchone()
-    c = _f(last["c"]) if last else _f(run_config.RUN.get("ucb"))
+    k = _f(run_config.RUN.get("ucb"))
+    c = None if k is None else k * scale
     pool = _pool()
     scored = {}
     for key in set(pool) | set(stats):
@@ -529,7 +530,8 @@ def ucb_context(con) -> dict:
     for i, g in enumerate(gains_all(con)):
         plays_ago.setdefault((g["campaign_map"], g["faction"]), i)
     top = max([int(round(max(v))) for v in rewards.values()] + [0])
-    return {"rewards": rewards, "stats": stats, "total": total, "c": c,
+    return {"rewards": rewards, "stats": stats, "total": total, "c": c, "k": k,
+            "scale": scale,
             "pool": pool, "scored": scored, "rank": rank, "n_picks": len(picks),
             "pick_count": pick_count, "last_pick": last_pick, "plays_ago": plays_ago,
             "top_reward": top}

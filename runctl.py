@@ -457,8 +457,9 @@ def main():
                             "ends when none remain")
         s.add_argument("--ucb", type=float, default=RUN.get("ucb"),
                        help="UCB1 start selector over settlements and lord levels "
-                            "gained; C is the exploration constant (run_config sets "
-                            "the default; --ucb 0 turns it off)")
+                            "gained; K scales the exploration weight: c = K times the "
+                            "trailing window's blend (run_config sets the default; "
+                            "--ucb 0 turns it off)")
         s.add_argument("--no-dev", action="store_true",
                        help="turn the diagnostic streams OFF -- they are on by default")
         if name == "up":
