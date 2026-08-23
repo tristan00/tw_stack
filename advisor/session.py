@@ -102,7 +102,6 @@ import ucb_stats as UCB
 UCB_WINDOW = UCB.WINDOW
 UCB_MIN_PLAYS = UCB.MIN_PLAYS
 _entropy_bits = UCB.entropy_bits
-_zscores = UCB.zscores
 _blend = UCB.blend
 
 
@@ -128,18 +127,17 @@ def _ucb_cell(score, n, mean, explore, p, blend=None, d=None):
 
 def _ucb_pick(pool, stats, c, rng, log=print, ts=None):
     total = max(1, sum(d["n"] for d in stats.values()))
-    z = UCB.zscores(stats)
     scored = []
     for p in pool:
         d = stats.get((p["campaign_map"], p["faction"])) or dict(UCB.EMPTY)
         n, mean = d["n"], d["mean"]
-        blend, explore, score = UCB.score(d, z, c, total)
+        blend, explore, score = UCB.score(d, c, total)
         scored.append((score, n, mean, explore, p, blend, d))
     scored.sort(key=lambda s: (-s[0], s[4]["file"]))
     log("ucb table (c=%g, %d plays over the trailing %d campaigns): score = blend + explore, "
-        "blend = mean of z(mean), z(entropy), z(std) over starts with %d+ plays; under %d "
-        "plays the score is inf | n | mean | H | std | start"
-        % (c, total, UCB_WINDOW, UCB_MIN_PLAYS, UCB_MIN_PLAYS))
+        "blend = (mean + H + std) / 3; under %d plays the score is inf "
+        "| n | mean | H | std | start"
+        % (c, total, UCB_WINDOW, UCB_MIN_PLAYS))
     for score, n, mean, explore, p, blend, d in scored:
         log("  %8s = %+6.3f + %8s  n=%-3d mean=%5.2f H=%4.2f sd=%4.2f  %s %s"
             % ("inf" if score == float("inf") else "%.3f" % score, blend,
@@ -1209,9 +1207,9 @@ def main():
                          "  --ucb C     -- UCB1 start selector over the trailing %d campaigns "
                          "(campaign_gains view; reward = settlements gained plus lord levels "
                          "gained). Starts with fewer than %d plays come first; then "
-                         "blend + C*sqrt(ln(total)/n), blend = mean of the z-scores of a "
-                         "start's mean reward, reward entropy and reward std across the "
-                         "played starts" % (UCB_WINDOW, UCB_MIN_PLAYS))
+                         "blend + C*sqrt(ln(total)/n), blend = (mean reward + reward entropy "
+                         "+ reward std) / 3 over the start's plays in the window"
+                         % (UCB_WINDOW, UCB_MIN_PLAYS))
     arg = sys.argv[sys.argv.index("--factions") + 1].strip()
     if arg == "no-cutscene":
         raise SystemExit(

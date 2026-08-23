@@ -84,7 +84,7 @@ def get_starts() -> StartsPage:
     return StartsPage(
         scope=_scope("one row per start in the presave pool, selector rank first",
                      "window columns are the trailing %d campaigns the selector scores; "
-                     "score = blend + explore, blend = mean z of mean, H, std"
+                     "score = blend + explore, blend = (mean + H + std) / 3"
                      % q.UCB.WINDOW),
         window=q.UCB.WINDOW, min_plays=q.UCB.MIN_PLAYS, c=cx["c"], total_plays=cx["total"],
         tiles=extras["tiles"], maps=extras["maps"], reward_bins=extras["reward_bins"],
