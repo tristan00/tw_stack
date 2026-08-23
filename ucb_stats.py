@@ -43,6 +43,11 @@ def blend(d):
     return sum(d[key] for key in KEYS) / len(KEYS)
 
 
+def window_blend(rewards):
+    gains = [g for vals in rewards.values() for g in vals]
+    return blend(describe(gains)) if gains else 0.0
+
+
 def explore_term(c, total, n):
     return c * math.sqrt(math.log(max(1, total)) / n)
 

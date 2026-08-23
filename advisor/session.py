@@ -108,12 +108,13 @@ _blend = UCB.blend
 def _start_gain_stats(window=UCB_WINDOW):
     path = os.path.join(common.RUN_DIR, "decisions.sqlite")
     if not os.path.exists(path):
-        return {}
+        return {}, 0.0
     con = dbopen.connect(path, readonly=True, timeout=10.0)
     try:
-        return UCB.start_stats(UCB.window_rewards(con, window))
+        rewards = UCB.window_rewards(con, window)
     finally:
         con.close()
+    return UCB.start_stats(rewards), UCB.window_blend(rewards)
 
 
 def _ucb_cell(score, n, mean, explore, p, blend=None, d=None):
@@ -125,8 +126,9 @@ def _ucb_cell(score, n, mean, explore, p, blend=None, d=None):
             "entropy": float(d["entropy"]), "std": float(d["std"])}
 
 
-def _ucb_pick(pool, stats, c, rng, log=print, ts=None):
+def _ucb_pick(pool, stats, k, scale, rng, log=print, ts=None):
     total = max(1, sum(d["n"] for d in stats.values()))
+    c = k * scale
     scored = []
     for p in pool:
         d = stats.get((p["campaign_map"], p["faction"])) or dict(UCB.EMPTY)
@@ -134,10 +136,10 @@ def _ucb_pick(pool, stats, c, rng, log=print, ts=None):
         blend, explore, score = UCB.score(d, c, total)
         scored.append((score, n, mean, explore, p, blend, d))
     scored.sort(key=lambda s: (-s[0], s[4]["file"]))
-    log("ucb table (c=%g, %d plays over the trailing %d campaigns): score = blend + explore, "
-        "blend = (mean + H + std) / 3; under %d plays the score is inf "
-        "| n | mean | H | std | start"
-        % (c, total, UCB_WINDOW, UCB_MIN_PLAYS))
+    log("ucb table (k=%g x window blend %.3f = c %.3f, %d plays over the trailing %d "
+        "campaigns): score = blend + c*sqrt(ln plays / n), blend = (mean + H + std) / 3; "
+        "under %d plays the score is inf | n | mean | H | std | start"
+        % (k, scale, c, total, UCB_WINDOW, UCB_MIN_PLAYS))
     for score, n, mean, explore, p, blend, d in scored:
         log("  %8s = %+6.3f + %8s  n=%-3d mean=%5.2f H=%4.2f sd=%4.2f  %s %s"
             % ("inf" if score == float("inf") else "%.3f" % score, blend,
@@ -147,14 +149,14 @@ def _ucb_pick(pool, stats, c, rng, log=print, ts=None):
     top = [s for s in scored if s[0] == best]
     score, n, mean, explore, p, blend, d = (top[rng.randrange(len(top))] if len(top) > 1
                                             else top[0])
-    log("ucb c=%g: %s on %s -- score=%s blend=%+.3f n=%d mean=%.3f H=%.2f sd=%.2f "
+    log("ucb k=%g c=%.3f: %s on %s -- score=%s blend=%+.3f n=%d mean=%.3f H=%.2f sd=%.2f "
         "(%d plays in window, %d tied)"
-        % (c, p["faction"], p["campaign_map"],
+        % (k, c, p["faction"], p["campaign_map"],
            "inf" if score == float("inf") else "%.3f" % score, blend, n, mean,
            d["entropy"], d["std"], total, len(top)))
     journal.log_ucb_pick(common.RUN_DIR, {
-        "ts": ts if ts is not None else time.time(), "c": c, "total_plays": total,
-        "tied": len(top),
+        "ts": ts if ts is not None else time.time(), "c": c, "k": k, "scale": scale,
+        "total_plays": total, "tied": len(top),
         "chosen": _ucb_cell(score, n, mean, explore, p, blend, d),
         "rows": [dict(_ucb_cell(*row), chosen=(row[4] is p)) for row in scored]})
     return p
@@ -436,8 +438,8 @@ def run_campaigns(n=3, turns=20, plan="all",
                 % (width, len(pool), len(presaves)))
         picked_ts = time.time()
         if ucb is not None:
-            this_presave = _ucb_pick(pool, _start_gain_stats(), ucb, rng, log=log,
-                                     ts=picked_ts)
+            stats, scale = _start_gain_stats()
+            this_presave = _ucb_pick(pool, stats, ucb, scale, rng, log=log, ts=picked_ts)
         else:
             this_presave = rng.choice(pool)
         this_campaign = _CAMPAIGN_LABEL.get(this_presave["campaign_map"],
@@ -1207,8 +1209,9 @@ def main():
                          "  --ucb C     -- UCB1 start selector over the trailing %d campaigns "
                          "(campaign_gains view; reward = settlements gained plus lord levels "
                          "gained). Starts with fewer than %d plays come first; then "
-                         "blend + C*sqrt(ln(total)/n), blend = (mean reward + reward entropy "
-                         "+ reward std) / 3 over the start's plays in the window"
+                         "blend + c*sqrt(ln(total)/n), blend = (mean reward + reward entropy "
+                         "+ reward std) / 3 over the start's plays in the window, "
+                         "c = K times the same blend taken over every gain in the window"
                          % (UCB_WINDOW, UCB_MIN_PLAYS))
     arg = sys.argv[sys.argv.index("--factions") + 1].strip()
     if arg == "no-cutscene":
