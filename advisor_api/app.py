@@ -59,16 +59,14 @@ async def _timed(request, call_next):
     finally:
         items = db.trace_end(token)
     ms = (time.perf_counter() - t0) * 1000
-    work = sorted((i for i in items if i[2] != "hit"), key=lambda i: -i[1])
-    hits = sum(1 for i in items if i[2] == "hit")
+    work = sorted(items, key=lambda i: -i[1])
     url = path + ("?" + request.url.query if request.url.query else "")
-    print("API %s %s %d %.0fms cached=%d recomputed=%d %s"
-          % (request.method, url, response.status_code, ms, hits, len(work),
-             " ".join("%s=%.0fms%s" % (n, m, "" if k == "miss" else "(%s)" % k)
-                      for n, m, k in work[:8])))
+    print("API %s %s %d %.0fms computed=%d %s"
+          % (request.method, url, response.status_code, ms, len(work),
+             " ".join("%s=%.0fms" % (n, m) for n, m, _k in work[:8])))
     response.headers["Server-Timing"] = ", ".join(
         ["total;dur=%.0f" % ms]
-        + ["%s;dur=%.0f;desc=%s" % (n.strip("_"), m, k) for n, m, k in work[:8]])
+        + ["%s;dur=%.0f" % (n.strip("_"), m) for n, m, _k in work[:8]])
     return response
 
 
@@ -110,15 +108,16 @@ def get_log(file: str | None = None, q_text: str | None = None, t0: str | None =
 @app.get("/api/campaigns/starts", response_model=StartsPage, tags=["campaigns"])
 def get_starts() -> StartsPage:
     con = _con()
-    cx = q.ucb_context(con)
-    extras = q.starts_page_extras(con)
+    gains = q.gains_all(con)
+    cx = q.ucb_context(con, gains)
+    extras = q.starts_page_extras(con, cx, gains)
     return StartsPage(
         scope=_scope("one row per playable start, best total gained first",
                      "gained columns are per-campaign first-to-peak deltas: best is the "
                      "single strongest campaign, avg is across all of that start's campaigns"),
         window=q.UCB.WINDOW, min_plays=q.UCB.MIN_PLAYS, c=cx["c"], total_plays=cx["total"],
         tiles=extras["tiles"], maps=extras["maps"], reward_bins=extras["reward_bins"],
-        turns_bins=extras["turns_bins"], rows=q.starts_rows(con))
+        turns_bins=extras["turns_bins"], rows=q.starts_rows(con, None, cx, gains))
 
 
 @app.get("/api/campaigns/starts/{campaign_map}/{faction}", response_model=StartDetail,
@@ -141,13 +140,15 @@ def get_start(campaign_map: str, faction: str) -> StartDetail:
 def get_picks(limit: int = 2000, before: int | None = None) -> UcbPicksPage:
     con = _con()
     lim = max(1, min(int(limit), 5000))
-    picks = q.ucb_picks(con, lim, before)
-    cx = q.ucb_context(con)
+    gains = q.gains_all(con)
+    cx = q.ucb_context(con, gains)
+    series = q.ucb_pick_series(con, gains)
+    picks = q.ucb_picks(series, lim, before)
     return UcbPicksPage(
         scope=_scope("one row per UCB start pick, newest first",
                      "score = blend + explore, blend = (mean + H + std) / 3"),
         window=q.UCB.WINDOW, min_plays=q.UCB.MIN_PLAYS, pool=len(cx["pool"]),
-        tiles=q.ucb_tiles(con), picks=picks,
+        tiles=q.ucb_tiles(series, cx), picks=picks,
         cursor=(picks[-1].pick_id if len(picks) >= lim else None))
 
 
@@ -201,14 +202,15 @@ def get_matrix(kind: str = Query("action", pattern="^(action|interrupt)$")) -> M
 @app.get("/api/campaigns", response_model=CampaignsPage, tags=["campaigns"])
 def get_campaigns() -> CampaignsPage:
     con = _con()
-    rows = q.campaign_rows(con)
+    outcomes, unjoined = q.outcome_join(con)
+    rows = q.campaign_rows(con, outcomes=outcomes)
     return CampaignsPage(
         scope=_scope("every campaign in this run dir, newest first",
                      "outcome is joined from the postmortem log"),
-        headline=q.outcome_headline(con),
+        headline=q.outcome_headline(rows),
         suspicious=Count(value=sum(1 for r in rows if r.suspicious), noun="campaigns",
                          population="whose ending looks like a harness fault, not a defeat"),
-        unjoined=Count(value=q.unjoined_endings(con), noun="endings",
+        unjoined=Count(value=unjoined, noun="endings",
                        population="recorded in the log but belonging to earlier run dirs"),
         growth_coverage=Rate(
             n=sum(1 for r in rows if r.growth_state == "measured"), of=len(rows),

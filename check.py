@@ -79,8 +79,8 @@ CHECKS = [
     ("graph_build", ["-m", "advisor.mapgraph.test_build"], True,
      "real decisions build graphs with the expected node and edge counts"),
     ("api_corpus", ["advisor_api/test_db.py"], True,
-     "the corpus access layer: every cache-invalidation probe executes, so a memoized "
-     "answer can never be pinned to a stale corpus while every endpoint still reads 200"),
+     "the corpus access layer: every corpus-change probe executes and reports numbers, "
+     "so /api/events sees every write and column introspection matches the schema"),
     ("api", ["advisor_api/test_api.py"], True,
      "every dashboard view answers under budget and agrees with direct SQL; every count "
      "names the population it counted and every rate carries its denominator; the "

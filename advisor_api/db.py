@@ -15,7 +15,6 @@ import common
 from decisions import dbopen
 
 _local = threading.local()
-_MISS = object()
 _trace = contextvars.ContextVar("api_trace", default=None)
 
 
@@ -83,97 +82,6 @@ def stamp(run: str | None = None) -> tuple:
         except sqlite3.Error as e:
             out.append("err:%s" % e)
     return tuple(out)
-
-
-def cached_on(key_fn):
-    def deco(fn):
-        state: dict = {"key": None, "vals": {}, "inflight": {}}
-        lock = threading.Lock()
-
-        @functools.wraps(fn)
-        def wrapper(*args):
-            while True:
-                k = key_fn()
-                with lock:
-                    if state["key"] != k:
-                        state["key"] = k
-                        state["vals"] = {}
-                        state["inflight"] = {}
-                    hit = state["vals"].get(args, _MISS)
-                    if hit is not _MISS:
-                        _note(fn.__name__, 0.0, "hit")
-                        return hit
-                    ev = state["inflight"].get(args)
-                    mine = ev is None
-                    if mine:
-                        ev = state["inflight"][args] = threading.Event()
-                if not mine:
-                    t0 = time.perf_counter()
-                    ev.wait()
-                    _note(fn.__name__, (time.perf_counter() - t0) * 1000, "wait")
-                    continue
-                t0 = time.perf_counter()
-                try:
-                    val = fn(*args)
-                    _note(fn.__name__, (time.perf_counter() - t0) * 1000, "miss")
-                except BaseException:
-                    with lock:
-                        if state["inflight"].get(args) is ev:
-                            del state["inflight"][args]
-                    ev.set()
-                    raise
-                with lock:
-                    if state["key"] == k:
-                        state["vals"][args] = val
-                    if state["inflight"].get(args) is ev:
-                        del state["inflight"][args]
-                ev.set()
-                return val
-
-        wrapper.cache_clear = lambda: state.update(key=None, vals={}, inflight={})
-        return wrapper
-    return deco
-
-
-def cached(fn):
-    return cached_on(lambda: stamp())(fn)
-
-
-_CAMPAIGN_STAMP_SQL = (
-    "SELECT COUNT(*), MAX(campaign_id), SUM(outcome IS NOT NULL) FROM campaigns",
-    "SELECT MAX(pick_id) FROM ucb_picks",
-)
-
-
-def campaign_stamp(run: str | None = None) -> tuple:
-    con = connect(run)
-    out = [db_path(run)]
-    for sql in _CAMPAIGN_STAMP_SQL:
-        try:
-            row = con.execute(sql).fetchone()
-            out.extend((v or 0) for v in (row or ()))
-        except sqlite3.Error as e:
-            out.append("err:%s" % e)
-    return tuple(out)
-
-
-def cached_per_campaign(fn):
-    return cached_on(lambda: campaign_stamp())(fn)
-
-
-def file_stamp(*paths) -> tuple:
-    out = []
-    for p in paths:
-        try:
-            st = os.stat(p)
-            out.append((int(st.st_size), int(st.st_mtime_ns)))
-        except OSError:
-            out.append(None)
-    return tuple(out)
-
-
-def cached_files(*paths):
-    return cached_on(lambda: file_stamp(*paths))
 
 
 def columns(con, name: str) -> set:

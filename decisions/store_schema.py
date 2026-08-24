@@ -72,7 +72,9 @@ CREATE TABLE IF NOT EXISTS decisions(
   n_entities INTEGER NOT NULL, n_offers INTEGER NOT NULL,
   campaign_blob INTEGER REFERENCES blobs(blob_id),
   world_blob INTEGER REFERENCES blobs(blob_id),
-  timings TEXT);
+  timings TEXT,
+  income REAL, settlements REAL, allies REAL, vassals REAL,
+  power_rank REAL, lord_level REAL);
 
 CREATE TABLE IF NOT EXISTS entities(
   decision_id INTEGER NOT NULL, entity_seq INTEGER NOT NULL,
@@ -90,7 +92,8 @@ CREATE TABLE IF NOT EXISTS taken(
   offer_seq INTEGER, entity_seq INTEGER, action_id INTEGER,
   ts REAL, executed INTEGER NOT NULL, confirmed INTEGER NOT NULL, counted INTEGER NOT NULL,
   refusal TEXT, confirm_signal TEXT, confirm_before TEXT, confirm_after TEXT,
-  latency_ms INTEGER, policy TEXT, timing TEXT, diagnostics TEXT);
+  latency_ms INTEGER, policy TEXT, timing TEXT, diagnostics TEXT,
+  campaign_id INTEGER);
 
 -- Separate so it can be dropped without touching the corpus: scores are a property of the
 -- model that ranked a decision, not of the decision.
@@ -162,6 +165,18 @@ CREATE INDEX IF NOT EXISTS ix_taken_ts ON taken(ts);
 CREATE INDEX IF NOT EXISTS ix_taken_counted ON taken(counted);
 CREATE INDEX IF NOT EXISTS ix_diplo_ev ON diplomacy_events(campaign_key, event_id);
 CREATE INDEX IF NOT EXISTS ix_ucb_picks_ts ON ucb_picks(ts);
+"""
+
+
+CAMPAIGN_SCALARS = ("income", "settlements", "allies", "vassals",
+                    "power_rank", "lord_level")
+
+SCALAR_DDL = """
+CREATE INDEX IF NOT EXISTS ix_dec_gains ON decisions(
+  campaign_id, decision_id, ts, turn, settlements, lord_level, allies, vassals);
+CREATE INDEX IF NOT EXISTS ix_dec_turn_bounds ON decisions(campaign_id, turn, decision_id);
+CREATE INDEX IF NOT EXISTS ix_taken_agg ON taken(
+  campaign_id, action_id, policy, refusal, counted, latency_ms, ts);
 """
 
 
@@ -253,31 +268,21 @@ DROP VIEW IF EXISTS turn_open;
 CREATE VIEW turn_open AS
 SELECT c.campaign_key AS campaign_id, d.turn AS turn, d.ts AS ts,
        d.decision_id AS decision_id,
-       CAST(json_extract(unz(b.z), '$.income')      AS REAL) AS income,
-       CAST(json_extract(unz(b.z), '$.settlements') AS REAL) AS settlements,
-       CAST(json_extract(unz(b.z), '$.allies')      AS REAL) AS allies,
-       CAST(json_extract(unz(b.z), '$.vassals')     AS REAL) AS vassals,
-       CAST(json_extract(unz(b.z), '$.power_rank')  AS REAL) AS power_rank,
-       CAST(json_extract(unz(b.z), '$.lord_level')  AS REAL) AS lord_level
+       d.income AS income, d.settlements AS settlements, d.allies AS allies,
+       d.vassals AS vassals, d.power_rank AS power_rank, d.lord_level AS lord_level
 FROM turn_bounds tb
 JOIN decisions d ON d.decision_id = tb.open_id
-LEFT JOIN campaigns c ON c.campaign_id = d.campaign_id
-LEFT JOIN blobs b ON b.blob_id = d.campaign_blob;
+LEFT JOIN campaigns c ON c.campaign_id = d.campaign_id;
 
 DROP VIEW IF EXISTS turn_close;
 CREATE VIEW turn_close AS
 SELECT c.campaign_key AS campaign_id, d.turn AS turn, d.ts AS ts,
        d.decision_id AS decision_id,
-       CAST(json_extract(unz(b.z), '$.income')      AS REAL) AS income,
-       CAST(json_extract(unz(b.z), '$.settlements') AS REAL) AS settlements,
-       CAST(json_extract(unz(b.z), '$.allies')      AS REAL) AS allies,
-       CAST(json_extract(unz(b.z), '$.vassals')     AS REAL) AS vassals,
-       CAST(json_extract(unz(b.z), '$.power_rank')  AS REAL) AS power_rank,
-       CAST(json_extract(unz(b.z), '$.lord_level')  AS REAL) AS lord_level
+       d.income AS income, d.settlements AS settlements, d.allies AS allies,
+       d.vassals AS vassals, d.power_rank AS power_rank, d.lord_level AS lord_level
 FROM turn_bounds tb
 JOIN decisions d ON d.decision_id = tb.close_id
-LEFT JOIN campaigns c ON c.campaign_id = d.campaign_id
-LEFT JOIN blobs b ON b.blob_id = d.campaign_blob;
+LEFT JOIN campaigns c ON c.campaign_id = d.campaign_id;
 
 DROP VIEW IF EXISTS interrupt_decisions;
 CREATE VIEW interrupt_decisions AS
@@ -321,41 +326,24 @@ GROUP BY c.campaign_map, c.faction;
 -- required two or more decisions before it reports a delta.
 -- analytics/generations.py buckets these by model generation; the session's --ucb
 -- start selector averages their sum per start. A second computation would drift.
--- The `LIMIT -1` is a no-op limit that blocks the query flattener: without it SQLite
--- inlines the subquery and calls unz() once per extracted column, decompressing every
--- campaign blob four times over -- 0.475s instead of 0.135s for identical rows.
 DROP VIEW IF EXISTS campaign_gains;
 CREATE VIEW campaign_gains AS
-SELECT campaign_map, faction, campaign_key, MIN(ts) AS first_ts,
-       IFNULL(MAX(turn), 0) AS turns_reached,
-       IFNULL(MAX(settlements), 0) - IFNULL(MIN(fs), 0) AS settlements_gained,
-       IFNULL(MAX(lord_level), 0) - IFNULL(MIN(fl), 0) AS levels_gained,
-       IFNULL(MAX(allies), 0) - IFNULL(MIN(fa), 0) AS allies_gained,
-       IFNULL(MAX(vassals), 0) - IFNULL(MIN(fv), 0) AS vassals_gained
-FROM (
-  SELECT campaign_map, faction, campaign_key, ts, turn,
-         settlements, lord_level, allies, vassals,
-         FIRST_VALUE(settlements) OVER w AS fs,
-         FIRST_VALUE(lord_level) OVER w AS fl,
-         FIRST_VALUE(allies) OVER w AS fa,
-         FIRST_VALUE(vassals) OVER w AS fv
-  FROM (
-    SELECT c.campaign_map AS campaign_map, c.faction AS faction,
-           c.campaign_key AS campaign_key, d.decision_id AS decision_id, d.ts AS ts,
-           d.turn AS turn,
-           CAST(json_extract(j, '$.settlements') AS REAL) AS settlements,
-           CAST(json_extract(j, '$.lord_level') AS REAL) AS lord_level,
-           CAST(json_extract(j, '$.allies') AS REAL) AS allies,
-           CAST(json_extract(j, '$.vassals') AS REAL) AS vassals
-    FROM (SELECT decision_id, campaign_id, ts, turn, unz(b.z) AS j
-          FROM decisions d LEFT JOIN blobs b ON b.blob_id = d.campaign_blob
-          LIMIT -1) d
-    LEFT JOIN campaigns c ON c.campaign_id = d.campaign_id
-  )
-  WINDOW w AS (PARTITION BY campaign_key ORDER BY decision_id)
-)
-GROUP BY campaign_key
-HAVING COUNT(*) >= 2;
+SELECT c.campaign_map AS campaign_map, c.faction AS faction,
+       c.campaign_key AS campaign_key, agg.first_ts AS first_ts,
+       agg.turns_reached AS turns_reached,
+       IFNULL(agg.peak_settlements, 0) - IFNULL(f.settlements, 0) AS settlements_gained,
+       IFNULL(agg.peak_lord_level, 0) - IFNULL(f.lord_level, 0) AS levels_gained,
+       IFNULL(agg.peak_allies, 0) - IFNULL(f.allies, 0) AS allies_gained,
+       IFNULL(agg.peak_vassals, 0) - IFNULL(f.vassals, 0) AS vassals_gained
+FROM (SELECT campaign_id, COUNT(*) AS n, MIN(decision_id) AS first_id,
+             MIN(ts) AS first_ts, IFNULL(MAX(turn), 0) AS turns_reached,
+             MAX(settlements) AS peak_settlements,
+             MAX(lord_level) AS peak_lord_level,
+             MAX(allies) AS peak_allies, MAX(vassals) AS peak_vassals
+      FROM decisions GROUP BY campaign_id) agg
+JOIN decisions f ON f.decision_id = agg.first_id
+LEFT JOIN campaigns c ON c.campaign_id = agg.campaign_id
+WHERE agg.n >= 2;
 """.format(ES=MAX_ENTITIES_PER_DECISION, OS=MAX_OFFERS_PER_DECISION,
            NS=len(SCORE_FIELDS), MS=len(MODEL_SCORE_FIELDS))
 

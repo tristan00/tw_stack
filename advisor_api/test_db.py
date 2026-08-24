@@ -31,40 +31,7 @@ def test_stamp_carries_no_error_markers():
 
 def test_stamp_is_not_constant_zero():
     st = db.stamp()
-    assert any(p for p in st), "stamp is all zeros -- cache would never invalidate: %r" % (st,)
-
-
-def test_cache_returns_same_value_within_a_stamp():
-    con = db.connect()
-    calls = []
-
-    @db.cached
-    def counted(con):
-        calls.append(1)
-        return con.execute("SELECT COUNT(*) FROM campaigns").fetchone()[0]
-
-    a, b = counted(con), counted(con)
-    assert a == b
-    assert len(calls) == 1, "cached() recomputed within one stamp"
-
-
-def test_cache_invalidates_when_stamp_moves(monkeypatch=None):
-    con = db.connect()
-    calls = []
-
-    @db.cached
-    def counted(con):
-        calls.append(1)
-        return len(calls)
-
-    counted(con)
-    real = db.stamp
-    db.stamp = lambda run=None: ("moved",)
-    try:
-        counted(con)
-    finally:
-        db.stamp = real
-    assert len(calls) == 2, "cached() did not recompute after the stamp moved"
+    assert any(p for p in st), "stamp is all zeros -- /api/events would never fire: %r" % (st,)
 
 
 def test_columns_reports_real_schema():
