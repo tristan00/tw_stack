@@ -6,33 +6,34 @@ SINGLE_TURN = "single_turn"
 NO_TURN_ROWS = "no_turn_rows"
 
 _TRAJECTORY = """
-SELECT ckey,
-       COUNT(*)                                       AS turn_rows,
-       MIN(turn)                                      AS first_turn,
-       MAX(turn)                                      AS last_measured_turn,
-       MAX(CASE WHEN rn_lo = 1 THEN settlements END)  AS first_settlements,
-       MAX(CASE WHEN rn_hi = 1 THEN settlements END)  AS final_settlements,
-       MAX(settlements)                               AS peak_settlements,
-       MAX(CASE WHEN rn_lo = 1 THEN lord_level END)   AS first_lord_level,
-       MAX(CASE WHEN rn_hi = 1 THEN lord_level END)   AS final_lord_level,
-       MAX(lord_level)                                AS peak_lord_level,
-       MAX(power_rank)                                AS peak_power_rank,
-       MAX(CASE WHEN rn_hi = 1 THEN power_rank END)   AS final_power_rank,
-       MAX(CASE WHEN rn_hi = 1 THEN income END)       AS final_income
-  FROM (SELECT campaign_id AS ckey,
-               CAST(json_extract(campaign, '$.turn')        AS REAL) AS turn,
-               CAST(json_extract(campaign, '$.settlements') AS REAL) AS settlements,
-               CAST(json_extract(campaign, '$.lord_level')  AS REAL) AS lord_level,
-               CAST(json_extract(campaign, '$.power_rank')  AS REAL) AS power_rank,
-               CAST(json_extract(campaign, '$.income')      AS REAL) AS income,
-               ROW_NUMBER() OVER (PARTITION BY campaign_id ORDER BY decision_id ASC)  AS rn_lo,
-               ROW_NUMBER() OVER (PARTITION BY campaign_id ORDER BY decision_id DESC) AS rn_hi
-          FROM decision_points %s)
- GROUP BY ckey
+SELECT c.campaign_key AS ckey,
+       agg.turn_rows AS turn_rows,
+       agg.first_turn AS first_turn,
+       agg.last_measured_turn AS last_measured_turn,
+       fo.settlements AS first_settlements,
+       lo.settlements AS final_settlements,
+       agg.peak_settlements AS peak_settlements,
+       fo.lord_level AS first_lord_level,
+       lo.lord_level AS final_lord_level,
+       agg.peak_lord_level AS peak_lord_level,
+       agg.peak_power_rank AS peak_power_rank,
+       lo.power_rank AS final_power_rank,
+       lo.income AS final_income
+  FROM (SELECT campaign_id, COUNT(*) AS turn_rows,
+               MIN(turn) AS first_turn, MAX(turn) AS last_measured_turn,
+               MIN(decision_id) AS first_id, MAX(decision_id) AS last_id,
+               MAX(settlements) AS peak_settlements,
+               MAX(lord_level) AS peak_lord_level,
+               MAX(power_rank) AS peak_power_rank
+          FROM decisions %s GROUP BY campaign_id) agg
+  JOIN decisions fo ON fo.decision_id = agg.first_id
+  JOIN decisions lo ON lo.decision_id = agg.last_id
+  LEFT JOIN campaigns c ON c.campaign_id = agg.campaign_id
 """
 
 TRAJECTORY_SQL = _TRAJECTORY % ""
-TRAJECTORY_SQL_ONE = _TRAJECTORY % "WHERE campaign_id = ?"
+TRAJECTORY_SQL_ONE = _TRAJECTORY % ("WHERE campaign_id IN (SELECT campaign_id"
+                                    " FROM campaigns WHERE campaign_key = ?)")
 
 
 def state_of(turn_rows) -> str:

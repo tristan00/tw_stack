@@ -52,6 +52,13 @@ def _int_or_none(v):
         return None
 
 
+def _real_or_none(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def _dumps(o):
     return json.dumps(o, default=str, sort_keys=True, separators=(",", ":"))
 
@@ -81,6 +88,19 @@ class DecisionStore:
         self._assert_compatible(fresh=fresh)
         self.con.executescript(S.DDL)
         self._add_missing_columns()
+        self.con.executescript(S.SCALAR_DDL)
+        if self.con.execute("SELECT 1 FROM decisions WHERE settlements IS NULL"
+                            " AND campaign_blob IS NOT NULL LIMIT 1").fetchone():
+            self._backfill_scalars()
+        if self.con.execute(
+                "SELECT 1 FROM taken WHERE campaign_id IS NULL LIMIT 1").fetchone():
+            t0 = time.time()
+            self.con.execute(
+                "UPDATE taken SET campaign_id = (SELECT d.campaign_id FROM decisions d"
+                " WHERE d.decision_id = taken.decision_id) WHERE campaign_id IS NULL")
+            self.con.commit()
+            sys.stderr.write("store: backfilled campaign_id on taken in %.1fs"
+                             % (time.time() - t0) + chr(10))
         self.con.executescript(S.VIEWS)
         self.con.execute("INSERT OR IGNORE INTO meta(k,v) VALUES('schema_version',?)",
                          (S.SCHEMA_VERSION,))
@@ -97,13 +117,49 @@ class DecisionStore:
                     ("ucb_picks", "std", "REAL"),
                     ("ucb_pick_rows", "blend", "REAL"),
                     ("ucb_pick_rows", "entropy", "REAL"),
-                    ("ucb_pick_rows", "std", "REAL"))
+                    ("ucb_pick_rows", "std", "REAL"),
+                    ("decisions", "income", "REAL"),
+                    ("decisions", "settlements", "REAL"),
+                    ("decisions", "allies", "REAL"),
+                    ("decisions", "vassals", "REAL"),
+                    ("decisions", "power_rank", "REAL"),
+                    ("decisions", "lord_level", "REAL"),
+                    ("taken", "campaign_id", "INTEGER"))
 
     def _add_missing_columns(self):
         for table, col, decl in self._ADD_COLUMNS:
             have = {r[1] for r in self.con.execute("PRAGMA table_info(%s)" % table)}
             if col not in have:
                 self.con.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, col, decl))
+
+    def _backfill_scalars(self):
+        t0 = time.time()
+        n = 0
+        last = 0
+        while True:
+            rows = self.con.execute(
+                "SELECT d.decision_id, unz(b.z) FROM decisions d"
+                " JOIN blobs b ON b.blob_id = d.campaign_blob"
+                " WHERE d.decision_id > ? AND d.settlements IS NULL"
+                " ORDER BY d.decision_id LIMIT 5000",
+                (last,)).fetchall()
+            if not rows:
+                break
+            ups = []
+            for did, j in rows:
+                try:
+                    camp = json.loads(j) if j else {}
+                except ValueError:
+                    camp = {}
+                ups.append(tuple(_real_or_none(camp.get(k)) for k in S.CAMPAIGN_SCALARS)
+                           + (did,))
+                last = did
+            self.con.executemany(
+                "UPDATE decisions SET income=?,settlements=?,allies=?,vassals=?,"
+                "power_rank=?,lord_level=? WHERE decision_id=?", ups)
+            n += len(ups)
+        self.con.commit()
+        sys.stderr.write("store: backfilled campaign scalars on %d decisions in %.1fs" % (n, time.time() - t0) + chr(10))
 
 
     def _assert_compatible(self, fresh=False):
@@ -247,11 +303,13 @@ class DecisionStore:
                                 _int_or_none(camp.get("difficulty")), camp.get("leader"))
         cur = self.con.execute(
             "INSERT INTO decisions(campaign_id,ts,turn,decision_seq,policy,version_id,"
-            "n_entities,n_offers,campaign_blob,world_blob)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?)",
+            "n_entities,n_offers,campaign_blob,world_blob,"
+            "income,settlements,allies,vassals,power_rank,lord_level)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (cid, snapshot.get("ts") or time.time(), int(camp.get("turn") or 0),
              int(decision_seq), policy, self._version_id, len(ents), 0,
-             self._blob(_dumps(camp)), self._blob(_dumps(snapshot.get("world") or {}))))
+             self._blob(_dumps(camp)), self._blob(_dumps(snapshot.get("world") or {})))
+            + tuple(_real_or_none(camp.get(k)) for k in S.CAMPAIGN_SCALARS))
         did = cur.lastrowid
 
         self.con.executemany(
@@ -384,8 +442,9 @@ class DecisionStore:
         self.con.execute(
             "INSERT OR REPLACE INTO taken(decision_id,offer_seq,entity_seq,action_id,ts,"
             "executed,confirmed,counted,refusal,confirm_signal,confirm_before,confirm_after,"
-            "latency_ms,policy,timing,diagnostics)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "latency_ms,policy,timing,diagnostics,campaign_id)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
+            "(SELECT campaign_id FROM decisions WHERE decision_id=?))",
             (decision_id, seq, ent_seq, action_id, taken.get("ts") or time.time(),
              1 if taken.get("executed") else 0, 1 if taken.get("confirmed") else 0,
              1 if taken.get("counted") else 0, taken.get("refusal"), conf.get("signal"),
@@ -394,7 +453,8 @@ class DecisionStore:
              _dumps(taken.get("timing")),
              _dumps({"stderr": taken.get("stderr"), "prechecks": taken.get("prechecks"),
                      "execute_error": taken.get("execute_error"),
-                     "doomed": taken.get("doomed"), "params": taken.get("params")})))
+                     "doomed": taken.get("doomed"), "params": taken.get("params")}),
+             decision_id))
         self.con.commit()
         return seq is not None
 

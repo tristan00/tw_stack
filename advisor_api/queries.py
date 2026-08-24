@@ -6,7 +6,6 @@ import math
 import os
 import statistics
 import sys
-import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -158,49 +157,34 @@ def _age_words(seconds):
     return "%dd ago" % (s // 86400)
 
 
-_PM_LOCK = threading.Lock()
-_PM: dict = {"path": None, "last": 0, "rows": []}
-
-
-def postmortems(con) -> list:
-    with _PM_LOCK:
-        path = db.db_path()
-        if _PM["path"] != path:
-            _PM.update(path=path, last=0, rows=[])
-        t0 = time.perf_counter()
-        added = 0
-        for pid, payload, key in con.execute(
-                "SELECT postmortem_id, payload, campaign_key FROM postmortems"
-                " WHERE postmortem_id > ? ORDER BY postmortem_id", (_PM["last"],)):
-            d = _jload(payload) or {}
-            if key and not d.get("campaign_key"):
-                d["campaign_key"] = key
-            _PM["rows"].append(d)
-            _PM["last"] = _i(pid, 0) or _PM["last"]
-            added += 1
-        if added:
-            db._note("postmortems/incr", (time.perf_counter() - t0) * 1000, "%d new" % added)
-        return list(_PM["rows"])
-
-
-@db.cached_per_campaign
-def join_outcomes(con) -> dict:
-    claimed = {}
-    for pm in postmortems(con):
-        key = pm.get("campaign_key")
-        if key:
-            claimed[key] = pm
-    return claimed
-
-
-@db.cached_per_campaign
-def unjoined_endings(con) -> int:
+@db.timed
+def outcome_join(con) -> tuple:
     keys = {r[0] for r in con.execute("SELECT campaign_key FROM campaigns")}
-    return sum(1 for pm in postmortems(con)
-               if not pm.get("campaign_key") or pm["campaign_key"] not in keys)
+    claimed: dict = {}
+    unjoined = 0
+    for key, packed in con.execute(
+            "SELECT campaign_key, CASE WHEN json_valid(payload) THEN json_extract(payload,"
+            " '$.campaign_key', '$.outcome', '$.when', '$.error',"
+            " '$.plausibility.verdict', '$.growth', '$.faction', '$.ts') END"
+            " FROM postmortems ORDER BY postmortem_id"):
+        got = _jload(packed)
+        if not isinstance(got, list) or len(got) < 8:
+            got = [None] * 8
+        ck = got[0] or key
+        if not ck or ck not in keys:
+            unjoined += 1
+        if ck:
+            claimed[ck] = {"campaign_key": ck, "outcome": got[1], "when": got[2],
+                           "error": got[3], "plausibility": {"verdict": got[4]},
+                           "growth": got[5] or {}, "faction": got[6], "ts": got[7]}
+    return claimed, unjoined
 
 
-@db.cached
+def join_outcomes(con) -> dict:
+    return outcome_join(con)[0]
+
+
+@db.timed
 def current(con) -> Current:
     row = con.execute(
         "SELECT d.turn, d.ts, c.campaign_key, c.leader, b.z"
@@ -220,7 +204,7 @@ def current(con) -> Current:
                    age_seconds=max(0.0, time.time() - (_f(row["ts"]) or 0.0)))
 
 
-@db.cached
+@db.timed
 def totals(con) -> list:
     q = lambda s: con.execute(s).fetchone()[0] or 0
     return [
@@ -236,7 +220,7 @@ def totals(con) -> list:
     ]
 
 
-@db.cached
+@db.timed
 def throughput(con) -> list:
     import time
     now = time.time()
@@ -289,7 +273,7 @@ def _rate_sparks(rows, buckets=SPARK_BUCKETS):
             [round(len(s) * per_hour, 2) for s in turn_sets])
 
 
-@db.cached
+@db.timed
 def _confirm_spark(con, buckets=SPARK_BUCKETS):
     rows = con.execute(
         "SELECT counted, refusal FROM action_taken"
@@ -309,7 +293,7 @@ def _confirm_spark(con, buckets=SPARK_BUCKETS):
     return out
 
 
-@db.cached
+@db.timed
 def collect_timing(con) -> list:
     rows = con.execute("SELECT timings FROM decision_points"
                        " ORDER BY decision_id DESC LIMIT 400").fetchall()
@@ -337,7 +321,7 @@ def collect_timing(con) -> list:
     return out
 
 
-@db.cached
+@db.timed
 def cycle_timing(con) -> list:
     rows = con.execute("SELECT timing FROM action_taken"
                        " ORDER BY decision_id DESC LIMIT 400").fetchall()
@@ -362,39 +346,65 @@ def cycle_timing(con) -> list:
     return out
 
 
-def _decs_for(con, cids) -> dict:
+def _campaign_keys(con) -> dict:
+    return {r["campaign_id"]: r["campaign_key"] for r in con.execute(
+        "SELECT campaign_id, campaign_key FROM campaigns")}
+
+
+def _faction_of(con) -> dict:
+    return {r["campaign_id"]: r["faction"] for r in con.execute(
+        "SELECT campaign_id, faction FROM campaigns")}
+
+
+def _action_types_for(con, ids) -> dict:
+    ids = [i for i in ids if i is not None]
+    out = {}
+    for i in range(0, len(ids), 900):
+        chunk = ids[i:i + 900]
+        for r in con.execute(
+                "SELECT action_id, action_type FROM actions WHERE action_id IN (%s)"
+                % ",".join("?" * len(chunk)), chunk):
+            out[r["action_id"]] = r["action_type"]
+    return out
+
+
+def _decs_all(con) -> dict:
     return {r["ckey"]: dict(r) for r in con.execute(
         "SELECT c.campaign_key ckey, COUNT(*) n, MIN(d.ts) t0, MAX(d.ts) t1,"
         "       MAX(d.turn) last_turn"
         " FROM decisions d JOIN campaigns c ON c.campaign_id = d.campaign_id"
-        " WHERE d.campaign_id IN (%s) GROUP BY c.campaign_key" % ",".join("?" * len(cids)),
-        cids)}
+        " GROUP BY c.campaign_key")}
 
 
-def _acts_for(con, cids) -> dict:
-    return {r["ckey"]: dict(r) for r in con.execute(
-        "SELECT c.campaign_key ckey,"
-        "       COUNT(*) rows_,"
-        "       SUM(CASE WHEN t.refusal IS 'awaiting_execution' THEN 0 ELSE 1 END) attempted,"
-        "       SUM(CASE WHEN t.counted=1 THEN 1 ELSE 0 END) confirmed"
-        " FROM taken t JOIN decisions d ON d.decision_id = t.decision_id"
-        " JOIN campaigns c ON c.campaign_id = d.campaign_id"
-        " WHERE d.campaign_id IN (%s) GROUP BY c.campaign_key" % ",".join("?" * len(cids)),
-        cids)}
+def _acts_all(con) -> dict:
+    keys = _campaign_keys(con)
+    out = {}
+    for r in con.execute(
+            "SELECT campaign_id, COUNT(*) rows_,"
+            "       SUM(CASE WHEN refusal IS 'awaiting_execution' THEN 0 ELSE 1 END) attempted,"
+            "       SUM(CASE WHEN counted=1 THEN 1 ELSE 0 END) confirmed"
+            " FROM taken GROUP BY campaign_id"):
+        ckey = keys.get(r["campaign_id"])
+        if ckey:
+            out[ckey] = dict(r)
+    return out
 
 
-@db.cached
-def campaign_rows(con) -> list:
-    decs = _per_campaign("campaign_rows/decisions", con, _decs_for)
-    acts = _per_campaign("campaign_rows/actions", con, _acts_for)
+@db.timed
+def campaign_rows(con, outcomes=None, produced=None) -> list:
+    decs = _decs_all(con)
+    acts = _acts_all(con)
     growth = {g["campaign_key"]: CG.enrich(g)
               for g in adb.rows("SELECT * FROM campaign_growth")}
     meta = {r["campaign_key"]: r for r in con.execute(
         "SELECT campaign_id, campaign_key, faction, turns, campaign_map, presave_radius, "
         "leader FROM campaigns")}
 
-    outcomes = join_outcomes(con)
-    produced_by = {v: k for k, v in pick_campaigns(con).items()}
+    if outcomes is None:
+        outcomes = outcome_join(con)[0]
+    if produced is None:
+        produced = pick_campaigns(con)
+    produced_by = {v: k for k, v in produced.items()}
     out = []
     for ckey, d in decs.items():
         m = meta.get(ckey)
@@ -464,10 +474,10 @@ def campaign_rows(con) -> list:
     return out
 
 
-@db.cached_per_campaign
-def outcome_headline(con) -> list:
+@db.timed
+def outcome_headline(rows) -> list:
     tally = {}
-    for row in campaign_rows(con):
+    for row in rows:
         if not row.outcome:
             continue
         tally.setdefault(row.outcome.raw, [0, row.outcome_state])
@@ -481,83 +491,13 @@ def outcome_headline(con) -> list:
 PICK_JOIN_S = 120.0
 
 
-_INCR_LOCK = threading.Lock()
-_INCR: dict = {}
-_IN_CHUNK = 900
-
-
-def _campaign_marks(con) -> dict:
-    return {r["campaign_key"]: (_i(r["campaign_id"], 0) or 0, _i(r["last_decision_id"], 0) or 0)
-            for r in con.execute("SELECT campaign_id, campaign_key, last_decision_id"
-                                 " FROM campaigns")}
-
-
-def _per_campaign(name, con, compute) -> dict:
-    marks = _campaign_marks(con)
-    with _INCR_LOCK:
-        cache = _INCR.setdefault(name, {})
-        stale = [k for k, (cid, mark) in marks.items() if cache.get(k, (None, None))[0] != mark]
-        if stale:
-            t0 = time.perf_counter()
-            fresh = {}
-            cids = [marks[k][0] for k in stale]
-            for i in range(0, len(cids), _IN_CHUNK):
-                fresh.update(compute(con, cids[i:i + _IN_CHUNK]))
-            for k in stale:
-                cache[k] = (marks[k][1], fresh.get(k))
-            db._note(name + "/incr", (time.perf_counter() - t0) * 1000,
-                     "%d campaigns" % len(stale))
-        for k in [k for k in cache if k not in marks]:
-            del cache[k]
-        return {k: v for k, (mark, v) in cache.items() if v is not None}
-
-
-_GAINS_SQL = """
-SELECT campaign_map, faction, campaign_key, MIN(ts) AS first_ts,
-       IFNULL(MAX(turn), 0) AS turns_reached,
-       IFNULL(MAX(settlements), 0) - IFNULL(MIN(fs), 0) AS settlements_gained,
-       IFNULL(MAX(lord_level), 0) - IFNULL(MIN(fl), 0) AS levels_gained,
-       IFNULL(MAX(allies), 0) - IFNULL(MIN(fa), 0) AS allies_gained,
-       IFNULL(MAX(vassals), 0) - IFNULL(MIN(fv), 0) AS vassals_gained
-FROM (
-  SELECT campaign_map, faction, campaign_key, ts, turn,
-         settlements, lord_level, allies, vassals,
-         FIRST_VALUE(settlements) OVER w AS fs,
-         FIRST_VALUE(lord_level) OVER w AS fl,
-         FIRST_VALUE(allies) OVER w AS fa,
-         FIRST_VALUE(vassals) OVER w AS fv
-  FROM (
-    SELECT c.campaign_map AS campaign_map, c.faction AS faction,
-           c.campaign_key AS campaign_key, d.decision_id AS decision_id, d.ts AS ts,
-           d.turn AS turn,
-           CAST(json_extract(j, '$.settlements') AS REAL) AS settlements,
-           CAST(json_extract(j, '$.lord_level') AS REAL) AS lord_level,
-           CAST(json_extract(j, '$.allies') AS REAL) AS allies,
-           CAST(json_extract(j, '$.vassals') AS REAL) AS vassals
-    FROM (SELECT decision_id, campaign_id, ts, turn, unz(b.z) AS j
-          FROM decisions d LEFT JOIN blobs b ON b.blob_id = d.campaign_blob
-          WHERE d.campaign_id IN (%s)
-          LIMIT -1) d
-    LEFT JOIN campaigns c ON c.campaign_id = d.campaign_id
-  )
-  WINDOW w AS (PARTITION BY campaign_key ORDER BY decision_id)
-)
-GROUP BY campaign_key
-HAVING COUNT(*) >= 2
-"""
-
-
-def _gains_for(con, cids) -> dict:
-    out = {}
-    for r in con.execute(_GAINS_SQL % ",".join("?" * len(cids)), cids):
-        g = dict(r)
-        g["reward"] = (_f(g["settlements_gained"], 0.0) or 0.0) + (_f(g["levels_gained"], 0.0) or 0.0)
-        out[g["campaign_key"]] = g
-    return out
-
-
 def gains_all(con) -> list:
-    rows = list(_per_campaign("gains_all", con, _gains_for).values())
+    rows = []
+    for r in con.execute("SELECT * FROM campaign_gains"):
+        g = dict(r)
+        g["reward"] = ((_f(g["settlements_gained"], 0.0) or 0.0)
+                       + (_f(g["levels_gained"], 0.0) or 0.0))
+        rows.append(g)
     rows.sort(key=lambda g: -(_f(g["first_ts"], 0.0) or 0.0))
     return rows
 
@@ -572,7 +512,7 @@ def _pool() -> dict:
         return {}
 
 
-@db.cached_per_campaign
+@db.timed
 def pick_campaigns(con) -> dict:
     by_key: dict = {}
     for r in con.execute(
@@ -597,10 +537,12 @@ def pick_campaigns(con) -> dict:
     return out
 
 
-@db.cached_per_campaign
-def ucb_context(con) -> dict:
+@db.timed
+def ucb_context(con, gains=None) -> dict:
+    if gains is None:
+        gains = gains_all(con)
     rewards: dict = {}
-    for g in gains_all(con)[:UCB.WINDOW]:
+    for g in gains[:UCB.WINDOW]:
         rewards.setdefault((g["campaign_map"], g["faction"]), []).append(
             float(g["reward"] or 0.0))
     stats = UCB.start_stats(rewards)
@@ -629,7 +571,7 @@ def ucb_context(con) -> dict:
         pick_count[key] = pick_count.get(key, 0) + 1
         last_pick[key] = i
     plays_ago = {}
-    for i, g in enumerate(gains_all(con)):
+    for i, g in enumerate(gains):
         plays_ago.setdefault((g["campaign_map"], g["faction"]), i)
     top = max([int(round(max(v))) for v in rewards.values()] + [0])
     return {"rewards": rewards, "stats": stats, "total": total, "c": c, "k": k,
@@ -647,10 +589,14 @@ def _bins(vals, top) -> list:
     return out
 
 
-@db.cached_per_campaign
-def starts_rows(con) -> list:
+@db.timed
+def starts_rows(con, rows=None, cx=None, gains=None) -> list:
+    if rows is None:
+        rows = campaign_rows(con)
+    if gains is None:
+        gains = gains_all(con)
     per = {}
-    for row in campaign_rows(con):
+    for row in rows:
         fkey, _ = ident.split_campaign_key(row.campaign.raw)
         mkey = row.campaign_map.raw if row.campaign_map else ""
         b = per.setdefault((mkey, fkey), {"n": 0, "turns": [], "span_min": 0.0,
@@ -664,17 +610,18 @@ def starts_rows(con) -> list:
     counts = {((r["campaign_map"] or ""), r["faction"]): r["n"] for r in con.execute(
         "SELECT campaign_map, faction, n FROM start_counts")}
     leaders = _start_leaders(con)
-    cx = ucb_context(con)
-    window = gains_all(con)[:UCB.WINDOW]
+    if cx is None:
+        cx = ucb_context(con, gains)
+    window = gains[:UCB.WINDOW]
     win_rows: dict = {}
     for g in window:
         win_rows.setdefault((g["campaign_map"], g["faction"]), []).append(g)
     best = {}
-    for g in gains_all(con):
+    for g in gains:
         k = (g["campaign_map"], g["faction"])
         best[k] = max(best.get(k, 0.0), _f(g["reward"], 0.0) or 0.0)
     acc: dict = {}
-    for g in gains_all(con):
+    for g in gains:
         vals = acc.setdefault(((g["campaign_map"] or ""), g["faction"]),
                               {"s": [], "l": [], "a": [], "v": [], "t": []})
         s, l = _f(g["settlements_gained"], 0.0) or 0.0, _f(g["levels_gained"], 0.0) or 0.0
@@ -697,7 +644,7 @@ def starts_rows(con) -> list:
         allied[r["ckey"]] = r["a"]
         vassal[r["ckey"]] = r["v"]
     ever_a, ever_v = {}, {}
-    for row in campaign_rows(con):
+    for row in rows:
         fkey, _ = ident.split_campaign_key(row.campaign.raw)
         k = (row.campaign_map.raw if row.campaign_map else "", fkey)
         ever_a[k] = ever_a.get(k, 0) + (1 if (allied.get(row.campaign.raw) or 0) else 0)
@@ -775,10 +722,13 @@ def _hist(rows, field, top=None) -> list:
     return [HistBin(x=x, counts=by_x.get(x, {})) for x in range(lo, hi + 1)]
 
 
-@db.cached_per_campaign
-def starts_page_extras(con) -> dict:
-    cx = ucb_context(con)
-    window = gains_all(con)[:UCB.WINDOW]
+@db.timed
+def starts_page_extras(con, cx=None, gains=None) -> dict:
+    if gains is None:
+        gains = gains_all(con)
+    if cx is None:
+        cx = ucb_context(con, gains)
+    window = gains[:UCB.WINDOW]
     maps = sorted({g["campaign_map"] or "" for g in window} | {k[0] for k in cx["pool"]})
     ns = [cx["stats"][k]["n"] for k in cx["pool"] if k in cx["stats"]]
     ns_all = [cx["stats"].get(k, UCB.EMPTY)["n"] for k in cx["pool"]]
@@ -798,7 +748,7 @@ def starts_page_extras(con) -> dict:
         Metric(label="starts in pool", value=len(cx["pool"]),
                sub="%d played inside the window" % len(ns)),
         Metric(label="plays in window", value=cx["total"],
-               sub="of %d campaigns all time" % len(gains_all(con))),
+               sub="of %d campaigns all time" % len(gains)),
         Metric(label="plays per start", value=(statistics.median(ns) if ns else None),
                sub=("min %d · max %d" % (min(ns), max(ns)) if ns else None)),
         Metric(label="reward per campaign",
@@ -819,22 +769,26 @@ def starts_page_extras(con) -> dict:
             "turns_bins": _hist(window, "turns_reached")}
 
 
-@db.cached_per_campaign
+@db.timed
 def ucb_pick_counts(con) -> dict:
     return {_i(r["pick_id"], 0): _i(r["n"], 0) for r in con.execute(
         "SELECT pick_id, COUNT(*) n FROM ucb_pick_rows GROUP BY pick_id")}
 
 
 def start_detail(con, mkey: str, fkey: str):
-    row = next((r for r in starts_rows(con)
+    gains = gains_all(con)
+    cx = ucb_context(con, gains)
+    produced = pick_campaigns(con)
+    rows = campaign_rows(con, produced=produced)
+    row = next((r for r in starts_rows(con, rows, cx, gains)
                 if (r.campaign_map.raw if r.campaign_map else "") == mkey
                 and r.faction.raw == fkey), None)
     if row is None:
         return None
-    by_camp = {r.campaign.raw: r for r in campaign_rows(con)}
-    produced_by = {v: k for k, v in pick_campaigns(con).items()}
+    by_camp = {r.campaign.raw: r for r in rows}
+    produced_by = {v: k for k, v in produced.items()}
     camps = []
-    for i, g in enumerate(gains_all(con)):
+    for i, g in enumerate(gains):
         if (g["campaign_map"] or "") != mkey or g["faction"] != fkey:
             continue
         cr = by_camp.get(g["campaign_key"])
@@ -868,7 +822,6 @@ def start_detail(con, mkey: str, fkey: str):
             rank=_i(r["rank"], 0), ranked=counts.get(_i(r["pick_id"], 0), 0),
             n=_i(r["n"], 0), mean=_f(r["mean"]), blend=blend, explore=explore,
             score=score, chosen=bool(r["chosen"])))
-    cx = ucb_context(con)
     pop = [0] * (cx["top_reward"] + 1)
     for vals in cx["rewards"].values():
         for i, c in enumerate(_bins(vals, cx["top_reward"])):
@@ -885,32 +838,33 @@ def start_detail(con, mkey: str, fkey: str):
     return row, camps, traj, pop, cells
 
 
-@db.cached
+@db.timed
 def matrix(con, kind: str = "action"):
+    facs = _faction_of(con)
     if kind == "interrupt":
-        sql = ("SELECT c.faction faction, i.kind atype,"
-               "       COUNT(*) tried,"
-               "       SUM(CASE WHEN i.counted=1 THEN 1 ELSE 0 END) ok,"
-               "       SUM(COALESCE(i.latency_ms,0)) ms"
-               " FROM interrupt_decisions i"
-               " JOIN campaigns c ON c.campaign_key = i.campaign_id"
-               " GROUP BY c.faction, i.kind")
+        sql = ("SELECT campaign_id, kind atype, COUNT(*) tried,"
+               "       SUM(CASE WHEN counted=1 THEN 1 ELSE 0 END) ok,"
+               "       SUM(COALESCE(latency_ms,0)) ms"
+               " FROM interrupts GROUP BY campaign_id, kind")
+        rows = con.execute(sql).fetchall()
+        names = None
     else:
-        sql = ("SELECT c.faction faction, at.action_type atype,"
-               "       SUM(CASE WHEN at.refusal IS 'awaiting_execution' THEN 0 ELSE 1 END) tried,"
-               "       SUM(CASE WHEN at.counted=1 THEN 1 ELSE 0 END) ok,"
-               "       SUM(COALESCE(at.latency_ms,0)) ms"
-               " FROM action_taken at"
-               " JOIN decision_points dp ON dp.decision_id = at.decision_id"
-               " JOIN campaigns c ON c.campaign_key = dp.campaign_id"
-               " GROUP BY c.faction, at.action_type")
+        sql = ("SELECT campaign_id, action_id atype,"
+               "       SUM(CASE WHEN refusal IS 'awaiting_execution' THEN 0 ELSE 1 END) tried,"
+               "       SUM(CASE WHEN counted=1 THEN 1 ELSE 0 END) ok,"
+               "       SUM(COALESCE(latency_ms,0)) ms"
+               " FROM taken GROUP BY campaign_id, action_id")
+        rows = con.execute(sql).fetchall()
+        names = _action_types_for(con, {r["atype"] for r in rows})
     grid, totals_ = {}, {}
-    for r in con.execute(sql):
-        f, a = r["faction"], r["atype"]
-        tried, ok, ms = _i(r["tried"], 0) or 0, _i(r["ok"], 0) or 0, _f(r["ms"], 0.0) or 0.0
-        if not a:
+    for r in rows:
+        f = facs.get(r["campaign_id"])
+        a = r["atype"] if names is None else names.get(r["atype"])
+        if f is None or not a:
             continue
-        grid.setdefault(f, {})[a] = (tried, ok, ms)
+        tried, ok, ms = _i(r["tried"], 0) or 0, _i(r["ok"], 0) or 0, _f(r["ms"], 0.0) or 0.0
+        cell = grid.setdefault(f, {}).get(a) or (0, 0, 0.0)
+        grid[f][a] = (cell[0] + tried, cell[1] + ok, cell[2] + ms)
         t = totals_.setdefault(a, [0, 0, 0.0])
         t[0] += tried
         t[1] += ok
@@ -1067,11 +1021,11 @@ def decisions_page(con, offset=0, limit=DECISIONS_PAGE, action_type=None, policy
     return out, total
 
 
-@db.cached_per_campaign
+@db.timed
 def decision_facets(con) -> dict:
     at = [r[0] for r in con.execute(
-        "SELECT DISTINCT a.action_type FROM taken t JOIN actions a ON a.action_id = t.action_id"
-        " WHERE a.action_type IS NOT NULL ORDER BY a.action_type")]
+        "SELECT DISTINCT action_type FROM actions WHERE action_type IS NOT NULL"
+        " AND action_id IN (SELECT action_id FROM taken) ORDER BY action_type")]
     po = sorted({arms.arm_of(r[0]) for r in con.execute(
         "SELECT DISTINCT policy FROM taken WHERE policy IS NOT NULL")} - {None})
     return {"action_types": [_phrase(a) for a in at],
@@ -1147,56 +1101,40 @@ def _phases(row) -> list:
     return out
 
 
-def _taken_partials_for(con, cids) -> dict:
-    marks = ",".join("?" * len(cids))
-    join = (" FROM taken t JOIN decisions d ON d.decision_id = t.decision_id"
-            " JOIN campaigns c ON c.campaign_id = d.campaign_id"
-            " LEFT JOIN actions a ON a.action_id = t.action_id"
-            " WHERE d.campaign_id IN (%s)" % marks)
-    out: dict = {}
-    part = lambda k: out.setdefault(k, {"types": {}, "refus": {}, "pol": {}, "tot": [0, 0, 0]})
-    for r in con.execute(
-            "SELECT c.campaign_key ckey, a.action_type atype,"
-            "       SUM(CASE WHEN t.refusal IS 'awaiting_execution' THEN 0 ELSE 1 END) tried,"
-            "       SUM(CASE WHEN t.counted=1 THEN 1 ELSE 0 END) ok" + join +
-            " AND a.action_type IS NOT NULL GROUP BY ckey, atype", cids):
-        part(r["ckey"])["types"][r["atype"]] = [_i(r["tried"], 0) or 0, _i(r["ok"], 0) or 0]
-    for r in con.execute(
-            "SELECT c.campaign_key ckey, a.action_type atype, t.refusal refusal, COUNT(*) n"
-            + join + " AND t.refusal IS NOT NULL AND t.refusal IS NOT 'awaiting_execution'"
-            " GROUP BY ckey, atype, refusal", cids):
-        part(r["ckey"])["refus"][(r["atype"], r["refusal"])] = _i(r["n"], 0) or 0
-    for r in con.execute(
-            "SELECT c.campaign_key ckey, COALESCE(t.policy,'(unrecorded)') p, COUNT(*) n"
-            + join + " GROUP BY ckey, p", cids):
-        part(r["ckey"])["pol"][r["p"]] = _i(r["n"], 0) or 0
-    for r in con.execute(
-            "SELECT c.campaign_key ckey, COUNT(*) n,"
-            "       SUM(CASE WHEN t.refusal IS 'awaiting_execution' THEN 0 ELSE 1 END) attempted,"
-            "       SUM(CASE WHEN t.counted=1 THEN 1 ELSE 0 END) confirmed" + join +
-            " GROUP BY ckey", cids):
-        part(r["ckey"])["tot"] = [_i(r["n"], 0) or 0, _i(r["attempted"], 0) or 0,
-                                  _i(r["confirmed"], 0) or 0]
-    return out
-
-
-@db.cached
+@db.timed
 def actions_summary(con):
+    typed = con.execute(
+        "SELECT action_id,"
+        "       SUM(CASE WHEN refusal IS 'awaiting_execution' THEN 0 ELSE 1 END) tried,"
+        "       SUM(CASE WHEN counted=1 THEN 1 ELSE 0 END) ok"
+        " FROM taken GROUP BY action_id").fetchall()
+    refused = con.execute(
+        "SELECT action_id, refusal, COUNT(*) n FROM taken"
+        " WHERE refusal IS NOT NULL AND refusal IS NOT 'awaiting_execution'"
+        " GROUP BY action_id, refusal").fetchall()
+    atypes = _action_types_for(con, {r["action_id"] for r in typed}
+                               | {r["action_id"] for r in refused})
     types: dict = {}
+    for r in typed:
+        atype = atypes.get(r["action_id"])
+        if not atype:
+            continue
+        slot = types.setdefault(atype, [0, 0])
+        slot[0] += _i(r["tried"], 0) or 0
+        slot[1] += _i(r["ok"], 0) or 0
     refus_n: dict = {}
+    for r in refused:
+        key = (atypes.get(r["action_id"]), r["refusal"])
+        refus_n[key] = refus_n.get(key, 0) + (_i(r["n"], 0) or 0)
     pol: dict = {}
-    tot = [0, 0, 0]
-    for p in _per_campaign("actions_summary", con, _taken_partials_for).values():
-        for atype, (tried, ok) in p["types"].items():
-            slot = types.setdefault(atype, [0, 0])
-            slot[0] += tried
-            slot[1] += ok
-        for key, n in p["refus"].items():
-            refus_n[key] = refus_n.get(key, 0) + n
-        for pp, n in p["pol"].items():
-            pol[pp] = pol.get(pp, 0) + n
-        for i in range(3):
-            tot[i] += p["tot"][i]
+    for r in con.execute(
+            "SELECT COALESCE(policy,'(unrecorded)') p, COUNT(*) n FROM taken GROUP BY p"):
+        pol[r["p"]] = pol.get(r["p"], 0) + (_i(r["n"], 0) or 0)
+    tr = con.execute(
+        "SELECT COUNT(*) n,"
+        "       SUM(CASE WHEN refusal IS 'awaiting_execution' THEN 0 ELSE 1 END) attempted,"
+        "       SUM(CASE WHEN counted=1 THEN 1 ELSE 0 END) confirmed FROM taken").fetchone()
+    tot = [_i(tr["n"], 0) or 0, _i(tr["attempted"], 0) or 0, _i(tr["confirmed"], 0) or 0]
     rows = []
     for atype, (tried, ok) in types.items():
         rate = Rate(n=ok, of=tried, noun="actions", population="attempted of type %s" % atype)
@@ -1247,42 +1185,26 @@ def actions_summary(con):
 _INTERRUPT_SCORERS = (("greedy_catboost", "exploit"), ("marwil_gnn", "gnn"))
 
 
-_COVER_LOCK = threading.Lock()
-_COVER: dict = {"path": None, "last": 0, "kinds": {}}
-
-
 def _interrupt_coverage(con) -> dict:
-    with _COVER_LOCK:
-        path = db.db_path()
-        if _COVER["path"] != path:
-            _COVER.update(path=path, last=0, kinds={})
-        t0 = time.perf_counter()
-        added = 0
-        for r in con.execute("SELECT interrupt_id, kind, options_json FROM interrupts"
-                             " WHERE interrupt_id > ? ORDER BY interrupt_id", (_COVER["last"],)):
-            b = _COVER["kinds"].setdefault(r["kind"], {"rows": 0, "scored": {}, "agree": 0,
-                                                       "cmp": 0})
-            b["rows"] += 1
-            opts = _options_of(r["options_json"])
-            bests = {}
-            for arm, key in _INTERRUPT_SCORERS:
-                got = [(k, o) for k, o in opts if o.get(key) is not None]
-                if got:
-                    b["scored"][arm] = b["scored"].get(arm, 0) + 1
-                    bests[arm] = max(got, key=lambda kv: _f(kv[1].get(key), -1e9))[0]
-            if len(bests) >= 2:
-                b["cmp"] += 1
-                if len(set(bests.values())) == 1:
-                    b["agree"] += 1
-            _COVER["last"] = _i(r["interrupt_id"], 0) or _COVER["last"]
-            added += 1
-        if added:
-            db._note("menus/coverage", (time.perf_counter() - t0) * 1000, "%d new" % added)
-        return {k: {"rows": v["rows"], "scored": dict(v["scored"]), "agree": v["agree"],
-                    "cmp": v["cmp"]} for k, v in _COVER["kinds"].items()}
+    kinds: dict = {}
+    for r in con.execute("SELECT kind, options_json FROM interrupts ORDER BY interrupt_id"):
+        b = kinds.setdefault(r["kind"], {"rows": 0, "scored": {}, "agree": 0, "cmp": 0})
+        b["rows"] += 1
+        opts = _options_of(r["options_json"])
+        bests = {}
+        for arm, key in _INTERRUPT_SCORERS:
+            got = [(k, o) for k, o in opts if o.get(key) is not None]
+            if got:
+                b["scored"][arm] = b["scored"].get(arm, 0) + 1
+                bests[arm] = max(got, key=lambda kv: _f(kv[1].get(key), -1e9))[0]
+        if len(bests) >= 2:
+            b["cmp"] += 1
+            if len(set(bests.values())) == 1:
+                b["agree"] += 1
+    return kinds
 
 
-@db.cached
+@db.timed
 def menus(con):
     total = _i(con.execute("SELECT COUNT(*) FROM interrupts").fetchone()[0], 0) or 0
     by_screen = [Count(value=_i(r["n"], 0) or 0, noun=str(r["kind"] or "screens"),
@@ -1329,7 +1251,7 @@ def menus(con):
             by_screen, policies, coverage, rows)
 
 
-@db.cached
+@db.timed
 def timeline(con) -> list:
     rows = con.execute(
         "SELECT at.decision_id, at.ts, at.action_type, at.action_key, at.executed,"
@@ -1400,7 +1322,7 @@ def model_cards() -> list:
     return _model_cards()
 
 
-@db.cached_files(*[os.path.join(common.native(p), "meta.json") for _n, p, _b, _r in _MODEL_DIRS])
+@db.timed
 def _model_cards() -> list:
     out = []
     for name, path, family, role in _MODEL_DIRS:
@@ -1503,9 +1425,7 @@ def _meta_json(model_dir) -> dict:
         return {}
 
 
-@db.cached_files(os.path.join(common.native(common.MODEL_MAPGRAPH), "meta.json"),
-                 os.path.join(common.native(common.MODEL_MAPGRAPH_GREEDY), "meta.json"),
-                 os.path.join(common.native(common.MODEL_GLOBAL), "meta.json"))
+@db.timed
 def _fit_config() -> list:
     from advisor_api.models import FitConfigRow
     out = []
@@ -1531,7 +1451,7 @@ def _fit_config() -> list:
     return out
 
 
-@db.cached_per_campaign
+@db.timed
 def model_versions() -> list:
     from advisor_api.models import ModelVersion
     try:
@@ -1579,37 +1499,44 @@ def _ts_in(windows):
     return "(" + " OR ".join("(ts >= ? AND ts < ?)" for _ in windows) + ")"
 
 
-def _diplomacy_partials_for(con, cids) -> dict:
+def _diplomacy_partials(con) -> dict:
+    keys = _campaign_keys(con)
+    terms = {}
+    for r in con.execute("SELECT action_id, action_key FROM actions"
+                         " WHERE action_type = 'diplomacy'"):
+        k = str(r["action_key"] or "")
+        terms[r["action_id"]] = k.split(":", 1)[1] if ":" in k else k
+    if not terms:
+        return {}
     out: dict = {}
     for r in con.execute(
-            "SELECT c.campaign_key ckey, MIN(t.ts) ts,"
-            "       CASE WHEN instr(a.action_key, ':') > 0"
-            "            THEN substr(a.action_key, instr(a.action_key, ':') + 1)"
-            "            ELSE a.action_key END term,"
-            "       COALESCE(t.policy,'(unrecorded)') p,"
-            "       SUM(CASE WHEN t.refusal IS 'awaiting_execution' THEN 0 ELSE 1 END) attempted,"
-            "       SUM(CASE WHEN t.counted=1 THEN 1 ELSE 0 END) confirmed"
-            " FROM taken t JOIN decisions d ON d.decision_id = t.decision_id"
-            " JOIN campaigns c ON c.campaign_id = d.campaign_id"
-            " JOIN actions a ON a.action_id = t.action_id"
-            " WHERE a.action_type = 'diplomacy' AND d.campaign_id IN (%s)"
-            " GROUP BY ckey, term, p" % ",".join("?" * len(cids)), cids):
-        part = out.setdefault(r["ckey"], {"ts": None, "cells": {}})
+            "SELECT campaign_id, action_id, COALESCE(policy,'(unrecorded)') p,"
+            "       MIN(ts) ts,"
+            "       SUM(CASE WHEN refusal IS 'awaiting_execution' THEN 0 ELSE 1 END) attempted,"
+            "       SUM(CASE WHEN counted=1 THEN 1 ELSE 0 END) confirmed"
+            " FROM taken WHERE action_id IN (SELECT action_id FROM actions"
+            " WHERE action_type = 'diplomacy')"
+            " GROUP BY campaign_id, action_id, p"):
+        ckey = keys.get(r["campaign_id"])
+        if not ckey:
+            continue
+        part = out.setdefault(ckey, {"ts": None, "cells": {}})
         ts = _f(r["ts"])
         if ts is not None and (part["ts"] is None or ts < part["ts"]):
             part["ts"] = ts
-        part["cells"][(r["term"], r["p"])] = [_i(r["attempted"], 0) or 0,
-                                              _i(r["confirmed"], 0) or 0]
+        cell = part["cells"].setdefault((terms[r["action_id"]], r["p"]), [0, 0])
+        cell[0] += _i(r["attempted"], 0) or 0
+        cell[1] += _i(r["confirmed"], 0) or 0
     return out
 
 
-@db.cached
+@db.timed
 def diplomacy_mix(con, version=None):
     from advisor_api.models import DiplomacyCell, DiplomacyRow
     windows = _version_windows(version)
     cells: dict = {}
     per_source: dict = {}
-    for part in _per_campaign("diplomacy_mix", con, _diplomacy_partials_for).values():
+    for part in _diplomacy_partials(con).values():
         ts = part["ts"] or 0.0
         if windows and not any(a <= ts < b for a, b in windows):
             continue
@@ -1637,22 +1564,24 @@ def diplomacy_mix(con, version=None):
     return [_phrase(a) for a in sources], total, rows
 
 
-@db.cached
+@db.timed
 def forcing(con, version=None):
     windows = _version_windows(version)
-    base = ("SELECT COALESCE(t.policy,'(unrecorded)') p, a.action_type, COUNT(*) n"
-            " FROM taken t JOIN actions a ON a.action_id = t.action_id"
-            " WHERE a.action_type IS NOT NULL")
+    base = "SELECT COALESCE(policy,'(unrecorded)') p, action_id, COUNT(*) n FROM taken"
     if windows:
-        rows = con.execute(base + " AND " + _ts_in(windows) + " GROUP BY p, a.action_type",
+        rows = con.execute(base + " WHERE " + _ts_in(windows) + " GROUP BY p, action_id",
                            [t for w in windows for t in w]).fetchall()
     else:
-        rows = con.execute(base + " GROUP BY p, a.action_type").fetchall()
+        rows = con.execute(base + " GROUP BY p, action_id").fetchall()
+    atypes = _action_types_for(con, {r["action_id"] for r in rows})
     by_arm: dict = {}
     for r in rows:
+        atype = atypes.get(r["action_id"])
+        if not atype:
+            continue
         arm = arms.arm_of(r["p"]) or arms.UNRECORDED
         mix = by_arm.setdefault(arm, {})
-        mix[r["action_type"]] = mix.get(r["action_type"], 0) + (_i(r["n"], 0) or 0)
+        mix[atype] = mix.get(atype, 0) + (_i(r["n"], 0) or 0)
     tiles = []
     for arm in arms.TRAINABLE:
         mix = by_arm.get(arm) or {}
@@ -1810,7 +1739,7 @@ def _secondary(s: dict) -> list:
     return out
 
 
-@adb.cached
+@db.timed
 def agreement_page(pair: str | None = None):
     from advisor_api.models import (AgreementPage, AgreementRankRow, AgreementSummary,
                                     CorrelationSummary, RhoBin)
@@ -1902,7 +1831,7 @@ _GENERATION_CAVEAT = (
     "starts on an already-retrained model begins again at g0.")
 
 
-@adb.cached
+@db.timed
 def agreement_series(axis: str = "window", pair: str | None = None):
     from advisor_api.models import (AgreementSeriesPage, AgreementSeriesPoint,
                                     GenerationRow)
@@ -1975,7 +1904,7 @@ def agreement_series(axis: str = "window", pair: str | None = None):
                        "anything yet")))
 
 
-@adb.cached
+@db.timed
 def agreement_breakdown(dim: str = "action_type", pair: str | None = None):
     from advisor_api.models import AgreementBreakdownPage, AgreementBreakdownRow
     if dim not in ("arm", "action_type", "context_kind"):
@@ -2009,7 +1938,7 @@ def agreement_breakdown(dim: str = "action_type", pair: str | None = None):
         empty_reason=(None if out else "nothing comparable has been folded in yet"), **head)
 
 
-@adb.cached
+@db.timed
 def analytics_status():
     from advisor_api.models import AnalyticsPage, TenantStatus
     out = []
@@ -2078,7 +2007,7 @@ def rho_for(decision_ids, pair) -> dict:
     return out
 
 
-@db.cached_per_campaign
+@db.timed
 def correlations(con, version=None) -> list:
     windows = _version_windows(version)
     gains = {}
@@ -2089,25 +2018,25 @@ def correlations(con, version=None) -> list:
         gains[g["campaign_key"]] = (_f(g["settlements_gained"], 0.0) or 0.0,
                                     _f(g["levels_gained"], 0.0) or 0.0)
     tiles = []
+    keys = _campaign_keys(con)
     for label, sql in (
             ("action ranker",
-             "SELECT COALESCE(t.policy,'(unrecorded)') arm, c.campaign_key ckey, COUNT(*) n"
-             " FROM taken t JOIN decisions d ON d.decision_id = t.decision_id"
-             " JOIN campaigns c ON c.campaign_id = d.campaign_id GROUP BY arm, ckey"),
+             "SELECT COALESCE(policy,'(unrecorded)') arm, campaign_id, COUNT(*) n"
+             " FROM taken GROUP BY arm, campaign_id"),
             ("interrupt model",
-             "SELECT COALESCE(i.policy,'(unrecorded)') arm, c.campaign_key ckey, COUNT(*) n"
-             " FROM interrupts i LEFT JOIN campaigns c ON c.campaign_id = i.campaign_id"
-             " GROUP BY arm, ckey")):
+             "SELECT COALESCE(policy,'(unrecorded)') arm, campaign_id, COUNT(*) n"
+             " FROM interrupts GROUP BY arm, campaign_id")):
         per: dict = {}
         totals: dict = {}
         for r in con.execute(sql):
-            if r["ckey"] not in gains:
+            ckey = keys.get(r["campaign_id"])
+            if ckey not in gains:
                 continue
             arm = arms.arm_of(r["arm"]) or arms.UNRECORDED
             n = _i(r["n"], 0) or 0
             cells = per.setdefault(arm, {})
-            cells[r["ckey"]] = cells.get(r["ckey"], 0) + n
-            totals[r["ckey"]] = totals.get(r["ckey"], 0) + n
+            cells[ckey] = cells.get(ckey, 0) + n
+            totals[ckey] = totals.get(ckey, 0) + n
         camps = sorted(k for k, tot in totals.items() if tot)
         rewards = [gains[k][0] + gains[k][1] for k in camps]
         setts = [gains[k][0] for k in camps]
@@ -2152,7 +2081,7 @@ def training_history() -> list:
     return _training_history()
 
 
-@db.cached_files(common.native(common.RUNS_ROOT))
+@db.timed
 def _training_history() -> list:
     import glob
 
@@ -2246,26 +2175,28 @@ def _clean(d: dict) -> dict:
 TRIAL_CORR_MIN_N = 2
 
 
-@db.cached_per_campaign
+@db.timed
 def _campaign_arm_shares(con) -> dict:
+    keys = _campaign_keys(con)
     per: dict = {}
     totals: dict = {}
     for r in con.execute(
-            "SELECT COALESCE(t.policy,'(unrecorded)') arm, c.campaign_key ckey, COUNT(*) n"
-            " FROM taken t JOIN decisions d ON d.decision_id = t.decision_id"
-            " JOIN campaigns c ON c.campaign_id = d.campaign_id"
-            " GROUP BY arm, ckey"):
+            "SELECT COALESCE(policy,'(unrecorded)') arm, campaign_id, COUNT(*) n"
+            " FROM taken GROUP BY arm, campaign_id"):
         arm = arms.arm_of(r["arm"]) or arms.UNRECORDED
         if arm in arms.NOT_A_DRAW:
             continue
+        ckey = keys.get(r["campaign_id"])
+        if not ckey:
+            continue
         n = _i(r["n"], 0) or 0
-        per.setdefault(r["ckey"], {})[arm] = per.get(r["ckey"], {}).get(arm, 0) + n
-        totals[r["ckey"]] = totals.get(r["ckey"], 0) + n
+        per.setdefault(ckey, {})[arm] = per.get(ckey, {}).get(arm, 0) + n
+        totals[ckey] = totals.get(ckey, 0) + n
     return {c: {a: n / totals[c] for a, n in cells.items()}
             for c, cells in per.items() if totals.get(c)}
 
 
-@db.cached_per_campaign
+@db.timed
 def _campaign_settlement_growth(con) -> dict:
     out = {}
     for ckey, row in CG.trajectories(con).items():
@@ -2282,12 +2213,7 @@ def _W(part: str) -> float:
 
 
 
-_per_campaign_and_ledger = db.cached_on(
-    lambda: (db.campaign_stamp(),
-             db.file_stamp(metrics_db.DB_PATH, metrics_db.DB_PATH + "-wal")))
-
-
-@_per_campaign_and_ledger
+@db.timed
 def campaign_reward_series(con) -> list:
     if con is None:
         return []
@@ -2327,7 +2253,7 @@ def _growth_corr(uuids, shares, growth) -> dict:
     return out
 
 
-@_per_campaign_and_ledger
+@db.timed
 def trials(con=None):
     out, meta = _trials()
     live = metrics_db.live_trials(meta)
@@ -2341,7 +2267,7 @@ def trials(con=None):
     return out
 
 
-@db.cached_files(metrics_db.DB_PATH, metrics_db.DB_PATH + "-wal")
+@db.timed
 def _trials() -> tuple:
     out = []
     rows = list(metrics_db.trials())
@@ -2404,7 +2330,7 @@ def reward_series(con, campaign_key: str):
     return pts, constant
 
 
-@db.cached
+@db.timed
 def diplomacy_tail(con, campaign_key: str | None = None) -> list:
     if campaign_key:
         rows = con.execute(
@@ -2601,18 +2527,25 @@ def _start_leaders(con) -> dict:
 PULSE = 50
 
 
-@db.cached_per_campaign
-def ucb_pick_series(con) -> list:
+@db.timed
+def ucb_pick_series(con, gains=None, camp_rows=None, produced=None) -> list:
     leaders = _start_leaders(con)
     top: dict = {}
-    for r in con.execute("SELECT pick_id, rank, score FROM ucb_pick_rows WHERE rank <= 2"):
-        top.setdefault(_i(r["pick_id"], 0), {})[_i(r["rank"], 0)] = _f(r["score"])
     ns: dict = {}
-    for r in con.execute("SELECT pick_id, n FROM ucb_pick_rows"):
-        ns.setdefault(_i(r["pick_id"], 0), []).append(_i(r["n"], 0) or 0)
-    produced = pick_campaigns(con)
-    gains = {g["campaign_key"]: g for g in gains_all(con)}
-    by_camp = {r.campaign.raw: r for r in campaign_rows(con)}
+    for r in con.execute("SELECT pick_id, rank, score, n FROM ucb_pick_rows"):
+        pid = _i(r["pick_id"], 0)
+        rank = _i(r["rank"], 0)
+        if rank is not None and rank <= 2:
+            top.setdefault(pid, {})[rank] = _f(r["score"])
+        ns.setdefault(pid, []).append(_i(r["n"], 0) or 0)
+    if produced is None:
+        produced = pick_campaigns(con)
+    if gains is None:
+        gains = gains_all(con)
+    if camp_rows is None:
+        camp_rows = campaign_rows(con, produced=produced)
+    gains = {g["campaign_key"]: g for g in gains}
+    by_camp = {r.campaign.raw: r for r in camp_rows}
     rows = [dict(r) for r in con.execute("SELECT * FROM ucb_picks ORDER BY pick_id")]
     keys = [(r["campaign_map"], r["faction"]) for r in rows]
     seen: set = set()
@@ -2661,18 +2594,15 @@ def ucb_pick_series(con) -> list:
     return out
 
 
-def ucb_picks(con, limit: int = 200, before: int | None = None) -> list:
-    series = ucb_pick_series(con)
+def ucb_picks(series, limit: int = 200, before: int | None = None) -> list:
     desc = list(reversed(series))
     if before is not None:
         desc = [p for p in desc if p.pick_id < int(before)]
     return desc[:int(limit)]
 
 
-@db.cached_per_campaign
-def ucb_tiles(con) -> list:
-    series = ucb_pick_series(con)
-    cx = ucb_context(con)
+@db.timed
+def ucb_tiles(series, cx) -> list:
     if not series:
         return []
     last = series[-1]
@@ -2704,7 +2634,7 @@ def ucb_tiles(con) -> list:
     ]
 
 
-@db.cached_per_campaign
+@db.timed
 def ucb_pick_rows(con, pick_id: int) -> tuple:
     head = next((p for p in ucb_pick_series(con) if p.pick_id == int(pick_id)), None)
     if head is None:
