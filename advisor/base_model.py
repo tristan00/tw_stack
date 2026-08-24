@@ -14,9 +14,8 @@ import features as F
 
 RUNS_ROOT = common.RUNS_ROOT
 GAIN_PARTS = ("settlements", "lord_level", "allies", "vassals")
-TARGET_PARTS = GAIN_PARTS + ("survival",)
-TARGET_WEIGHTS = {"settlements": 1.0, "lord_level": 1.0, "allies": 1.0, "vassals": 3.0,
-                  "survival": 1.0}
+TARGET_PARTS = GAIN_PARTS
+TARGET_WEIGHTS = {"settlements": 1.0, "lord_level": 1.0, "allies": 1.0, "vassals": 3.0}
 SHORT_HORIZON = 3
 SHORT_WEIGHT = 0.5
 
@@ -201,7 +200,6 @@ def decision_deltas(campaign, turns, turn):
             out[p] = None
             continue
         out[p] = far - b
-    out["survival"] = turns_left(turns, turn)
     return out
 
 

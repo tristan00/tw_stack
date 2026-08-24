@@ -86,7 +86,7 @@ def _shard(args):
 def walk(runs_root=None, limit=None, log=print, workers=None):
     import concurrent.futures as cf
     import torch
-    from base_model import RUNS_ROOT, decision_deltas, target
+    from base_model import RUNS_ROOT, TARGET_WEIGHTS, decision_deltas, target
     from store import DecisionStore, IncompatibleStore
     runs_root = runs_root or RUNS_ROOT
     dbs = common.run_dbs(runs_root)
@@ -162,16 +162,19 @@ def walk(runs_root=None, limit=None, log=print, workers=None):
     examples = []
     tally = {"no_graph": 0, "no_label": 0, "taken_missing": 0, "no_actions": 0}
     for did, camp_id, campaign, turn, drop, data, counts, _thash in slots:
-        y = target(decision_deltas(campaign, series.get(camp_id) or {}, turn))
+        deltas = decision_deltas(campaign, series.get(camp_id) or {}, turn)
+        y = target(deltas)
         if y is None:
             tally["no_label"] += 1
             continue
         if drop is not None:
             tally[drop] += 1
             continue
+        gain = sum(TARGET_WEIGHTS.get(k, 1.0) * v for k, v in deltas.items()
+                   if k != "survival" and v is not None)
         data.y = torch.tensor([float(y)], dtype=torch.float32)
-        examples.append({"data": data, "y": float(y), "campaign_id": camp_id,
-                         "counts": counts})
+        examples.append({"data": data, "y": float(y), "gain": float(gain),
+                         "campaign_id": camp_id, "counts": counts})
         if limit and len(examples) >= limit:
             break
     return {"examples": examples, "tally": tally, "runs": len(dbs) - len(skipped),
@@ -344,7 +347,11 @@ def train(runs_root=None, cfg=None, log=None):
     cfg = dict(CFG, **(cfg or {}))
     t0 = time.time()
     w = walk(runs_root, log=log)
-    ex = w["examples"]
+    ex = [e for e in w["examples"] if e["gain"] != 0.0]
+    w["tally"]["zero_reward"] = len(w["examples"]) - len(ex)
+    log("mapgraph.train: dropped %d rows with zero material reward coming, %d rows with "
+        "real gains remain (survival does not count as reward)"
+        % (w["tally"]["zero_reward"], len(ex)))
     if len(ex) < S.MIN_ROWS:
         return {"trained": False, "rows": len(ex), "need": S.MIN_ROWS,
                 "tally": w["tally"], "n_decisions": w["n_decisions"]}
@@ -365,7 +372,10 @@ def train(runs_root=None, cfg=None, log=None):
             "n_scalars": S.N_SCALARS, "node_types": list(S.NODE_TYPES),
             "relations": list(S.RELATIONS), "tally": w["tally"],
             "target": "base_model.target(decision_deltas(...)), z-scored -- identical "
-                      "to the CatBoost target, unmodified",
+                      "to the CatBoost target, unmodified; rows whose material gains "
+                      "(settlements, lord_level, allies, vassals -- survival excluded) "
+                      "sum to zero are dropped before the fit, so MARWIL trains only on "
+                      "rows with real reward coming",
             "loss": "advantage-weighted listwise NLL + MSE(v, y_z); no mse(q, y)"}
     stage = S.MODEL_DIR + ".staging"
     shutil.rmtree(stage, ignore_errors=True)
