@@ -51,12 +51,12 @@ def _module_globals_defined(path):
 
 
 def main():
-    d = tempfile.mkdtemp(prefix="journaltest_")
+    from decisions import pgtest
+    pgtest.fresh()
     try:
         from decisions import journal as J
 
-        run = os.path.join(d, "run")
-        os.makedirs(run)
+        run = "journaltest/run"
 
         from decisions.store import DecisionStore
 
@@ -107,7 +107,7 @@ def main():
             check(not missing, "no undefined names in %s" % mod,
                   ("missing: %s" % ", ".join(missing[:6])) if missing else "")
     finally:
-        shutil.rmtree(d, ignore_errors=True)
+        pgtest.drop()
 
     print("\n%s" % ("journal OK" if not FAILED else "%d FAILED" % len(FAILED)))
     return 1 if FAILED else 0

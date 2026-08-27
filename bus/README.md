@@ -20,14 +20,14 @@ monolith's `data/` dir). Rebuild the mod with `pack_multi.py` to move them.
 Optional, low-overhead instrumentation on `Bus.send`: it records every call as
 `(channel, key, outcome, elapsed_ms)` where `outcome ∈ {hit, empty, timeout, error}` and
 `key` is the payload (for `find`/`tree` this is the path). Aggregated in memory per
-`(channel, key)`, flushed to sqlite in batches (every 200 calls / 10 s + on exit — never
+`(channel, key)`, flushed to Postgres (bus.call_stats) in batches (every 200 calls / 10 s + on exit — never
 per-call). Purpose: surface **junk calls** — `find`s for components that don't exist on the
 current faction (e.g. `great_game_rituals` on Wood Elves) → the mod full-tree-searches and
 returns nothing. `hit` = the reply carried something (`result.found` / non-empty `child_ids`
 / non-null result); `empty` = reply arrived but found=false / null.
 
 - **Enable/disable:** ON by default. `set BUS_STATS=0` to turn off. DB path override:
-  `set BUS_STATS_DB=<path>` (default `<TWDATA>/bus/bus_stats.sqlite`).
+  stats land in the Postgres `bus.call_stats` table.
 - **Read the report:** `python bus_stats.py` — prints total calls, %hit/empty/timeout, and the
   **JUNK list** (keys with `calls>=5` and `hits==0`, i.e. never returned anything), sorted by
   call count, with wasted ms. Flags: `--db <path>`, `--min <n>` (junk threshold), `--top <n>`.
@@ -38,7 +38,7 @@ returns nothing. `hit` = the reply carried something (`result.found` / non-empty
 
 ## Tests
 - `python test_bus_stats.py` — **offline, no game/bus.** Verifies the classifier on real
-  find/eval reply shapes, the sqlite accumulate+flush, the report's junk list, and that
+  find/eval reply shapes, the accumulate+flush upserts, the report's junk list, and that
   `Bus.send` records the right outcome (hit/empty/timeout/CTD-error) with `_send_impl` stubbed.
 - `python test_bus.py` — **offline, no game.** 5 concurrent processes each append 40 commands to one
   shared file; asserts all 200 seqs are unique and strictly increasing (no collision). This is the

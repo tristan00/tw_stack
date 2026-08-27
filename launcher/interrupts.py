@@ -77,6 +77,7 @@ DISPLAY_CONTROLS = frozenset((
     "button_battle_ready",
     "button_zoom",
     "button_txt",
+    "button_diamond",
 ))
 
 
@@ -321,8 +322,8 @@ def _sample_ui_hiding(bus, after_path):
     return now
 
 
-def _click(bus, path, settle=1.5):
-    before = tuple(roots(bus))
+def _click(bus, path, settle=1.5, until=None):
+    before = None if until is not None else tuple(roots(bus))
     try:
         r = bus.send("click", path, timeout=10.0) or {}
     except Exception as e:
@@ -337,6 +338,12 @@ def _click(bus, path, settle=1.5):
     deadline = t0 + settle
     changed = False
     while time.time() < deadline:
+        if until is not None:
+            if until():
+                changed = True
+                break
+            time.sleep(0.15)
+            continue
         time.sleep(0.3)
         if tuple(roots(bus)) != before:
             changed = True
@@ -513,8 +520,8 @@ def defeated_probe(bus):
     return None
 
 
-def pending(bus):
-    r = roots(bus)
+def pending(bus, open_roots=None):
+    r = roots(bus) if open_roots is None else list(open_roots)
     out = set()
     if r and "hud_campaign" not in r:
         out.add("popup")
@@ -656,7 +663,7 @@ def _clickable_controls(bus, root="popup_battle_results"):
 
 def handle_results(bus):
     steps = []
-    last, repeats, idle_waits = None, 0, 0
+    last, repeats, idle_waits, misses = None, 0, 0, 0
     for _ in range(4):
         if "popup_battle_results" not in roots(bus):
             break
@@ -703,6 +710,11 @@ def handle_results(bus):
         roots_before = set(roots(bus))
         clicked = _click(bus, ctrls[target], settle=2.5)
         moved = set(roots(bus)) != roots_before
+        if not clicked and not moved and misses < 1:
+            misses += 1
+            sys.stderr.write("interrupts: %s did not resolve at click time (results panel "
+                             "mid-transition) -- re-reading before recording anything\n" % target)
+            continue
         _record_choice("battle_results", "popup_battle_results", opts_before, target,
                        extra={"panel": facts} if facts else None,
                        executed=clicked, confirmed=bool(moved),
@@ -1177,6 +1189,8 @@ def _cancel_declare_on_proposal(bus, tree, clickable):
 
 
 PROPOSAL_SKIP_BLOCKERS = frozenset(PROPOSAL_KNOWN_NONANSWERS) - {"button_ok_war_declared"}
+POST_SKIP_ANSWER_IDS = PROPOSAL_ANSWER_IDS | frozenset(
+    ("button_ok_war_declared", "button_ok_declare", "button_cancel_declare"))
 
 
 def _proposal_buttons(tree):
@@ -1195,12 +1209,25 @@ def answer_incoming_proposal(bus):
     clickable = _clickable_ids(tree)
     if ("button_skip" in clickable and not (PROPOSAL_ANSWER_IDS & set(clickable))
             and not (PROPOSAL_SKIP_BLOCKERS & set(clickable))):
-        if _click(bus, clickable["button_skip"], settle=2.0):
+        settled = {}
+
+        def _skip_settled():
+            if PROPOSAL_ROOT not in roots(bus):
+                settled["gone"] = True
+                return True
+            t = _tree(bus, PROPOSAL_ROOT)
+            ids = _clickable_ids(t or ())
+            if POST_SKIP_ANSWER_IDS & set(ids):
+                settled["tree"], settled["clickable"] = t, ids
+                return True
+            return False
+
+        if _click(bus, clickable["button_skip"], settle=2.0, until=_skip_settled):
             steps.append("diplomacy_dialogue_skipped:%s" % PROPOSAL_ROOT)
-        if PROPOSAL_ROOT not in roots(bus):
+        if settled.get("gone") or PROPOSAL_ROOT not in roots(bus):
             return steps
-        tree = _read_tree_or_die(bus, PROPOSAL_ROOT)
-        clickable = _clickable_ids(tree)
+        tree = settled.get("tree") or _read_tree_or_die(bus, PROPOSAL_ROOT)
+        clickable = settled.get("clickable") or _clickable_ids(tree)
     if "button_ok_war_declared" in clickable:
         return steps + _acknowledge_war_on_proposal(bus, tree, clickable)
     if "button_ok_declare" in clickable or "button_cancel_declare" in clickable:
@@ -1408,8 +1435,11 @@ def choose_dilemma(bus, open_roots):
         sys.stderr.write("interrupts: dilemma %s (%s) -- %d options -> %r\n"
                          % (root, dilemma_id, len(opts), key))
         t0 = time.time()
-        clicked = _click(bus, opts[key], settle=2.5)
+        clicked = _click(bus, opts[key], settle=2.5,
+                         until=lambda: _dilemma_answered(bus, root) is True)
         gone = _root_gone(bus, root)
+        if gone is False:
+            gone = _dilemma_answered(bus, root)
         if clicked:
             steps.append("dilemma:%s:%s" % (root, key))
         _record_choice("dilemma", root, detail["options"], key,
@@ -1617,6 +1647,15 @@ def _dilemma_options(bus, root):
     return _with_identity(out)
 
 
+def _dilemma_answered(bus, root):
+    tree = _tree(bus, root)
+    if not tree:
+        return None
+    return not any(n.get("visible") and str(n.get("state")) in _CLICKABLE
+                   and DILEMMA_LIST in str(n.get("path") or "").split("|")
+                   for n in tree)
+
+
 def _with_identity(found):
     import os as _os
     records = sorted(found)
@@ -1676,7 +1715,7 @@ def resolve(bus, max_rounds=4):
         for r in before:
             if r not in nav.BASE_ROOTS and r not in BENIGN_PANELS:
                 nav.dump_screen(bus, r, "interrupt")
-        kinds = pending(bus)
+        kinds = pending(bus, before)
         if (not kinds and ALLY_ATTACKED_ROOT not in before
                 and PROPOSAL_ROOT not in before):
             _stuck_sig[0] = None

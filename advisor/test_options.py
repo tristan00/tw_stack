@@ -4,9 +4,7 @@ from __future__ import annotations
 import ast
 import io
 import os
-import shutil
 import sys
-import tempfile
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
@@ -189,11 +187,11 @@ def main():
                   "%s attack carries the stance reason" % short,
                   ",".join(str(o["gate"]) for o in atk))
 
+    from decisions import pgtest
     from store import DecisionStore
-    d = tempfile.mkdtemp(prefix="optstore_")
+    pgtest.fresh()
     try:
-        run = os.path.join(d, "run")
-        os.makedirs(run)
+        run = "optstore/run"
         st = DecisionStore(run)
         st.register_collector("sha-options")
         did = st.write_decision(rec, decision_seq=0, policy="test")
@@ -215,7 +213,7 @@ def main():
             check(True, "write_decision refuses a snapshot carrying offers")
         st.close()
     finally:
-        shutil.rmtree(d, ignore_errors=True)
+        pgtest.drop()
 
     import re as _re
     import importlib

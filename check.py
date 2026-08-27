@@ -23,12 +23,16 @@ CHECKS = [
      "every CCO property route the collector reads exists on that context"),
     ("dilemma_audit", ["-m", "decisions.dilemma_audit"], False,
      "recorded dilemmas carry all their options"),
+    ("cycle_audit", ["-m", "decisions.cycle_audit"], False,
+     "the decision cycle cannot be shortcut: no action starts before the previous one's "
+     "validation ended, no campaign acts past an unresolved action, and no row is left "
+     "frozen in awaiting_execution"),
     ("lua_syntax", ["bus/test_lua_syntax.py"], False,
      "every lua fragment the collector sends compiles"),
     ("bus_seq", ["bus/test_bus.py"], False,
      "concurrent processes allocate unique strictly-increasing sequence numbers"),
     ("bus_stats", ["bus/test_bus_stats.py"], False,
-     "command classifier, sqlite accumulate/flush, Bus.send instrumentation"),
+     "command classifier, accumulate/flush upserts, Bus.send instrumentation"),
     ("input", ["input/test_input.py"], False,
      "the input stream emits rows on a monotonic clock"),
     ("logs", ["logs/test_logs.py"], False,

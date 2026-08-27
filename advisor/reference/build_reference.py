@@ -1,17 +1,32 @@
 import json
 import os
 import re
-import sqlite3
 import struct
 import sys
+import time
 
 import zstandard as zstd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import common
+from decisions import pg
 
 GAME = common.GAME_DATA_DIR
 HAS_INDEX_WITH_TIMESTAMPS = 0x40
+
+_KEYS = {"captive_options": ("record_key",),
+         "captive_binding": ("entity_type", "entity_key", "button"),
+         "agent_permitted_subtypes": ("faction", "agent", "subtype"),
+         "meta": ("k",)}
+
+
+def _rep(cur, table, row):
+    keys = _KEYS.get(table, ("key",))
+    cur.execute("DELETE FROM %s WHERE %s"
+                % (table, " AND ".join("%s=%%s" % k for k in keys)),
+                tuple(row[:len(keys)]))
+    cur.execute("INSERT INTO %s VALUES (%s)" % (table, ", ".join(["%s"] * len(row))),
+                tuple(row))
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCHEMA_JSON = os.path.join(HERE, "schema_db.json")
@@ -216,7 +231,7 @@ def _agent_reference(cur, files, d, schema, report):
                     "crit_failure_mod REAL, show_in_ui INTEGER, subculture TEXT, "
                     "loc_name TEXT)")
         for r in acts:
-            cur.execute("INSERT OR REPLACE INTO agent_actions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", (
+            _rep(cur, "agent_actions", (
                 r.get("unique_id"), r.get("agent"), r.get("ability"), r.get("attribute"),
                 r.get("chance_of_success"), r.get("cannot_fail"),
                 int(bool(r.get("succeed_always_override"))),
@@ -234,7 +249,7 @@ def _agent_reference(cur, files, d, schema, report):
         cur.execute("CREATE TABLE agent_types (key TEXT PRIMARY KEY, move_points INTEGER, "
                     "faction_total_cap INTEGER, playable INTEGER)")
         for r in types:
-            cur.execute("INSERT OR REPLACE INTO agent_types VALUES (?,?,?,?)", (
+            _rep(cur, "agent_types", (
                 r.get("key"), r.get("move_points"), r.get("faction_total_cap"),
                 int(bool(r.get("playable")))))
         report["_written"]["agent_types"] = len(types)
@@ -245,8 +260,7 @@ def _agent_reference(cur, files, d, schema, report):
         cur.execute("DROP TABLE IF EXISTS agent_abilities")
         cur.execute("CREATE TABLE agent_abilities (key TEXT PRIMARY KEY, category TEXT)")
         for r in abil:
-            cur.execute("INSERT OR REPLACE INTO agent_abilities VALUES (?,?)",
-                        (r.get("ability") or r.get("key"), r.get("category")))
+            _rep(cur, "agent_abilities", (r.get("ability") or r.get("key"), r.get("category")))
         report["_written"]["agent_abilities"] = len(abil)
 
     res, rmeta = decode_db_table(files, d, "action_results_tables", schema)
@@ -256,7 +270,7 @@ def _agent_reference(cur, files, d, schema, report):
         cur.execute("CREATE TABLE action_results (key TEXT PRIMARY KEY, actor_bundle TEXT, "
                     "target_bundle TEXT, actor_bundle_turns INTEGER, target_bundle_turns INTEGER)")
         for r in res:
-            cur.execute("INSERT OR REPLACE INTO action_results VALUES (?,?,?,?,?)", (
+            _rep(cur, "action_results", (
                 r.get("key"), r.get("actor_effect_bundle"), r.get("target_effect_bundle"),
                 r.get("actor_effect_bundle_turns"), r.get("target_effect_bundle_turns")))
         report["_written"]["action_results"] = len(res)
@@ -270,7 +284,7 @@ def _agent_reference(cur, files, d, schema, report):
                     "action_result_key TEXT, outcome TEXT, effect TEXT, effect_scope TEXT, "
                     "value REAL, affects_target INTEGER, advancement_stage TEXT)")
         for r in outc:
-            cur.execute("INSERT OR REPLACE INTO action_result_outcomes VALUES (?,?,?,?,?,?,?,?)", (
+            _rep(cur, "action_result_outcomes", (
                 r.get("key"), r.get("action_result_key"), r.get("outcome"),
                 r.get("effect_record"), r.get("effect_scope_record"), r.get("value"),
                 int(bool(r.get("affects_target"))), r.get("advancement_stage")))
@@ -284,14 +298,13 @@ def _agent_reference(cur, files, d, schema, report):
         cur.execute("CREATE TABLE agent_permitted_subtypes (faction TEXT, agent TEXT, "
                     "subtype TEXT, PRIMARY KEY (faction, agent, subtype))")
         for r in perm:
-            cur.execute("INSERT OR REPLACE INTO agent_permitted_subtypes VALUES (?,?,?)",
-                        (r.get("faction"), r.get("agent"), r.get("subtype")))
+            _rep(cur, "agent_permitted_subtypes", (r.get("faction"), r.get("agent"), r.get("subtype")))
         report["_written"]["agent_permitted_subtypes"] = len(perm)
 
 
 def _captive_reference(cur, files, d, schema, report):
     def loc(rk):
-        row = cur.execute("SELECT text FROM loc WHERE key=?",
+        row = cur.execute("SELECT text FROM loc WHERE key=%s",
                           ("campaign_post_battle_captive_options_onscreen_name_%s" % rk,)).fetchone()
         v = row[0] if row else None
         for _ in range(5):
@@ -300,7 +313,7 @@ def _captive_reference(cur, files, d, schema, report):
             m = re.match(r"\{\{tr:([\w.]+)\}\}", v)
             if not m:
                 break
-            row = cur.execute("SELECT text FROM loc WHERE key=?", (m.group(1),)).fetchone()
+            row = cur.execute("SELECT text FROM loc WHERE key=%s", (m.group(1),)).fetchone()
             v = row[0] if row else None
         return v
 
@@ -315,8 +328,7 @@ def _captive_reference(cur, files, d, schema, report):
     for r in opts:
         rk = r["record_key"]
         key2recs.setdefault(r["key"], []).append((rk, r["outcome"]))
-        cur.execute("INSERT OR REPLACE INTO captive_options VALUES (?,?,?,?)",
-                    (rk, r["key"], r["outcome"], loc(rk)))
+        _rep(cur, "captive_options", (rk, r["key"], r["outcome"], loc(rk)))
     option_keys = set(key2recs)
 
     mem, mmeta = decode_db_table(files, d, "campaign_group_members_tables", schema)
@@ -374,8 +386,7 @@ def _captive_reference(cur, files, d, schema, report):
     cur.execute("CREATE TABLE captive_binding (entity_type TEXT, entity_key TEXT, button TEXT, "
                 "record_key TEXT, PRIMARY KEY (entity_type, entity_key, button))")
     for (etype, ekey, button), (rank, rk) in best.items():
-        cur.execute("INSERT OR REPLACE INTO captive_binding VALUES (?,?,?,?)",
-                    (etype, ekey, button, rk))
+        _rep(cur, "captive_binding", (etype, ekey, button, rk))
     report["_written"]["captive_options"] = len(opts)
     report["_written"]["captive_binding"] = len(best)
 
@@ -393,8 +404,7 @@ def decode_db_tables(con, files, d, schema, report):
     cur.execute("CREATE TABLE building_chains (key TEXT PRIMARY KEY, superchain TEXT, "
                 "chain_category TEXT, sort_order INTEGER)")
     for r in chains:
-        cur.execute("INSERT OR REPLACE INTO building_chains VALUES (?,?,?,?)",
-                    (r["key"], r.get("building_superchain"), r.get("chain_category"),
+        _rep(cur, "building_chains", (r["key"], r.get("building_superchain"), r.get("chain_category"),
                      r.get("optional_sort_order")))
     report["_written"] = report.get("_written", {})
     report["_written"]["building_chains"] = len(chains)
@@ -405,7 +415,7 @@ def decode_db_tables(con, files, d, schema, report):
                 "create_cost INTEGER, create_time INTEGER, upkeep_cost INTEGER, food_cost INTEGER, "
                 "dev_point_cost INTEGER, building_instance_key TEXT)")
     for r in blevels:
-        cur.execute("INSERT OR REPLACE INTO buildings VALUES (?,?,?,?,?,?,?,?,?)", (
+        _rep(cur, "buildings", (
             r["level_name"], r.get("chain"), r.get("level"),
             r.get("create_cost"), r.get("create_time"), r.get("upkeep_cost"),
             r.get("food_cost"), r.get("development_point_cost"), r.get("building_instance_key")))
@@ -423,7 +433,7 @@ def decode_db_tables(con, files, d, schema, report):
     for r in nodes:
         tk = r.get("technology_key")
         t = tech_by_key.get(tk, {})
-        cur.execute("INSERT OR REPLACE INTO tech VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", (
+        _rep(cur, "tech", (
             r["key"], tk, r.get("technology_node_set"), r.get("tier"),
             r.get("research_points_required"), r.get("cost_per_round"), r.get("food_cost"),
             r.get("required_parents"), t.get("building_level"),
@@ -434,7 +444,7 @@ def decode_db_tables(con, files, d, schema, report):
     for tk, t in tech_by_key.items():
         if tk in node_tks:
             continue
-        cur.execute("INSERT OR REPLACE INTO tech VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", (
+        _rep(cur, "tech", (
             tk, tk, None, None, None, None, None, None, t.get("building_level"),
             int(bool(t.get("is_civil"))), int(bool(t.get("is_engineering"))),
             int(bool(t.get("is_military"))), int(bool(t.get("is_hidden")))))
@@ -450,7 +460,7 @@ def decode_db_tables(con, files, d, schema, report):
                 "num_men INTEGER, is_naval INTEGER, ui_unit_group_land TEXT)")
     for r in mains:
         lu = land_by_key.get(r.get("land_unit"), {})
-        cur.execute("INSERT OR REPLACE INTO units VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
+        _rep(cur, "units", (
             r["unit"], r.get("land_unit"), r.get("caste"),
             lu.get("category"), lu.get("class"),
             r.get("recruitment_cost"), r.get("upkeep_cost"), r.get("create_time"),
@@ -464,7 +474,7 @@ def decode_db_tables(con, files, d, schema, report):
         cur.execute("CREATE TABLE skills (key TEXT PRIMARY KEY, unlocked_at_rank INTEGER, "
                     "influence_cost INTEGER, is_background_skill INTEGER, background_weighting REAL)")
         for r in skills:
-            cur.execute("INSERT OR REPLACE INTO skills VALUES (?,?,?,?,?)", (
+            _rep(cur, "skills", (
                 r["key"], r.get("unlocked_at_rank"), r.get("influence_cost"),
                 int(bool(r.get("is_background_skill"))), r.get("background_weighting")))
         report["_written"]["skills"] = len(skills)
@@ -476,7 +486,7 @@ def decode_db_tables(con, files, d, schema, report):
                     "cooldown_time INTEGER, slave_cost INTEGER, influence_cost INTEGER, "
                     "required_resources TEXT, expended_resources TEXT)")
         for r in rituals:
-            cur.execute("INSERT OR REPLACE INTO rituals VALUES (?,?,?,?,?,?,?,?)", (
+            _rep(cur, "rituals", (
                 r["key"], r.get("category"), r.get("cast_time"), r.get("cooldown_time"),
                 r.get("slave_cost"), r.get("influence_cost"),
                 r.get("required_resources"), r.get("expended_resources")))
@@ -522,7 +532,7 @@ def _merc_reference(cur, files, d, schema, report):
             orphans.add(j["pool"])
             continue
         for g in gs:
-            cur.execute("INSERT INTO merc_units VALUES (?,?,?,?,?,?,?,?,?,?)", (
+            cur.execute("INSERT INTO merc_units VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", (
                 g["unit_record"], j["pool"], flavor,
                 j.get("subculture_requirement") or "", j.get("faction_requirement") or "",
                 j.get("tech_requirement") or "", j["group"],
@@ -536,9 +546,9 @@ def _merc_reference(cur, files, d, schema, report):
 
 
 def build():
-    out = common.REFERENCE_DB
-    os.makedirs(os.path.dirname(out), exist_ok=True)
-    con = sqlite3.connect(out)
+    con = pg.connect(search_path="reference")
+    con.execute("CREATE SCHEMA IF NOT EXISTS reference")
+    con.commit()
     cur = con.cursor()
 
     lfiles, ld = parse_pack(GAME + "/local_en.pack")
@@ -550,7 +560,7 @@ def build():
             b = read_file(lfiles, ld, name)
             try:
                 for k, v in decode_loc(b).items():
-                    cur.execute("INSERT OR REPLACE INTO loc VALUES (?,?)", (k, v)); n += 1
+                    _rep(cur, "loc", (k, v)); n += 1
             except Exception as e:
                 print(f"  skip {name}: {e}")
     con.commit()
@@ -571,6 +581,9 @@ def build():
         tag = "OK" if m["ok"] else "SKIP"
         print(f"  [{tag}] {t:38s} ver={m['version']} rows={m['rows']} files={m['files']} :: {m['reason']}")
 
+    cur.execute("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)")
+    _rep(cur, "meta", ("built", str(time.time())))
+    con.commit()
     _verify(cur)
     con.close()
 
@@ -582,20 +595,20 @@ def _verify(cur):
         return cur.execute(sql, args).fetchone()
 
     b = one("SELECT building_chain, level, create_cost, create_time, upkeep_cost, food_cost, "
-            "dev_point_cost FROM buildings WHERE key=?", ("wh2_main_hef_resource_marble_1",))
-    nm = one("SELECT text FROM loc WHERE key=?", ("building_culture_variants_name_wh2_main_hef_resource_marble_1",))
+            "dev_point_cost FROM buildings WHERE key=%s", ("wh2_main_hef_resource_marble_1",))
+    nm = one("SELECT text FROM loc WHERE key=%s", ("building_culture_variants_name_wh2_main_hef_resource_marble_1",))
     print(f"  building marble_1 {nm and nm[0]!r}: chain={b[0]} level={b[1]} create_cost={b[2]} "
           f"create_time={b[3]} upkeep={b[4]} food={b[5]} dev={b[6]}")
 
     t = one("SELECT node_set, tier, research_points_required, cost_per_round, food_cost, "
-            "required_parents, building_level, is_military FROM tech WHERE key=?", ("wh2_main_tech_hef_0_00",))
-    tn = one("SELECT text FROM loc WHERE key=?", ("technologies_onscreen_name_wh2_main_tech_hef_0_00",))
+            "required_parents, building_level, is_military FROM tech WHERE key=%s", ("wh2_main_tech_hef_0_00",))
+    tn = one("SELECT text FROM loc WHERE key=%s", ("technologies_onscreen_name_wh2_main_tech_hef_0_00",))
     print(f"  tech hef_0_00 {tn and tn[0]!r}: node_set={t[0]} tier={t[1]} research_pts={t[2]} "
           f"cost/round={t[3]} food={t[4]} parents={t[5]} unlocks_building={t[6]!r} is_military={t[7]}")
 
     u = one("SELECT caste, category, class, recruitment_cost, upkeep_cost, create_time, tier, num_men "
-            "FROM units WHERE key=?", ("wh2_main_hef_inf_spearmen_0",))
-    un = one("SELECT text FROM loc WHERE key=?", ("land_units_onscreen_name_wh2_main_hef_inf_spearmen_0",))
+            "FROM units WHERE key=%s", ("wh2_main_hef_inf_spearmen_0",))
+    un = one("SELECT text FROM loc WHERE key=%s", ("land_units_onscreen_name_wh2_main_hef_inf_spearmen_0",))
     print(f"  unit spearmen {un and un[0]!r}: caste={u[0]} category={u[1]} class={u[2]} "
           f"recruit={u[3]} upkeep={u[4]} create_time={u[5]} tier={u[6]} num_men={u[7]}")
 
@@ -618,8 +631,8 @@ def _verify(cur):
         got = {}
         for button in ("kill", "enslave", "release"):
             r = one("SELECT o.onscreen_name FROM captive_binding b JOIN captive_options o "
-                    "ON o.record_key=b.record_key WHERE b.entity_type=? AND b.entity_key=? "
-                    "AND b.button=?", (etype, ekey, button))
+                    "ON o.record_key=b.record_key WHERE b.entity_type=%s AND b.entity_key=%s "
+                    "AND b.button=%s", (etype, ekey, button))
             got[button] = r[0] if r else None
         print(f"  captives {label:20s}: kill={got['kill']!r} enslave={got['enslave']!r} "
               f"release={got['release']!r}")

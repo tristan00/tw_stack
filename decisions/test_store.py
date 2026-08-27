@@ -3,17 +3,13 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
-import sqlite3
 import sys
-import tempfile
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(_HERE))
 
 import common
-from decisions import dbopen
-from decisions import store_schema as S
+from decisions import pg, pgtest
 from decisions.store import DecisionStore, IncompatibleStore
 
 FAILED = []
@@ -57,10 +53,14 @@ def _snapshot(turn, faction="wh_main_emp", uuid="camp-1", n_lords=2, settlements
 
 
 def main():
-    d = tempfile.mkdtemp(prefix="storetest_")
+    pgtest.fresh()
     try:
-        run = os.path.join(d, "run")
-        os.makedirs(run)
+        run = "storetest/run"
+        try:
+            DecisionStore(run, readonly=True)
+            check(False, "a schemaless database raises IncompatibleStore")
+        except IncompatibleStore:
+            check(True, "a schemaless database raises IncompatibleStore")
         st = DecisionStore(run)
         st.register_collector("sha-abc", git_sha="deadbeef", note="test")
 
@@ -77,10 +77,10 @@ def main():
 
         check(st.layout_violations() == 0, "n_offers equals the rows actually stored")
         n_off, = st.con.execute(
-            "SELECT n_offers FROM decisions WHERE decision_id=?",
+            "SELECT n_offers FROM decisions WHERE decision_id=%s",
             (dids[0],)).fetchone()
         check(n_off == 9, "counts: %d options stored" % n_off)
-        check(st.con.execute("SELECT count(*) FROM offers WHERE decision_id=?",
+        check(st.con.execute("SELECT count(*) FROM offers WHERE decision_id=%s",
                              (dids[0],)).fetchone()[0] == n_off,
               "every stored option is a candidate -- nothing gated reaches the database")
 
@@ -108,9 +108,8 @@ def main():
             "SELECT count(DISTINCT world_blob) FROM decisions").fetchone()[0]
         check(n_world == 1, "an unchanged world is stored once, not 5 times")
         raw, stored = st.con.execute("SELECT SUM(n), SUM(length(z)) FROM blobs").fetchone()
-        check(stored <= raw + n_blobs,
-              "stored bytes never exceed the text (%d -> %d over %d blobs)"
-              % (raw, stored, n_blobs))
+        check(stored == raw, "blobs store the text verbatim (%d chars over %d blobs)"
+              % (stored, n_blobs))
 
         st.attach_taken(dids[0], {"context_kind": "lord", "context_id": 100,
                                   "action_type": "building", "key": "b_a",
@@ -137,21 +136,21 @@ def main():
              "key": "xy:1,0", "score": 0.25, "rank": 2,
              "models": {"greedy_gnn": {"score": 3.5, "rank": 1}}},
         ])
-        con = dbopen.connect(os.path.join(run, "decisions.sqlite"))
+        con = pg.connect(autocommit=True, readonly=True)
         rows = con.execute(
             "SELECT action_key,params,score,rank,ggnn_score,ggnn_rank FROM action_offers"
-            " WHERE decision_id=? AND context_id='100' AND action_type='building'"
+            " WHERE decision_id=%s AND context_id='100' AND action_type='building'"
             " ORDER BY offer_id", (dids[0],)).fetchall()
         scored = [r for r in rows if r[2] is not None]
         check(len(rows) == 2 and len(scored) == 1,
               "a score reaches one of two identically-keyed offers, not both")
         check(abs(scored[0][2] - 0.75) < 1e-6 and scored[0][3] == 1.0,
-              "score and rank survive the float32 packing")
+              "score and rank round-trip as real columns")
         check(abs(scored[0][4] - 2.5) < 1e-6 and scored[0][5] == 2.0,
-              "a model_scores row lands beside the legacy packed row, same offer")
+              "an offer_model_scores row lands beside the offer_scores row, same offer")
         unscored = [r for r in rows if r[2] is None]
         check(unscored and unscored[0][4] is None and unscored[0][5] is None,
-              "the offer the scorer did not name reads NULL in model_scores too")
+              "the offer the scorer did not name reads NULL in offer_model_scores too")
 
         lab = st.labelled_decisions()
         check(len(lab) == 2, "labelled_decisions returns the labelled ones")
@@ -175,7 +174,7 @@ def main():
         check(len(dp) == 5 and dp[0][1] == "camp-1", "decision_points view")
         check(json.loads(dp[0][5])["treasury"] == 2501, "decision_points.campaign is text")
         es = con.execute("SELECT snapshot_id,decision_id,context_kind,context_id,features"
-                         " FROM entity_snapshots WHERE decision_id=?", (dids[0],)).fetchall()
+                         " FROM entity_snapshots WHERE decision_id=%s", (dids[0],)).fetchall()
         check(len(es) == 3 and json.loads(es[0][4])["rank"] == 3, "entity_snapshots view")
         check(len({r[0] for r in con.execute("SELECT snapshot_id FROM entity_snapshots")})
               == 15, "synthetic snapshot_ids are unique across decisions")
@@ -217,9 +216,6 @@ def main():
         check(s["decisions"] == 5 and s["offers"] == 45 and s["taken"] == 2, "summary")
         check(st.max_decision_id() == dids[-1], "max_decision_id")
 
-        av = st.con.execute("PRAGMA auto_vacuum").fetchone()[0]
-        check(av == 2, "auto_vacuum is INCREMENTAL (2), got %s" % av)
-
         _write(_snapshot(7, uuid="camp-2", settlements=2.0), decision_seq=0, policy="random")
         _write(_snapshot(7, uuid="camp-2", settlements=2.0), decision_seq=1, policy="random")
         _write(_snapshot(7, uuid="camp-2", settlements=3.0), decision_seq=2, policy="random")
@@ -246,31 +242,75 @@ def main():
             " ORDER BY d.decision_seq LIMIT 1").fetchone()
         check(by_id == by_seq, "decision_id order and decision_seq order agree on turn open")
         views = {r[0] for r in con.execute(
-            "SELECT name FROM sqlite_master WHERE type='view'")}
+            "SELECT table_name FROM information_schema.views"
+            " WHERE table_schema='public'")}
         check({"turn_bounds", "turn_open", "turn_close"} <= views,
               "turn_bounds/turn_open/turn_close exist as VIEWS")
 
         st.close()
         con.close()
 
-        old = os.path.join(d, "v1")
-        os.makedirs(old)
-        c = sqlite3.connect(os.path.join(old, "decisions.sqlite"))
-        c.execute("CREATE TABLE decision_points(decision_id INTEGER PRIMARY KEY, world TEXT)")
-        c.commit()
-        c.close()
-        try:
-            DecisionStore(old)
-            check(False, "a v1 store raises IncompatibleStore")
-        except IncompatibleStore:
-            check(True, "a v1 store raises IncompatibleStore")
-
         st2 = DecisionStore(run)
         check(st2.summary()["decisions"] == 9, "reopen keeps the rows")
         check(st2.layout_violations() == 0, "reopen: layout invariant still holds")
+
+        snap3 = _snapshot(9, uuid="camp-3")
+        snap3["entities"].append({"context_kind": "province", "context_id": "reg_0",
+                                  "state": {"province": "prov_a", "region": "reg_0",
+                                            "settlement_present": True},
+                                  "offers": []})
+        opts3 = [dict(o, context_kind=e["context_kind"], context_id=e["context_id"])
+                 for e in snap3["entities"] for o in e.pop("offers", [])]
+        did3 = st2.write_decision(snap3, decision_seq=0, policy="random")
+        st2.attach_options(did3, opts3)
+        st2.attach_taken(did3, {"context_kind": "lord", "context_id": 100,
+                                "action_type": "building", "key": "b_a",
+                                "executed": True, "confirmed": True, "counted": True})
+        got = list(st2.taken_rows())
+        check([g[0]["decision_id"] for g in got] == [dids[0], dids[1], did3],
+              "taken_rows streams every labelled decision in decision_id order")
+        check(got[0][1] == ("lord", "100", "building", "b_a") and got[0][2] is True,
+              "taken_rows carries the label")
+        offs = [o for e in got[0][0]["entities"] for o in e["offers"]]
+        check(len(offs) == 1 and offs[0]["params"] == {"slot_index": 0, "cost": 100},
+              "taken_rows carries only the matched offer, with that offer's own params")
+        check(got[0][0]["campaign"].get("treasury") == 2501
+              and got[0][0]["world"]["hostiles"][0]["faction"] == "orcs",
+              "taken_rows decodes the campaign and world blobs")
+        r3 = got[2][0]
+        check(sorted(e["context_kind"] for e in r3["entities"]) == ["lord", "province"],
+              "taken_rows carries the taken entity plus the province states, nothing else")
+        lord = [e for e in r3["entities"] if e["context_kind"] == "lord"][0]
+        check(lord["state"].get("garrisoned") is True and len(lord["offers"]) == 1,
+              "taken_rows resolves the taken entity's own state blob")
+        ro = DecisionStore(run, readonly=True)
+        with ro.snapshot_read():
+            check(len(list(ro.taken_rows())) == 3,
+                  "taken_rows streams inside a read-only snapshot")
+        ro.close()
+
+        snap4 = _snapshot(10, uuid="camp-3")
+        opts4 = [dict(o, context_kind=e["context_kind"], context_id=e["context_id"])
+                 for e in snap4["entities"] for o in e.pop("offers", [])]
+        did4 = st2.write_decision(snap4, decision_seq=1, policy="random")
+        st2.attach_options(did4, opts4)
+        st2.attach_taken(did4, {"context_kind": "lord", "context_id": 100,
+                                "action_type": "move", "key": "xy:1,0",
+                                "executed": False, "confirmed": False, "counted": False,
+                                "refusal": "awaiting_execution"})
+        check(did4 not in st2.taken_map() and len(list(st2.taken_rows())) == 3,
+              "an awaiting row stays out of the corpus loaders")
+        check(st2.finalize_stale_awaiting() == 1,
+              "finalize_stale_awaiting converts exactly the stragglers")
+        ref, = st2.con.execute("SELECT refusal FROM taken WHERE decision_id=%s",
+                               (did4,)).fetchone()
+        check(ref == "campaign_died", "a stale awaiting row becomes campaign_died")
+        check(did4 not in st2.taken_map() and len(list(st2.taken_rows())) == 3
+              and len(st2.labelled_decisions()) == 3,
+              "campaign_died stays out of the corpus loaders")
         st2.close()
     finally:
-        shutil.rmtree(d, ignore_errors=True)
+        pgtest.drop()
 
     print("\n%s" % ("store OK" if not FAILED else "%d FAILED" % len(FAILED)))
     return 1 if FAILED else 0

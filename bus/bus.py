@@ -186,9 +186,13 @@ class Bus:
                 with open(self.out_path, "rb") as f:
                     f.seek(off)
                     data = f.read()
-                off = size
-                for line in data.decode("utf-8", "replace").splitlines():
-                    line = line.strip()
+                parts = data.split(b"\n")
+                tail = parts.pop()
+                pos = off
+                for bline in parts:
+                    nxt = pos + len(bline) + 1
+                    line = bline.decode("utf-8", "replace").strip()
+                    pos = nxt
                     if not line:
                         continue
                     try:
@@ -197,7 +201,8 @@ class Bus:
                         continue
                     if row.get("cmd") in kinds and (pred is None or pred(row)):
                         common.waitlog("wait_row", time.time() - t0, True, str(row.get("cmd")))
-                        return row, off
+                        return row, nxt
+                off = size - len(tail)
             if self.consec_timeouts >= 3:
                 common.waitlog("wait_row", time.time() - t0, False,
                                "bus_silent x%d %s" % (self.consec_timeouts, ",".join(sorted(kinds))))

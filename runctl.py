@@ -214,6 +214,21 @@ def down():
     return [kill_session(), kill_recorder(), kill_ui(), kill_analytics()]
 
 
+LAUNCH_RECORD = os.path.join(SERVICES_LOG_DIR, "last_launch.json")
+
+
+def _record_launch(vals):
+    rec = dict(vals, ts=time.time(), argv=sys.argv[1:])
+    tmp = LAUNCH_RECORD + ".tmp"
+    try:
+        os.makedirs(SERVICES_LOG_DIR, exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(rec, fh, indent=1)
+        os.replace(tmp, LAUNCH_RECORD)
+    except OSError as e:
+        sys.stderr.write("runctl: could not record the launch -> %s\n" % repr(e)[:80])
+
+
 HARNESS_EVERY_S = 300.0
 HARNESS_STALL_S = 1200.0
 HARNESS_PROGRESS_S = 1800.0
@@ -343,23 +358,30 @@ def harness_tick():
             fh.write(str(time.time()))
     except OSError:
         pass
-    from run_config import RUN
+    try:
+        rec = json.load(open(LAUNCH_RECORD, encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        _harness_note("relaunch REFUSED: no readable launch record at %s (%r). runctl "
+                      "records the explicit params of every launch; relaunching on guessed "
+                      "params is how models get retrained by accident" % (LAUNCH_RECORD, e))
+        return "refused"
     for step in down():
         _harness_note(step)
     common.wait("harness_relaunch_settle", 2.0)
     try:
-        for step in up(RUN["campaigns"], RUN["turns"],
-                       retrain_every=RUN["retrain_every"],
-                       retrain_first=RUN.get("retrain_first", False),
-                       dev=RUN.get("dev", True), with_ui=True,
-                       strategies=RUN["strategies"], ruleset=RUN["ruleset"],
-                       interrupt_strategies=RUN["interrupt_strategies"],
-                       factions=RUN["factions"],
-                       presave_radius=RUN["presave_radius"],
-                       ucb=RUN.get("ucb") or None):
+        _harness_note("relaunching from %s (retrain_first forced off on relaunch)"
+                      % LAUNCH_RECORD)
+        for step in up(rec["campaigns"], rec["turns"],
+                       retrain_every=rec["retrain_every"], retrain_first=False,
+                       cold=rec.get("cold", False), dev=rec["dev"], with_ui=True,
+                       strategies=rec["strategies"], ruleset=rec.get("ruleset"),
+                       interrupt_strategies=rec["interrupt_strategies"],
+                       factions=rec["factions"],
+                       presave_radius=rec["presave_radius"],
+                       width=rec.get("width", 0), ucb=rec.get("ucb")):
             _harness_note(step)
-    except SystemExit as e:
-        _harness_note("relaunch refused: %s" % e)
+    except (SystemExit, KeyError) as e:
+        _harness_note("relaunch refused: %r" % e)
         return "refused"
     return "relaunched"
 
@@ -421,32 +443,37 @@ def status():
 
 
 def main():
-    ap = argparse.ArgumentParser(prog="runctl", description="start and stop tw_stack runs")
+    ap = argparse.ArgumentParser(
+        prog="runctl",
+        description="start and stop tw_stack runs. Every run parameter is explicit: "
+                    "there are no defaults, so nothing -- retraining above all -- can "
+                    "happen without being stated on this command line")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    from run_config import RUN
     for name in ("up", "session"):
         s = sub.add_parser(name)
-        s.add_argument("campaigns", type=int, nargs="?", default=RUN["campaigns"])
-        s.add_argument("turns", nargs="?", default=str(RUN["turns"]))
-        s.add_argument("--factions", default=RUN["factions"],
+        s.add_argument("campaigns", type=int)
+        s.add_argument("turns")
+        s.add_argument("--factions", required=True,
                        help="all | key,key,...  ('all' plays every start baked at "
                             "--presave-radius; each start carries its own map)")
-        s.add_argument("--retrain-every", type=int, default=RUN["retrain_every"])
-        s.add_argument("--retrain-first", action="store_true",
-                       default=RUN["retrain_first"],
+        s.add_argument("--retrain-every", type=int, required=True,
+                       help="0 = never retrain; N = a retrain window every N campaigns. "
+                            "No default: training touches the owner's models only when "
+                            "this flag explicitly asks for it")
+        s.add_argument("--retrain-first", action="store_true", default=None,
                        help="also take the retrain window at campaign 1, instead of first "
                             "at campaign N+1; this is also how a warm mix bootstraps on a "
                             "box with no models yet")
         s.add_argument("--no-retrain-first", dest="retrain_first",
                        action="store_false",
-                       help="skip the campaign-1 retrain even though run_config wants it")
-        s.add_argument("--strategies", default=None)
+                       help="skip the campaign-1 retrain")
+        s.add_argument("--strategies", default=None,
+                       help="the action-arm mix; required unless --cold")
         s.add_argument("--interrupt-strategies", default=None,
                        help="the mix for blocking screens (random, greedy_catboost, "
-                            "ruleset); defaults to run_config")
+                            "ruleset); required unless --cold")
         s.add_argument("--ruleset", default=None)
-        s.add_argument("--presave-radius", type=_presave_radius,
-                       default=RUN["presave_radius"],
+        s.add_argument("--presave-radius", type=_presave_radius, required=True,
                        help="sample starts from the baked trimmed saves of exactly this "
                             "radius; fails if none are baked at that radius. Fresh "
                             "campaigns are baked by bake.py, never played here")
@@ -455,13 +482,14 @@ def main():
                        help="sample only starts whose (map, faction) has fewer than N "
                             "recorded campaigns, re-checked per campaign; the session "
                             "ends when none remain")
-        s.add_argument("--ucb", type=float, default=RUN.get("ucb"),
+        s.add_argument("--ucb", type=float, required=True,
                        help="UCB1 start selector over settlements and lord levels "
                             "gained; K scales the exploration weight: c = K times the "
-                            "trailing window's blend (run_config sets the default; "
-                            "--ucb 0 turns it off)")
-        s.add_argument("--no-dev", action="store_true",
-                       help="turn the diagnostic streams OFF -- they are on by default")
+                            "trailing window's blend; 0 turns it off")
+        s.add_argument("--dev", dest="dev", action="store_true", default=None,
+                       help="diagnostic streams ON")
+        s.add_argument("--no-dev", dest="dev", action="store_false",
+                       help="diagnostic streams OFF")
         if name == "up":
             s.add_argument("--shots", type=int, default=DEFAULT_SHOTS)
             s.add_argument("--port", type=int, default=DEFAULT_PORT)
@@ -479,22 +507,28 @@ def main():
         return
     if a.cmd == "harness":
         raise SystemExit(harness(a.every))
-    strategies = a.strategies if a.strategies is not None else (
-        None if a.cold else RUN["strategies"])
-    interrupt_strategies = a.interrupt_strategies if a.interrupt_strategies is not None \
-        else (None if a.cold else RUN["interrupt_strategies"])
-    ruleset = a.ruleset if a.ruleset is not None else (None if a.cold else RUN["ruleset"])
-    ucb = a.ucb if (a.ucb is not None and a.ucb > 0) else None
-    common = dict(retrain_every=a.retrain_every, retrain_first=a.retrain_first,
-                  cold=a.cold, dev=not a.no_dev,
-                  factions=a.factions, strategies=strategies, ruleset=ruleset,
-                  interrupt_strategies=interrupt_strategies,
+    if a.dev is None:
+        ap.error("state --dev or --no-dev -- every run parameter is explicit")
+    if a.retrain_every > 0 and a.retrain_first is None:
+        ap.error("--retrain-every %d needs an explicit --retrain-first or "
+                 "--no-retrain-first" % a.retrain_every)
+    if not a.cold and not (a.strategies and a.interrupt_strategies):
+        ap.error("--strategies and --interrupt-strategies are required; only --cold "
+                 "runs without models")
+    ucb = a.ucb if a.ucb > 0 else None
+    params = dict(retrain_every=a.retrain_every, retrain_first=bool(a.retrain_first),
+                  cold=a.cold, dev=a.dev,
+                  factions=a.factions,
+                  strategies=None if a.cold else a.strategies,
+                  ruleset=None if a.cold else a.ruleset,
+                  interrupt_strategies=None if a.cold else a.interrupt_strategies,
                   presave_radius=a.presave_radius, width=a.width, ucb=ucb)
+    _record_launch(dict(params, campaigns=a.campaigns, turns=a.turns))
     if a.cmd == "session":
-        print("session -> %s" % start_session(a.campaigns, a.turns, **common))
+        print("session -> %s" % start_session(a.campaigns, a.turns, **params))
         return
     print("\n".join(up(a.campaigns, a.turns, shots=a.shots, port=a.port,
-                       with_ui=not a.no_ui, **common)))
+                       with_ui=not a.no_ui, **params)))
 
 
 if __name__ == "__main__":

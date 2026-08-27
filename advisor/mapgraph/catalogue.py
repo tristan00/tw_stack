@@ -1,19 +1,20 @@
 from __future__ import annotations
 
 
-import os
-import sqlite3
-
-from advisor.mapgraph import schema as S
+from decisions import pg
 
 _CACHE = {}
 
 
-def _open(path):
-    if not os.path.exists(path):
-        raise RuntimeError("mapgraph.catalogue: %s missing -- the reference db is a hard "
-                           "dependency; rebuild it before training or ranking" % path)
-    return sqlite3.connect("file:%s?mode=ro" % path.replace("\\", "/"), uri=True)
+def _open():
+    con = pg.connect(autocommit=True, readonly=True, row_factory=pg.row_factory,
+                     search_path="reference")
+    if con.execute("SELECT to_regclass('reference.buildings')").fetchone()[0] is None:
+        con.close()
+        raise RuntimeError("mapgraph.catalogue: the reference schema is missing -- it is a "
+                           "hard dependency; rebuild it (advisor/reference/"
+                           "build_reference.py) before training or ranking")
+    return con
 
 
 def _load():
@@ -22,26 +23,21 @@ def _load():
     out = {"building_chain": {}, "chain_super": {}, "chain_category": {},
            "tech_parents": {}, "skill_actions": {}, "agent_ability": {},
            "unit_caste": {}, "ok": True}
-    cx = _open(S.REFERENCE_DB)
-    cx.row_factory = sqlite3.Row
+    cx = _open()
     try:
-        for r in cx.execute("SELECT key, building_chain FROM buildings"):
+        for r in cx.execute("SELECT key, building_chain FROM buildings").fetchall():
             if r["building_chain"]:
                 out["building_chain"][r["key"]] = r["building_chain"]
         for r in cx.execute("SELECT key, superchain, chain_category "
-                            "FROM building_chains"):
+                            "FROM building_chains").fetchall():
             out["chain_super"][r["key"]] = r["superchain"]
             out["chain_category"][r["key"]] = r["chain_category"]
-        for r in cx.execute("SELECT key, agent, ability FROM agent_actions"):
+        for r in cx.execute("SELECT key, agent, ability FROM agent_actions").fetchall():
             out["agent_ability"][r["key"]] = r["ability"]
-        for r in cx.execute("SELECT key, caste, category, tier FROM units"):
+        for r in cx.execute("SELECT key, caste, category, tier FROM units").fetchall():
             out["unit_caste"][r["key"]] = (r["caste"], r["category"], r["tier"])
-    finally:
-        cx.close()
-    cx = _open(os.path.join(os.path.dirname(S.REFERENCE_DB),
-                            "agent_action_unlocks.sqlite"))
-    try:
-        for skill, action in cx.execute("SELECT skill, agent_action FROM skill_actions"):
+        for skill, action in cx.execute(
+                "SELECT skill, agent_action FROM skill_actions").fetchall():
             out["skill_actions"].setdefault(skill, []).append(action)
     finally:
         cx.close()
@@ -60,7 +56,7 @@ def dense_ids():
     if _DENSE:
         return _DENSE
     out = {k: {} for k in list(_KIND_TABLE) + list(_KIND_COLUMN)}
-    cx = _open(S.REFERENCE_DB)
+    cx = _open()
     try:
         cols = [(k, t, "key") for k, t in _KIND_TABLE.items()]
         cols += [(k, t, c) for k, (t, c) in _KIND_COLUMN.items()]
@@ -93,10 +89,10 @@ def attrs():
     if _ATTRS:
         return _ATTRS
     out = {k: {} for k in _ATTR_QUERY}
-    cx = _open(S.REFERENCE_DB)
+    cx = _open()
     try:
         for kind, (sql, names) in _ATTR_QUERY.items():
-            for row in cx.execute(sql):
+            for row in cx.execute(sql).fetchall():
                 key = row[0]
                 if not key:
                     continue

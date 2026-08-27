@@ -27,8 +27,7 @@ from advisor_api.models import (
     TimelineLane, TimingRow, TrainingEvent, TrialCorr, TrialRow, UcbPick, UcbRow,
     HistBin, MatrixCell, ProducedCampaign, StartCampaign, StartPickPoint,
 )
-from decisions import dbopen
-from decisions import store_schema as SS
+from decisions import pg_schema as SS
 
 DECISIONS_PAGE = 50
 TIMELINE_DECISIONS = 200
@@ -162,21 +161,20 @@ def outcome_join(con) -> tuple:
     keys = {r[0] for r in con.execute("SELECT campaign_key FROM campaigns")}
     claimed: dict = {}
     unjoined = 0
-    for key, packed in con.execute(
-            "SELECT campaign_key, CASE WHEN json_valid(payload) THEN json_extract(payload,"
-            " '$.campaign_key', '$.outcome', '$.when', '$.error',"
-            " '$.plausibility.verdict', '$.growth', '$.faction', '$.ts') END"
-            " FROM postmortems ORDER BY postmortem_id"):
-        got = _jload(packed)
-        if not isinstance(got, list) or len(got) < 8:
-            got = [None] * 8
-        ck = got[0] or key
+    for key, payload in con.execute(
+            "SELECT campaign_key, payload FROM postmortems ORDER BY postmortem_id"):
+        got = _jload(payload)
+        if not isinstance(got, dict):
+            got = {}
+        ck = got.get("campaign_key") or key
         if not ck or ck not in keys:
             unjoined += 1
         if ck:
-            claimed[ck] = {"campaign_key": ck, "outcome": got[1], "when": got[2],
-                           "error": got[3], "plausibility": {"verdict": got[4]},
-                           "growth": got[5] or {}, "faction": got[6], "ts": got[7]}
+            claimed[ck] = {"campaign_key": ck, "outcome": got.get("outcome"),
+                           "when": got.get("when"), "error": got.get("error"),
+                           "plausibility": {"verdict": (got.get("plausibility") or {}).get("verdict")},
+                           "growth": got.get("growth") or {}, "faction": got.get("faction"),
+                           "ts": got.get("ts")}
     return claimed, unjoined
 
 
@@ -193,7 +191,7 @@ def current(con) -> Current:
         " ORDER BY d.decision_id DESC LIMIT 1").fetchone()
     if not row:
         return Current()
-    camp = _jload(dbopen._unz(row["z"])) if row["z"] is not None else {}
+    camp = _jload(row["z"]) if row["z"] is not None else {}
     stored = con.execute("SELECT SUM(n) FROM start_counts").fetchone()
     return Current(campaign=_camp(row["campaign_key"]), turn=_i(row["turn"]),
                    leader=row["leader"],
@@ -227,7 +225,7 @@ def throughput(con) -> list:
     since = now - 3600.0
     rows = con.execute(
         "SELECT ts, campaign_id, turn FROM decisions"
-        " WHERE ts >= ? ORDER BY decision_id DESC", (since,)).fetchall()
+        " WHERE ts >= %s ORDER BY decision_id DESC", (since,)).fetchall()
     out = []
     if not rows:
         return out
@@ -237,7 +235,8 @@ def throughput(con) -> list:
     taken = con.execute(
         "SELECT COUNT(*) a,"
         " SUM(CASE WHEN counted=1 THEN 1 ELSE 0 END) c"
-        " FROM taken WHERE refusal IS NOT 'awaiting_execution' AND ts >= ?",
+        " FROM taken WHERE (refusal IS NULL OR"
+        " refusal NOT IN ('awaiting_execution','campaign_died')) AND ts >= %s",
         (since,)).fetchone()
     attempted, confirmed = _i(taken["a"], 0) or 0, _i(taken["c"], 0) or 0
     pct = (100.0 * confirmed / attempted) if attempted else None
@@ -278,7 +277,7 @@ def _confirm_spark(con, buckets=SPARK_BUCKETS):
     rows = con.execute(
         "SELECT counted, refusal FROM action_taken"
         " ORDER BY decision_id DESC LIMIT 2000").fetchall()
-    rows = [r for r in rows if r["refusal"] != "awaiting_execution"]
+    rows = [r for r in rows if r["refusal"] not in ("awaiting_execution", "campaign_died")]
     if len(rows) < buckets:
         return []
     rows.reverse()
@@ -306,7 +305,7 @@ def collect_timing(con) -> list:
             if v is not None:
                 buckets.setdefault(k, []).append(v)
     label = {"collect_ms": "recorder collect", "roundtrip_ms": "request round trip",
-             "score_ms": "featurize + rank", "store_ms": "sqlite store",
+             "score_ms": "featurize + rank", "store_ms": "corpus store",
              "trace_ms": "trace write", "housekeep_ms": "housekeeping",
              "pickup_lag_ms": "recorder pickup"}
     out = []
@@ -363,7 +362,7 @@ def _action_types_for(con, ids) -> dict:
         chunk = ids[i:i + 900]
         for r in con.execute(
                 "SELECT action_id, action_type FROM actions WHERE action_id IN (%s)"
-                % ",".join("?" * len(chunk)), chunk):
+                % ",".join(["%s"] * len(chunk)), chunk):
             out[r["action_id"]] = r["action_type"]
     return out
 
@@ -381,7 +380,7 @@ def _acts_all(con) -> dict:
     out = {}
     for r in con.execute(
             "SELECT campaign_id, COUNT(*) rows_,"
-            "       SUM(CASE WHEN refusal IS 'awaiting_execution' THEN 0 ELSE 1 END) attempted,"
+            "       SUM(CASE WHEN refusal IN ('awaiting_execution','campaign_died') THEN 0 ELSE 1 END) attempted,"
             "       SUM(CASE WHEN counted=1 THEN 1 ELSE 0 END) confirmed"
             " FROM taken GROUP BY campaign_id"):
         ckey = keys.get(r["campaign_id"])
@@ -806,12 +805,11 @@ def start_detail(con, mkey: str, fkey: str):
             in_window=i < UCB.WINDOW))
     counts = ucb_pick_counts(con)
     traj = []
-    blend_col = "r.blend" if "blend" in db.columns(con, "ucb_pick_rows") else "NULL"
     for r in con.execute(
             "SELECT r.pick_id pick_id, p.ts ts, p.c c, r.rank rank, r.n n, r.mean mean,"
-            " %s blend, r.explore explore, r.score score, r.chosen chosen"
+            " r.blend blend, r.explore explore, r.score score, r.chosen chosen"
             " FROM ucb_pick_rows r JOIN ucb_picks p ON p.pick_id = r.pick_id"
-            " WHERE r.campaign_map = ? AND r.faction = ? ORDER BY r.pick_id" % blend_col,
+            " WHERE r.campaign_map = %s AND r.faction = %s ORDER BY r.pick_id",
             (mkey, fkey)):
         score, explore = _f(r["score"]), _f(r["explore"])
         blend = _f(r["blend"])
@@ -850,7 +848,7 @@ def matrix(con, kind: str = "action"):
         names = None
     else:
         sql = ("SELECT campaign_id, action_id atype,"
-               "       SUM(CASE WHEN refusal IS 'awaiting_execution' THEN 0 ELSE 1 END) tried,"
+               "       SUM(CASE WHEN refusal IN ('awaiting_execution','campaign_died') THEN 0 ELSE 1 END) tried,"
                "       SUM(CASE WHEN counted=1 THEN 1 ELSE 0 END) ok,"
                "       SUM(COALESCE(latency_ms,0)) ms"
                " FROM taken GROUP BY campaign_id, action_id")
@@ -889,6 +887,8 @@ def _result_of(row) -> tuple:
     refusal = row["refusal"] if "refusal" in row.keys() else None
     if refusal == "awaiting_execution":
         return "awaiting execution", "neutral"
+    if refusal == "campaign_died":
+        return "campaign died", "neutral"
     if _i(row["counted"], 0):
         return "confirmed", "ok"
     if refusal:
@@ -930,19 +930,12 @@ def resolve_pair(pair=None):
 _RANK_FIELD = {"greedy_catboost": "rank", "marwil_gnn": "gnn_rank", "greedy_gnn": "ggnn_rank"}
 
 
-def _ggnn_cols(con) -> str:
-    cols = {r[1] for r in con.execute("PRAGMA table_info(action_offers)")}
-    if "ggnn_score" in cols:
-        return "ggnn_score, ggnn_rank"
-    return "NULL AS ggnn_score, NULL AS ggnn_rank"
-
-
 @db.timed
 def decisions_page(con, offset=0, limit=DECISIONS_PAGE, action_type=None, policy=None,
                    result=None, campaign=None, q=None):
     where, args = [], []
     if action_type:
-        where.append("at.action_type = ?")
+        where.append("at.action_type = %s")
         args.append(action_type)
     if policy:
         raw = [r[0] for r in con.execute(
@@ -950,20 +943,23 @@ def decisions_page(con, offset=0, limit=DECISIONS_PAGE, action_type=None, policy
             if arms.arm_of(r[0]) == policy]
         if not raw:
             raw = [policy]
-        where.append("COALESCE(at.policy, dp.policy) IN (%s)" % ",".join("?" * len(raw)))
+        where.append("COALESCE(at.policy, dp.policy) IN (%s)" % ",".join(["%s"] * len(raw)))
         args += raw
     if campaign:
-        where.append("dp.campaign_id = ?")
+        where.append("dp.campaign_id = %s")
         args.append(campaign)
     if q:
-        where.append("(at.action_key LIKE ? OR dp.campaign_id LIKE ?)")
+        where.append("(at.action_key ILIKE %s OR dp.campaign_id ILIKE %s)")
         args += ["%%%s%%" % q, "%%%s%%" % q]
     if result == "confirmed":
         where.append("at.counted = 1")
     elif result == "refused":
-        where.append("at.refusal IS NOT NULL AND at.refusal IS NOT 'awaiting_execution'")
+        where.append("at.refusal IS NOT NULL AND"
+                     " at.refusal NOT IN ('awaiting_execution','campaign_died')")
     elif result == "awaiting":
         where.append("at.refusal = 'awaiting_execution'")
+    elif result == "campaign_died":
+        where.append("at.refusal = 'campaign_died'")
     clause = (" WHERE " + " AND ".join(where)) if where else ""
 
     base = (" FROM taken t"
@@ -984,16 +980,17 @@ def decisions_page(con, offset=0, limit=DECISIONS_PAGE, action_type=None, policy
         "       COALESCE(t.policy, d.policy) policy,"
         "       c.campaign_key campaign_id, d.turn, d.n_offers"
         % SS.MAX_OFFERS_PER_DECISION + base + clause +
-        " ORDER BY t.decision_id DESC LIMIT ? OFFSET ?", args + [limit, offset]).fetchall()
+        " ORDER BY t.decision_id DESC LIMIT %s OFFSET %s", args + [limit, offset]).fetchall()
 
     offer_by_id = {}
     ids = sorted({r["offer_id"] for r in rows if r["offer_id"] is not None})
     dids = sorted({r["decision_id"] for r in rows if r["offer_id"] is not None})
     if ids:
         for o in con.execute(
-                "SELECT offer_id, exploit, pct_global, pct_local, rank, gnn_impact, gnn_rank,"
-                "       %s FROM action_offers WHERE decision_id IN (%s) AND offer_id IN (%s)"
-                % (_ggnn_cols(con), ",".join("?" * len(dids)), ",".join("?" * len(ids))),
+                "SELECT offer_id, exploit, pct_global, rank, gnn_impact, gnn_rank,"
+                "       ggnn_score, ggnn_rank"
+                " FROM action_offers WHERE decision_id IN (%s) AND offer_id IN (%s)"
+                % (",".join(["%s"] * len(dids)), ",".join(["%s"] * len(ids))),
                 dids + ids):
             offer_by_id[o["offer_id"]] = o
 
@@ -1014,7 +1011,6 @@ def decisions_page(con, offset=0, limit=DECISIONS_PAGE, action_type=None, policy
             policy=_phrase(r["policy"]),
             exploit=_f(o["exploit"]) if o else None,
             pct_global=_f(o["pct_global"]) if o else None,
-            pct_local=_f(o["pct_local"]) if o else None,
             cat_rank=cat_rank, gnn_impact=_f(o["gnn_impact"]) if o else None,
             gnn_rank=gnn_rank, ggnn_score=_f(o["ggnn_score"]) if o else None,
             ggnn_rank=ggnn_rank, latency_ms=_f(r["latency_ms"])))
@@ -1030,7 +1026,8 @@ def decision_facets(con) -> dict:
         "SELECT DISTINCT policy FROM taken WHERE policy IS NOT NULL")} - {None})
     return {"action_types": [_phrase(a) for a in at],
             "policies": [_phrase(p) for p in po],
-            "results": [_phrase(x) for x in ("confirmed", "refused", "awaiting")]}
+            "results": [_phrase(x) for x in ("confirmed", "refused", "awaiting",
+                                             "campaign_died")]}
 
 
 def decision_detail(con, decision_id: int):
@@ -1040,14 +1037,14 @@ def decision_detail(con, decision_id: int):
         "       at.latency_ms, at.offer_id, at.timing, COALESCE(at.policy, dp.policy) policy,"
         "       dp.campaign_id, dp.turn, dp.n_offers, dp.timings"
         " FROM action_taken at JOIN decision_points dp ON dp.decision_id = at.decision_id"
-        " WHERE at.decision_id = ?", (decision_id,)).fetchone()
+        " WHERE at.decision_id = %s", (decision_id,)).fetchone()
     if not row:
         row = con.execute(
             "SELECT decision_id, ts, NULL context_kind, NULL context_id, NULL action_type,"
             "       NULL action_key, 0 executed, 0 confirmed, 0 counted, NULL refusal,"
             "       NULL latency_ms, NULL offer_id, NULL timing, policy,"
             "       campaign_id, turn, n_offers, timings"
-            " FROM decision_points WHERE decision_id = ?", (decision_id,)).fetchone()
+            " FROM decision_points WHERE decision_id = %s", (decision_id,)).fetchone()
     if not row:
         return None
     res, state = _result_of(row)
@@ -1064,21 +1061,21 @@ def decision_detail(con, decision_id: int):
     offers = []
     for o in con.execute(
             "SELECT offer_id, context_kind, context_id, action_type, action_key, exploit,"
-            "       pct_global, pct_local, rank, gnn_impact, gnn_rank, %s"
-            " FROM action_offers WHERE decision_id = ?"
-            " ORDER BY COALESCE(rank, 9999), offer_id" % _ggnn_cols(con), (decision_id,)):
+            "       pct_global, rank, gnn_impact, gnn_rank, ggnn_score, ggnn_rank"
+            " FROM action_offers WHERE decision_id = %s"
+            " ORDER BY COALESCE(rank, 9999), offer_id", (decision_id,)):
         offers.append(OfferRow(
             rank=_i(o["rank"]), entity="%s %s" % (o["context_kind"] or "", o["context_id"] or ""),
             action_type=_phrase(o["action_type"]), action_key=o["action_key"],
             exploit=_f(o["exploit"]), pct_global=_f(o["pct_global"]),
-            pct_local=_f(o["pct_local"]), gnn_impact=_f(o["gnn_impact"]),
+            gnn_impact=_f(o["gnn_impact"]),
             gnn_rank=_i(o["gnn_rank"]), ggnn_score=_f(o["ggnn_score"]),
             ggnn_rank=_i(o["ggnn_rank"]), taken=(o["offer_id"] == taken_offer)))
 
     ents = []
     for e in con.execute(
             "SELECT context_kind, context_id, features FROM entity_snapshots"
-            " WHERE decision_id = ? LIMIT 40", (decision_id,)):
+            " WHERE decision_id = %s LIMIT 40", (decision_id,)):
         ents.append(EntityState(context_kind=e["context_kind"] or "",
                                 context_id=str(e["context_id"] or ""),
                                 features=_jload(e["features"])))
@@ -1105,12 +1102,13 @@ def _phases(row) -> list:
 def actions_summary(con):
     typed = con.execute(
         "SELECT action_id,"
-        "       SUM(CASE WHEN refusal IS 'awaiting_execution' THEN 0 ELSE 1 END) tried,"
+        "       SUM(CASE WHEN refusal IN ('awaiting_execution','campaign_died') THEN 0 ELSE 1 END) tried,"
         "       SUM(CASE WHEN counted=1 THEN 1 ELSE 0 END) ok"
         " FROM taken GROUP BY action_id").fetchall()
     refused = con.execute(
         "SELECT action_id, refusal, COUNT(*) n FROM taken"
-        " WHERE refusal IS NOT NULL AND refusal IS NOT 'awaiting_execution'"
+        " WHERE refusal IS NOT NULL AND"
+        " refusal NOT IN ('awaiting_execution','campaign_died')"
         " GROUP BY action_id, refusal").fetchall()
     atypes = _action_types_for(con, {r["action_id"] for r in typed}
                                | {r["action_id"] for r in refused})
@@ -1132,7 +1130,7 @@ def actions_summary(con):
         pol[r["p"]] = pol.get(r["p"], 0) + (_i(r["n"], 0) or 0)
     tr = con.execute(
         "SELECT COUNT(*) n,"
-        "       SUM(CASE WHEN refusal IS 'awaiting_execution' THEN 0 ELSE 1 END) attempted,"
+        "       SUM(CASE WHEN refusal IN ('awaiting_execution','campaign_died') THEN 0 ELSE 1 END) attempted,"
         "       SUM(CASE WHEN counted=1 THEN 1 ELSE 0 END) confirmed FROM taken").fetchone()
     tot = [_i(tr["n"], 0) or 0, _i(tr["attempted"], 0) or 0, _i(tr["confirmed"], 0) or 0]
     rows = []
@@ -1227,7 +1225,7 @@ def menus(con):
     for r in con.execute(
             "SELECT interrupt_id, ts, kind, root, campaign_id, turn, n_options, chosen,"
             "       executed, confirmed, counted, refusal, latency_ms, policy, options_json"
-            " FROM interrupt_decisions ORDER BY interrupt_id DESC LIMIT ?", (MENUS_ROWS,)):
+            " FROM interrupt_decisions ORDER BY interrupt_id DESC LIMIT %s", (MENUS_ROWS,)):
         res, state = _result_of(r)
         chosen = r["chosen"]
         options = [InterruptOption(label=_phrase(label), exploit=_f(o.get("exploit")),
@@ -1258,7 +1256,7 @@ def timeline(con) -> list:
         "       at.confirmed, at.counted, at.refusal, at.timing,"
         "       dp.campaign_id, dp.turn, dp.timings"
         " FROM action_taken at JOIN decision_points dp ON dp.decision_id = at.decision_id"
-        " ORDER BY at.decision_id DESC LIMIT ?", (TIMELINE_DECISIONS,)).fetchall()
+        " ORDER BY at.decision_id DESC LIMIT %s", (TIMELINE_DECISIONS,)).fetchall()
     lanes: dict = {}
     prev_ts: dict = {}
     for r in reversed(rows):
@@ -1296,13 +1294,10 @@ def timeline(con) -> list:
 
 
 _MODEL_DIRS = (
-    ("greedy_catboost global", common.MODEL_GLOBAL, "catboost",
-     "The advantage model the greedy_catboost arm ranks on: e1 predicts the return with "
-     "the action, e2 the same state without it, and e1 - e2 is the advantage. Ranks every "
-     "offered action across the whole faction."),
-    ("greedy_catboost local", common.MODEL_LOCAL, "catboost",
-     "The same advantage within one entity's own option set, so a lord's choices compete "
-     "against each other rather than against the whole map. Blended into the global rank."),
+    ("greedy_catboost", common.MODEL_GLOBAL, "catboost",
+     "One reward regression over the action and game-state features: it predicts the "
+     "return of each offered action directly, and the arm takes the highest prediction. "
+     "No state-only model, no advantage -- the catboost twin of greedy_gnn."),
     ("greedy_catboost interrupt", common.MODEL_INTERRUPT, "catboost",
      "The advantage model for blocking screens -- battles, dilemmas, occupation choices. "
      "The only interrupt model: the interrupt mix draws from greedy_catboost, random and "
@@ -1338,7 +1333,8 @@ def _model_cards() -> list:
                 status = "incomplete"
                 note = "meta.json is missing or unreadable"
         if status == "ready":
-            want = ("model.pt",) if family == "mapgraph" else ("e1.cbm",)
+            want = (("model.pt",) if family == "mapgraph" else
+                    ("model.cbm",) if path == common.MODEL_GLOBAL else ("e1.cbm",))
             missing = [f for f in want if not os.path.exists(os.path.join(d, f))]
             if missing:
                 status, note = "incomplete", "missing on disk: %s" % ", ".join(missing)
@@ -1360,14 +1356,17 @@ def _model_cards() -> list:
                 rows.append(("campaigns", str(camps)))
             if family == "mapgraph":
                 fit = meta.get("fit") if isinstance(meta.get("fit"), dict) else {}
-                for k, label, fmt in (("val_listwise_nll", "held-out listwise NLL", "%.4f"),
-                                      ("val_value_mse", "held-out value MSE (z)", "%.4f"),
-                                      ("val_mse", "held-out reward MSE (z)", "%.4f"),
-                                      ("val_r2", "held-out R²", "%+.3f")):
-                    if fit.get(k) is not None:
-                        rows.append((label, fmt % (_f(fit[k]) or 0)))
+                mse, sd = _f(fit.get("val_mse")), _f(meta.get("y_sd"))
+                if mse is not None and sd is not None and mse >= 0:
+                    rows.append(("held-out RMSE", "%.4f" % ((mse ** 0.5) * sd)))
+                if fit.get("val_r2") is not None:
+                    rows.append(("held-out R²", "%+.3f" % (_f(fit["val_r2"]) or 0)))
                 if fit.get("val_rows") is not None:
                     rows.append(("held-out rows", "{:,}".format(_i(fit["val_rows"], 0) or 0)))
+                for k, label, fmt in (("val_listwise_nll", "held-out listwise NLL", "%.4f"),
+                                      ("val_value_mse", "held-out value MSE", "%.4f")):
+                    if fit.get(k) is not None:
+                        rows.append((label, fmt % (_f(fit[k]) or 0)))
                 for k, label in (("epochs_run", "epochs"), ("stopped_by", "stopped by"),
                                  ("device", "trained on")):
                     if fit.get(k) is not None:
@@ -1376,18 +1375,18 @@ def _model_cards() -> list:
                                                          str(meta.get("schema_hash"))[:8])))
             else:
                 cfit = meta.get("fit") or {}
-                for tag, label in (("e1", "held-out RMSE (state+action)"),
-                                   ("local_e1", "held-out RMSE (state+action)"),
-                                   ("e2", "held-out RMSE (state only)"),
-                                   ("local_e2", "held-out RMSE (state only)")):
+                for tag, label in (("model", "held-out RMSE"),
+                                   ("e1", "e1 RMSE"), ("e2", "e2 RMSE")):
                     part = cfit.get(tag) or {}
                     if part.get("val_rmse") is not None:
-                        rows.append((label, "%.4f over %s val rows"
-                                     % (_f(part["val_rmse"]) or 0, part.get("val_rows"))))
-                if meta.get("mae_in_sample") is not None:
-                    rows.append(("in-sample MAE", "%.4f" % (_f(meta["mae_in_sample"]) or 0)))
-                for k, label in (("sd_global", "target spread (sd)"),
-                                 ("sd_local", "target spread (sd)"),
+                        rows.append((label, "%.4f" % (_f(part["val_rmse"]) or 0)))
+                r2 = _f((cfit.get("model") or {}).get("val_r2"))
+                if r2 is not None:
+                    rows.append(("held-out R²", "%+.3f" % r2))
+                held = ((cfit.get("model") or cfit.get("e1") or {})).get("val_rows")
+                if held is not None:
+                    rows.append(("held-out rows", "{:,}".format(_i(held, 0) or 0)))
+                for k, label in (("sd_global", "target spread"),
                                  ("epsilon", "epsilon"), ("beta", "beta")):
                     if k in meta:
                         rows.append((label, "%.4g" % (_f(meta[k]) or 0)))
@@ -1443,9 +1442,9 @@ def _fit_config() -> list:
                      "rows": g.get("rows"), "schema": g.get("schema_version")}))
     c = _meta_json(common.MODEL_GLOBAL)
     out.append(FitConfigRow(
-        family="greedy_catboost", role="E1 - E2 advantage ranker, global blended with local",
-        hyperparameters={k: c[k] for k in ("short_horizon", "short_weight", "w_local",
-                                           "exp_lo", "exp_hi", "target") if k in c},
+        family="greedy_catboost", role="one reward regression over action and game-state features",
+        hyperparameters={k: c[k] for k in ("short_horizon", "short_weight",
+                                           "pred_lo", "pred_hi", "target") if k in c},
         compute={"rows": c.get("rows"),
                  "features": len(c.get("num") or []) + len(c.get("cat") or [])}))
     return out
@@ -1492,11 +1491,17 @@ def model_versions() -> list:
 def _version_windows(version):
     if not version:
         return None
-    return next((v.windows for v in model_versions() if v.version == version), None)
+    vs = model_versions()
+    for i, v in enumerate(vs):
+        if v.version == version:
+            lo = v.from_ts if i + 1 < len(vs) else 0.0
+            hi = vs[i - 1].from_ts if i > 0 else math.inf
+            return [[lo, hi]]
+    return [[math.inf, math.inf]]
 
 
 def _ts_in(windows):
-    return "(" + " OR ".join("(ts >= ? AND ts < ?)" for _ in windows) + ")"
+    return "(" + " OR ".join("(ts >= %s AND ts < %s)" for _ in windows) + ")"
 
 
 def _diplomacy_partials(con) -> dict:
@@ -1512,7 +1517,7 @@ def _diplomacy_partials(con) -> dict:
     for r in con.execute(
             "SELECT campaign_id, action_id, COALESCE(policy,'(unrecorded)') p,"
             "       MIN(ts) ts,"
-            "       SUM(CASE WHEN refusal IS 'awaiting_execution' THEN 0 ELSE 1 END) attempted,"
+            "       SUM(CASE WHEN refusal IN ('awaiting_execution','campaign_died') THEN 0 ELSE 1 END) attempted,"
             "       SUM(CASE WHEN counted=1 THEN 1 ELSE 0 END) confirmed"
             " FROM taken WHERE action_id IN (SELECT action_id FROM actions"
             " WHERE action_type = 'diplomacy')"
@@ -1559,8 +1564,8 @@ def diplomacy_mix(con, version=None):
             by_source=[DiplomacyCell(
                 source=_phrase(a), attempted=by.get(a, [0, 0])[0],
                 confirmed=by.get(a, [0, 0])[1],
-                share=(round(by.get(a, [0, 0])[0] / per_source[a], 4)
-                       if per_source.get(a) else None)) for a in sources]))
+                share=(round(by.get(a, [0, 0])[0] / att, 4)
+                       if att and by.get(a, [0, 0])[0] else None)) for a in sources]))
     return [_phrase(a) for a in sources], total, rows
 
 
@@ -1752,7 +1757,7 @@ def agreement_page(pair: str | None = None):
                   detail="every decision in this run dir, precomputed; pick any two of the "
                          "arms that store a per-offer ranking")
     try:
-        s = adb.one("SELECT * FROM agreement_summary WHERE scope='all' AND pair=?",
+        s = adb.one("SELECT * FROM agreement_summary WHERE scope='all' AND pair=%s",
                     (po.key,))
     except Exception as e:
         return AgreementPage(scope=scope, freshness=fresh, summary=[], rows=[],
@@ -1788,7 +1793,7 @@ def agreement_page(pair: str | None = None):
     summary = [
         AgreementSummary(measure="decisions compared", value="{:,}".format(comparable),
                          help=None),
-        AgreementSummary(measure="offers both arms ranked (median)",
+        AgreementSummary(measure="offers both arms ranked, median",
                          value="{:,.0f}".format(_f(s.get("overlap_median"), 0.0))),
         AgreementSummary(measure="Spearman rho, median",
                          value="%+0.3f" % _f(s.get("rho_median"), 0.0),
@@ -1809,11 +1814,11 @@ def agreement_page(pair: str | None = None):
         b_rank=_f(r["b_rank"]), b_pct=_f(r["b_pct"]),
         delta_pct=_f(r["delta_pct"]), rho_median=_f(r["rho_median"]),
         fell_back=_i(r["fell_back"], 0) or 0)
-        for r in adb.rows("SELECT * FROM agreement_breakdown WHERE dim='arm' AND pair=?"
+        for r in adb.rows("SELECT * FROM agreement_breakdown WHERE dim='arm' AND pair=%s"
                           " ORDER BY decisions DESC", (po.key,))]
     bins = [RhoBin(lo=_f(h["lo"], 0.0), hi=_f(h["hi"], 0.0),
                    decisions=_i(h["decisions"], 0) or 0)
-            for h in adb.rows("SELECT * FROM agreement_hist WHERE pair=? ORDER BY bucket",
+            for h in adb.rows("SELECT * FROM agreement_hist WHERE pair=%s ORDER BY bucket",
                               (po.key,))]
     return AgreementPage(scope=scope, freshness=fresh, correlation=corr, rho_bins=bins,
                          summary=summary, rows=rows, secondary=_secondary(s),
@@ -1840,9 +1845,9 @@ def agreement_series(axis: str = "window", pair: str | None = None):
     po, opts = resolve_pair(pair)
     head = dict(pair=po.key, a=po.a, b=po.b, pairs=opts)
     try:
-        pts = adb.rows("SELECT * FROM agreement_series WHERE axis=? AND pair=? ORDER BY seq",
+        pts = adb.rows("SELECT * FROM agreement_series WHERE axis=%s AND pair=%s ORDER BY seq",
                        (axis, po.key))
-        s = adb.one("SELECT * FROM agreement_summary WHERE scope='all' AND pair=?",
+        s = adb.one("SELECT * FROM agreement_summary WHERE scope='all' AND pair=%s",
                     (po.key,)) or {}
     except Exception as e:
         return AgreementSeriesPage(
@@ -1876,7 +1881,7 @@ def agreement_series(axis: str = "window", pair: str | None = None):
             gate=r["gate"])
 
     gens = []
-    for r in adb.rows("SELECT * FROM agreement_series WHERE axis='generation' AND pair=?"
+    for r in adb.rows("SELECT * FROM agreement_series WHERE axis='generation' AND pair=%s"
                       " ORDER BY seq", (po.key,)):
         n = _i(r["decisions"], 0) or 0
         gens.append(GenerationRow(
@@ -1912,7 +1917,7 @@ def agreement_breakdown(dim: str = "action_type", pair: str | None = None):
     po, opts = resolve_pair(pair)
     head = dict(pair=po.key, a=po.a, b=po.b, pairs=opts)
     try:
-        rows = adb.rows("SELECT * FROM agreement_breakdown WHERE dim=? AND pair=?"
+        rows = adb.rows("SELECT * FROM agreement_breakdown WHERE dim=%s AND pair=%s"
                         " ORDER BY decisions DESC", (dim, po.key))
     except Exception as e:
         return AgreementBreakdownPage(
@@ -1961,7 +1966,7 @@ def decision_agreement(decision_id: int) -> list:
     from advisor_api.models import DecisionAgreement
     try:
         by_pair = {r["pair"]: r for r in adb.rows(
-            "SELECT * FROM model_agreement WHERE decision_id=?", (int(decision_id),))}
+            "SELECT * FROM model_agreement WHERE decision_id=%s", (int(decision_id),))}
     except Exception:
         return []
     out = []
@@ -1997,9 +2002,9 @@ def rho_for(decision_ids, pair) -> dict:
     try:
         for i in range(0, len(ids), 400):
             chunk = ids[i:i + 400]
-            marks = ",".join("?" * len(chunk))
+            marks = ",".join(["%s"] * len(chunk))
             for r in adb.rows("SELECT decision_id, rho, n FROM model_agreement"
-                              " WHERE pair=? AND decision_id IN (%s)" % marks,
+                              " WHERE pair=%%s AND decision_id IN (%s)" % marks,
                               [pair] + chunk):
                 out[_i(r["decision_id"])] = (_f(r["rho"]), _i(r["n"]))
     except Exception:
@@ -2104,10 +2109,7 @@ def _training_history() -> list:
             if not (rt or irt or gnn or ggnn):
                 continue
             gen += 1
-            local = rt.get("local") or {}
-            fit = rt.get("fit") or {}
-            e1, e2 = (fit.get("e1") or {}), (fit.get("e2") or {})
-            r1, r2 = _f(e1.get("val_rmse")), _f(e2.get("val_rmse"))
+            cbfit = (rt.get("fit") or {}).get("model") or {}
             gfit, ggfit = (gnn.get("fit") or {}), (ggnn.get("fit") or {})
             corpus_rows = _i(rt.get("rows") or gnn.get("rows") or ggnn.get("rows"))
             corpus_campaigns = _i(rt.get("campaigns") or gnn.get("campaigns")
@@ -2120,18 +2122,11 @@ def _training_history() -> list:
                     "seconds": _f(rt.get("seconds")),
                 }),
                 "greedy_catboost": _clean({
-                    "e1 rmse": r1,
-                    "e2 rmse": r2,
-                    "lift": (round(r2 - r1, 4) if (r1 is not None and r2 is not None)
-                             else None),
-                    "val rows": _i(e1.get("val_rows")),
-                    "best iter": _i(e1.get("best_iteration")),
+                    "rmse": _f(cbfit.get("val_rmse")),
+                    "R2": _f(cbfit.get("val_r2")),
+                    "val rows": _i(cbfit.get("val_rows")),
+                    "best iter": _i(cbfit.get("best_iteration")),
                     "in-sample MAE": _f(rt.get("mae_in_sample")),
-                }),
-                "greedy_catboost local": _clean({
-                    "rows": _i(local.get("rows")),
-                    "e1 rmse": _f(((local.get("fit") or {}).get("local_e1") or {})
-                                  .get("val_rmse")),
                 }),
                 "greedy_catboost interrupt": _clean({
                     "rows": _i(irt.get("rows")),
@@ -2206,10 +2201,15 @@ def _campaign_settlement_growth(con) -> dict:
     return out
 
 
+_TARGET_WEIGHTS = []
+
+
 def _W(part: str) -> float:
-    sys.path.insert(0, common.ADVISOR)
-    import base_model
-    return float(base_model.TARGET_WEIGHTS.get(part, 1.0))
+    if not _TARGET_WEIGHTS:
+        sys.path.insert(0, common.ADVISOR)
+        import base_model
+        _TARGET_WEIGHTS.append(base_model.TARGET_WEIGHTS)
+    return float(_TARGET_WEIGHTS[0].get(part, 1.0))
 
 
 
@@ -2317,7 +2317,7 @@ def _trials() -> tuple:
 def reward_series(con, campaign_key: str):
     rows = con.execute(
         "SELECT turn, income, settlements, allies, vassals, power_rank"
-        " FROM turn_open WHERE campaign_id = ? ORDER BY turn", (campaign_key,)).fetchall()
+        " FROM turn_open WHERE campaign_id = %s ORDER BY turn", (campaign_key,)).fetchall()
     pts = [RewardPoint(turn=_i(r["turn"], 0) or 0, income=_f(r["income"]),
                        settlements=_f(r["settlements"]), allies=_f(r["allies"]),
                        vassals=_f(r["vassals"]), power_rank=_f(r["power_rank"]))
@@ -2335,12 +2335,12 @@ def diplomacy_tail(con, campaign_key: str | None = None) -> list:
     if campaign_key:
         rows = con.execute(
             "SELECT ts,campaign_key,turn,kind,payload FROM diplomacy_events"
-            " WHERE campaign_key=? ORDER BY event_id DESC LIMIT ?",
+            " WHERE campaign_key=%s ORDER BY event_id DESC LIMIT %s",
             (campaign_key, DIPLO_TAIL)).fetchall()
     else:
         rows = con.execute(
             "SELECT ts,campaign_key,turn,kind,payload FROM diplomacy_events"
-            " ORDER BY event_id DESC LIMIT ?", (DIPLO_TAIL,)).fetchall()
+            " ORDER BY event_id DESC LIMIT %s", (DIPLO_TAIL,)).fetchall()
     out = []
     for r in rows:
         d = _jload(r["payload"]) or {}
@@ -2527,25 +2527,46 @@ def _start_leaders(con) -> dict:
 PULSE = 50
 
 
+def _camps_meta(con, outcomes) -> dict:
+    out = {}
+    now = time.time()
+    for ckey, turns, t1 in con.execute(
+            "SELECT c.campaign_key, c.turns, MAX(d.ts) t1 FROM campaigns c"
+            " JOIN decisions d ON d.campaign_id = c.campaign_id"
+            " GROUP BY c.campaign_key, c.turns"):
+        pm = outcomes.get(ckey)
+        outcome, state = None, "neutral"
+        if pm:
+            raw = str(pm.get("outcome") or "")
+            verdict = str((pm.get("plausibility") or {}).get("verdict") or "")
+            suspicious = ("harness_failure_likely" in verdict) or ("ambiguous" in verdict)
+            outcome = _phrase(raw)
+            state = "bad" if suspicious else _OUTCOME_STATE.get(raw, "neutral")
+        elif now - (_f(t1) or 0.0) > LIVE_WINDOW_S:
+            outcome = _phrase("no_ending_recorded")
+            state = _OUTCOME_STATE["no_ending_recorded"]
+        out[ckey] = (_i(turns), outcome, state)
+    return out
+
+
 @db.timed
 def ucb_pick_series(con, gains=None, camp_rows=None, produced=None) -> list:
     leaders = _start_leaders(con)
     top: dict = {}
-    ns: dict = {}
-    for r in con.execute("SELECT pick_id, rank, score, n FROM ucb_pick_rows"):
-        pid = _i(r["pick_id"], 0)
-        rank = _i(r["rank"], 0)
-        if rank is not None and rank <= 2:
-            top.setdefault(pid, {})[rank] = _f(r["score"])
-        ns.setdefault(pid, []).append(_i(r["n"], 0) or 0)
+    for r in con.execute("SELECT pick_id, rank, score FROM ucb_pick_rows"
+                         " WHERE rank <= 2"):
+        top.setdefault(_i(r["pick_id"], 0), {})[_i(r["rank"], 0)] = _f(r["score"])
+    ns = {_i(r["pick_id"], 0): [_i(n, 0) or 0 for n in r["nl"]] for r in con.execute(
+        "SELECT pick_id, ARRAY_AGG(n) nl FROM ucb_pick_rows GROUP BY pick_id")}
     if produced is None:
         produced = pick_campaigns(con)
     if gains is None:
         gains = gains_all(con)
-    if camp_rows is None:
-        camp_rows = campaign_rows(con, produced=produced)
+    if camp_rows is not None:
+        meta = {r.campaign.raw: (r.turns, r.outcome, r.outcome_state) for r in camp_rows}
+    else:
+        meta = _camps_meta(con, outcome_join(con)[0])
     gains = {g["campaign_key"]: g for g in gains}
-    by_camp = {r.campaign.raw: r for r in camp_rows}
     rows = [dict(r) for r in con.execute("SELECT * FROM ucb_picks ORDER BY pick_id")]
     keys = [(r["campaign_map"], r["faction"]) for r in rows]
     seen: set = set()
@@ -2568,12 +2589,12 @@ def ucb_pick_series(con, gains=None, camp_rows=None, produced=None) -> list:
         ck = produced.get(pid)
         if ck:
             g = gains.get(ck) or {}
-            cr = by_camp.get(ck)
+            cm = meta.get(ck)
             prod = ProducedCampaign(
                 campaign=_camp(ck), reward=_f(g.get("reward")),
-                turns=(cr.turns if cr else _i(g.get("turns_reached"))),
-                outcome=cr.outcome if cr else None,
-                outcome_state=cr.outcome_state if cr else "neutral")
+                turns=(cm[0] if cm else _i(g.get("turns_reached"))),
+                outcome=cm[1] if cm else None,
+                outcome_state=cm[2] if cm else "neutral")
         out.append(UcbPick(
             leader=leaders.get(((r["campaign_map"] or ""), r["faction"])),
             pick_id=pid, ts=_f(r["ts"]), c=_f(r["c"]),
@@ -2641,7 +2662,7 @@ def ucb_pick_rows(con, pick_id: int) -> tuple:
         return None, [], 0
     leaders = _start_leaders(con)
     raw = [dict(r) for r in con.execute(
-        "SELECT * FROM ucb_pick_rows WHERE pick_id = ? ORDER BY rank", (int(pick_id),))]
+        "SELECT * FROM ucb_pick_rows WHERE pick_id = %s ORDER BY rank", (int(pick_id),))]
     top_score = next((_f(r["score"]) for r in raw if _f(r["score"]) is not None), None)
     rows = []
     for r in raw:

@@ -50,11 +50,19 @@ def fingerprint():
         h.update(name.encode())
         with open(p, "rb") as fh:
             h.update(hashlib.sha1(fh.read()).digest())
-    ref = getattr(S, "REFERENCE_DB", None)
-    for db in [p for p in (ref,) if p]:
-        st = os.stat(db) if os.path.exists(db) else None
-        h.update(("%s|%s|%s" % (os.path.basename(db), st.st_size if st else 0,
-                                int(st.st_mtime) if st else 0)).encode())
+    from decisions import pg
+    try:
+        con = pg.connect(autocommit=True, readonly=True, search_path="reference")
+        try:
+            built = con.execute("SELECT v FROM meta WHERE k='built'").fetchone()
+            n = con.execute("SELECT (SELECT COUNT(*) FROM buildings)"
+                            " + (SELECT COUNT(*) FROM units)"
+                            " + (SELECT COUNT(*) FROM agent_actions)").fetchone()[0]
+        finally:
+            con.close()
+        h.update(("reference|%s|%s" % (built[0] if built else 0, n)).encode())
+    except Exception:
+        h.update(b"reference|absent")
     return h.hexdigest()[:16]
 
 

@@ -3,43 +3,45 @@ from __future__ import annotations
 import glob
 import json
 import os
-import sqlite3
 import sys
 import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "bus"))
+sys.path.insert(0, os.path.dirname(_HERE))
 sys.path.insert(0, _HERE)
 
 import cco_queries as CQ
 from bus import Bus
+from decisions import pg
 
 POLL = 2.0
 BUS_BACKOFF = 10.0
 REQ_FILE = "actions_requests.jsonl"
-DB_FILE = "actions.sqlite"
 _TAIL_BYTES = 512 * 1024
 
 
 def _db(out_dir):
-    con = sqlite3.connect(os.path.join(out_dir, DB_FILE), timeout=10.0)
-    con.execute("PRAGMA journal_mode=WAL")
+    con = pg.connect(autocommit=True, search_path="capture")
+    con.execute("CREATE SCHEMA IF NOT EXISTS capture")
     con.execute("CREATE TABLE IF NOT EXISTS snapshots("
-                "ts REAL, turn INTEGER, entity_kind TEXT, entity_id TEXT, "
+                "ts DOUBLE PRECISION, turn INTEGER, entity_kind TEXT, entity_id TEXT, "
                 "action_type TEXT, payload TEXT)")
     con.execute("CREATE TABLE IF NOT EXISTS latest("
                 "entity_kind TEXT, entity_id TEXT, action_type TEXT, "
-                "ts REAL, turn INTEGER, payload TEXT, "
+                "ts DOUBLE PRECISION, turn INTEGER, payload TEXT, "
                 "PRIMARY KEY(entity_kind, entity_id, action_type))")
     return con
 
 
 def _write(con, ts, turn, kind, eid, atype, payload):
     p = json.dumps(payload, separators=(",", ":"))
-    con.execute("INSERT INTO snapshots VALUES(?,?,?,?,?,?)", (ts, turn, kind, str(eid), atype, p))
-    con.execute("INSERT OR REPLACE INTO latest VALUES(?,?,?,?,?,?)",
+    con.execute("INSERT INTO snapshots VALUES(%s,%s,%s,%s,%s,%s)",
+                (ts, turn, kind, str(eid), atype, p))
+    con.execute("INSERT INTO latest VALUES(%s,%s,%s,%s,%s,%s)"
+                " ON CONFLICT (entity_kind, entity_id, action_type) DO UPDATE SET"
+                " ts=excluded.ts, turn=excluded.turn, payload=excluded.payload",
                 (kind, str(eid), atype, ts, turn, p))
-    con.commit()
 
 
 def _current_turn(out_dir):

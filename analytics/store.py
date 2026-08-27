@@ -1,57 +1,55 @@
 from __future__ import annotations
 
-
 import os
-import sqlite3
+import sys
 import time
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import psycopg
+
+from decisions import pg
+
+SCHEMA = "analytics"
 
 SPINE_DDL = """
 CREATE TABLE IF NOT EXISTS analytics_state(
   tenant           TEXT PRIMARY KEY,
   formula_version  INTEGER NOT NULL,
   input_version    INTEGER,
-  watermark        INTEGER NOT NULL DEFAULT 0,
-  rows             INTEGER NOT NULL DEFAULT 0,
-  source_rows      INTEGER NOT NULL DEFAULT 0,
-  source_floor     INTEGER,
-  built_ts         REAL,
-  last_run_ts      REAL,
-  last_run_seconds REAL,
-  last_folded      INTEGER NOT NULL DEFAULT 0,
+  watermark        BIGINT NOT NULL DEFAULT 0,
+  rows             BIGINT NOT NULL DEFAULT 0,
+  source_rows      BIGINT NOT NULL DEFAULT 0,
+  source_floor     BIGINT,
+  built_ts         DOUBLE PRECISION,
+  last_run_ts      DOUBLE PRECISION,
+  last_run_seconds DOUBLE PRECISION,
+  last_folded      BIGINT NOT NULL DEFAULT 0,
   last_error       TEXT,
-  last_error_ts    REAL);
+  last_error_ts    DOUBLE PRECISION);
 """
-
-_PRAGMAS = ("PRAGMA journal_mode=WAL",
-            "PRAGMA synchronous=NORMAL",
-            "PRAGMA busy_timeout=5000")
 
 
 def analytics_path(run_dir: str) -> str:
-    return os.path.join(run_dir, "analytics.sqlite")
+    return "%s search_path=%s" % (pg.dsn(), SCHEMA)
 
 
-def connect(path: str, readonly: bool = False) -> sqlite3.Connection | None:
-    if readonly:
-        if not os.path.isfile(path):
-            return None
-        con = sqlite3.connect("file:%s?mode=ro" % path.replace("\\", "/"), uri=True,
-                              isolation_level=None, timeout=5.0)
-        con.row_factory = sqlite3.Row
-        return con
-    d = os.path.dirname(path)
-    if d:
-        os.makedirs(d, exist_ok=True)
-    con = sqlite3.connect(path, isolation_level=None, timeout=30.0)
-    con.row_factory = sqlite3.Row
-    for p in _PRAGMAS:
-        con.execute(p)
-    con.executescript(SPINE_DDL)
+def connect(path: str | None = None, readonly: bool = False, schema: str = SCHEMA):
+    con = pg.connect(autocommit=True, readonly=readonly,
+                     row_factory=pg.row_factory, search_path="%s, public" % schema)
+    if not readonly:
+        con.execute("CREATE SCHEMA IF NOT EXISTS %s" % schema)
+        con.execute(SPINE_DDL)
     return con
 
 
-def state(an: sqlite3.Connection, tenant: str) -> dict:
-    row = an.execute("SELECT * FROM analytics_state WHERE tenant=?", (tenant,)).fetchone()
+def executemany(con, sql, rows):
+    with con.cursor() as cur:
+        cur.executemany(sql, rows)
+
+
+def state(an, tenant: str) -> dict:
+    row = an.execute("SELECT * FROM analytics_state WHERE tenant=%s", (tenant,)).fetchone()
     if row is None:
         return {"tenant": tenant, "formula_version": None, "input_version": None,
                 "watermark": 0, "rows": 0, "source_rows": 0, "source_floor": None,
@@ -60,24 +58,27 @@ def state(an: sqlite3.Connection, tenant: str) -> dict:
     return dict(row)
 
 
-def all_state(an: sqlite3.Connection) -> list:
+def all_state(an) -> list:
     return [dict(r) for r in an.execute("SELECT * FROM analytics_state ORDER BY tenant")]
 
 
-def _set(an: sqlite3.Connection, tenant: str, **fields):
+def _set(an, tenant: str, **fields):
+    fv = fields.pop("formula_version", 0)
     keys = sorted(fields)
     an.execute(
-        "INSERT INTO analytics_state(tenant, formula_version, %s) VALUES(?, ?, %s)"
+        "INSERT INTO analytics_state(tenant, formula_version%s) VALUES(%%s, %%s%s)"
         " ON CONFLICT(tenant) DO UPDATE SET %s"
-        % (", ".join(keys), ", ".join("?" * len(keys)),
-           ", ".join("%s=excluded.%s" % (k, k) for k in keys)),
-        [tenant, fields.get("formula_version", 0)] + [fields[k] for k in keys])
+        % ("".join(", " + k for k in keys), ", %s" * len(keys),
+           ", ".join(["formula_version=excluded.formula_version"]
+                     + ["%s=excluded.%s" % (k, k) for k in keys])),
+        [tenant, fv] + [fields[k] for k in keys])
 
 
-def _table_rows(an: sqlite3.Connection, name: str) -> int:
+def _table_rows(an, name: str) -> int:
     try:
         return int(an.execute("SELECT COUNT(*) FROM %s" % name).fetchone()[0])
-    except sqlite3.Error:
+    except psycopg.Error:
+        an.execute("ROLLBACK")
         return -1
 
 
@@ -125,15 +126,16 @@ def rebuild_reason(tenant, src, an) -> str | None:
 
 def ensure(tenant, src, an) -> str | None:
     try:
-        an.executescript(tenant.DDL)
-    except sqlite3.OperationalError as e:
+        an.execute(tenant.DDL)
+    except psycopg.errors.InvalidTableDefinition as e:
+        an.execute("ROLLBACK")
         why = "the tenant's DDL no longer fits the table on disk (%s)" % str(e)[:80]
     else:
         why = rebuild_reason(tenant, src, an)
     if why:
         for name in getattr(tenant, "TABLES", (tenant.NAME,)):
             an.execute("DROP TABLE IF EXISTS %s" % name)
-        an.executescript(tenant.DDL)
+        an.execute(tenant.DDL)
         an.execute("BEGIN")
         try:
             an.execute("DELETE FROM %s" % tenant.NAME)

@@ -219,7 +219,7 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
         stuck.update(fired=True, reason=reason, detail=detail)
         stuck["shot"] = executor.screenshot("stuck_%s_%d" % (reason, int(time.time())))
         log("!! STUCK (%s) after %ss -- screenshot: %s"
-            % (reason, detail.get("idle_s"), stuck["shot"]))
+            % (reason, detail.get("turn_s") or detail.get("idle_s"), stuck["shot"]))
         _append(report_path, {"kind": "stuck", "reason": reason, "detail": detail,
                               "screenshot": stuck["shot"], "ts": time.time()})
         if on_stuck:
@@ -279,7 +279,7 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
                 raise GameStuck("turn_stalled: the turn did not advance within the settle "
                                 "budget (turn %s, %d actions, %d confirmed)"
                                 % (row["turn"], row["actions"], row["confirmed"]))
-            if row["ended_by"] == "stuck":
+            if row["ended_by"] in ("stuck", "turn_time_cap"):
                 if executor.defeated_row_seen() or executor.defeated_probe() is True:
                     raise CampaignLost("watchdog fired but the faction is DEAD -- defeat, "
                                        "not a stall (%s)" % stuck["reason"])
@@ -386,6 +386,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
     _last_done_ts = [None]
     _hk_parts = [{}]
     log("== TURN %s ==" % turn)
+    wd.begin_turn(turn)
     opening = executor.resolve_interrupts()
     _drain_interrupts(run_dir, log)
     if opening:
@@ -422,7 +423,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
         return failing
     while True:
         if stuck["fired"]:
-            ended_by = "stuck"
+            ended_by = "turn_time_cap" if stuck.get("reason") == "turn_time_cap" else "stuck"
             break
         if executor.defeated_row_seen():
             log("   faction_destroyed row seen mid-turn -- defeat, ending the turn now")
@@ -563,8 +564,15 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
 
         if pick["action_type"] == "end_turn":
             gate_failed[0] = _check_gate_before_end()
-        pre_off = executor.bus.out_offset()
-        result = executor.execute(pick)
+        try:
+            pre_off = executor.bus.out_offset()
+            result = executor.execute(pick)
+        except BaseException:
+            try:
+                journal.log_verification(run_dir, decision_id, _died_record(pick))
+            except Exception:
+                pass
+            raise
         act_hist.append(pick["action_type"])
         del act_hist[:-F.PREV_ACTIONS]
         F.bump_action_counts(act_counts, pick["action_type"])
@@ -632,7 +640,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
         active = _active_from(record, pol)
         _hk_parts[0]["active_from"] = int((time.time() - _t) * 1000)
         _last_done_ts[0] = time.time()
-    terminal = ended_by in ("stuck", "no_campaign_ui", "defeated")
+    terminal = ended_by in ("stuck", "turn_time_cap", "no_campaign_ui", "defeated")
     if terminal:
         settle = {"turn": None, "steps": [], "waited_s": 0.0, "skipped": ended_by}
     elif gate_failed[0]:
@@ -647,6 +655,9 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
     if settle.get("defeated"):
         log("   !! faction destroyed during the AI phase -- defeat, not a stall")
         ended_by = "defeated"
+    elif settle.get("aborted") and stuck.get("reason") == "turn_time_cap":
+        ended_by = "turn_time_cap"
+        log("   !! turn time cap reached during the inter-turn settle -- the campaign ends here")
     elif settle["turn"] is None and not terminal and not settle.get("skipped"):
         ended_by = "turn_stalled"
         log("   !! turn never advanced within %.0fs -- a turn that cannot advance ends "
@@ -681,6 +692,13 @@ def _active_from(record, pol):
         elif e["context_kind"] == "province":
             regions.append(e["context_id"])
     return {"lords": lords, "heroes": heroes, "regions": regions, "campaign": True}
+
+
+def _died_record(pick):
+    return {"context_kind": pick["context_kind"], "context_id": pick["context_id"],
+            "action_type": pick["action_type"], "key": pick["key"],
+            "params": pick.get("params") or {}, "executed": False, "confirmed": False,
+            "counted": False, "refusal": "campaign_died", "policy": pick.get("policy")}
 
 
 def _noop_record(pick):

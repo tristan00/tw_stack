@@ -53,14 +53,10 @@ def audit_run(run_dir):
 
 def main():
     root = sys.argv[1] if len(sys.argv) > 1 else RUNS_ROOT
-    runs = [root] if os.path.exists(os.path.join(root, "decisions.sqlite")) else \
-        sorted(os.path.join(root, d) for d in os.listdir(root)
-               if os.path.isdir(os.path.join(root, d)))
+    runs = [os.path.dirname(db) for db in common.run_dbs(root)]
     tot_seen = tot_multi = 0
     tot_bad = []
     for run in runs:
-        if not os.path.exists(os.path.join(run, "decisions.sqlite")):
-            continue
         try:
             seen, multi, bad = audit_run(run)
         except IncompatibleStore as e:

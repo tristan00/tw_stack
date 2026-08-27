@@ -11,7 +11,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import arms
 from analytics import metrics as M
-from decisions import store_schema as S
+from analytics import store as _store
+from decisions import pg_schema as S
 
 NAME = "model_agreement"
 FORMULA_VERSION = 3
@@ -21,45 +22,43 @@ TABLES = ("model_agreement",)
 
 PAIRS = S.PAIRS
 PAIR_KEYS = tuple(S.pair_key(a, b) for a, b in PAIRS)
-_WIDTH = len(S.SCORE_FIELDS)
-_MWIDTH = len(S.MODEL_SCORE_FIELDS)
 
 OK, MISSING_A, MISSING_B, NO_SCORES, TOO_FEW = ("ok", "missing_a", "missing_b",
                                                 "no_scores", "too_few")
 
 DDL = """
 CREATE TABLE IF NOT EXISTS model_agreement(
-  decision_id     INTEGER NOT NULL,
+  decision_id     BIGINT  NOT NULL,
   pair            TEXT    NOT NULL,
-  computed_ts     REAL    NOT NULL,
-  ts              REAL,
+  computed_ts     DOUBLE PRECISION NOT NULL,
+  ts              DOUBLE PRECISION,
   turn            INTEGER,
-  campaign_id     INTEGER,
+  campaign_id     BIGINT,
   n_offers        INTEGER NOT NULL,
   n_a             INTEGER NOT NULL,
   n_b             INTEGER NOT NULL,
   n               INTEGER NOT NULL,
   status          TEXT    NOT NULL,
-  rho             REAL,
-  tau_b           REAL,
-  rbo             REAL,
+  rho             DOUBLE PRECISION,
+  tau_b           DOUBLE PRECISION,
+  rbo             DOUBLE PRECISION,
   top1_same       INTEGER,
-  top3_overlap    REAL,
-  top5_overlap    REAL,
-  top10_overlap   REAL,
+  top3_overlap    DOUBLE PRECISION,
+  top5_overlap    DOUBLE PRECISION,
+  top10_overlap   DOUBLE PRECISION,
   a_top_in_b      INTEGER,
   b_top_in_a      INTEGER,
   taken_offer_seq INTEGER,
   taken_a_rank    INTEGER,
   taken_b_rank    INTEGER,
-  taken_a_pct     REAL,
-  taken_b_pct     REAL,
+  taken_a_pct     DOUBLE PRECISION,
+  taken_b_pct     DOUBLE PRECISION,
   arm             TEXT,
   fell_back       INTEGER NOT NULL DEFAULT 0,
   action_type     TEXT,
   context_kind    TEXT,
   PRIMARY KEY(decision_id, pair)
-) WITHOUT ROWID;
+);
 
 CREATE INDEX IF NOT EXISTS ix_ma_pair_ts    ON model_agreement(pair, ts);
 CREATE INDEX IF NOT EXISTS ix_ma_pair_rho   ON model_agreement(pair, status, rho);
@@ -67,25 +66,17 @@ CREATE INDEX IF NOT EXISTS ix_ma_pair_atype ON model_agreement(pair, status, act
 CREATE INDEX IF NOT EXISTS ix_ma_pair_arm   ON model_agreement(pair, status, arm);
 """
 
-_MODEL_TABLE_ARMS = tuple(a for a in S.RANKED_ARMS if S.RANK_SOURCE[a][0] == "model_scores")
+RANK_COLUMN = {"greedy_catboost": "rank", "marwil_gnn": "gnn_rank"}
+MODEL_TABLE_ARMS = tuple(a for a in S.RANKED_ARMS if a not in RANK_COLUMN)
 
-def _select(src) -> str:
-    have = {r[0] for r in src.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='model_scores'")}
-    extra = "".join(
-        (",       (SELECT packed FROM model_scores ms WHERE ms.decision_id ="
-         " d.decision_id AND ms.model = '%s') AS ms_%s" % (arm, arm))
-        if have else ",       NULL AS ms_%s" % arm
-        for arm in _MODEL_TABLE_ARMS)
-    return ("SELECT d.decision_id, s.packed, d.ts, d.turn, d.campaign_id, d.n_offers,"
-            "       t.offer_seq AS taken_seq, COALESCE(t.policy, d.policy) AS policy,"
-            "       a.action_type, a.context_kind" + extra
-            + "  FROM decisions d"
-            "  LEFT JOIN scores  s ON s.decision_id = d.decision_id"
-            "  LEFT JOIN taken   t ON t.decision_id = d.decision_id"
-            "  LEFT JOIN actions a ON a.action_id   = t.action_id"
-            " WHERE d.decision_id > ? AND d.decision_id <= ?"
-            " ORDER BY d.decision_id")
+_SELECT = ("SELECT d.decision_id, d.ts, d.turn, d.campaign_id, d.n_offers,"
+           "       t.offer_seq AS taken_seq, COALESCE(t.policy, d.policy) AS policy,"
+           "       a.action_type, a.context_kind"
+           "  FROM decisions d"
+           "  LEFT JOIN taken   t ON t.decision_id = d.decision_id"
+           "  LEFT JOIN actions a ON a.action_id   = t.action_id"
+           " WHERE d.decision_id > %s AND d.decision_id <= %s"
+           " ORDER BY d.decision_id")
 
 _COLUMNS = ("decision_id", "pair", "computed_ts", "ts", "turn", "campaign_id", "n_offers",
             "n_a", "n_b", "n", "status", "rho", "tau_b", "rbo", "top1_same",
@@ -95,20 +86,20 @@ _COLUMNS = ("decision_id", "pair", "computed_ts", "ts", "turn", "campaign_id", "
 
 _INSERT = ("INSERT INTO model_agreement(%s) VALUES(%s)"
            " ON CONFLICT(decision_id, pair) DO UPDATE SET %s"
-           % (", ".join(_COLUMNS), ", ".join("?" * len(_COLUMNS)),
+           % (", ".join(_COLUMNS), ", ".join(["%s"] * len(_COLUMNS)),
               ", ".join("%s=excluded.%s" % (c, c) for c in _COLUMNS[2:])))
 
 _BATCH = 2000
 
 
 def safe_hi(src, an=None) -> int:
-    row = src.execute("SELECT MAX(decision_id) FROM decisions").fetchone()
+    row = src.execute("SELECT MAX(decision_id) m FROM decisions").fetchone()
     return max(0, int(row[0] or 0) - 1)
 
 
 def source_stats(src, hi):
-    row = src.execute("SELECT COUNT(*), MIN(decision_id) FROM decisions"
-                      " WHERE decision_id <= ?", (hi,)).fetchone()
+    row = src.execute("SELECT COUNT(*) c, MIN(decision_id) m FROM decisions"
+                      " WHERE decision_id <= %s", (hi,)).fetchone()
     return int(row[0] or 0) * len(PAIRS), row[1]
 
 
@@ -118,28 +109,39 @@ def _pct(rank, n):
     return round(100.0 * (float(rank) - 1.0) / (float(n) - 1.0), 3)
 
 
-def _column(packed, width, col, n_offers):
-    if packed is None:
-        return None
-    buf = np.frombuffer(packed, dtype="<f4")
-    if buf.size == 0 or buf.size % width or buf.size // width != n_offers:
-        return None
-    return buf.reshape(-1, width)[:, col].astype(np.float64)
-
-
-def rank_vectors(row) -> dict:
-    n_offers = int(row["n_offers"] or 0)
+def _score_vectors(src, lo, hi):
     out = {}
-    for arm in S.RANKED_ARMS:
-        table, col = S.RANK_SOURCE[arm]
-        packed = row["packed"] if table == "scores" else row["ms_%s" % arm]
-        v = _column(packed, _WIDTH if table == "scores" else _MWIDTH, col, n_offers)
-        if v is not None:
-            out[arm] = v
+    for did, seq, rank, gnn_rank in src.execute(
+            "SELECT decision_id, offer_seq, rank, gnn_rank FROM offer_scores"
+            " WHERE decision_id > %s AND decision_id <= %s", (lo, hi)):
+        d = out.setdefault(did, {})
+        d.setdefault("greedy_catboost", {})[seq] = rank
+        d.setdefault("marwil_gnn", {})[seq] = gnn_rank
+    for did, seq, model, rank in src.execute(
+            "SELECT decision_id, offer_seq, model, rank FROM offer_model_scores"
+            " WHERE decision_id > %s AND decision_id <= %s AND model = ANY(%s)",
+            (lo, hi, list(MODEL_TABLE_ARMS))):
+        out.setdefault(did, {}).setdefault(model, {})[seq] = rank
     return out
 
 
-def _rows(row) -> list:
+def rank_vectors(row, vecs) -> dict:
+    n_offers = int(row["n_offers"] or 0)
+    got = vecs.get(row["decision_id"]) or {}
+    out = {}
+    for arm in S.RANKED_ARMS:
+        by_seq = got.get(arm)
+        if by_seq is None:
+            continue
+        v = np.full(n_offers, np.nan)
+        for seq, val in by_seq.items():
+            if val is not None and 0 <= seq < n_offers:
+                v[seq] = val
+        out[arm] = v
+    return out
+
+
+def _rows(row, vecs) -> list:
     base = {c: None for c in _COLUMNS}
     base.update(decision_id=int(row["decision_id"]), computed_ts=time.time(),
                 ts=row["ts"], turn=row["turn"], campaign_id=row["campaign_id"],
@@ -148,7 +150,7 @@ def _rows(row) -> list:
                 action_type=row["action_type"], context_kind=row["context_kind"],
                 arm=arms.arm_of(row["policy"]),
                 fell_back=(1 if arms.fell_back(row["policy"]) else 0))
-    vecs = rank_vectors(row)
+    vecs = rank_vectors(row, vecs)
     seq = row["taken_seq"]
     out = []
     for a, b in PAIRS:
@@ -194,17 +196,25 @@ def _rows(row) -> list:
     return out
 
 
+_CHUNK = 2000
+
+
 def step(src, an, lo, hi):
-    cur = src.execute(_select(src), (lo, hi))
-    batch, written = [], 0
-    for row in cur:
-        for rec in _rows(row):
-            batch.append(tuple(rec[c] for c in _COLUMNS))
-        if len(batch) >= _BATCH:
-            an.executemany(_INSERT, batch)
+    written = 0
+    a = lo
+    while a < hi:
+        b = min(a + _CHUNK, hi)
+        vecs = _score_vectors(src, a, b)
+        batch = []
+        for row in src.execute(_SELECT, (a, b)).fetchall():
+            for rec in _rows(row, vecs):
+                batch.append(tuple(rec[c] for c in _COLUMNS))
+            if len(batch) >= _BATCH:
+                _store.executemany(an, _INSERT, batch)
+                written += len(batch)
+                batch = []
+        if batch:
+            _store.executemany(an, _INSERT, batch)
             written += len(batch)
-            batch = []
-    if batch:
-        an.executemany(_INSERT, batch)
-        written += len(batch)
+        a = b
     return hi, written

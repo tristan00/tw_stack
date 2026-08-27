@@ -5,7 +5,7 @@
                  │                        ▲                                          │
                  │            bus (file command bus — SOLE transport)                │
                  │                        │                                          │
-   manager (RECORDER: sole sqlite writer)│              launcher (DRIVER: launch,    │
+   manager (RECORDER: sole corpus writer)│              launcher (DRIVER: launch,    │
    streams: logs · input · shots ·       │              executor registry, nav,      │
    ui-capture · actions · decisions ─────┘              interrupts, screen/ps) ──────┘
                  │                                              ▲
@@ -17,16 +17,16 @@
    encoder) · ruleset · random
    interrupt mix: greedy_catboost (the catboost interrupt model) · ruleset · random
    watchdog
-   features ← reference/features_db ← <TWDATA>/reference/reference.sqlite
+   features ← reference/features_db ← Postgres eference schema
                  │
-   advisor_api (FRONTEND: :8777 — typed JSON API over decisions.sqlite + SSE,
+   advisor_api (FRONTEND: :8777 — typed JSON API over the Postgres corpus + SSE,
    serving the built client in ui/; service control: start/kill session, health)
 ```
 
 ## Projects
 - **bus** — file command bus to the in-game lua mod (`bus/mod/`), packed by `pack_multi.py` into
   `bus/dist/tw.pack` (deployed to the game by the launcher). Sole game I/O.
-- **manager** — the recorder. Owns every bus READ and all sqlite writes. Runs the streams
+- **manager** — the recorder. Owns every bus READ and all corpus writes. Runs the streams
   (`logs` always-on — drives campaign-swap detection; `input`, `shots`, `ui-capture`, `actions`
   opt-in; `decisions` on by default) into the run dir; writes the `CURRENT_RUN` pointer.
 - **advisor** — the backend. `session.py N T` plays N campaigns × T turns: `loop.py` per-turn
@@ -50,7 +50,7 @@
 - **launcher** — the driver. Game lifecycle (`bus_launcher.py`, `launcher.py`), the executor
   registry (`executor.py`, 18 action types incl. diplomacy), navigation, interrupt handling,
   PowerShell capture/input bridge (`ps/`). `config.py` is the only file allowed absolute paths.
-- **decisions** — the data layer: `store.py` (decisions.sqlite schema: decision points, offers,
+- **decisions** — the data layer: `store.py` (the Postgres corpus schema: decision points, offers,
   taken+confirmation law, interrupts, target rows), `collect.py`, `journal.py`.
 - **campaigns** — the campaign-boundary splitter kernel (used by manager and the logs stream).
 - **debugging** — read-only tools for reading a run after the fact. `timeline.py` merges
@@ -61,7 +61,7 @@
 
 ## Rules
 1. Only the **bus** talks to the game.
-2. The **manager** owns bus reads and sqlite writes; the **launcher** executes; the **advisor**
+2. The **manager** owns bus reads and corpus writes; the **launcher** executes; the **advisor**
    decides; the **UI** reads.
 3. An action is taken only when `executed AND confirmed` — unverified clicks are voided.
 4. **No logs, data, DBs, or models in this repo.** Everything a run produces lives under

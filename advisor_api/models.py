@@ -401,7 +401,6 @@ class DecisionRow(BaseModel):
     policy: Ident | None = None
     exploit: float | None = None
     pct_global: float | None = None
-    pct_local: float | None = None
     cat_rank: int | None = None
     gnn_impact: float | None = None
     gnn_rank: int | None = None
@@ -435,7 +434,6 @@ class OfferRow(BaseModel):
     action_key: str | None = None
     exploit: float | None = None
     pct_global: float | None = None
-    pct_local: float | None = None
     gnn_impact: float | None = None
     gnn_rank: int | None = None
     ggnn_score: float | None = None

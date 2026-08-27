@@ -46,17 +46,16 @@ def main():
     if '"state": state' in loop_src:
         problems.append("loop.py emits an end-of-turn state dict again")
 
-    import shutil
-    import tempfile
+    from decisions import pgtest
     from decisions.store import DecisionStore
-    d = tempfile.mkdtemp(prefix="singlestream_")
+    pgtest.fresh()
     try:
-        run = os.path.join(d, "run")
-        os.makedirs(run)
-        st = DecisionStore(run)
+        st = DecisionStore("singlestream/run")
         names = {r[0]: r[1] for r in st.con.execute(
-            "SELECT name, type FROM sqlite_master WHERE name LIKE 'turn_%'"
-            " OR name LIKE '%target%' OR name LIKE 'diplo_s%'")}
+            "SELECT table_name, CASE table_type WHEN 'VIEW' THEN 'view' ELSE 'table' END"
+            " FROM information_schema.tables WHERE table_schema='public'"
+            " AND (table_name LIKE 'turn\\_%' OR table_name LIKE '%target%'"
+            " OR table_name LIKE 'diplo\\_s%')")}
         for v in ("turn_bounds", "turn_open", "turn_close"):
             if names.get(v) != "view":
                 problems.append("%s is %r in a fresh schema -- it must be a VIEW, never "
@@ -66,7 +65,7 @@ def main():
             problems.append("a fresh schema contains end-of-turn table(s) %s" % stray)
         st.close()
     finally:
-        shutil.rmtree(d, ignore_errors=True)
+        pgtest.drop()
     for p in problems:
         print("  FAIL %s" % p)
     if problems:

@@ -12,7 +12,8 @@ TRAINABLE = arms.TRAINABLE
 ModelUnavailable = arms.ModelUnavailable
 
 
-TYPE_WEIGHTS = {"building_dismantle": 0.2, "item_unequip": 0.2, "end_turn": 1.0, "move": 2.0}
+TYPE_WEIGHTS = {"building_dismantle": 0.2, "item_unequip": 0.2, "end_turn": 1.0, "move": 2.0,
+                "diplomacy:declare_war": 1.2, "recruit_unit": 2.0, "recruit_hero": 0.2}
 
 
 class Random:
@@ -24,7 +25,10 @@ class Random:
     def pick(self, elig, record):
         pools = {}
         for r in elig:
-            pools.setdefault(r["action_type"], []).append(r)
+            t = r["action_type"]
+            if t == "diplomacy" and str(r.get("key", "")).endswith(":declare_war"):
+                t = "diplomacy:declare_war"
+            pools.setdefault(t, []).append(r)
         types = sorted(pools)
         weights = [TYPE_WEIGHTS.get(t, 1.0) for t in types]
         return self.rng.choice(pools[self.rng.choices(types, weights=weights)[0]])

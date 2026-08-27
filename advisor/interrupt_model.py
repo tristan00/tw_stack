@@ -81,12 +81,9 @@ def _row(screen, option, n_options, campaign, world=None, panel=None, meta=None)
 def gather(runs_root=RUNS_ROOT):
     pending, deltas = [], []
     seen_runs = 0
-    for name in sorted(os.listdir(runs_root)) if os.path.isdir(runs_root) else []:
-        db = os.path.join(runs_root, name, "decisions.sqlite")
-        if not os.path.exists(db):
-            continue
+    for db in common.run_dbs(runs_root):
         try:
-            s = DecisionStore(os.path.join(runs_root, name))
+            s = DecisionStore(os.path.dirname(db), readonly=True)
         except IncompatibleStore:
             continue
         seen_runs += 1

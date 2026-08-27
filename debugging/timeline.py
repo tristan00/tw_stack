@@ -222,13 +222,13 @@ def _jloads(v):
 
 def from_store(db, t0, t1):
     sys.path.insert(0, common.ROOT)
-    from decisions import dbopen
+    from decisions import pg
     rows = []
-    con = dbopen.connect(db, readonly=True, timeout=20.0)
+    con = pg.connect(autocommit=True, readonly=True)
     try:
         for did, ts, turn, seq, policy, ne, no, timings in con.execute(
                 "SELECT decision_id, ts, turn, decision_seq, policy, n_entities, n_offers,"
-                " timings FROM decisions WHERE ts BETWEEN ? AND ? ORDER BY ts", (t0, t1)):
+                " timings FROM decisions WHERE ts BETWEEN %s AND %s ORDER BY ts", (t0, t1)):
             rows.append((ts, "store", "decision",
                          "#%s turn=%s seq=%s policy=%s entities=%s offers=%s"
                          % (did, turn, seq, policy, ne, no)))
@@ -249,7 +249,7 @@ def from_store(db, t0, t1):
                                            separators=(",", ":")))[:380]))
         for did, ts, ex, cf, ct, refusal, lat, policy, timing, diag in con.execute(
                 "SELECT decision_id, ts, executed, confirmed, counted, refusal, latency_ms,"
-                " policy, timing, diagnostics FROM taken WHERE ts BETWEEN ? AND ?"
+                " policy, timing, diagnostics FROM taken WHERE ts BETWEEN %s AND %s"
                 " ORDER BY ts", (t0, t1)):
             tm = _jloads(timing)
             rows.append((ts, "store", "taken",
@@ -261,14 +261,14 @@ def from_store(db, t0, t1):
                 rows.append((t, "action", _classify_log(line), "#%s %s" % (did, line[:360])))
         for ts, turn, kind, root, nopt, chosen, ex, cf, ct, refusal, lat in con.execute(
                 "SELECT ts, turn, kind, root, n_options, chosen, executed, confirmed,"
-                " counted, refusal, latency_ms FROM interrupts WHERE ts BETWEEN ? AND ?"
+                " counted, refusal, latency_ms FROM interrupts WHERE ts BETWEEN %s AND %s"
                 " ORDER BY ts", (t0, t1)):
             rows.append((ts, "store", "interrupt",
                          "%s root=%s turn=%s options=%s chose=%s executed=%s confirmed=%s "
                          "counted=%s refusal=%s latency=%sms"
                          % (kind, root, turn, nopt, chosen, ex, cf, ct, refusal, lat)))
         for ts, kind, payload in con.execute(
-                "SELECT ts, kind, payload FROM rpc_requests WHERE ts BETWEEN ? AND ?"
+                "SELECT ts, kind, payload FROM rpc_requests WHERE ts BETWEEN %s AND %s"
                 " ORDER BY ts", (t0, t1)):
             d = _jloads(payload)
             did = d.get("decision_id")
@@ -287,24 +287,24 @@ def from_store(db, t0, t1):
             else:
                 rows.append((ts, "store", "rpc", "%s #%s" % (kind, did)))
         for ts, req, err in con.execute(
-                "SELECT ts, req_id, error FROM rpc_responses WHERE ts BETWEEN ? AND ?"
+                "SELECT ts, req_id, error FROM rpc_responses WHERE ts BETWEEN %s AND %s"
                 " ORDER BY ts", (t0, t1)):
             rows.append((ts, "store", "rpc", "reply %s%s"
                          % (req, " error=%s" % str(err)[:120] if err else "")))
         for ts, key, turn, outcome, defeated, reason in con.execute(
                 "SELECT ts, campaign_key, turn, outcome, defeated, reason FROM postmortems"
-                " WHERE ts BETWEEN ? AND ? ORDER BY ts", (t0, t1)):
+                " WHERE ts BETWEEN %s AND %s ORDER BY ts", (t0, t1)):
             rows.append((ts, "store", "postmortem",
                          "%s turn=%s outcome=%s defeated=%s reason=%s"
                          % (key, turn, outcome, defeated, str(reason)[:160])))
         for ts, key, turn, kind, payload in con.execute(
                 "SELECT ts, campaign_key, turn, kind, payload FROM diplomacy_events"
-                " WHERE ts BETWEEN ? AND ? ORDER BY ts", (t0, t1)):
+                " WHERE ts BETWEEN %s AND %s ORDER BY ts", (t0, t1)):
             rows.append((ts, "store", "diplomacy",
                          "%s %s turn=%s %s" % (kind, key, turn, str(payload)[:200])))
         for pid, ts, c, total, cmap, fac, n, mean, explore, score, tied in con.execute(
                 "SELECT pick_id, ts, c, total_plays, campaign_map, faction, n, mean,"
-                " explore, score, tied FROM ucb_picks WHERE ts BETWEEN ? AND ? ORDER BY ts",
+                " explore, score, tied FROM ucb_picks WHERE ts BETWEEN %s AND %s ORDER BY ts",
                 (t0, t1)):
             rows.append((ts, "store", "select",
                          "ucb c=%s picked %s on %s n=%s mean=%s explore=%s score=%s "
@@ -371,9 +371,7 @@ def collect(t0, t1, run_dir, log_dir, services_dir, dev_dir, screens_dir):
     if os.path.exists(errors):
         take("errors", from_stamped_log(errors, t0, t1, "errors"))
 
-    db = os.path.join(run_dir, "decisions.sqlite")
-    if os.path.exists(db):
-        take("store", from_store(db, t0, t1))
+    take("store", from_store(None, t0, t1))
 
     anchor = _anchor(run_dir)
     for name, source in (("trace.jsonl", "trace"), ("turn_trail.jsonl", "turn_trail"),

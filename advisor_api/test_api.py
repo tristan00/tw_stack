@@ -28,6 +28,7 @@ GET_ENDPOINTS = [
     "/api/campaigns/matrix?kind=interrupt",
     "/api/decisions",
     "/api/decisions/actions",
+    "/api/decisions/diplomacy",
     "/api/decisions/menus",
     "/api/decisions/timeline",
     "/api/models",
@@ -198,14 +199,18 @@ def test_api_agrees_with_sql():
 
 
 def test_campaign_id_join_trap():
+    import psycopg
     con = db.connect()
-    wrong = con.execute("SELECT COUNT(*) FROM turn_open t"
-                        " JOIN campaigns c ON t.campaign_id = c.campaign_id").fetchone()[0]
+    try:
+        con.execute("SELECT COUNT(*) FROM turn_open t"
+                    " JOIN campaigns c ON t.campaign_id = c.campaign_id").fetchone()
+        raise AssertionError(
+            "the id/key join executed -- if the schema changed, this test and every join "
+            "in queries.py must be revisited together")
+    except psycopg.errors.UndefinedFunction:
+        pass
     right = con.execute("SELECT COUNT(*) FROM turn_open t"
                         " JOIN campaigns c ON t.campaign_id = c.campaign_key").fetchone()[0]
-    assert wrong == 0, ("the id/key join returned %d rows -- if the schema changed, this "
-                        "test and every join in queries.py must be revisited together"
-                        % wrong)
     assert right > 0, "the key join returned nothing; turn_open is not joinable"
 
 
@@ -329,7 +334,7 @@ def test_analytics_cannot_go_stale_silently():
         "served behind=%r, re-derived %r" % (f["behind"]["value"], max(0, hi - 1 - watermark))
     if f["behind"]["value"] > 0:
         assert f["state"] != "ok", "analytics is behind but reports ok"
-    n_src = con.execute("SELECT COUNT(*) FROM decisions WHERE decision_id <= ?",
+    n_src = con.execute("SELECT COUNT(*) FROM decisions WHERE decision_id <= %s",
                         (watermark,)).fetchone()[0]
     n_fact = acon.execute("SELECT COUNT(DISTINCT decision_id) FROM model_agreement"
                           ).fetchone()[0]
@@ -515,9 +520,11 @@ def test_matrix_leads_with_totals_worst_first():
     con = db.connect()
     for t in tot[:3]:
         sql = con.execute(
-            "SELECT SUM(CASE WHEN refusal IS 'awaiting_execution' THEN 0 ELSE 1 END),"
-            "       SUM(CASE WHEN counted=1 THEN 1 ELSE 0 END)"
-            " FROM action_taken WHERE action_type = ?", (t["action_type"]["raw"],)).fetchone()
+            "SELECT SUM(CASE WHEN refusal IN ('awaiting_execution','campaign_died')"
+            " THEN 0 ELSE 1 END) att,"
+            "       SUM(CASE WHEN counted=1 THEN 1 ELSE 0 END) ok"
+            " FROM action_taken WHERE action_type = %s",
+            (t["action_type"]["raw"],)).fetchone()
         assert t["rate"]["of"] == (sql[0] or 0), (t["action_type"]["raw"], t["rate"], sql)
         assert t["rate"]["n"] == (sql[1] or 0), (t["action_type"]["raw"], t["rate"], sql)
 
@@ -556,6 +563,100 @@ def test_current_campaign_has_one_source():
     api = _client.get("/api/run").json()["current"]
     assert api["campaign"]["raw"] == row["campaign_id"]
     assert api["turn"] == row["turn"]
+
+
+def _diplomacy_page(version=None):
+    ep = "/api/decisions/diplomacy"
+    if version:
+        ep += "?version=" + version
+    r = _client.get(ep)
+    assert r.status_code == 200, (ep, r.status_code)
+    return r.json()
+
+
+def test_diplomacy_every_row_partitions_across_arms():
+    page = _diplomacy_page()
+    n_src = len(page["sources"])
+    assert page["attempts"]["value"] == sum(r["attempted"] for r in page["rows"])
+    for r in page["rows"]:
+        term = r["term"]["raw"]
+        cells = r["by_source"]
+        assert len(cells) == n_src, term
+        assert sum(c["attempted"] for c in cells) == r["attempted"], term
+        assert sum(c["confirmed"] for c in cells) == r["confirmed"], term
+        assert r["confirmed"] <= r["attempted"], term
+        assert r["share"]["n"] == r["attempted"], term
+        assert r["share"]["of"] == (page["attempts"]["value"] or 1), term
+        for c in cells:
+            assert c["confirmed"] <= c["attempted"], (term, c["source"]["raw"])
+            if c["attempted"]:
+                assert c["share"] is not None, (term, c["source"]["raw"])
+                assert abs(c["share"] - c["attempted"] / r["attempted"]) <= 5.1e-5, \
+                    (term, c["source"]["raw"], c["share"])
+            else:
+                assert c["share"] is None, (term, c["source"]["raw"])
+        if r["attempted"]:
+            total = sum(c["share"] for c in cells if c["share"] is not None)
+            assert abs(total - 1.0) <= 1e-3, \
+                "row %s shares sum to %r, not 1 -- a cell is normalized against " \
+                "something other than its own row" % (term, total)
+
+
+def test_diplomacy_no_attempt_falls_between_versions():
+    page = _diplomacy_page()
+    versions = [v["version"] for v in page["versions"]]
+    if not versions:
+        return
+    vpages = [_diplomacy_page(v) for v in versions]
+    for v, p in zip(versions, vpages):
+        assert p["version"] == v, (v, p["version"])
+    assert sum(p["attempts"]["value"] for p in vpages) == page["attempts"]["value"], \
+        "per-version attempts do not add up to the unfiltered total -- the version " \
+        "windows have a gap or an overlap"
+    split = {}
+    for p in vpages:
+        for r in p["rows"]:
+            split[r["term"]["raw"]] = split.get(r["term"]["raw"], 0) + r["attempted"]
+    whole = {r["term"]["raw"]: r["attempted"] for r in page["rows"]}
+    assert {k: v for k, v in split.items() if v} == {k: v for k, v in whole.items() if v}, \
+        "a proposal's attempts differ between 'every version' and the union of versions"
+
+
+def test_diplomacy_unknown_version_serves_everything():
+    page = _diplomacy_page("no_such_version")
+    assert page["version"] is None
+    assert page["attempts"]["value"] == _diplomacy_page()["attempts"]["value"]
+
+
+def test_diplomacy_counts_match_the_database():
+    con = db.connect()
+    keys = q._campaign_keys(con)
+    terms = {}
+    for r in con.execute("SELECT action_id, action_key FROM actions"
+                         " WHERE action_type = 'diplomacy'"):
+        k = str(r["action_key"] or "")
+        terms[r["action_id"]] = k.split(":", 1)[1] if ":" in k else k
+    want_att, want_ok = {}, {}
+    for r in con.execute(
+            "SELECT campaign_id, action_id,"
+            " SUM(CASE WHEN refusal IN ('awaiting_execution','campaign_died')"
+            "     THEN 0 ELSE 1 END) a,"
+            " SUM(CASE WHEN counted=1 THEN 1 ELSE 0 END) c"
+            " FROM taken WHERE action_id IN (SELECT action_id FROM actions"
+            " WHERE action_type = 'diplomacy')"
+            " GROUP BY campaign_id, action_id"):
+        if r["campaign_id"] not in keys:
+            continue
+        t = terms[r["action_id"]]
+        want_att[t] = want_att.get(t, 0) + (r["a"] or 0)
+        want_ok[t] = want_ok.get(t, 0) + (r["c"] or 0)
+    page = _diplomacy_page()
+    got_att = {r["term"]["raw"]: r["attempted"] for r in page["rows"]}
+    got_ok = {r["term"]["raw"]: r["confirmed"] for r in page["rows"]}
+    assert {k: v for k, v in got_att.items() if v} == \
+           {k: v for k, v in want_att.items() if v}
+    assert {k: v for k, v in got_ok.items() if v} == \
+           {k: v for k, v in want_ok.items() if v}
 
 
 if __name__ == "__main__":

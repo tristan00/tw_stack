@@ -4,10 +4,22 @@ import tempfile
 
 _TMP = tempfile.mkdtemp(prefix="bus_stats_test_")
 os.environ["BUS_STATS"] = "1"
-os.environ["BUS_STATS_DB"] = os.path.join(_TMP, "bus_stats.sqlite")
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from decisions import pg, pgtest
+
+pgtest.fresh()
 
 import bus_stats
 from errors import TWError
+
+
+def _clear_stats():
+    con = pg.connect(autocommit=True, search_path="bus")
+    try:
+        con.execute("DROP SCHEMA IF EXISTS bus CASCADE")
+    finally:
+        con.close()
 
 fails = []
 
@@ -32,7 +44,7 @@ for name, ch, reply, want in cases:
         fails.append("classify %s: got %r want %r" % (name, got, want))
 
 
-tr = bus_stats.StatsTracker(os.environ["BUS_STATS_DB"], flush_every_n=3, flush_every_s=999,
+tr = bus_stats.StatsTracker(flush_every_n=3, flush_every_s=999,
                             register_atexit=False)
 
 for _ in range(6):
@@ -48,7 +60,7 @@ tr.flush()
 tr.record("find", "great_game_rituals", "empty", 7.5)
 tr.flush()
 
-rep = bus_stats.build_report(os.environ["BUS_STATS_DB"], junk_min_calls=5)
+rep = bus_stats.build_report(junk_min_calls=5)
 junk_keys = {(r["channel"], r["key"]) for r in rep["junk"]}
 
 if ("find", "great_game_rituals") not in junk_keys:
@@ -74,8 +86,8 @@ import bus
 
 os.environ["BUS_GUARD"] = "0"
 
-send_db = os.path.join(_TMP, "send_stats.sqlite")
-send_tr = bus_stats.StatsTracker(send_db, flush_every_n=1, flush_every_s=999,
+_clear_stats()
+send_tr = bus_stats.StatsTracker(flush_every_n=1, flush_every_s=999,
                                  register_atexit=False)
 bus_stats.install_tracker(send_tr)
 
@@ -108,7 +120,7 @@ except TWError:
     pass
 send_tr.flush()
 
-srep = bus_stats.build_report(send_db, junk_min_calls=5)
+srep = bus_stats.build_report(junk_min_calls=5)
 srows = {r["key"]: r for r in srep["rows"]}
 if srows.get("units_panel", {}).get("hits") != 1:
     fails.append("send-path: units_panel should record 1 hit, got %r" % srows.get("units_panel"))
@@ -256,11 +268,12 @@ print("\n### JUNK-CALL REPORT (from instrumented Bus.send DB) ###\n")
 print(bus_stats.format_report(srep))
 print()
 
+pgtest.drop()
 if fails:
     print("FAIL:")
     for f in fails:
         print("  - " + f)
     sys.exit(1)
-print("PASS: classifier, sqlite accumulate/flush, report junk-list, Bus.send instrumentation, AND the "
+print("PASS: classifier, accumulate/flush upserts, report junk-list, Bus.send instrumentation, AND the "
       "active junk-find barrier (short-circuit + re-probe + reset + never-suppress-a-hitter + scope + "
       "BUS_GUARD gate) all verified offline (no game / no bus).")

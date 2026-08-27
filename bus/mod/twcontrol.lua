@@ -3,7 +3,7 @@
 
 local CMD_PATH = "@@BUS_CMD_PATH@@"
 local OUT_PATH = "@@BUS_OUT_PATH@@"
-local POLL_SECONDS = 0.1
+local POLL_SECONDS = 0.02
 
 
 local NULL = setmetatable({}, {})
@@ -925,6 +925,29 @@ local function faction_pos(g)
 end
 
 
+local function human_anchors(f)
+  local pts = {}
+  local cl = try(function() return f:character_list() end)
+  local nc = cl and try(function() return cl:num_items() end) or 0
+  for i = 0, nc - 1 do
+    local c = try(function() return cl:item_at(i) end)
+    local x = c and try(function() return c:logical_position_x() end)
+    local y = c and try(function() return c:logical_position_y() end)
+    if x and y then pts[#pts + 1] = { x = x, y = y } end
+  end
+  local rl = try(function() return f:region_list() end)
+  local nr = rl and try(function() return rl:num_items() end) or 0
+  for i = 0, nr - 1 do
+    local r = try(function() return rl:item_at(i) end)
+    local s = r and try(function() return r:settlement() end)
+    local x = s and try(function() return s:logical_position_x() end)
+    local y = s and try(function() return s:logical_position_y() end)
+    if x and y then pts[#pts + 1] = { x = x, y = y } end
+  end
+  return pts
+end
+
+
 local function remove_faction(g)
   local gi = try(function() return cm.game_interface end)
   if not gi then return false, 0, 0 end
@@ -1014,15 +1037,14 @@ function handlers.trim(seq, rest)
   local dry = (rest or ""):find("dry") ~= nil
   local f = human_faction()
   local me = f and try(function() return f:name() end)
-  local ox, oy = nil, nil
-  if f then ox, oy = faction_pos(f) end
+  local anchors = f and human_anchors(f) or {}
   local can_disarm = try(function()
     return type(getmetatable(cm.game_interface).set_region_abandoned) == "function"
   end) or false
-  if not radius or radius < 0 or not ox or not oy then
+  if not radius or radius < 0 or #anchors == 0 then
     log({ seq = seq, cmd = "trim", error = "trim needs a radius >= 0 and a locatable "
-          .. "human start", radius = or_null(radius), origin_x = or_null(ox),
-          origin_y = or_null(oy), me = or_null(me), turn = turn() })
+          .. "human start", radius = or_null(radius), n_anchors = #anchors,
+          me = or_null(me), turn = turn() })
     return
   end
   if not dry and not can_disarm then
@@ -1048,8 +1070,13 @@ function handlers.trim(seq, rest)
         if not gx or not gy then
           unplaced[#unplaced + 1] = name
         else
-          local dx, dy = gx - ox, gy - oy
-          if math.sqrt(dx * dx + dy * dy) > radius then
+          local d2min = nil
+          for _, a in ipairs(anchors) do
+            local dx, dy = gx - a.x, gy - a.y
+            local d2 = dx * dx + dy * dy
+            if not d2min or d2 < d2min then d2min = d2 end
+          end
+          if math.sqrt(d2min) > radius then
             local done = true
             if not dry then
               local nr, nc
@@ -1067,7 +1094,7 @@ function handlers.trim(seq, rest)
     end
   end
   log({ seq = seq, cmd = "trim", radius = radius, dry = dry, me = or_null(me),
-        origin_x = ox, origin_y = oy, n_factions = n,
+        n_anchors = #anchors, anchors = anchors, n_factions = n,
         n_killed = #killed, n_kept = #kept, n_unplaced = #unplaced,
         n_failed = #failed, n_already_dead = already,
         n_regions_abandoned = n_regions, n_characters_killed = n_chars,
@@ -1183,10 +1210,10 @@ local function poll()
   if cm and #assist_watch > 0 then pcall(assist_cleanup) end
 
 
-  if cm then
+  local armed = false
+  pcall(function() core:get_tm():real_callback(poll, POLL_MS, "twfrontend_poll"); armed = true end)
+  if not armed and cm then
     pcall(function() cm:callback(poll, POLL_SECONDS) end)
-  else
-    pcall(function() core:get_tm():real_callback(poll, POLL_MS, "twfrontend_poll") end)
   end
 end
 
@@ -1363,6 +1390,15 @@ local function arm_event_recorder()
         log({ cmd = "panel", opened = false, turn = turn(),
               name = or_null(try(function() return context.string end)) })
       end, true)
+
+    pcall(function()
+      core:add_listener("twcontrol_character_selected", "CharacterSelected", true,
+        function(context)
+          log({ cmd = "character_selected", turn = turn(),
+                cqi = or_null(try(function()
+                  return context:character():command_queue_index() end)) })
+        end, true)
+    end)
   end)
   log({ cmd = "event_recorder", armed = ok })
 end

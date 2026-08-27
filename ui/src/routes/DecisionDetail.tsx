@@ -70,16 +70,6 @@ const offerCols: Col<OfferRow>[] = [
     render: (r) => n(r.pct_global, 1),
   },
   {
-    key: 'local',
-    label: 'local',
-    unit: 'pct',
-    align: 'right',
-    group: 'greedy_catboost',
-    optional: true,
-    value: (r) => r.pct_local ?? 0,
-    render: (r) => n(r.pct_local, 1),
-  },
-  {
     key: 'gnn_impact',
     label: 'impact',
     align: 'right',

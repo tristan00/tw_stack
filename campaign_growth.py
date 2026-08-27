@@ -33,7 +33,7 @@ SELECT c.campaign_key AS ckey,
 
 TRAJECTORY_SQL = _TRAJECTORY % ""
 TRAJECTORY_SQL_ONE = _TRAJECTORY % ("WHERE campaign_id IN (SELECT campaign_id"
-                                    " FROM campaigns WHERE campaign_key = ?)")
+                                    " FROM campaigns WHERE campaign_key = %s)")
 
 
 def state_of(turn_rows) -> str:

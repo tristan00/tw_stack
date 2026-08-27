@@ -23,7 +23,7 @@ def window_rewards(con, window=WINDOW):
     for m, f, r in con.execute(
             "SELECT campaign_map, faction, settlements_gained + levels_gained FROM"
             " (SELECT campaign_map, faction, settlements_gained, levels_gained"
-            "    FROM campaign_gains ORDER BY first_ts DESC LIMIT ?)", (int(window),)):
+            "    FROM campaign_gains ORDER BY first_ts DESC LIMIT %s) w", (int(window),)):
         out.setdefault((m, f), []).append(float(r or 0.0))
     return out
 

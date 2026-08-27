@@ -170,8 +170,13 @@ class Executor:
             off = self.bus.out_offset()
 
         def _row_wanted(r):
-            if r.get("cmd") == "faction_destroyed":
+            c = r.get("cmd")
+            if c == "faction_destroyed":
                 return bool(r.get("is_us"))
+            if c == "panel":
+                return bool(r.get("opened"))
+            if c == "dilemma_issued":
+                return True
             return turn_before is None or (r.get("turn") or 0) > turn_before
 
         def _bus_silent():
@@ -194,8 +199,9 @@ class Executor:
                     return {"turn": None, "steps": steps + ["defeated"],
                             "waited_s": round(time.time() - t0, 1), "defeated": True}
                 return _bus_silent()
-            row, off = self.bus.wait_row(("turn_start", "faction_destroyed"),
-                                         timeout=poll, offset=off, pred=_row_wanted)
+            row, off = self.bus.wait_row(
+                ("turn_start", "faction_destroyed", "panel", "dilemma_issued"),
+                timeout=poll, offset=off, pred=_row_wanted)
             if row is not None:
                 if row.get("cmd") == "faction_destroyed":
                     common.waitlog("settle_between_turns", time.time() - t0, False,
@@ -204,10 +210,11 @@ class Executor:
                                      % row.get("event"))
                     return {"turn": None, "steps": steps + ["defeated"],
                             "waited_s": round(time.time() - t0, 1), "defeated": True}
-                common.waitlog("settle_between_turns", time.time() - t0, True,
-                               "turn=%s" % row.get("turn"))
-                return {"turn": row.get("turn"), "steps": steps,
-                        "waited_s": round(time.time() - t0, 1)}
+                if row.get("cmd") == "turn_start":
+                    common.waitlog("settle_between_turns", time.time() - t0, True,
+                                   "turn=%s" % row.get("turn"))
+                    return {"turn": row.get("turn"), "steps": steps,
+                            "waited_s": round(time.time() - t0, 1)}
             if _aborted():
                 return _bail()
             if self.defeated_row_seen():

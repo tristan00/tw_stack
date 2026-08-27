@@ -9,13 +9,11 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import common
-from decisions import dbopen
+from decisions import pg
 
-DB_NAME = "decisions.sqlite"
+DB_NAME = common.DECISIONS_DB
 RUNS_ROOT = common.RUNS_ROOT
 RUN_DIR = common.RUN_DIR
-
-BUSY_TIMEOUT = 30.0
 
 
 def current_run_dir(runs_root=RUNS_ROOT, timeout=0.0):
@@ -26,57 +24,43 @@ _local = threading.local()
 
 
 def _con(run_dir):
-    key = os.path.abspath(str(run_dir))
-    have = getattr(_local, "cons", None)
-    if have is None:
-        have = _local.cons = {}
-    con = have.get(key)
+    con = getattr(_local, "con", None)
     if con is not None:
         return con
-    path = os.path.join(run_dir, DB_NAME)
-    if not os.path.exists(path):
-        raise RuntimeError(
-            "no %s in %s -- the recorder owns this database and creates it. Start the "
-            "decisions stream before the advisor." % (DB_NAME, run_dir))
-    con = dbopen.connect(path, readonly=False, timeout=BUSY_TIMEOUT)
-    names = {r[0] for r in con.execute(
-        "SELECT name FROM sqlite_master WHERE type='table'")}
-    if "rpc_requests" not in names:
+    con = pg.connect(autocommit=True)
+    if con.execute("SELECT to_regclass('public.rpc_requests')").fetchone()[0] is None:
         con.close()
         raise RuntimeError(
-            "%s has no rpc_requests table -- it predates the database request channel. "
-            "The recorder creates it when it opens the store; restart the decisions "
-            "stream." % path)
-    have[key] = con
+            "database %s has no rpc_requests table -- the recorder owns the schema and "
+            "creates it when it opens the store. Start the decisions stream before the "
+            "advisor." % pg.DB)
+    con.execute("SET synchronous_commit = off")
+    con.execute("LISTEN rpc_requests")
+    con.execute("LISTEN rpc_responses")
+    _local.con = con
     return con
 
 
 def _store(run_dir):
     from decisions.store import DecisionStore
-    key = os.path.abspath(str(run_dir))
-    have = getattr(_local, "stores", None)
-    if have is None:
-        have = _local.stores = {}
-    st = have.get(key)
+    st = getattr(_local, "store", None)
     if st is None:
-        st = have[key] = DecisionStore(run_dir, readonly=True)
+        st = _local.store = DecisionStore(run_dir, readonly=True)
     return st
 
 
 def close(run_dir=None):
-    have = getattr(_local, "cons", None) or {}
-    stores = getattr(_local, "stores", None) or {}
-    for k in ([os.path.abspath(str(run_dir))] if run_dir else list(have)):
-        con = have.pop(k, None)
-        if con is not None:
-            try:
-                con.close()
-            except Exception:
-                pass
-    for k in ([os.path.abspath(str(run_dir))] if run_dir else list(stores)):
-        st = stores.pop(k, None)
-        if st is not None:
-            st.close()
+    con = getattr(_local, "con", None)
+    if con is not None:
+        _local.con = None
+        try:
+            con.close()
+        except Exception:
+            pass
+    st = getattr(_local, "store", None)
+    if st is not None:
+        _local.store = None
+        st.close()
 
 
 _req_seq = [0]
@@ -92,20 +76,23 @@ def _new_id(kind):
 
 def _ask(run_dir, kind, payload=None, req_id=None):
     con = _con(run_dir)
-    con.execute("INSERT INTO rpc_requests(req_id,kind,ts,payload) VALUES(?,?,?,?)",
+    con.execute("INSERT INTO rpc_requests(req_id,kind,ts,payload) VALUES(%s,%s,%s,%s)",
                 (req_id, kind, time.time(),
                  json.dumps(payload or {}, default=str)))
-    con.commit()
+    con.execute("SELECT pg_notify('rpc_requests', %s)", (req_id or kind,))
 
 
 def respond(run_dir, req_id, **payload):
     con = _con(run_dir)
     did = payload.pop("decision_id", None)
     err = payload.pop("error", None)
-    con.execute("INSERT OR REPLACE INTO rpc_responses(req_id,ts,decision_id,payload,error)"
-                " VALUES(?,?,?,?,?)",
+    con.execute("INSERT INTO rpc_responses(req_id,ts,decision_id,payload,error)"
+                " VALUES(%s,%s,%s,%s,%s)"
+                " ON CONFLICT (req_id) DO UPDATE SET ts=excluded.ts,"
+                " decision_id=excluded.decision_id, payload=excluded.payload,"
+                " error=excluded.error",
                 (req_id, time.time(), did, json.dumps(payload, default=str), err))
-    con.commit()
+    con.execute("SELECT pg_notify('rpc_responses', %s)", (req_id,))
 
 
 def read_requests(run_dir, after_id=0):
@@ -113,7 +100,7 @@ def read_requests(run_dir, after_id=0):
     rows, last = [], after_id
     for rpc_id, req_id, kind, ts, payload in con.execute(
             "SELECT rpc_id,req_id,kind,ts,payload FROM rpc_requests"
-            " WHERE rpc_id>? ORDER BY rpc_id", (after_id,)):
+            " WHERE rpc_id>%s ORDER BY rpc_id", (after_id,)):
         try:
             body = json.loads(payload or "{}")
         except json.JSONDecodeError:
@@ -122,6 +109,12 @@ def read_requests(run_dir, after_id=0):
         rows.append(body)
         last = rpc_id
     return rows, last
+
+
+def wait_requests(run_dir, timeout):
+    con = _con(run_dir)
+    for _ in con.notifies(timeout=timeout, stop_after=1):
+        pass
 
 
 def last_request_id(run_dir):
@@ -139,20 +132,19 @@ PRUNE_AFTER_S = 900.0
 def prune(run_dir, before_id, older_than=PRUNE_AFTER_S):
     con = _con(run_dir)
     cutoff = time.time() - float(older_than)
-    a = con.execute("DELETE FROM rpc_requests WHERE rpc_id<=? AND ts<?",
+    a = con.execute("DELETE FROM rpc_requests WHERE rpc_id<=%s AND ts<%s",
                     (before_id, cutoff)).rowcount
-    b = con.execute("DELETE FROM rpc_responses WHERE ts<?", (cutoff,)).rowcount
-    con.commit()
+    b = con.execute("DELETE FROM rpc_responses WHERE ts<%s", (cutoff,)).rowcount
     return max(0, a), max(0, b)
 
 
-def _await(run_dir, req_id, timeout, poll=0.02):
+def _await(run_dir, req_id, timeout):
     con = _con(run_dir)
     t0 = time.time()
     deadline = t0 + timeout
-    while time.time() < deadline:
+    while True:
         row = con.execute("SELECT decision_id,payload,error FROM rpc_responses"
-                          " WHERE req_id=?", (req_id,)).fetchone()
+                          " WHERE req_id=%s", (req_id,)).fetchone()
         if row is not None:
             did, payload, err = row
             common.waitlog("recorder_rpc", time.time() - t0, not err, req_id)
@@ -164,7 +156,11 @@ def _await(run_dir, req_id, timeout, poll=0.02):
                 body = {}
             body["decision_id"] = did
             return body
-        time.sleep(poll)
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        for _ in con.notifies(timeout=min(remaining, 1.0), stop_after=1):
+            pass
     common.waitlog("recorder_rpc", time.time() - t0, False, req_id)
     raise RuntimeError("recorder never answered request %s within %ss -- is the decisions "
                        "stream running?" % (req_id, timeout))

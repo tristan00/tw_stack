@@ -3,15 +3,14 @@ from __future__ import annotations
 
 import os
 import random
-import sqlite3
 import sys
-import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import common
 from analytics import metrics as M
 from analytics import store as S
+from decisions import pg, pgtest
 
 
 def reference_spearman(xs, ys):
@@ -125,7 +124,7 @@ class _Tenant:
     SOURCE = "decisions"
     DEPENDS_ON = ()
     DDL = ("CREATE TABLE IF NOT EXISTS probe("
-           " decision_id INTEGER PRIMARY KEY, doubled INTEGER NOT NULL) WITHOUT ROWID;")
+           " decision_id BIGINT PRIMARY KEY, doubled BIGINT NOT NULL);")
 
     def __init__(self, version=1, boom_at=None, drop=None, blind=False):
         self.FORMULA_VERSION = version
@@ -141,48 +140,49 @@ class _Tenant:
         if self.blind:
             return None
         r = src.execute("SELECT COUNT(*), MIN(decision_id) FROM decisions"
-                        " WHERE decision_id <= ?", (hi,)).fetchone()
+                        " WHERE decision_id <= %s", (hi,)).fetchone()
         return int(r[0] or 0), r[1]
 
     def step(self, src, an, lo, hi):
-        rows = src.execute("SELECT decision_id FROM decisions WHERE decision_id > ?"
-                           " AND decision_id <= ? ORDER BY decision_id", (lo, hi)).fetchall()
+        rows = src.execute("SELECT decision_id FROM decisions WHERE decision_id > %s"
+                           " AND decision_id <= %s ORDER BY decision_id", (lo, hi)).fetchall()
         written = 0
         for (did,) in rows:
             if self.boom_at is not None and did == self.boom_at:
                 raise RuntimeError("injected failure at %d" % did)
             if self.drop is not None and did == self.drop:
                 continue
-            an.execute("INSERT INTO probe(decision_id, doubled) VALUES(?, ?)"
+            an.execute("INSERT INTO probe(decision_id, doubled) VALUES(%s, %s)"
                        " ON CONFLICT(decision_id) DO UPDATE SET doubled=excluded.doubled",
                        (did, did * 2))
             written += 1
         return hi, written
 
 
-def _corpus(path, ids):
-    con = sqlite3.connect(path)
-    con.execute("CREATE TABLE decisions(decision_id INTEGER PRIMARY KEY)")
-    con.executemany("INSERT INTO decisions VALUES(?)", [(i,) for i in ids])
-    con.commit()
-    return con
-
-
 class _Sandbox:
 
     def __enter__(self):
-        self._d = tempfile.TemporaryDirectory()
-        self.dir = self._d.name
+        pgtest.fresh()
         self.cons = []
+        self._n = 0
         return self
 
     def corpus(self, name, ids):
-        con = _corpus(os.path.join(self.dir, name), ids)
+        schema = "src%d" % self._n
+        self._n += 1
+        con = pg.connect(autocommit=True, row_factory=pg.row_factory,
+                         search_path=schema)
+        con.execute("CREATE SCHEMA %s" % schema)
+        con.execute("CREATE TABLE decisions(decision_id BIGINT PRIMARY KEY)")
+        with con.cursor() as cur:
+            cur.executemany("INSERT INTO decisions VALUES(%s)", [(i,) for i in ids])
         self.cons.append(con)
         return con
 
-    def analytics(self, name="analytics.sqlite"):
-        con = S.connect(os.path.join(self.dir, name))
+    def analytics(self, name="analytics"):
+        schema = "an%d" % self._n
+        self._n += 1
+        con = S.connect(schema=schema)
         self.cons.append(con)
         return con
 
@@ -192,13 +192,13 @@ class _Sandbox:
                 c.close()
             except Exception:
                 pass
-        self._d.cleanup()
+        pgtest.drop()
         return False
 
 
 def test_formula_version_bump_wipes_and_rebuilds(fail):
     with _Sandbox() as box:
-        src = box.corpus("src.sqlite", range(91, 111))
+        src = box.corpus("src", range(91, 111))
         an = box.analytics()
         t = _Tenant(version=1)
         S.run_tenant(t, src, an)
@@ -218,7 +218,7 @@ def test_formula_version_bump_wipes_and_rebuilds(fail):
 
 def test_source_drift_forces_rebuild(fail):
     with _Sandbox() as box:
-        src = box.corpus("src.sqlite", range(91, 111))
+        src = box.corpus("src", range(91, 111))
         an = box.analytics()
         t = _Tenant()
         S.run_tenant(t, src, an)
@@ -234,7 +234,7 @@ def test_source_drift_forces_rebuild(fail):
 
 def test_a_watermark_ahead_of_its_source_rebuilds(fail):
     with _Sandbox() as box:
-        src = box.corpus("src.sqlite", range(91, 111))
+        src = box.corpus("src", range(91, 111))
         an = box.analytics()
         t = _Tenant(blind=True)
         S.run_tenant(t, src, an)
@@ -254,7 +254,7 @@ def test_a_watermark_ahead_of_its_source_rebuilds(fail):
 
 def test_no_source_row_below_the_watermark_is_uncomputed(fail):
     with _Sandbox() as box:
-        src = box.corpus("src.sqlite", [91, 92, 93, 97, 98])
+        src = box.corpus("src", [91, 92, 93, 97, 98])
         an = box.analytics()
         S.run_tenant(_Tenant(), src, an)
         st = S.state(an, "probe")
@@ -262,8 +262,8 @@ def test_no_source_row_below_the_watermark_is_uncomputed(fail):
             fail("a permanent gap stalled the fold at watermark=%r rows=%r; ids 94-96 do "
                  "not exist and never will" % (st["watermark"], st["rows"]))
 
-        src2 = box.corpus("src2.sqlite", range(91, 101))
-        an2 = box.analytics("a2.sqlite")
+        src2 = box.corpus("src2", range(91, 101))
+        an2 = box.analytics("a2")
         try:
             S.run_tenant(_Tenant(drop=95), src2, an2)
             fail("a tenant dropped a source row and the pass was accepted -- every "
@@ -278,7 +278,7 @@ def test_no_source_row_below_the_watermark_is_uncomputed(fail):
 
 def test_watermark_and_rows_commit_together(fail):
     with _Sandbox() as box:
-        src = box.corpus("src.sqlite", range(91, 111))
+        src = box.corpus("src", range(91, 111))
         an = box.analytics()
         try:
             S.run_tenant(_Tenant(boom_at=100), src, an)

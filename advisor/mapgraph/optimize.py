@@ -17,8 +17,18 @@ from advisor.mapgraph import train as T
 
 STAMP = time.strftime("%Y%m%d_%H%M%S")
 OUT_DIR = os.path.join(common.native(common.LOGS_SERVICES), "optuna_gnn")
-STORAGE = "sqlite:///" + os.path.join(OUT_DIR, "optuna_gnn.db").replace("\\", "/")
 TRIALS_JSONL = os.path.join(OUT_DIR, "trials.jsonl")
+
+
+def _storage():
+    from decisions import pg
+    admin = pg.connect(dbname="postgres", autocommit=True)
+    try:
+        if not admin.execute("SELECT 1 FROM pg_database WHERE datname='optuna'").fetchone():
+            admin.execute("CREATE DATABASE optuna")
+    finally:
+        admin.close()
+    return "postgresql+psycopg://%s@%s:%d/optuna" % (pg.USER, pg.HOST, pg.PORT)
 FIXED = {"update": "mlp", "epochs": 60, "patience": 10, "grad_clip": 5.0,
          "bf16": True, "seed": 0, "device": "cuda", "conv_map": None, "conv_a2e": None}
 
@@ -67,7 +77,7 @@ def run(trials=60, budget_s=600.0):
          % (len(ex), len(w["campaigns"]), trials, budget_s))
 
     study = optuna.create_study(
-        study_name="gnn_%s" % STAMP, storage=STORAGE, direction="minimize",
+        study_name="gnn_%s" % STAMP, storage=_storage(), direction="minimize",
         sampler=optuna.samplers.TPESampler(seed=0, multivariate=True),
         pruner=optuna.pruners.MedianPruner(n_startup_trials=8, n_warmup_steps=3))
 

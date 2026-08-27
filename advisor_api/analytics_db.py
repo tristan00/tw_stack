@@ -2,11 +2,12 @@ from __future__ import annotations
 
 
 import os
-import sqlite3
 import sys
 import threading
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import psycopg
 
 from advisor_api import db as _db
 from analytics import store as _store
@@ -18,16 +19,9 @@ def path(run: str | None = None) -> str:
 
 
 def connect(run: str | None = None):
-    p = path(run)
-    cache = getattr(_local, "cons", None)
-    if cache is None:
-        cache = _local.cons = {}
-    con = cache.get(p)
-    if con is None or not os.path.isfile(p):
-        if not os.path.isfile(p):
-            cache.pop(p, None)
-            return None
-        con = cache[p] = _store.connect(p, readonly=True)
+    con = getattr(_local, "con", None)
+    if con is None or con.closed:
+        con = _local.con = _store.connect(readonly=True)
     return con
 
 
@@ -37,7 +31,7 @@ def tenant_state(name: str, run: str | None = None) -> dict:
         return {}
     try:
         return _store.state(con, name)
-    except sqlite3.Error:
+    except psycopg.Error:
         return {}
 
 
@@ -47,7 +41,7 @@ def all_state(run: str | None = None) -> list:
         return []
     try:
         return _store.all_state(con)
-    except sqlite3.Error:
+    except psycopg.Error:
         return []
 
 
@@ -57,7 +51,7 @@ def rows(sql: str, args=(), run: str | None = None) -> list:
         return []
     try:
         return [dict(r) for r in con.execute(sql, args)]
-    except sqlite3.Error:
+    except psycopg.Error:
         return []
 
 
