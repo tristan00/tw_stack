@@ -9,7 +9,7 @@ from collections import Counter, defaultdict
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(_HERE))
 import common
-from decisions import dbopen
+from decisions import pg
 
 JUSTIFIED = {
     ("state:hero", "stance"):
@@ -82,7 +82,7 @@ def _rows(con, col, table, where=(), args=(), sample=None):
                         args).fetchone()[0]
         step = max(1, n // sample)
         if step > 1:
-            cond.append("decision_id %% %d = 0" % step)
+            cond.append("MOD(decision_id, %d) = 0" % step)
     if cond:
         sql += " WHERE " + " AND ".join(cond)
     return (r[0] for r in con.execute(sql, args))
@@ -114,19 +114,18 @@ def survivor_report(con):
 
 
 def check(db=None, sample=None, min_rows=200, verbose=True):
-    db = db or os.path.join(common.RUNS_ROOT.replace("/", os.sep), "run",
-                            "decisions.sqlite")
-    con = dbopen.connect(db, timeout=300)
+    con = pg.connect(autocommit=True, readonly=True)
     out = defaultdict(_blank)
 
     _scan(_rows(con, "campaign", "decision_points", sample=sample), "campaign", out)
-    for (kind,) in con.execute("SELECT DISTINCT context_kind FROM entity_snapshots"):
-        _scan(_rows(con, "features", "entity_snapshots", ["context_kind=?"], (kind,),
+    for (kind,) in con.execute("SELECT DISTINCT context_kind FROM entity_snapshots"
+                               ).fetchall():
+        _scan(_rows(con, "features", "entity_snapshots", ["context_kind=%s"], (kind,),
                     sample), "state:%s" % kind, out)
     seen_types = {r[0] for r in con.execute(
         "SELECT DISTINCT action_type FROM action_offers")}
     for at in sorted(seen_types):
-        _scan(_rows(con, "params", "action_offers", ["action_type=?"], (at,), sample),
+        _scan(_rows(con, "params", "action_offers", ["action_type=%s"], (at,), sample),
               "offer:%s" % at, out)
 
     wrows = defaultdict(_blank)
@@ -149,7 +148,7 @@ def check(db=None, sample=None, min_rows=200, verbose=True):
         m["empty"] += s["empty"]
         m["vals"].update(s["vals"])
 
-    zero = [(at, n) for at, n in survivor_report(dbopen.connect(db, timeout=300))
+    zero = [(at, n) for at, n in survivor_report(pg.connect(autocommit=True, readonly=True))
             if n == 0]
     dead, thin = [], []
     for (scope, field), s in sorted(merged.items()):
@@ -186,13 +185,12 @@ def check(db=None, sample=None, min_rows=200, verbose=True):
 
 
 def selftest():
-    import shutil
-    import tempfile
     sys.path.insert(0, common.DECISIONS)
+    from decisions import pgtest
     from decisions.store import DecisionStore
 
-    def _build(run, constant):
-        st = DecisionStore(run)
+    def _build(constant):
+        st = DecisionStore("covselftest")
         st.register_collector("sha-selftest")
         for turn in range(1, 6):
             snap = {"ts": 1000.0 + turn,
@@ -206,16 +204,13 @@ def selftest():
                                      "action_type": "noop", "key": "noop", "params": {}}])
         st.close()
 
-    d = tempfile.mkdtemp(prefix="covselftest_")
     try:
-        bad_dir = os.path.join(d, "constant")
-        good_dir = os.path.join(d, "varying")
-        os.makedirs(bad_dir)
-        os.makedirs(good_dir)
-        _build(bad_dir, True)
-        _build(good_dir, False)
-        bad = check(os.path.join(bad_dir, "decisions.sqlite"), min_rows=1, verbose=False)
-        good = check(os.path.join(good_dir, "decisions.sqlite"), min_rows=1, verbose=False)
+        pgtest.fresh()
+        _build(True)
+        bad = check(min_rows=1, verbose=False)
+        pgtest.fresh()
+        _build(False)
+        good = check(min_rows=1, verbose=False)
         bad_fields = {f for s, f, _n, _o, _w in bad if s != "declared"}
         good_fields = {f for s, f, _n, _o, _w in good if s != "declared"}
         ok1 = "treasury" in bad_fields and "rank" in bad_fields
@@ -226,7 +221,7 @@ def selftest():
               % ("ok  " if ok2 else "FAIL", ", ".join(sorted(good_fields))[:60] or "none"))
         return 0 if (ok1 and ok2) else 1
     finally:
-        shutil.rmtree(d, ignore_errors=True)
+        pgtest.drop()
 
 
 if __name__ == "__main__":

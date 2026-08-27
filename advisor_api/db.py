@@ -4,15 +4,16 @@ from __future__ import annotations
 import contextvars
 import functools
 import os
-import sqlite3
 import sys
 import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import psycopg
+
 import common
-from decisions import dbopen
+from decisions import pg
 
 _local = threading.local()
 _trace = contextvars.ContextVar("api_trace", default=None)
@@ -50,25 +51,21 @@ def run_dir() -> str:
 
 
 def db_path(run: str | None = None) -> str:
-    return os.path.join(run or run_dir(), "decisions.sqlite")
+    return pg.dsn()
 
 
-def connect(run: str | None = None) -> sqlite3.Connection:
-    path = db_path(run)
-    cache = getattr(_local, "cons", None)
-    if cache is None:
-        cache = _local.cons = {}
-    con = cache.get(path)
-    if con is None:
-        con = cache[path] = dbopen.connect(path)
-        con.row_factory = sqlite3.Row
+def connect(run: str | None = None):
+    con = getattr(_local, "con", None)
+    if con is None or con.closed:
+        con = _local.con = pg.connect(autocommit=True, readonly=True,
+                                      row_factory=pg.row_factory)
     return con
 
 
 _STAMP_SQL = (
-    "SELECT MAX(decision_id) FROM decisions",
-    "SELECT MAX(decision_id) FROM taken",
-    "SELECT MAX(interrupt_id) FROM interrupts",
+    "SELECT MAX(decision_id) m FROM decisions",
+    "SELECT MAX(decision_id) m FROM taken",
+    "SELECT MAX(interrupt_id) m FROM interrupts",
 )
 
 
@@ -78,14 +75,14 @@ def stamp(run: str | None = None) -> tuple:
     for sql in _STAMP_SQL:
         try:
             row = con.execute(sql).fetchone()
-            out.append((row[0] if row else 0) or 0)
-        except sqlite3.Error as e:
+            out.append((row["m"] if row else 0) or 0)
+        except psycopg.Error as e:
             out.append("err:%s" % e)
     return tuple(out)
 
 
 def columns(con, name: str) -> set:
     try:
-        return {c[0] for c in con.execute("SELECT * FROM %s LIMIT 0" % name).description}
-    except sqlite3.Error:
+        return {c.name for c in con.execute("SELECT * FROM %s LIMIT 0" % name).description}
+    except psycopg.Error:
         return set()

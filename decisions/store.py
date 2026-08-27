@@ -4,17 +4,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import sqlite3
-import struct
 import sys
 import time
-import zlib
 
-from decisions import dbopen
-from decisions import store_schema as S
+import psycopg
 
-DB_NAME = "decisions.sqlite"
-ZLEVEL = 6
+from decisions import pg
+from decisions import pg_schema as S
 
 
 class IncompatibleStore(RuntimeError):
@@ -29,9 +25,9 @@ class _SnapshotRead:
 
     def __enter__(self):
         try:
-            self.con.execute("BEGIN DEFERRED")
+            self.con.execute("BEGIN ISOLATION LEVEL REPEATABLE READ")
             self.entered = True
-        except sqlite3.OperationalError as e:
+        except psycopg.Error as e:
             sys.stderr.write("store: could not open a read snapshot (%s) -- reads may be torn\n"
                              % repr(e)[:100])
         return self
@@ -40,7 +36,7 @@ class _SnapshotRead:
         if self.entered:
             try:
                 self.con.execute("COMMIT")
-            except sqlite3.OperationalError:
+            except psycopg.Error:
                 pass
         return False
 
@@ -67,121 +63,42 @@ class DecisionStore:
 
     def __init__(self, run_dir, readonly=False):
         self.run_id = os.path.basename(str(run_dir).rstrip("/\\"))
-        self.path = os.path.join(run_dir, DB_NAME)
         self.readonly = bool(readonly)
         self._blob_cache = {}
         self._action_cache = {}
         self._campaign_cache = {}
         if self.readonly:
-            if not os.path.exists(self.path):
-                raise IncompatibleStore("no %s in %s" % (DB_NAME, run_dir))
-            self.con = dbopen.connect(self.path, readonly=True)
+            self.con = pg.connect(autocommit=True, readonly=True)
             self._assert_compatible()
             return
-        fresh = not os.path.exists(self.path) or os.path.getsize(self.path) == 0
-        self.con = dbopen.connect(self.path, readonly=False)
-        if fresh:
-            for p in S.PRAGMAS:
-                self.con.execute(p)
-        else:
-            self.con.execute("PRAGMA journal_mode=WAL")
-        self._assert_compatible(fresh=fresh)
-        self.con.executescript(S.DDL)
-        self._add_missing_columns()
-        self.con.executescript(S.SCALAR_DDL)
-        if self.con.execute("SELECT 1 FROM decisions WHERE settlements IS NULL"
-                            " AND campaign_blob IS NOT NULL LIMIT 1").fetchone():
-            self._backfill_scalars()
-        if self.con.execute(
-                "SELECT 1 FROM taken WHERE campaign_id IS NULL LIMIT 1").fetchone():
-            t0 = time.time()
-            self.con.execute(
-                "UPDATE taken SET campaign_id = (SELECT d.campaign_id FROM decisions d"
-                " WHERE d.decision_id = taken.decision_id) WHERE campaign_id IS NULL")
-            self.con.commit()
-            sys.stderr.write("store: backfilled campaign_id on taken in %.1fs"
-                             % (time.time() - t0) + chr(10))
-        self.con.executescript(S.VIEWS)
-        self.con.execute("INSERT OR IGNORE INTO meta(k,v) VALUES('schema_version',?)",
-                         (S.SCHEMA_VERSION,))
+        self.con = pg.connect()
+        self.con.execute("SET synchronous_commit = off")
+        self.con.execute(S.DDL)
+        self.con.execute(S.VIEWS)
+        self.con.execute("INSERT INTO meta(k,v) VALUES('schema_version',%s)"
+                         " ON CONFLICT (k) DO NOTHING", (S.SCHEMA_VERSION,))
         self.con.commit()
+        self._assert_compatible()
 
-    _ADD_COLUMNS = (("campaigns", "campaign_map", "TEXT"),
-                    ("campaigns", "presave_radius", "REAL"),
-                    ("campaigns", "selector", "TEXT"),
-                    ("campaigns", "picked_ts", "REAL"),
-                    ("campaigns", "difficulty", "INTEGER"),
-                    ("campaigns", "leader", "TEXT"),
-                    ("ucb_picks", "blend", "REAL"),
-                    ("ucb_picks", "entropy", "REAL"),
-                    ("ucb_picks", "std", "REAL"),
-                    ("ucb_pick_rows", "blend", "REAL"),
-                    ("ucb_pick_rows", "entropy", "REAL"),
-                    ("ucb_pick_rows", "std", "REAL"),
-                    ("decisions", "income", "REAL"),
-                    ("decisions", "settlements", "REAL"),
-                    ("decisions", "allies", "REAL"),
-                    ("decisions", "vassals", "REAL"),
-                    ("decisions", "power_rank", "REAL"),
-                    ("decisions", "lord_level", "REAL"),
-                    ("taken", "campaign_id", "INTEGER"))
-
-    def _add_missing_columns(self):
-        for table, col, decl in self._ADD_COLUMNS:
-            have = {r[1] for r in self.con.execute("PRAGMA table_info(%s)" % table)}
-            if col not in have:
-                self.con.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, col, decl))
-
-    def _backfill_scalars(self):
-        t0 = time.time()
-        n = 0
-        last = 0
-        while True:
-            rows = self.con.execute(
-                "SELECT d.decision_id, unz(b.z) FROM decisions d"
-                " JOIN blobs b ON b.blob_id = d.campaign_blob"
-                " WHERE d.decision_id > ? AND d.settlements IS NULL"
-                " ORDER BY d.decision_id LIMIT 5000",
-                (last,)).fetchall()
-            if not rows:
-                break
-            ups = []
-            for did, j in rows:
-                try:
-                    camp = json.loads(j) if j else {}
-                except ValueError:
-                    camp = {}
-                ups.append(tuple(_real_or_none(camp.get(k)) for k in S.CAMPAIGN_SCALARS)
-                           + (did,))
-                last = did
-            self.con.executemany(
-                "UPDATE decisions SET income=?,settlements=?,allies=?,vassals=?,"
-                "power_rank=?,lord_level=? WHERE decision_id=?", ups)
-            n += len(ups)
-        self.con.commit()
-        sys.stderr.write("store: backfilled campaign scalars on %d decisions in %.1fs" % (n, time.time() - t0) + chr(10))
-
-
-    def _assert_compatible(self, fresh=False):
-        have = {r[0] for r in self.con.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'")}
-        if not have and fresh:
-            return
-        if "decision_points" in have or ("action_offers" in have and "offers" not in have):
+    def _assert_compatible(self):
+        try:
+            row = self.con.execute(
+                "SELECT v FROM meta WHERE k='schema_version'").fetchone()
+        except psycopg.errors.UndefinedTable:
             raise IncompatibleStore(
-                "%s is a v1 decision store. It is not upgraded in place: 0.705%% of its "
-                "offers collide on the identity its labels were attached by, its collector "
-                "version cannot be reconstructed, and campaign outcome was never recorded. "
-                "Archive it and start a new run directory." % self.path)
-        if have and "offers" not in have and "meta" not in have:
-            raise IncompatibleStore("%s is not a decision store" % self.path)
+                "database %s has no decision store schema. The recorder owns the schema "
+                "and creates it; start the decisions stream first." % pg.DB)
+        if row and row[0] != S.SCHEMA_VERSION:
+            raise IncompatibleStore(
+                "database %s holds schema_version %s, this code expects %s"
+                % (pg.DB, row[0], S.SCHEMA_VERSION))
 
     def snapshot_read(self):
         return _SnapshotRead(self.con)
 
     def _assert_writable(self, what):
         if self.readonly:
-            raise IncompatibleStore("%s called on a read-only store (%s)" % (what, self.path))
+            raise IncompatibleStore("%s called on a read-only store" % what)
 
     def close(self):
         try:
@@ -197,12 +114,11 @@ class DecisionStore:
         hit = self._blob_cache.get(sha)
         if hit is not None:
             return hit
-        row = self.con.execute("SELECT blob_id FROM blobs WHERE sha=?", (sha,)).fetchone()
+        row = self.con.execute("SELECT blob_id FROM blobs WHERE sha=%s", (sha,)).fetchone()
         if row is None:
-            cur = self.con.execute(
-                "INSERT INTO blobs(sha,n,z) VALUES(?,?,?)",
-                (sha, len(text), dbopen.pack(text, ZLEVEL)))
-            bid = cur.lastrowid
+            bid = self.con.execute(
+                "INSERT INTO blobs(sha,n,z) VALUES(%s,%s,%s) RETURNING blob_id",
+                (sha, len(text), text)).fetchone()[0]
         else:
             bid = row[0]
         if len(self._blob_cache) > 4096:
@@ -216,11 +132,11 @@ class DecisionStore:
         if hit is not None:
             return hit
         self.con.execute(
-            "INSERT OR IGNORE INTO actions(context_kind,context_id,action_type,action_key,"
-            "params) VALUES(?,?,?,?,?)", k)
+            "INSERT INTO actions(context_kind,context_id,action_type,action_key,"
+            "params) VALUES(%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING", k)
         aid = self.con.execute(
-            "SELECT action_id FROM actions WHERE context_kind=? AND context_id=? AND "
-            "action_type=? AND action_key=? AND params=?", k).fetchone()[0]
+            "SELECT action_id FROM actions WHERE context_kind=%s AND context_id=%s AND "
+            "action_type=%s AND action_key=%s AND params=%s", k).fetchone()[0]
         if len(self._action_cache) > 200000:
             self._action_cache.clear()
         self._action_cache[k] = aid
@@ -235,36 +151,36 @@ class DecisionStore:
         if hit is not None:
             if campaign_map:
                 self.con.execute(
-                    "UPDATE campaigns SET campaign_map=? "
-                    "WHERE campaign_id=? AND (campaign_map IS NULL OR campaign_map='')",
+                    "UPDATE campaigns SET campaign_map=%s "
+                    "WHERE campaign_id=%s AND (campaign_map IS NULL OR campaign_map='')",
                     (campaign_map, hit))
             if presave_radius is not None:
                 self.con.execute(
-                    "UPDATE campaigns SET presave_radius=? "
-                    "WHERE campaign_id=? AND presave_radius IS NULL",
+                    "UPDATE campaigns SET presave_radius=%s "
+                    "WHERE campaign_id=%s AND presave_radius IS NULL",
                     (presave_radius, hit))
             if selector:
                 self.con.execute(
-                    "UPDATE campaigns SET selector=? "
-                    "WHERE campaign_id=? AND selector IS NULL",
+                    "UPDATE campaigns SET selector=%s "
+                    "WHERE campaign_id=%s AND selector IS NULL",
                     (selector, hit))
             if difficulty is not None:
                 self.con.execute(
-                    "UPDATE campaigns SET difficulty=? "
-                    "WHERE campaign_id=? AND difficulty IS NULL",
+                    "UPDATE campaigns SET difficulty=%s "
+                    "WHERE campaign_id=%s AND difficulty IS NULL",
                     (difficulty, hit))
             if leader:
                 self.con.execute(
-                    "UPDATE campaigns SET leader=? "
-                    "WHERE campaign_id=? AND leader IS NULL",
+                    "UPDATE campaigns SET leader=%s "
+                    "WHERE campaign_id=%s AND leader IS NULL",
                     (leader, hit))
             return hit
         self.con.execute(
-            "INSERT OR IGNORE INTO campaigns"
+            "INSERT INTO campaigns"
             "(campaign_key,faction,campaign_map,presave_radius,selector,difficulty,leader) "
-            "VALUES(?,?,?,?,?,?,?)",
+            "VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (campaign_key) DO NOTHING",
             (key, faction, campaign_map, presave_radius, selector, difficulty, leader))
-        cid = self.con.execute("SELECT campaign_id FROM campaigns WHERE campaign_key=?",
+        cid = self.con.execute("SELECT campaign_id FROM campaigns WHERE campaign_key=%s",
                                (key,)).fetchone()[0]
         self._campaign_cache[key] = cid
         return cid
@@ -272,10 +188,12 @@ class DecisionStore:
     def register_collector(self, collector_sha, git_sha=None, note=None):
         self._assert_writable("register_collector")
         self.con.execute(
-            "INSERT OR IGNORE INTO collector_versions(collector_sha,git_sha,started_ts,note)"
-            " VALUES(?,?,?,?)", (collector_sha, git_sha, time.time(), note))
-        row = self.con.execute("SELECT version_id FROM collector_versions WHERE collector_sha=?",
-                               (collector_sha,)).fetchone()
+            "INSERT INTO collector_versions(collector_sha,git_sha,started_ts,note)"
+            " VALUES(%s,%s,%s,%s) ON CONFLICT (collector_sha) DO NOTHING",
+            (collector_sha, git_sha, time.time(), note))
+        row = self.con.execute(
+            "SELECT version_id FROM collector_versions WHERE collector_sha=%s",
+            (collector_sha,)).fetchone()
         self.con.commit()
         self._version_id = row[0]
         return row[0]
@@ -301,27 +219,28 @@ class DecisionStore:
                                 camp.get("faction"), camp.get("campaign_map"),
                                 camp.get("presave_radius"), camp.get("selector"),
                                 _int_or_none(camp.get("difficulty")), camp.get("leader"))
-        cur = self.con.execute(
+        did = self.con.execute(
             "INSERT INTO decisions(campaign_id,ts,turn,decision_seq,policy,version_id,"
             "n_entities,n_offers,campaign_blob,world_blob,"
             "income,settlements,allies,vassals,power_rank,lord_level)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+            " RETURNING decision_id",
             (cid, snapshot.get("ts") or time.time(), int(camp.get("turn") or 0),
              int(decision_seq), policy, self._version_id, len(ents), 0,
              self._blob(_dumps(camp)), self._blob(_dumps(snapshot.get("world") or {})))
-            + tuple(_real_or_none(camp.get(k)) for k in S.CAMPAIGN_SCALARS))
-        did = cur.lastrowid
+            + tuple(_real_or_none(camp.get(k)) for k in S.CAMPAIGN_SCALARS)).fetchone()[0]
 
-        self.con.executemany(
-            "INSERT INTO entities(decision_id,entity_seq,context_kind,context_id,"
-            "features_blob) VALUES(?,?,?,?,?)",
-            [(did, ei, e.get("context_kind"), str(e.get("context_id")),
-              self._blob(_dumps(e.get("state") or {})))
-             for ei, e in enumerate(ents)])
+        with self.con.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO entities(decision_id,entity_seq,context_kind,context_id,"
+                "features_blob) VALUES(%s,%s,%s,%s,%s)",
+                [(did, ei, e.get("context_kind"), str(e.get("context_id")),
+                  self._blob(_dumps(e.get("state") or {})))
+                 for ei, e in enumerate(ents)])
 
         self.con.execute(
-            "UPDATE campaigns SET first_decision_id=COALESCE(first_decision_id,?),"
-            "last_decision_id=?, turns=MAX(COALESCE(turns,0),?) WHERE campaign_id=?",
+            "UPDATE campaigns SET first_decision_id=COALESCE(first_decision_id,%s),"
+            "last_decision_id=%s, turns=GREATEST(COALESCE(turns,0),%s) WHERE campaign_id=%s",
             (did, did, int(camp.get("turn") or 0), cid))
         self.con.commit()
         return did
@@ -330,7 +249,7 @@ class DecisionStore:
         self._assert_writable("attach_options")
         ents = {(k, str(i)): seq for seq, (k, i) in enumerate(
             self.con.execute("SELECT context_kind,context_id FROM entities"
-                             " WHERE decision_id=? ORDER BY entity_seq", (decision_id,)))}
+                             " WHERE decision_id=%s ORDER BY entity_seq", (decision_id,)))}
         rows = []
         for o in options or []:
             ei = ents.get((o.get("context_kind"), str(o.get("context_id"))))
@@ -344,10 +263,11 @@ class DecisionStore:
         if len(rows) >= S.MAX_OFFERS_PER_DECISION:
             raise ValueError("decision has %d options; the view id packing allows %d"
                              % (len(rows), S.MAX_OFFERS_PER_DECISION - 1))
-        self.con.executemany(
-            "INSERT INTO offers(decision_id,offer_seq,entity_seq,action_id)"
-            " VALUES(?,?,?,?)", rows)
-        self.con.execute("UPDATE decisions SET n_offers=? WHERE decision_id=?",
+        with self.con.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO offers(decision_id,offer_seq,entity_seq,action_id)"
+                " VALUES(%s,%s,%s,%s)", rows)
+        self.con.execute("UPDATE decisions SET n_offers=%s WHERE decision_id=%s",
                          (len(rows), decision_id))
         self.con.commit()
         return len(rows)
@@ -356,7 +276,7 @@ class DecisionStore:
         if not timings:
             return 0
         self._assert_writable("attach_timings")
-        self.con.execute("UPDATE decisions SET timings=? WHERE decision_id=?",
+        self.con.execute("UPDATE decisions SET timings=%s WHERE decision_id=%s",
                          (_dumps(timings), decision_id))
         self.con.commit()
         return 1
@@ -366,7 +286,7 @@ class DecisionStore:
         for seq, ck, cid, at, ak in self.con.execute(
                 "SELECT o.offer_seq,a.context_kind,a.context_id,a.action_type,a.action_key"
                 " FROM offers o JOIN actions a ON a.action_id=o.action_id"
-                " WHERE o.decision_id=?", (decision_id,)):
+                " WHERE o.decision_id=%s", (decision_id,)):
             out.setdefault((ck, str(cid), at, str(ak)), seq)
         return out
 
@@ -374,53 +294,37 @@ class DecisionStore:
         if not scores:
             return 0
         self._assert_writable("attach_scores")
-        n_offers = self.con.execute("SELECT n_offers FROM decisions WHERE decision_id=?",
-                                    (decision_id,)).fetchone()
-        if n_offers is None:
-            return 0
-        n_offers = int(n_offers[0])
-        ns = len(S.SCORE_FIELDS)
-        buf = bytearray(struct.pack("<%df" % (n_offers * ns),
-                                    *([float("nan")] * (n_offers * ns))))
-        row = self.con.execute("SELECT packed FROM scores WHERE decision_id=?",
-                               (decision_id,)).fetchone()
-        if row is not None and len(row[0]) == len(buf):
-            buf = bytearray(row[0])
         seqs = self._seq_by_identity(decision_id)
-        nm = len(S.MODEL_SCORE_FIELDS)
-        per_model = {}
+        rows, model_rows = [], []
         n = 0
         for s in scores:
             seq = seqs.get((s.get("context_kind"), str(s.get("context_id")),
                             s.get("action_type"), str(s.get("key"))))
             if seq is None:
                 continue
-            for j, f in enumerate(S.SCORE_FIELDS):
-                v = s.get(f)
-                struct.pack_into("<f", buf, (seq * ns + j) * 4,
-                                 float("nan") if v is None else float(v))
+            rows.append((decision_id, seq)
+                        + tuple(_real_or_none(s.get(f)) for f in S.SCORE_FIELDS))
             for model, vals in (s.get("models") or {}).items():
-                mbuf = per_model.get(model)
-                if mbuf is None:
-                    mbuf = bytearray(struct.pack("<%df" % (n_offers * nm),
-                                                 *([float("nan")] * (n_offers * nm))))
-                    old = self.con.execute(
-                        "SELECT packed FROM model_scores WHERE decision_id=? AND model=?",
-                        (decision_id, str(model))).fetchone()
-                    if old is not None and len(old[0]) == len(mbuf):
-                        mbuf = bytearray(old[0])
-                    per_model[model] = mbuf
-                for j, f in enumerate(S.MODEL_SCORE_FIELDS):
-                    v = (vals or {}).get(f)
-                    struct.pack_into("<f", mbuf, (seq * nm + j) * 4,
-                                     float("nan") if v is None else float(v))
+                model_rows.append((decision_id, seq, str(model))
+                                  + tuple(_real_or_none((vals or {}).get(f))
+                                          for f in S.MODEL_SCORE_FIELDS))
             n += 1
-        self.con.execute("INSERT OR REPLACE INTO scores(decision_id,packed) VALUES(?,?)",
-                         (decision_id, bytes(buf)))
-        for model, mbuf in per_model.items():
-            self.con.execute(
-                "INSERT OR REPLACE INTO model_scores(decision_id,model,packed) VALUES(?,?,?)",
-                (decision_id, str(model), bytes(mbuf)))
+        with self.con.cursor() as cur:
+            if rows:
+                cur.executemany(
+                    "INSERT INTO offer_scores(decision_id,offer_seq,score,exploit,rank,"
+                    "pct_global,gnn_impact,gnn_rank)"
+                    " VALUES(%s,%s,%s,%s,%s,%s,%s,%s)"
+                    " ON CONFLICT (decision_id,offer_seq) DO UPDATE SET"
+                    " score=excluded.score, exploit=excluded.exploit, rank=excluded.rank,"
+                    " pct_global=excluded.pct_global,"
+                    " gnn_impact=excluded.gnn_impact, gnn_rank=excluded.gnn_rank", rows)
+            if model_rows:
+                cur.executemany(
+                    "INSERT INTO offer_model_scores(decision_id,offer_seq,model,score,rank)"
+                    " VALUES(%s,%s,%s,%s,%s)"
+                    " ON CONFLICT (decision_id,offer_seq,model) DO UPDATE SET"
+                    " score=excluded.score, rank=excluded.rank", model_rows)
         self.con.commit()
         return n
 
@@ -430,9 +334,9 @@ class DecisionStore:
         atype, akey = taken.get("action_type"), str(taken.get("key"))
         row = self.con.execute(
             "SELECT o.offer_seq,o.entity_seq,o.action_id FROM offers o"
-            " JOIN actions a ON a.action_id=o.action_id WHERE o.decision_id=?"
-            " AND a.context_kind=? AND a.context_id=? AND a.action_type=? AND a.action_key=?"
-            " ORDER BY o.offer_seq LIMIT 1",
+            " JOIN actions a ON a.action_id=o.action_id WHERE o.decision_id=%s"
+            " AND a.context_kind=%s AND a.context_id=%s AND a.action_type=%s"
+            " AND a.action_key=%s ORDER BY o.offer_seq LIMIT 1",
             (decision_id, ck, cid, atype, akey)).fetchone()
         seq, ent_seq, action_id = row if row else (None, None, None)
         if action_id is None:
@@ -440,11 +344,20 @@ class DecisionStore:
                                         _dumps(taken.get("params") or {}))
         conf = taken.get("confirm") or {}
         self.con.execute(
-            "INSERT OR REPLACE INTO taken(decision_id,offer_seq,entity_seq,action_id,ts,"
+            "INSERT INTO taken(decision_id,offer_seq,entity_seq,action_id,ts,"
             "executed,confirmed,counted,refusal,confirm_signal,confirm_before,confirm_after,"
             "latency_ms,policy,timing,diagnostics,campaign_id)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
-            "(SELECT campaign_id FROM decisions WHERE decision_id=?))",
+            " VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
+            "(SELECT campaign_id FROM decisions WHERE decision_id=%s))"
+            " ON CONFLICT (decision_id) DO UPDATE SET"
+            " offer_seq=excluded.offer_seq, entity_seq=excluded.entity_seq,"
+            " action_id=excluded.action_id, ts=excluded.ts, executed=excluded.executed,"
+            " confirmed=excluded.confirmed, counted=excluded.counted,"
+            " refusal=excluded.refusal, confirm_signal=excluded.confirm_signal,"
+            " confirm_before=excluded.confirm_before, confirm_after=excluded.confirm_after,"
+            " latency_ms=excluded.latency_ms, policy=excluded.policy,"
+            " timing=excluded.timing, diagnostics=excluded.diagnostics,"
+            " campaign_id=excluded.campaign_id",
             (decision_id, seq, ent_seq, action_id, taken.get("ts") or time.time(),
              1 if taken.get("executed") else 0, 1 if taken.get("confirmed") else 0,
              1 if taken.get("counted") else 0, taken.get("refusal"), conf.get("signal"),
@@ -463,22 +376,23 @@ class DecisionStore:
         rec = dict(rec or {})
         rows = rec.get("rows") or []
         chosen = rec.get("chosen") or {}
-        cur = self.con.execute(
+        pid = self.con.execute(
             "INSERT INTO ucb_picks(ts,c,total_plays,campaign_map,faction,n,mean,explore,"
-            "score,tied,blend,entropy,std) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "score,tied,blend,entropy,std) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+            " RETURNING pick_id",
             (rec.get("ts") or time.time(), rec.get("c"), _int_or_none(rec.get("total_plays")),
              chosen.get("campaign_map"), chosen.get("faction"),
              _int_or_none(chosen.get("n")), chosen.get("mean"), chosen.get("explore"),
              chosen.get("score"), _int_or_none(rec.get("tied")),
-             chosen.get("blend"), chosen.get("entropy"), chosen.get("std")))
-        pid = cur.lastrowid
-        self.con.executemany(
-            "INSERT INTO ucb_pick_rows(pick_id,rank,campaign_map,faction,n,mean,explore,"
-            "score,chosen,blend,entropy,std) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-            [(pid, i + 1, r.get("campaign_map"), r.get("faction"), _int_or_none(r.get("n")),
-              r.get("mean"), r.get("explore"), r.get("score"),
-              1 if r.get("chosen") else 0, r.get("blend"), r.get("entropy"), r.get("std"))
-             for i, r in enumerate(rows)])
+             chosen.get("blend"), chosen.get("entropy"), chosen.get("std"))).fetchone()[0]
+        with self.con.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO ucb_pick_rows(pick_id,rank,campaign_map,faction,n,mean,explore,"
+                "score,chosen,blend,entropy,std) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                [(pid, i + 1, r.get("campaign_map"), r.get("faction"),
+                  _int_or_none(r.get("n")), r.get("mean"), r.get("explore"), r.get("score"),
+                  1 if r.get("chosen") else 0, r.get("blend"), r.get("entropy"), r.get("std"))
+                 for i, r in enumerate(rows)])
         self.con.commit()
         return pid
 
@@ -490,7 +404,7 @@ class DecisionStore:
         defeated = 1 if outcome == "defeated" else (0 if outcome else None)
         self.con.execute(
             "INSERT INTO postmortems(campaign_key,ts,run_dir,faction,turn,outcome,"
-            "defeated,reason,payload) VALUES(?,?,?,?,?,?,?,?,?)",
+            "defeated,reason,payload) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             (key, rec.get("ts") or time.time(), rec.get("run_dir"), rec.get("faction"),
              _int_or_none(rec.get("turn_at_death") or rec.get("turns_played")),
              outcome, defeated, rec.get("ended_by") if isinstance(rec.get("ended_by"), str)
@@ -498,12 +412,12 @@ class DecisionStore:
              _dumps(rec)))
         if key:
             self.con.execute(
-                "UPDATE campaigns SET outcome=?, defeated=? WHERE campaign_key=?",
+                "UPDATE campaigns SET outcome=%s, defeated=%s WHERE campaign_key=%s",
                 (outcome, defeated, key))
             if rec.get("picked_ts") is not None:
                 self.con.execute(
-                    "UPDATE campaigns SET picked_ts=? "
-                    "WHERE campaign_key=? AND picked_ts IS NULL",
+                    "UPDATE campaigns SET picked_ts=%s "
+                    "WHERE campaign_key=%s AND picked_ts IS NULL",
                     (rec["picked_ts"], key))
         self.con.commit()
         return True
@@ -512,7 +426,7 @@ class DecisionStore:
         out = []
         for payload, key in self.con.execute(
                 "SELECT payload,campaign_key FROM postmortems"
-                " ORDER BY postmortem_id DESC LIMIT ?", (int(limit),)):
+                " ORDER BY postmortem_id DESC LIMIT %s", (int(limit),)):
             try:
                 d = json.loads(payload or "{}")
             except ValueError:
@@ -529,7 +443,7 @@ class DecisionStore:
                 if k not in ("kind", "turn", "campaign_key", "campaign_id", "ts")}
         self.con.execute(
             "INSERT INTO diplomacy_events(ts,campaign_key,turn,kind,payload)"
-            " VALUES(?,?,?,?,?)",
+            " VALUES(%s,%s,%s,%s,%s)",
             (row.get("ts") or time.time(),
              row.get("campaign_key") or row.get("campaign_id"),
              _int_or_none(row.get("turn")), row.get("kind"), _dumps(body)))
@@ -540,12 +454,12 @@ class DecisionStore:
         if campaign_key:
             rows = self.con.execute(
                 "SELECT ts,campaign_key,turn,kind,payload FROM diplomacy_events"
-                " WHERE campaign_key=? ORDER BY event_id DESC LIMIT ?",
+                " WHERE campaign_key=%s ORDER BY event_id DESC LIMIT %s",
                 (campaign_key, int(limit))).fetchall()
         else:
             rows = self.con.execute(
                 "SELECT ts,campaign_key,turn,kind,payload FROM diplomacy_events"
-                " ORDER BY event_id DESC LIMIT ?", (int(limit),)).fetchall()
+                " ORDER BY event_id DESC LIMIT %s", (int(limit),)).fetchall()
         out = []
         for ts, ckey, turn, kind, payload in rows:
             try:
@@ -572,7 +486,7 @@ class DecisionStore:
             "INSERT INTO interrupts(ts,campaign_id,turn,kind,root,root_context,n_options,"
             "options_json,chosen,chosen_context,executed,confirmed,counted,refusal,"
             "latency_ms,campaign_blob,world_blob,panel_blob,policy)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             (row.get("ts") or time.time(),
              self._campaign_id(self.campaign_key(camp.get("faction"),
                                                  camp.get("campaign_uuid")),
@@ -588,6 +502,14 @@ class DecisionStore:
              row.get("policy")))
         self.con.commit()
 
+
+    def finalize_stale_awaiting(self):
+        self._assert_writable("finalize_stale_awaiting")
+        n = self.con.execute(
+            "UPDATE taken SET refusal='campaign_died'"
+            " WHERE refusal='awaiting_execution'").rowcount
+        self.con.commit()
+        return int(n or 0)
 
     def summary(self):
         q = lambda s: self.con.execute(s).fetchone()[0]
@@ -606,7 +528,7 @@ class DecisionStore:
     def _entities_and_offers(self, where="", args=()):
         ents_by_dec = {}
         for did, ei, ck, cid, feats in self.con.execute(
-                "SELECT e.decision_id,e.entity_seq,e.context_kind,e.context_id,unz(b.z)"
+                "SELECT e.decision_id,e.entity_seq,e.context_kind,e.context_id,b.z"
                 " FROM entities e JOIN blobs b ON b.blob_id=e.features_blob" + where +
                 " ORDER BY e.decision_id,e.entity_seq", args):
             ents_by_dec.setdefault(did, []).append(
@@ -630,15 +552,15 @@ class DecisionStore:
 
     def read_decision(self, decision_id):
         row = self.con.execute(
-            "SELECT d.turn,c.campaign_key,unz(bc.z),unz(bw.z) FROM decisions d"
+            "SELECT d.turn,c.campaign_key,bc.z,bw.z FROM decisions d"
             " JOIN campaigns c ON c.campaign_id=d.campaign_id"
             " LEFT JOIN blobs bc ON bc.blob_id=d.campaign_blob"
             " LEFT JOIN blobs bw ON bw.blob_id=d.world_blob"
-            " WHERE d.decision_id=?", (decision_id,)).fetchone()
+            " WHERE d.decision_id=%s", (decision_id,)).fetchone()
         if row is None:
             raise KeyError("decision %s not in the store" % decision_id)
         turn, ckey, cjson, wjson = row
-        ents = self._entities_and_offers(" WHERE e.decision_id=?", (decision_id,))
+        ents = self._entities_and_offers(" WHERE e.decision_id=%s", (decision_id,))
         return {"decision_id": decision_id, "turn": turn, "campaign_id": ckey,
                 "campaign": json.loads(cjson or "{}"), "world": json.loads(wjson or "{}"),
                 "entities": ents.get(decision_id, [])}
@@ -654,7 +576,7 @@ class DecisionStore:
         for did, ck, cid, at, ak, counted, refusal in self.con.execute(
                 "SELECT t.decision_id,a.context_kind,a.context_id,a.action_type,a.action_key,"
                 "t.counted,t.refusal FROM taken t LEFT JOIN actions a ON a.action_id=t.action_id"):
-            if refusal == "awaiting_execution":
+            if refusal in ("awaiting_execution", "campaign_died"):
                 continue
             if confirmed_only and not counted:
                 continue
@@ -664,10 +586,10 @@ class DecisionStore:
     def labelled_decisions(self, confirmed_only=False, after=None, before=None):
         rng, args = "", []
         if after is not None:
-            rng += " AND decision_id>?"
+            rng += " AND decision_id>%s"
             args.append(int(after))
         if before is not None:
-            rng += " AND decision_id<=?"
+            rng += " AND decision_id<=%s"
             args.append(int(before))
 
         taken = {}
@@ -675,9 +597,9 @@ class DecisionStore:
                 "SELECT t.decision_id,a.context_kind,a.context_id,a.action_type,a.action_key,"
                 "t.counted,t.refusal FROM taken t"
                 " LEFT JOIN actions a ON a.action_id=t.action_id"
-                + ((" WHERE 1" + rng.replace("decision_id", "t.decision_id")) if rng else ""),
+                + ((" WHERE 1=1" + rng.replace("decision_id", "t.decision_id")) if rng else ""),
                 args):
-            if refusal == "awaiting_execution":
+            if refusal in ("awaiting_execution", "campaign_died"):
                 continue
             if confirmed_only and not counted:
                 continue
@@ -685,16 +607,16 @@ class DecisionStore:
         if not taken:
             return []
 
-        w = (" WHERE 1" + rng.replace("decision_id", "e.decision_id")) if rng else ""
+        w = (" WHERE 1=1" + rng.replace("decision_id", "e.decision_id")) if rng else ""
         ents_by_dec = self._entities_and_offers(w, args)
 
         out = []
         for did, turn, ckey, cjson, wjson in self.con.execute(
-                "SELECT d.decision_id,d.turn,c.campaign_key,unz(bc.z),unz(bw.z)"
+                "SELECT d.decision_id,d.turn,c.campaign_key,bc.z,bw.z"
                 " FROM decisions d JOIN campaigns c ON c.campaign_id=d.campaign_id"
                 " LEFT JOIN blobs bc ON bc.blob_id=d.campaign_blob"
                 " LEFT JOIN blobs bw ON bw.blob_id=d.world_blob"
-                + ((" WHERE 1" + rng.replace("decision_id", "d.decision_id")) if rng else "")
+                + ((" WHERE 1=1" + rng.replace("decision_id", "d.decision_id")) if rng else "")
                 + " ORDER BY d.decision_id", args):
             hit = taken.get(did)
             if hit is None:
@@ -705,10 +627,62 @@ class DecisionStore:
                          "entities": ents_by_dec.get(did, [])}, hit[0], hit[1]))
         return out
 
+    def taken_rows(self):
+        cur = self.con.cursor(name="taken_rows_stream")
+        cur.itersize = 50
+        try:
+            cur.execute(
+                "SELECT t.decision_id,d.turn,c.campaign_key,bc.z,bw.z,"
+                "a.context_kind,a.context_id,a.action_type,a.action_key,a.params,"
+                "t.counted,t.entity_seq,be.z,pv.ids,pv.states"
+                " FROM taken t"
+                " JOIN decisions d ON d.decision_id=t.decision_id"
+                " JOIN campaigns c ON c.campaign_id=d.campaign_id"
+                " LEFT JOIN actions a ON a.action_id=t.action_id"
+                " LEFT JOIN blobs bc ON bc.blob_id=d.campaign_blob"
+                " LEFT JOIN blobs bw ON bw.blob_id=d.world_blob"
+                " LEFT JOIN entities e ON e.decision_id=t.decision_id"
+                " AND e.entity_seq=t.entity_seq"
+                " LEFT JOIN blobs be ON be.blob_id=e.features_blob"
+                " LEFT JOIN LATERAL ("
+                "SELECT array_agg(e2.context_id ORDER BY e2.entity_seq) AS ids,"
+                " array_agg(b2.z ORDER BY e2.entity_seq) AS states"
+                " FROM entities e2 JOIN blobs b2 ON b2.blob_id=e2.features_blob"
+                " WHERE e2.decision_id=t.decision_id"
+                " AND e2.context_kind='province') pv ON TRUE"
+                " WHERE (t.refusal IS NULL OR"
+                " t.refusal NOT IN ('awaiting_execution','campaign_died'))"
+                " ORDER BY t.decision_id")
+            for (did, turn, ckey, cjson, wjson, ck, cid, at, ak, params, counted,
+                 ent_seq, ejson, prov_ids, prov_states) in cur:
+                ents = [{"context_kind": "province", "context_id": pid,
+                         "state": json.loads(pz or "{}"), "offers": []}
+                        for pid, pz in zip(prov_ids or (), prov_states or ())]
+                if ent_seq is not None and at is not None:
+                    hit = None
+                    if ck == "province":
+                        for e in ents:
+                            if e["context_id"] == str(cid):
+                                hit = e
+                                break
+                    if hit is None:
+                        hit = {"context_kind": ck, "context_id": str(cid),
+                               "state": json.loads(ejson or "{}"), "offers": []}
+                        ents.append(hit)
+                    hit["offers"].append({"action_type": at, "key": ak,
+                                          "params": json.loads(params or "{}")})
+                yield ({"decision_id": did, "turn": turn, "campaign_id": ckey,
+                        "campaign": json.loads(cjson or "{}"),
+                        "world": json.loads(wjson or "{}"),
+                        "entities": ents},
+                       (ck, str(cid), at, str(ak)), bool(counted))
+        finally:
+            cur.close()
+
     def campaign_snapshots(self):
         out = []
         for ckey, ts, cjson, wjson in self.con.execute(
-                "SELECT c.campaign_key,d.ts,unz(bc.z),unz(bw.z) FROM decisions d"
+                "SELECT c.campaign_key,d.ts,bc.z,bw.z FROM decisions d"
                 " JOIN campaigns c ON c.campaign_id=d.campaign_id"
                 " LEFT JOIN blobs bc ON bc.blob_id=d.campaign_blob"
                 " LEFT JOIN blobs bw ON bw.blob_id=d.world_blob"
@@ -731,7 +705,8 @@ class DecisionStore:
             " JOIN campaigns c ON c.campaign_id=d.campaign_id"
             " LEFT JOIN actions a ON a.action_id=t.action_id"
             " WHERE a.action_type != 'noop'"
-            " AND (t.refusal IS NULL OR t.refusal != 'awaiting_execution')"
+            " AND (t.refusal IS NULL OR"
+            " t.refusal NOT IN ('awaiting_execution','campaign_died'))"
             " ORDER BY t.decision_id").fetchall()
 
     def interrupt_rows(self):
@@ -739,8 +714,8 @@ class DecisionStore:
         for (iid, ts, camp, turn, kind, opts, chosen, executed, confirmed, counted, refusal,
              cjson, wjson, pjson) in self.con.execute(
                 "SELECT i.interrupt_id,i.ts,c.campaign_key,i.turn,i.kind,i.options_json,"
-                "i.chosen,i.executed,i.confirmed,i.counted,i.refusal,unz(bc.z),unz(bw.z),"
-                "unz(bp.z) FROM interrupts i"
+                "i.chosen,i.executed,i.confirmed,i.counted,i.refusal,bc.z,bw.z,"
+                "bp.z FROM interrupts i"
                 " LEFT JOIN campaigns c ON c.campaign_id=i.campaign_id"
                 " LEFT JOIN blobs bc ON bc.blob_id=i.campaign_blob"
                 " LEFT JOIN blobs bw ON bw.blob_id=i.world_blob"
@@ -777,7 +752,7 @@ class DecisionStore:
     def entity_series(self):
         out = {}
         for camp, turn, kind, cid, feats in self.con.execute(
-                "SELECT c.campaign_key,d.turn,e.context_kind,e.context_id,unz(b.z)"
+                "SELECT c.campaign_key,d.turn,e.context_kind,e.context_id,b.z"
                 " FROM turn_bounds tb"
                 " JOIN decisions d ON d.decision_id=tb.open_id"
                 " JOIN entities e ON e.decision_id=d.decision_id"

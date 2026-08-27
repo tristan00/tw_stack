@@ -106,6 +106,17 @@ def _settled_y(bus, row_id, limit=3.0, agree=3):
     return prev if prev is not None else 0
 
 
+def _y_moved(bus, row_id, from_y, limit=0.4):
+    t0 = time.time()
+    while time.time() - t0 < limit:
+        cur = int(_find(bus, row_id).get("y") or 0)
+        if cur != from_y:
+            common.waitlog("row_y_moved", time.time() - t0, True, row_id)
+            return cur
+    common.waitlog("row_y_moved", time.time() - t0, False, row_id)
+    return from_y
+
+
 def scroll_to_row(bus, row_id, margin=6):
     n = _find(bus, row_id)
     if not n.get("found"):
@@ -124,6 +135,7 @@ def scroll_to_row(bus, row_id, margin=6):
         arrow = SCROLL_ARROW % ("bottom" if centre > hi else "top")
         bus.send("click", arrow, timeout=8.0)
         clicks += 1
+        _y_moved(bus, row_id, centre - h // 2)
         centre = _settled_y(bus, row_id) + h // 2
         if lo <= centre <= hi:
             common.trylog("scroll_to_row", clicks, budget, True, row_id)
@@ -541,8 +553,6 @@ def send(bus):
     if not (n and n.get("visible") and str(n.get("state")) in _CLICKABLE):
         return False
     _bus_click(bus, n)
-    _wait(lambda: not _find(bus, "button_send").get("visible"), 2.5, step=0.2,
-          tag="send_button_clear")
     return True
 
 

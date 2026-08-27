@@ -29,7 +29,7 @@ import { cn } from '@/lib/utils'
 const VIEWS = [
   { key: 'log', label: 'log', asks: 'what did it choose' },
   { key: 'actions', label: 'by action type', asks: 'is the game accepting what it picks' },
-  { key: 'diplomacy', label: 'diplomacy', asks: 'what does it propose, and which arm proposes it' },
+  { key: 'diplomacy', label: 'diplomacy', asks: 'what each source picks, per model version' },
   { key: 'menus', label: 'blocking screens', asks: 'how does it answer menus' },
   { key: 'timeline', label: 'timeline', asks: 'where did the time go' },
 ]
@@ -562,7 +562,25 @@ function Timeline() {
 }
 
 type DiplomacyPage = Schemas['DiplomacyPage']
-type DiplomacyRow = Schemas['DiplomacyRow']
+type ModelVersion = Schemas['ModelVersion']
+
+const ARM_COLOR: Record<string, string> = {
+  greedy_catboost: 'var(--cat)',
+  marwil_gnn: 'var(--gnn)',
+  greedy_gnn: 'var(--ggnn)',
+  random: 'var(--warn)',
+  ruleset: 'var(--ok)',
+}
+
+const armColor = (raw: string) => ARM_COLOR[raw] ?? 'var(--dim)'
+
+function versionShort(v: ModelVersion): string {
+  if (!v.trained_ts) return v.trained ? v.version : 'pre'
+  const d = new Date(v.trained_ts * 1000)
+  const mmdd = `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  const hhmm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  return v.trained ? `${mmdd} ${hhmm}` : `pre ${mmdd}`
+}
 
 function Diplomacy() {
   const [version, setVersion] = useState<string>('')
@@ -572,42 +590,32 @@ function Diplomacy() {
   )
   if (error) return <ErrorState error={error} onRetry={reload} />
   if (loading || !data) return <Skeleton rows={10} />
-  const sources = data.sources ?? []
-  const rows = data.rows ?? []
-  const pct = (v: number | null | undefined) => (v == null ? <span className="text-dim">—</span> : <span className="num">{(100 * v).toFixed(1)}%</span>)
-  const cols: Col<DiplomacyRow>[] = [
-    { key: 'term', label: 'proposal', value: (r) => r.term.label, render: (r) => r.term.label },
-    {
-      key: 'all',
-      label: 'all sources',
-      group: 'distribution of attempts',
-      align: 'right',
-      value: (r) => (r.share.of ? r.share.n / r.share.of : 0),
-      render: (r) => <strong className="num">{(100 * (r.share.of ? r.share.n / r.share.of : 0)).toFixed(1)}%</strong>,
-    },
-    ...sources.map((s, i) => ({
-      key: `share_${s.raw}`,
-      label: s.label,
-      group: 'distribution of attempts',
-      align: 'right' as const,
-      value: (r: DiplomacyRow) => r.by_source?.[i]?.share ?? 0,
-      render: (r: DiplomacyRow) => pct(r.by_source?.[i]?.share),
-    })),
-    { key: 'attempted', label: 'all sources', group: 'attempts', align: 'right', optional: true, value: (r) => r.attempted ?? 0, render: (r) => n(r.attempted) },
-    ...sources.map((s, i) => ({
-      key: `n_${s.raw}`,
-      label: s.label,
-      group: 'attempts',
-      align: 'right' as const,
-      optional: true,
-      value: (r: DiplomacyRow) => r.by_source?.[i]?.attempted ?? 0,
-      render: (r: DiplomacyRow) => n(r.by_source?.[i]?.attempted ?? 0),
-    })),
-    { key: 'confirmed', label: 'confirmed', group: 'attempts', align: 'right', optional: true, value: (r) => r.confirmed ?? 0, render: (r) => n(r.confirmed) },
-  ]
+
+  const rows = [...(data.rows ?? [])].sort((a, b) => (b.attempted ?? 0) - (a.attempted ?? 0))
+  const counts = new Map<string, Map<string, number>>()
+  const colTotals = new Map<string, number>()
+  for (const r of rows)
+    for (const c of r.by_source ?? []) {
+      const att = c.attempted ?? 0
+      if (!att) continue
+      const byTerm = counts.get(c.source.raw) ?? new Map<string, number>()
+      byTerm.set(r.term.raw, (byTerm.get(r.term.raw) ?? 0) + att)
+      counts.set(c.source.raw, byTerm)
+      colTotals.set(c.source.raw, (colTotals.get(c.source.raw) ?? 0) + att)
+    }
+  const sources = (data.sources ?? []).filter((s) => (colTotals.get(s.raw) ?? 0) > 0)
+  const total = rows.reduce((t, r) => t + (r.attempted ?? 0), 0)
+
   return (
-    <Section title="diplomacy" scope={data.scope}>
-      <Card className="mb-3 flex flex-wrap items-center gap-3 px-3 py-2">
+    <Section
+      title="diplomacy"
+      scope={{
+        text: 'what each source picks',
+        detail:
+          'counts of attempted diplomatic actions by the source that picked them; pick a model version to see the mix while it was in force; the tint is the share of that source\u2019s picks',
+      }}
+    >
+      <Card className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2 px-3 py-2">
         <label className="text-dim flex items-center gap-2 text-2xs">
           model version
           <select
@@ -617,13 +625,74 @@ function Diplomacy() {
           >
             <option value="">every version</option>
             {(data.versions ?? []).map((v) => (
-              <option key={v.version} value={v.version}>{v.label}</option>
+              <option key={v.version} value={v.version} title={v.label}>
+                {versionShort(v)} · {n(v.campaigns)} campaigns
+              </option>
             ))}
           </select>
         </label>
         <CountText count={data.attempts} />
       </Card>
-      <DataTable rows={rows} cols={cols} rowId={(r) => r.term.raw} initialSort={{ key: 'all', desc: true }} pageSize={25} emptyWhat="no diplomatic action attempted yet" />
+      {rows.length === 0 ? (
+        <Card className="text-dim px-3.5 py-6 text-center text-xs">
+          no diplomatic action attempted{version ? ' under this model version' : ' yet'}
+        </Card>
+      ) : (
+        <Card className="max-w-3xl overflow-hidden">
+          <table className="w-full border-separate border-spacing-0 text-xs">
+            <thead>
+              <tr className="text-dim border-line text-2xs">
+                <th className="px-3 py-1.5 text-left font-normal">proposal</th>
+                {sources.map((s) => (
+                  <th key={s.raw} className="min-w-20 px-2 py-1.5 text-right font-normal whitespace-nowrap">
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="inline-block size-2 rounded-sm" style={{ background: armColor(s.raw) }} />
+                      {s.label}
+                    </span>
+                  </th>
+                ))}
+                <th className="num min-w-16 px-3 py-1.5 text-right font-normal">all sources</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.term.raw}>
+                  <td className="border-line/60 border-t px-3 py-1.5">{r.term.label}</td>
+                  {sources.map((s) => {
+                    const v = counts.get(s.raw)?.get(r.term.raw) ?? 0
+                    const of = colTotals.get(s.raw) ?? 0
+                    const share = of ? v / of : 0
+                    return (
+                      <td
+                        key={s.raw}
+                        title={`${s.label} picked ${r.term.label} ${n(v)} times — ${(100 * share).toFixed(1)}% of its ${n(of)} diplomacy picks`}
+                        className="num border-line/60 border-t px-2 py-1.5 text-right"
+                        style={
+                          v
+                            ? { background: `color-mix(in oklab, ${armColor(s.raw)} ${Math.min(55, Math.round(110 * share))}%, transparent)` }
+                            : undefined
+                        }
+                      >
+                        {v ? n(v) : <span className="text-dim opacity-40">·</span>}
+                      </td>
+                    )
+                  })}
+                  <td className="num text-dim border-line/60 border-t px-3 py-1.5 text-right">{n(r.attempted)}</td>
+                </tr>
+              ))}
+              <tr className="text-dim text-2xs">
+                <td className="border-line border-t px-3 py-1.5">all picks</td>
+                {sources.map((s) => (
+                  <td key={s.raw} className="num border-line border-t px-2 py-1.5 text-right">
+                    {n(colTotals.get(s.raw) ?? 0)}
+                  </td>
+                ))}
+                <td className="num border-line border-t px-3 py-1.5 text-right">{n(total)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </Card>
+      )}
     </Section>
   )
 }

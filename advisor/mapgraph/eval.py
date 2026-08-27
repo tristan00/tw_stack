@@ -22,8 +22,7 @@ def _load(limit=120):
     from base_model import decision_deltas, target
     from store import DecisionStore
     out = []
-    for db in sorted(glob.glob(os.path.join(common.native(common.RUNS_ROOT), "*",
-                                            "decisions.sqlite"))):
+    for db in common.run_dbs():
         s = DecisionStore(os.path.dirname(db), readonly=True)
         try:
             with s.snapshot_read():

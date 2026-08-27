@@ -67,17 +67,19 @@ def _until(pred, cap, step=0.2, tag="until_poll", detail=""):
     while time.time() < deadline:
         try:
             if pred():
-                common.waitlog(tag, time.time() - t0, True, detail)
+                common.waitlog(tag, time.time() - t0, True,
+                               detail() if callable(detail) else detail)
                 return True
         except Exception:
             pass
         time.sleep(step)
-    common.waitlog(tag, time.time() - t0, False, detail)
+    common.waitlog(tag, time.time() - t0, False, detail() if callable(detail) else detail)
     return False
 
 
 _CLEAR_TRACE = common.CLEAR_SCREEN_TRACE
 _BATTLE_ROOTS = ("popup_pre_battle", "popup_battle_results", "settlement_captured")
+_DESELECT_OWNED = frozenset(("character_panel",))
 LAST_GUARD = [None]
 
 
@@ -143,9 +145,15 @@ def clear_screen(bus, where=None):
         return 0
     try:
         _ev(bus, 'common.call_context_command([[CloseAllPanels]]) return "sent"', timeout=15.0)
-        _until(lambda: not [r for r in (nav.visible_roots(bus) or [])
-                            if r not in nav.BASE_ROOTS and r not in nav.BENIGN_PANELS],
-               1.0, tag="close_all_panels_settle")
+        left = []
+
+        def _closable_gone():
+            left[:] = [r for r in (nav.visible_roots(bus) or [])
+                       if r not in nav.BASE_ROOTS and r not in nav.BENIGN_PANELS
+                       and r not in _DESELECT_OWNED]
+            return not left
+        _until(_closable_gone, 1.0, tag="close_all_panels_settle",
+               detail=lambda: ",".join(left[:8]))
     except Exception as e:
         sys.stderr.write("click_actions: CloseAllPanels -> %s" % repr(e)[:80] + chr(10))
     n = 0

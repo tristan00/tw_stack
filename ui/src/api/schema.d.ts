@@ -1136,8 +1136,6 @@ export interface components {
             exploit?: number | null;
             /** Pct Global */
             pct_global?: number | null;
-            /** Pct Local */
-            pct_local?: number | null;
             /** Cat Rank */
             cat_rank?: number | null;
             /** Gnn Impact */
@@ -1665,8 +1663,6 @@ export interface components {
             exploit?: number | null;
             /** Pct Global */
             pct_global?: number | null;
-            /** Pct Local */
-            pct_local?: number | null;
             /** Gnn Impact */
             gnn_impact?: number | null;
             /** Gnn Rank */

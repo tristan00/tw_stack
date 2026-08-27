@@ -134,9 +134,11 @@ def _attack_sett_confirm(bus, ctx, pick, before):
 
 
 _SETT_DOOM_POLLS = 2
+_DOOM_FLOOR_S = 2.8
 
 
 def _attack_sett_doomed(bus, ctx, pick, before, after):
+    before.setdefault("doom_t0", time.time())
     if not after or after.get("pre_battle") is True or after.get("captured") is True \
             or after.get("besieging") == "true":
         before["doom_streak"] = 0
@@ -149,7 +151,8 @@ def _attack_sett_doomed(bus, ctx, pick, before, after):
         before["doom_streak"] = 0
         return None
     before["doom_streak"] = before.get("doom_streak", 0) + 1
-    if before["doom_streak"] < _SETT_DOOM_POLLS:
+    if (before["doom_streak"] < _SETT_DOOM_POLLS
+            or time.time() - before["doom_t0"] < _DOOM_FLOOR_S):
         return None
     return ("character still at %s, no pre-battle, capture or siege, acted still %r after %d "
             "polls -- the order never took (roots=%s)"
@@ -213,11 +216,12 @@ def _leave_confirm(bus, ctx, pick, before):
 
 
 def _leave_doomed(bus, ctx, pick, before, after):
+    before.setdefault("doom_t0", time.time())
     if (after or {}).get("in_settlement") != "true":
         before["doom_streak"] = 0
         return None
     before["doom_streak"] = before.get("doom_streak", 0) + 1
-    if before["doom_streak"] < 2:
+    if before["doom_streak"] < 2 or time.time() - before["doom_t0"] < _DOOM_FLOOR_S:
         return None
     return ("still in_settlement after %d polls -- the garrison exit never landed"
             % before["doom_streak"])

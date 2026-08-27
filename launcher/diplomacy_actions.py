@@ -160,6 +160,6 @@ register("diplomacy", {
     "layer": "click", "signal": "treaty_changed",
     "snapshot": _snapshot, "prechecks": [_validate_pick], "execute": _execute, "confirm": _confirm,
     "doomed": _doomed_unsent,
-    "timeout_s": 0.0, "poll_s": 0.0, "confirm_settle_s": 0.6,
+    "timeout_s": 0.6, "poll_s": 0.15,
     "retryable": False,
 })

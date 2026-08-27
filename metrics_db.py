@@ -2,37 +2,29 @@ from __future__ import annotations
 
 
 import json
-import os
-import sqlite3
 import time
 
-import common
+from decisions import pg
 
-DB_PATH = os.path.join(common.native(common.METRICS_DIR), "metrics.sqlite")
+DB_PATH = "%s search_path=metrics" % pg.dsn()
 
 DDL = """
-CREATE TABLE IF NOT EXISTS trials(
-  trial TEXT PRIMARY KEY, ts REAL NOT NULL, first_ts REAL,
+CREATE SCHEMA IF NOT EXISTS metrics;
+CREATE TABLE IF NOT EXISTS metrics.trials(
+  trial TEXT PRIMARY KEY, ts DOUBLE PRECISION NOT NULL, first_ts DOUBLE PRECISION,
   snapshots INTEGER NOT NULL DEFAULT 1, payload TEXT NOT NULL);
-CREATE INDEX IF NOT EXISTS ix_trials_ts ON trials(ts);
-CREATE TABLE IF NOT EXISTS trials_archive(
-  trial TEXT PRIMARY KEY, ts REAL NOT NULL, first_ts REAL,
+CREATE INDEX IF NOT EXISTS ix_trials_ts ON metrics.trials(ts);
+CREATE TABLE IF NOT EXISTS metrics.trials_archive(
+  trial TEXT PRIMARY KEY, ts DOUBLE PRECISION NOT NULL, first_ts DOUBLE PRECISION,
   snapshots INTEGER NOT NULL DEFAULT 1, payload TEXT NOT NULL,
-  archived_ts REAL NOT NULL, reason TEXT);
+  archived_ts DOUBLE PRECISION NOT NULL, reason TEXT);
 """
 
 
-def connect(readonly=False, timeout=30.0):
-    if readonly:
-        if not os.path.exists(DB_PATH):
-            return None
-        return sqlite3.connect("file:%s?mode=ro" % DB_PATH.replace("\\", "/"),
-                               uri=True, timeout=timeout)
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    con = sqlite3.connect(DB_PATH, timeout=timeout)
-    con.execute("PRAGMA journal_mode=WAL")
-    con.executescript(DDL)
-    con.commit()
+def connect(readonly=False):
+    con = pg.connect(autocommit=True, readonly=readonly, search_path="metrics, public")
+    if not readonly:
+        con.execute(DDL)
     return con
 
 
@@ -44,11 +36,10 @@ def write_trial(row):
     con = connect()
     try:
         con.execute("INSERT INTO trials(trial,ts,first_ts,snapshots,payload)"
-                    " VALUES(?,?,?,1,?)"
+                    " VALUES(%s,%s,%s,1,%s)"
                     " ON CONFLICT(trial) DO UPDATE SET ts=excluded.ts,"
                     " payload=excluded.payload, snapshots=trials.snapshots+1",
                     (str(trial), now, now, json.dumps(row, default=str)))
-        con.commit()
     finally:
         con.close()
     return True
@@ -68,21 +59,26 @@ def prune_unmatched(have, reason="campaign data gone from the run dir"):
             if not any(u in have for u in uuids):
                 gone.append((trial, ts, first_ts, snaps, payload, now, reason))
         if gone:
-            con.executemany(
-                "INSERT OR REPLACE INTO trials_archive"
-                "(trial,ts,first_ts,snapshots,payload,archived_ts,reason)"
-                " VALUES(?,?,?,?,?,?,?)", gone)
-            con.executemany("DELETE FROM trials WHERE trial=?",
-                            [(g[0],) for g in gone])
-        con.commit()
+            with con.cursor() as cur:
+                cur.executemany(
+                    "INSERT INTO trials_archive"
+                    "(trial,ts,first_ts,snapshots,payload,archived_ts,reason)"
+                    " VALUES(%s,%s,%s,%s,%s,%s,%s)"
+                    " ON CONFLICT(trial) DO UPDATE SET ts=excluded.ts,"
+                    " first_ts=excluded.first_ts, snapshots=excluded.snapshots,"
+                    " payload=excluded.payload, archived_ts=excluded.archived_ts,"
+                    " reason=excluded.reason", gone)
+                cur.executemany("DELETE FROM trials WHERE trial=%s",
+                                [(g[0],) for g in gone])
         return [g[0] for g in gone]
     finally:
         con.close()
 
 
 def trials():
-    con = connect(readonly=True)
-    if con is None:
+    try:
+        con = connect(readonly=True)
+    except Exception:
         return []
     try:
         out = []
@@ -96,6 +92,21 @@ def trials():
             d.setdefault("ts", ts)
             out.append(d)
         return out
+    except Exception:
+        return []
+    finally:
+        con.close()
+
+
+def trial_ids():
+    try:
+        con = connect(readonly=True)
+    except Exception:
+        return set()
+    try:
+        return {r[0] for r in con.execute("SELECT trial FROM trials")}
+    except Exception:
+        return set()
     finally:
         con.close()
 
@@ -112,13 +123,3 @@ def live_trials(rows, now=None):
     if now - float(newest.get("ts") or 0) > TRIAL_LIVE_WINDOW_S:
         return set()
     return {str(newest.get("trial") or "")}
-
-
-def trial_ids():
-    con = connect(readonly=True)
-    if con is None:
-        return set()
-    try:
-        return {r[0] for r in con.execute("SELECT trial FROM trials")}
-    finally:
-        con.close()

@@ -2,16 +2,17 @@ from __future__ import annotations
 
 
 import os
-import sqlite3
 import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import psycopg
+
 import common
 from analytics import store
 from analytics.tenants import TENANTS
-from decisions import dbopen
+from decisions import pg
 
 POLL_S = 5.0
 HEARTBEAT_S = 300.0
@@ -24,9 +25,7 @@ def _log(msg):
 
 
 def corpus(run_dir):
-    con = dbopen.connect(os.path.join(run_dir, "decisions.sqlite"))
-    con.row_factory = sqlite3.Row
-    return con
+    return pg.connect(autocommit=True, readonly=True, row_factory=pg.row_factory)
 
 
 def one_pass(src, an, tenants, log=_log) -> dict:
@@ -40,7 +39,7 @@ def one_pass(src, an, tenants, log=_log) -> dict:
                 log("folded %d into %s (through %d) in %.3fs; %d rows"
                     % (r["folded"], t.NAME, r["watermark"], r["seconds"], r["rows"]))
             done.append(r)
-        except sqlite3.OperationalError as e:
+        except psycopg.OperationalError as e:
             failed.append((t.NAME, str(e)))
             log("BUSY %s: %s" % (t.NAME, e))
         except Exception as e:
@@ -52,12 +51,12 @@ def one_pass(src, an, tenants, log=_log) -> dict:
 def rebuild(an, tenants, log=_log):
     for t in tenants:
         try:
-            an.executescript(t.DDL)
+            an.execute(t.DDL)
             an.execute("BEGIN")
             an.execute("DELETE FROM %s" % t.NAME)
-            an.execute("DELETE FROM analytics_state WHERE tenant=?", (t.NAME,))
+            an.execute("DELETE FROM analytics_state WHERE tenant=%s", (t.NAME,))
             an.execute("COMMIT")
-        except sqlite3.Error as e:
+        except psycopg.Error as e:
             an.execute("ROLLBACK")
             log("could not clear %s: %s" % (t.NAME, e))
     log("cleared %d tenants -- the next pass rebuilds" % len(tenants))
@@ -69,10 +68,9 @@ def main(argv):
     if "--run-dir" in argv:
         run_dir = argv[argv.index("--run-dir") + 1]
     once = "--once" in argv
-    path = store.analytics_path(run_dir)
-    _log("analytics: corpus %s" % os.path.join(run_dir, "decisions.sqlite"))
-    _log("analytics: writing %s" % path)
-    src, an = corpus(run_dir), store.connect(path)
+    _log("analytics: corpus %s" % pg.dsn())
+    _log("analytics: writing %s" % store.analytics_path(run_dir))
+    src, an = corpus(run_dir), store.connect()
     if "--rebuild" in argv:
         rebuild(an, TENANTS)
     t0 = time.time()

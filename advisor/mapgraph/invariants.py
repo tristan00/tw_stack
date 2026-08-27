@@ -90,7 +90,7 @@ def check_catalogue(verbose=True):
     dense = C.dense_ids()
     if not any(dense.values()):
         results.append((False, "catalogue ids are dense",
-                        "reference.sqlite unreadable -- ids fall back to hashing"))
+                        "reference schema unreadable -- ids fall back to hashing"))
     for kind in sorted(dense):
         keys = list(dense[kind])
         if not keys:

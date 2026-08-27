@@ -48,9 +48,10 @@ def run(ctx):
                 if store is not None:
                     store.close()
                 store = DecisionStore(out_dir)
+                stale = store.finalize_stale_awaiting()
                 cur_dir, after_id, seq = out_dir, journal.last_request_id(out_dir), 0
                 ctx.emit({"kind": "decisions_status", "status": "store_open",
-                          "db": os.path.join(out_dir, "decisions.sqlite")})
+                          "db": journal.pg.dsn(), "stale_finalized": stale})
             rows, after_id = journal.read_requests(out_dir, after_id)
             for row in rows:
                 kind, rid = row.get("kind"), row.get("req_id")
@@ -158,7 +159,7 @@ def run(ctx):
             ctx.on_error("decisions-stream", e)
             common.wait("decisions_error_backoff", 5.0, repr(e)[:80])
             continue
-        time.sleep(POLL)
+        journal.wait_requests(out_dir, POLL)
     common.waitlog("decisions_poll", time.time() - t_loop, True, "stopped")
     if store is not None:
         ctx.emit({"kind": "decisions_status", "status": "closing", **counts})

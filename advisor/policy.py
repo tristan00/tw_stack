@@ -227,7 +227,7 @@ def scores_for_store(ranked, limit=None):
     out = []
     for r in rows:
         vals = {f: r.get(f) for f in ("score", "exploit", "rank", "pct_global",
-                                      "pct_local", "gnn_impact", "gnn_rank")}
+                                      "gnn_impact", "gnn_rank")}
         models = {}
         if r.get("ggnn_score") is not None or r.get("ggnn_rank") is not None:
             models["greedy_gnn"] = {"score": r.get("ggnn_score"), "rank": r.get("ggnn_rank")}

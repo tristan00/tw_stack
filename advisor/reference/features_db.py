@@ -1,23 +1,21 @@
 import os
 import re
-import sqlite3
 import sys
 
 _EMPTY_SUFFIX_WARNED = set()
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import common
-
-DB = common.REFERENCE_DB
+from decisions import pg
 
 _con = None
 
 
 def _connect():
     global _con
-    if _con is None:
-        _con = sqlite3.connect(DB, check_same_thread=False)
-        _con.row_factory = sqlite3.Row
+    if _con is None or _con.closed:
+        _con = pg.connect(autocommit=True, readonly=True, row_factory=pg.row_factory,
+                          search_path="reference")
     return _con
 
 
@@ -29,7 +27,7 @@ def _lookup(table, key_col, key):
     hit = _lookup_cache.get(ck)
     if hit is None:
         row = _connect().execute(
-            "SELECT * FROM %s WHERE %s=?" % (table, key_col), (key,)
+            "SELECT * FROM %s WHERE %s=%%s" % (table, key_col), (key,)
         ).fetchone()
         hit = dict(row) if row is not None else {}
         _lookup_cache[ck] = hit
@@ -61,7 +59,7 @@ def ritual_features(key):
 
 
 def label(key):
-    row = _connect().execute("SELECT text FROM loc WHERE key=?", (key,)).fetchone()
+    row = _connect().execute("SELECT text FROM loc WHERE key=%s", (key,)).fetchone()
     return row["text"] if row else None
 
 
@@ -86,8 +84,8 @@ def agent_action_keys(name_suffix):
     con = _connect()
     for suf in sufs:
         hit = 0
-        for row in con.execute("SELECT key FROM loc WHERE key LIKE ?",
-                               (_AGENT_ACTION_NAME_PREFIX + "%" + str(suf),)):
+        for row in con.execute("SELECT key FROM loc WHERE key LIKE %s",
+                               (_AGENT_ACTION_NAME_PREFIX + "%" + str(suf),)).fetchall():
             out.append(row["key"][len(_AGENT_ACTION_NAME_PREFIX):])
             hit += 1
         if not hit and str(suf) not in _EMPTY_SUFFIX_WARNED:
@@ -95,7 +93,7 @@ def agent_action_keys(name_suffix):
             sys.stderr.write(
                 "features_db: agent_action_keys(%r) matched NOTHING in loc -- every hero action "
                 "on this suffix dies at method_name before touching the game. Either the suffix "
-                "is wrong or reference.sqlite was built without the agent-action rows.\n" % suf)
+                "is wrong or the reference schema was built without the agent-action rows.\n" % suf)
     return sorted(set(out))
 
 
@@ -105,13 +103,14 @@ def agent_action_payload(name_suffix):
         row = con.execute(
             "SELECT r.key AS result, r.actor_bundle, r.target_bundle, r.actor_bundle_turns, "
             "r.target_bundle_turns FROM agent_actions a JOIN action_results r "
-            "ON r.key=a.cannot_fail_result WHERE a.key=?", (key,)).fetchone()
+            "ON r.key=a.cannot_fail_result WHERE a.key=%s", (key,)).fetchone()
         if row is None:
             continue
         effects = [(o["effect"], o["effect_scope"], o["value"]) for o in con.execute(
             "SELECT effect, effect_scope, value FROM action_result_outcomes "
-            "WHERE action_result_key=? AND outcome='generic_bonus_value' AND affects_target=1 "
-            "AND effect IS NOT NULL AND effect_scope IS NOT NULL ORDER BY key", (row["result"],))]
+            "WHERE action_result_key=%s AND outcome='generic_bonus_value' AND affects_target=1 "
+            "AND effect IS NOT NULL AND effect_scope IS NOT NULL ORDER BY key",
+            (row["result"],)).fetchall()]
         if not effects:
             continue
         return {"action_key": key, "result_key": row["result"],
@@ -151,7 +150,7 @@ def agent_action_rows(name_suffix):
     for suf in sufs:
         for row in con.execute(
                 "SELECT key,agent,ability,attribute,chance_of_success FROM agent_actions "
-                "WHERE key LIKE ?", ("%" + str(suf),)):
+                "WHERE key LIKE %s", ("%" + str(suf),)).fetchall():
             out.append({"key": row["key"], "agent": row["agent"], "ability": row["ability"],
                         "attribute": row["attribute"], "chance": row["chance_of_success"]})
     return out
@@ -165,9 +164,12 @@ def agent_action_catalogue():
     if _catalogue_cache is not None:
         return _catalogue_cache
     con = _connect()
-    cats = {r["key"]: r["category"] for r in con.execute("SELECT key,category FROM agent_abilities")}
+    cats = {r["key"]: r["category"]
+            for r in con.execute("SELECT key,category FROM agent_abilities").fetchall()}
     out = {}
-    for r in con.execute("SELECT key,agent,ability,attribute,chance_of_success FROM agent_actions"):
+    for r in con.execute(
+            "SELECT key,agent,ability,attribute,chance_of_success FROM agent_actions"
+            ).fetchall():
         ability = r["ability"]
         if cats.get(ability) == "ambient":
             continue
@@ -187,15 +189,15 @@ def agent_action_catalogue():
 
 
 def agent_ability_category(ability):
-    row = _connect().execute("SELECT category FROM agent_abilities WHERE key=?",
+    row = _connect().execute("SELECT category FROM agent_abilities WHERE key=%s",
                              (str(ability),)).fetchone()
     return row["category"] if row else None
 
 
 def permitted_agent_subtypes(faction):
     return [(r["agent"], r["subtype"]) for r in _connect().execute(
-        "SELECT agent,subtype FROM agent_permitted_subtypes WHERE faction=? ORDER BY agent,subtype",
-        (str(faction),))]
+        "SELECT agent,subtype FROM agent_permitted_subtypes WHERE faction=%s"
+        " ORDER BY agent,subtype", (str(faction),)).fetchall()]
 
 
 _CAPTIVE_BUTTONS = ("kill", "enslave", "release")
@@ -211,7 +213,7 @@ def captive_options(culture=None, faction=None, subculture=None):
             row = con.execute(
                 "SELECT b.record_key, o.onscreen_name FROM captive_binding b "
                 "JOIN captive_options o ON o.record_key = b.record_key "
-                "WHERE b.entity_type=? AND b.entity_key=? AND b.button=?",
+                "WHERE b.entity_type=%s AND b.entity_key=%s AND b.button=%s",
                 (etype, ekey, button)).fetchone()
             if row and row["onscreen_name"]:
                 out[button] = {"record_key": row["record_key"], "name": row["onscreen_name"]}
@@ -236,8 +238,8 @@ def agent_subtypes(race_tokens):
     global _subtype_cache
     if _subtype_cache is None:
         _subtype_cache = []
-        for row in _connect().execute("SELECT key,text FROM loc WHERE key LIKE ?",
-                                      (_SUBTYPE_PREFIX + "%",)):
+        for row in _connect().execute("SELECT key,text FROM loc WHERE key LIKE %s",
+                                      (_SUBTYPE_PREFIX + "%",)).fetchall():
             sub = row["key"][len(_SUBTYPE_PREFIX):]
             m = _SUBTYPE_RE.match(sub)
             _subtype_cache.append((m.group(1) if m else None, sub, row["text"]))
@@ -245,27 +247,16 @@ def agent_subtypes(race_tokens):
     return [(sub, txt) for tok, sub, txt in _subtype_cache if tok in toks]
 
 
-UNLOCK_DB = common.UNLOCK_DB
-_unlock_con = None
 _unlock_cache = {}
-
-
-def _unlock_connect():
-    global _unlock_con
-    if _unlock_con is None:
-        _unlock_con = sqlite3.connect("file:%s?mode=ro" % UNLOCK_DB.replace("\\", "/"),
-                                      uri=True, check_same_thread=False)
-        _unlock_con.row_factory = sqlite3.Row
-    return _unlock_con
 
 
 def actions_for_skills(skill_keys):
     out = set()
-    con = _unlock_connect()
+    con = _connect()
     for k in skill_keys or ():
         k = str(k)
         if k not in _unlock_cache:
             _unlock_cache[k] = {r["agent_action"] for r in con.execute(
-                "SELECT agent_action FROM skill_actions WHERE skill=?", (k,))}
+                "SELECT agent_action FROM skill_actions WHERE skill=%s", (k,)).fetchall()}
         out |= _unlock_cache[k]
     return out

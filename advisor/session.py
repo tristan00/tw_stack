@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 import sys
 import threading
 import time
@@ -13,7 +12,8 @@ sys.path.insert(0, os.path.dirname(_HERE))
 import common
 import campaign_growth as CG
 import metrics_db
-from decisions import dbopen
+import psycopg
+from decisions import pg
 
 sys.path.insert(0, common.BUS)
 sys.path.insert(0, common.LAUNCHER)
@@ -85,14 +85,15 @@ _CAMPAIGN_LABEL = {"wh3_main_combi": "Immortal Empires",
 
 
 def _width_counts():
-    path = os.path.join(common.RUN_DIR, "decisions.sqlite")
-    if not os.path.exists(path):
+    try:
+        con = pg.connect(autocommit=True, readonly=True)
+    except psycopg.OperationalError:
         return {}
-    con = sqlite3.connect("file:%s?mode=ro" % path.replace("\\", "/"),
-                          uri=True, timeout=10.0)
     try:
         return {(m, f): n for m, f, n in con.execute(
             "SELECT campaign_map, faction, n FROM start_counts")}
+    except psycopg.errors.UndefinedTable:
+        return {}
     finally:
         con.close()
 
@@ -106,12 +107,14 @@ _blend = UCB.blend
 
 
 def _start_gain_stats(window=UCB_WINDOW):
-    path = os.path.join(common.RUN_DIR, "decisions.sqlite")
-    if not os.path.exists(path):
+    try:
+        con = pg.connect(autocommit=True, readonly=True)
+    except psycopg.OperationalError:
         return {}, 0.0
-    con = dbopen.connect(path, readonly=True, timeout=10.0)
     try:
         rewards = UCB.window_rewards(con, window)
+    except psycopg.errors.UndefinedTable:
+        return {}, 0.0
     finally:
         con.close()
     return UCB.start_stats(rewards), UCB.window_blend(rewards)
@@ -178,10 +181,9 @@ def _tail_jsonl(path, n):
 
 
 def _ending_evidence(rd, entry, ex):
-    import sqlite3
     out = {}
     try:
-        con = dbopen.connect(os.path.join(str(rd), "decisions.sqlite"), timeout=5.0)
+        con = pg.connect(autocommit=True, readonly=True)
         camp = entry.get("campaign_uuid")
         if not camp:
             row = con.execute("SELECT campaign_id FROM decision_points"
@@ -194,12 +196,12 @@ def _ending_evidence(rd, entry, ex):
                 {"turn": t, "settlements": s, "income": i, "power_rank": p}
                 for t, s, i, p in con.execute(
                     "SELECT turn, settlements, income, power_rank FROM turn_open"
-                    " WHERE campaign_id=? ORDER BY turn DESC LIMIT 6", (camp,))][::-1]
+                    " WHERE campaign_id=%s ORDER BY turn DESC LIMIT 6", (camp,))][::-1]
             out["recent_battles"] = [
                 {"turn": t, "kind": k, "chosen": c, "confirmed": cf}
                 for t, k, c, cf in con.execute(
                     "SELECT turn, kind, chosen, confirmed FROM interrupt_decisions"
-                    " WHERE campaign_id=? AND kind IN ('pre_battle','battle_results','occupation')"
+                    " WHERE campaign_id=%s AND kind IN ('pre_battle','battle_results','occupation')"
                     " ORDER BY interrupt_id DESC LIMIT 6", (camp,))][::-1]
         con.close()
     except Exception as e:
@@ -238,6 +240,11 @@ def _ending_evidence(rd, entry, ex):
     elif outcome in ("stuck", "error"):
         if out.get("defeat_row"):
             verdict = "MISLABELED? engine death row present -- likely a real defeat"
+        elif str(entry.get("error") or "").startswith("turn_time_cap"):
+            verdict = ("turn_time_cap_reached: the turn blew the hard wall-clock cap. This is a "
+                       "SPEED bug -- multi-second waits, misfired clicks, or budget-burning "
+                       "fallbacks inside the turn. Hunt the slow waits in the .err timeline; "
+                       "do not treat the final screen as the culprit")
         elif healthy:
             verdict = "harness_failure_likely: state healthy at the wedge (%s settlements)" \
                       % last.get("settlements")
@@ -712,10 +719,7 @@ def _uuid_of(rows):
 
 
 def _db(run_dir):
-    import sqlite3
-    con = dbopen.connect(os.path.join(run_dir or journal.RUN_DIR, journal.DB_NAME))
-    con.row_factory = sqlite3.Row
-    return con
+    return pg.connect(autocommit=True, readonly=True, row_factory=pg.row_factory)
 
 
 _TURNS_CACHE = {}
@@ -758,7 +762,7 @@ def _resolve_uuid(con, c):
     t1 = t0 + float(c.get("seconds") or 0) + 60
     hits = [cid for cid, first in con.execute(
         "SELECT campaign_id, MIN(ts) FROM decision_points GROUP BY campaign_id"
-        " HAVING MIN(ts) BETWEEN ? AND ?", (t0, t1))
+        " HAVING MIN(ts) BETWEEN %s AND %s", (t0, t1))
         if str(cid).startswith(plan + "_")]
     return hits[0] if len(hits) == 1 else None
 
@@ -788,13 +792,15 @@ def _campaign_growth(con, uuid):
 
 def _campaign_timing(con, uuid, c, turns_by_uuid):
     n, t0, t1, roundtrip = con.execute(
-        "SELECT COUNT(*), MIN(ts), MAX(ts), SUM(COALESCE(json_extract(timings,'$.roundtrip_ms'),0))"
-        " FROM decision_points WHERE campaign_id=?", (uuid,)).fetchone() or (0, None, None, 0)
+        "SELECT COUNT(*), MIN(ts), MAX(ts),"
+        " SUM(COALESCE((timings::jsonb->>'roundtrip_ms')::double precision,0))"
+        " FROM decision_points WHERE campaign_id=%s", (uuid,)).fetchone() or (0, None, None, 0)
     act_ms, wasted_ms, acts = con.execute(
-        "SELECT SUM(COALESCE(json_extract(a.timing,'$.total_ms'),0)),"
-        " SUM(COALESCE(json_extract(a.timing,'$.confirm_wasted_ms'),0)), COUNT(*)"
+        "SELECT SUM(COALESCE((a.timing::jsonb->>'total_ms')::double precision,0)) act_ms,"
+        " SUM(COALESCE((a.timing::jsonb->>'confirm_wasted_ms')::double precision,0)) wasted,"
+        " COUNT(*) n"
         " FROM action_taken a JOIN decision_points d ON d.decision_id=a.decision_id"
-        " WHERE d.campaign_id=?", (uuid,)).fetchone() or (0, 0, 0)
+        " WHERE d.campaign_id=%s", (uuid,)).fetchone() or (0, 0, 0)
     turns = turns_by_uuid.get(uuid) or []
     ends = [float(t.get("ts") or 0) for t in turns] + [float(t1 or 0)]
     play = max(0.0, max(ends) - float(t0 or max(ends)))
@@ -971,22 +977,23 @@ def backfill_trials(runs_root=RUNS_ROOT, log=print, recompute=False):
 
 
 def _reconcile_ledger(run_dir, log):
-    path = os.path.join(run_dir, journal.DB_NAME)
     have = set()
-    if os.path.exists(path):
-        con = dbopen.connect(path, readonly=True)
+    try:
+        con = pg.connect(autocommit=True, readonly=True)
+    except psycopg.OperationalError:
+        con = None
+    if con is not None:
         try:
             have = {r[0] for r in con.execute("SELECT campaign_key FROM campaigns")}
-        except sqlite3.OperationalError as e:
-            if "no such table" not in str(e):
-                raise
+        except psycopg.errors.UndefinedTable:
+            pass
         finally:
             con.close()
     gone = metrics_db.prune_unmatched(have)
     if gone:
         log("ledger reconciled with %s: %d trial(s) moved to trials_archive, "
-            "%d campaign(s) on disk -- %s"
-            % (path, len(gone), len(have), ", ".join(sorted(gone))[:300]))
+            "%d campaign(s) in the corpus -- %s"
+            % (pg.DB, len(gone), len(have), ", ".join(sorted(gone))[:300]))
 
 
 def _write_trial(row, log, quiet=False):

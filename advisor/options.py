@@ -644,20 +644,32 @@ def _diplo_options(targets):
         rel = {"standing": t["standing"], "at_war": t["at_war"], "allied": t["allied"],
                "trade": t["trade"], "their_vassal": t["their_vassal"]}
         at_war = bool(t["at_war"])
-        offers.append(_offer("diplomacy", "%s:%s" % (f, DIPLO_DECLARE_WAR), not at_war,
-                             "already_at_war" if at_war else None,
+        hostile = t["standing"] < 0
+        offers.append(_offer("diplomacy", "%s:%s" % (f, DIPLO_DECLARE_WAR),
+                             (not at_war) and hostile,
+                             ("already_at_war" if at_war else
+                              None if hostile else "relations_not_negative"),
                              faction=f, terms=[DIPLO_DECLARE_WAR], **rel))
         offers.append(_offer("diplomacy", "%s:%s" % (f, DIPLO_PEACE), at_war,
                              None if at_war else "not_at_war",
                              faction=f, terms=[DIPLO_PEACE], **rel))
         vassalage = t.get("their_vassal") or t.get("our_master")
         HELD = {"military_alliance": t.get("allied"), "trade_agreement": t.get("trade"),
-                "vassal": vassalage, "confederation": vassalage}
+                "vassal": vassalage, "confederation": vassalage,
+                "defensive_alliance": t.get("def_ally"),
+                "nonaggression_pact": t.get("nap"), "soft_access": t.get("mil_access")}
+        pact_first = t.get("trade") or t.get("nap")
+        allied_first = t.get("mil_ally") or t.get("def_ally")
+        NEEDS = {"defensive_alliance": (pact_first, "needs_trade_or_nap_first"),
+                 "military_alliance": (pact_first, "needs_trade_or_nap_first"),
+                 "confederation": (allied_first, "needs_alliance_first")}
         for a in DIPLO_TERMS:
             held = bool(HELD.get(a))
-            ok = (not at_war) and not held
+            met, unmet = NEEDS.get(a, (True, None))
+            ok = (not at_war) and not held and bool(met)
             gate = ("at_war_offers_only_peace" if at_war else
-                    "already_holds_%s" % a if held else None)
+                    "already_holds_%s" % a if held else
+                    None if met else unmet)
             offers.append(_offer("diplomacy", "%s:%s" % (f, a), ok, gate,
                                  faction=f, terms=[a], **rel))
         for tier in DIPLO_GIFT_TIERS:
@@ -699,7 +711,7 @@ MAX_ACTIONS_PER_ENTITY = 6
 FACTION_WIDE_CAPS = frozenset(("recruit_lord", "recruit_hero", "research", "rites",
                                "building_dismantle", "colonize"))
 PER_TURN_CAPS = {"recruit_lord": 1, "recruit_hero": 1, "recruit_unit": 4, "edict": 1,
-                 "research": 1, "rites": 1, "diplomacy": 1, "noop": 0, "stance": 1,
+                 "research": 1, "rites": 1, "diplomacy": 2, "noop": 0, "stance": 1,
                  "hero_action": 3, "building_dismantle": 0, "raise_dead": 4,
                  "recruit_ror": 1, "recruit_blessed": 4, "recruit_imperial": 1,
                  "colonize": 1, "item_unequip": 1}
@@ -714,6 +726,7 @@ ATTACK_PAIR_TYPES = frozenset(("attack_army", "attack_settlement"))
 ATTACK_PAIR_CAP = 1
 DIPLO_TARGET_CAP = 1
 DIPLO_GIFT_CAP = 1
+TURN_ACTION_CAP = 15
 
 
 def _is_gift(key):
@@ -790,6 +803,8 @@ class Gate:
     def reason(self, ck, cid, o, actions_taken):
         at, key = o.get("action_type"), str(o.get("key"))
         k = (ck, str(cid))
+        if actions_taken >= TURN_ACTION_CAP and at != "end_turn":
+            return "turn_action_cap:%d" % TURN_ACTION_CAP
         if not o.get("available"):
             return o.get("gate") or "no_gate_recorded"
         if self._no_movement_left(o.get("_state"), at):

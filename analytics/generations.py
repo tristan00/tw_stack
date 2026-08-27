@@ -21,16 +21,16 @@ CREATE TABLE IF NOT EXISTS model_generations(
   trial            TEXT PRIMARY KEY,
   generation       INTEGER,
   session          TEXT,
-  started_ts       REAL NOT NULL,
-  ended_ts         REAL NOT NULL,
-  seg_from_ts      REAL NOT NULL,
-  seg_to_ts        REAL NOT NULL,
+  started_ts       DOUBLE PRECISION NOT NULL,
+  ended_ts         DOUBLE PRECISION NOT NULL,
+  seg_from_ts      DOUBLE PRECISION NOT NULL,
+  seg_to_ts        DOUBLE PRECISION NOT NULL,
   overlapped_by    TEXT,
   retrained        INTEGER NOT NULL,
   feature_version  TEXT,
   corpus_decisions INTEGER,
   campaigns        INTEGER,
-  computed_ts      REAL NOT NULL);
+  computed_ts      DOUBLE PRECISION NOT NULL);
 
 CREATE INDEX IF NOT EXISTS ix_gen_seg ON model_generations(seg_from_ts);
 """
@@ -101,13 +101,15 @@ def step(src, an, lo, hi):
     rows = _windows(common.RUN_DIR)
     an.execute("DELETE FROM model_generations")
     now = time.time()
-    an.executemany(
+    from analytics import store as _store
+    _store.executemany(
+        an,
         "INSERT INTO model_generations(trial, generation, session, started_ts, ended_ts,"
         " seg_from_ts, seg_to_ts, overlapped_by, retrained, feature_version,"
         " corpus_decisions, campaigns, computed_ts)"
-        " VALUES(:trial, :generation, :session, :started_ts, :ended_ts, :seg_from_ts,"
-        " :seg_to_ts, :overlapped_by, :retrained, :feature_version,"
-        " :corpus_decisions, :campaigns, :computed_ts)",
+        " VALUES(%(trial)s, %(generation)s, %(session)s, %(started_ts)s, %(ended_ts)s,"
+        " %(seg_from_ts)s, %(seg_to_ts)s, %(overlapped_by)s, %(retrained)s,"
+        " %(feature_version)s, %(corpus_decisions)s, %(campaigns)s, %(computed_ts)s)",
         [dict(r, computed_ts=now) for r in rows])
     return max(hi, len(rows)), len(rows)
 
@@ -121,20 +123,12 @@ FROM campaign_gains
 """
 
 
-def _ro(path):
-    import sqlite3
-    return sqlite3.connect("file:%s?mode=ro" % path.replace("\\", "/"), uri=True, timeout=5)
-
-
 def generation_gains(run_dir=None, min_trials=GAINS_MIN_TRIALS):
-    run_dir = common.native(run_dir or common.RUN_DIR)
-    an = _ro(os.path.join(run_dir, "analytics.sqlite"))
-    trains = an.execute("SELECT trial, seg_from_ts, corpus_decisions FROM model_generations"
-                        " WHERE retrained=1 ORDER BY seg_from_ts").fetchall()
-    an.close()
+    from decisions import pg
+    con = pg.connect(autocommit=True, readonly=True, search_path="analytics, public")
+    trains = con.execute("SELECT trial, seg_from_ts, corpus_decisions FROM model_generations"
+                         " WHERE retrained=1 ORDER BY seg_from_ts").fetchall()
     models = [("baseline", float("-inf"), None)] + [tuple(r) for r in trains]
-    from decisions import dbopen
-    con = dbopen.connect(os.path.join(run_dir, "decisions.sqlite"), timeout=5)
     camps = con.execute(_GAINS_SQL).fetchall()
     con.close()
     agg = {}

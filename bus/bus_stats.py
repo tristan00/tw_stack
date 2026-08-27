@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import atexit
 import os
-import sqlite3
 import sys
 import threading
 import time
@@ -10,8 +9,8 @@ from collections import deque
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import common
+from decisions import pg
 
-DEFAULT_DB_PATH = common.BUS_STATS_DB
 KEY_MAXLEN = 400
 FLUSH_EVERY_N = 200
 FLUSH_EVERY_S = 10.0
@@ -39,10 +38,6 @@ def _env_guard_enabled() -> bool:
     if v is None:
         return True
     return v.strip().lower() not in ("0", "false", "no", "off", "")
-
-
-def _env_db_path() -> str:
-    return os.environ.get("BUS_STATS_DB") or DEFAULT_DB_PATH
 
 
 def classify_outcome(channel: str, reply) -> str:
@@ -82,39 +77,40 @@ def make_key(channel: str, payload: str) -> str:
 
 
 _SCHEMA = """
-CREATE TABLE IF NOT EXISTS call_stats (
+CREATE SCHEMA IF NOT EXISTS bus;
+CREATE TABLE IF NOT EXISTS bus.call_stats (
     channel  TEXT NOT NULL,
     key      TEXT NOT NULL,
-    calls    INTEGER NOT NULL DEFAULT 0,
-    hits     INTEGER NOT NULL DEFAULT 0,
-    empties  INTEGER NOT NULL DEFAULT 0,
-    timeouts INTEGER NOT NULL DEFAULT 0,
-    errors   INTEGER NOT NULL DEFAULT 0,
-    total_ms REAL    NOT NULL DEFAULT 0,
-    last_ts  REAL,
+    calls    BIGINT NOT NULL DEFAULT 0,
+    hits     BIGINT NOT NULL DEFAULT 0,
+    empties  BIGINT NOT NULL DEFAULT 0,
+    timeouts BIGINT NOT NULL DEFAULT 0,
+    errors   BIGINT NOT NULL DEFAULT 0,
+    total_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+    last_ts  DOUBLE PRECISION,
     PRIMARY KEY (channel, key)
 );
 """
 
 _UPSERT = """
 INSERT INTO call_stats (channel, key, calls, hits, empties, timeouts, errors, total_ms, last_ts)
-VALUES (:channel, :key, :calls, :hits, :empties, :timeouts, :errors, :total_ms, :last_ts)
+VALUES (%(channel)s, %(key)s, %(calls)s, %(hits)s, %(empties)s, %(timeouts)s, %(errors)s,
+        %(total_ms)s, %(last_ts)s)
 ON CONFLICT(channel, key) DO UPDATE SET
-    calls    = calls    + excluded.calls,
-    hits     = hits     + excluded.hits,
-    empties  = empties  + excluded.empties,
-    timeouts = timeouts + excluded.timeouts,
-    errors   = errors   + excluded.errors,
-    total_ms = total_ms + excluded.total_ms,
+    calls    = call_stats.calls    + excluded.calls,
+    hits     = call_stats.hits     + excluded.hits,
+    empties  = call_stats.empties  + excluded.empties,
+    timeouts = call_stats.timeouts + excluded.timeouts,
+    errors   = call_stats.errors   + excluded.errors,
+    total_ms = call_stats.total_ms + excluded.total_ms,
     last_ts  = excluded.last_ts;
 """
 
 
 class StatsTracker:
 
-    def __init__(self, db_path: str, flush_every_n: int = FLUSH_EVERY_N,
+    def __init__(self, db_path: str | None = None, flush_every_n: int = FLUSH_EVERY_N,
                  flush_every_s: float = FLUSH_EVERY_S, register_atexit: bool = True) -> None:
-        self.db_path = db_path
         self.flush_every_n = max(1, int(flush_every_n))
         self.flush_every_s = float(flush_every_s)
         self._lock = threading.Lock()
@@ -170,21 +166,17 @@ class StatsTracker:
                              % (len(snapshot), repr(e)[:100]))
 
     def _write(self, snapshot: dict) -> None:
-        d = os.path.dirname(self.db_path)
-        if d:
-            os.makedirs(d, exist_ok=True)
-        conn = sqlite3.connect(self.db_path, timeout=5.0)
+        conn = pg.connect(autocommit=True, search_path="bus")
         try:
-            conn.execute("PRAGMA journal_mode=WAL;")
-            conn.execute("PRAGMA busy_timeout=5000;")
+            conn.execute("SET synchronous_commit = off")
             conn.execute(_SCHEMA)
             rows = [{
                 "channel": ch, "key": ky,
                 "calls": v[0], "hits": v[1], "empties": v[2],
                 "timeouts": v[3], "errors": v[4], "total_ms": v[5], "last_ts": v[6],
             } for (ch, ky), v in snapshot.items()]
-            conn.executemany(_UPSERT, rows)
-            conn.commit()
+            with conn.cursor() as cur:
+                cur.executemany(_UPSERT, rows)
         finally:
             conn.close()
 
@@ -277,7 +269,7 @@ def get_tracker() -> StatsTracker | None:
         with _tracker_lock:
             if _tracker is None:
                 try:
-                    _tracker = StatsTracker(_env_db_path())
+                    _tracker = StatsTracker()
                 except Exception as e:
                     if not _disabled_logged:
                         sys.stderr.write("bus_stats: tracker init failed (stats off) -> %s\n"
@@ -357,13 +349,10 @@ def reset_suppression() -> None:
 
 
 def load_rows(db_path: str | None = None) -> list[dict]:
-    path = db_path or _env_db_path()
-    if not os.path.exists(path):
-        return []
     try:
-        conn = sqlite3.connect(path, timeout=5.0)
+        conn = pg.connect(autocommit=True, readonly=True, row_factory=pg.row_factory,
+                          search_path="bus")
         try:
-            conn.row_factory = sqlite3.Row
             cur = conn.execute(
                 "SELECT channel, key, calls, hits, empties, timeouts, errors, total_ms, last_ts "
                 "FROM call_stats")
@@ -433,17 +422,15 @@ def format_report(rep: dict, top: int = 40) -> str:
 def main(argv=None) -> int:
     import argparse
     p = argparse.ArgumentParser(description="Report WH3 bus call stats + junk (never-return) calls.")
-    p.add_argument("--db", default=None, help="sqlite path (default: env BUS_STATS_DB or %s)"
-                   % DEFAULT_DB_PATH)
     p.add_argument("--min", type=int, default=5, dest="min_calls",
                    help="min calls for the junk list (default 5)")
     p.add_argument("--top", type=int, default=40, help="max junk rows to print (default 40)")
     args = p.parse_args(argv)
-    db = args.db or _env_db_path()
-    if not os.path.exists(db):
-        sys.stderr.write("bus_stats: no DB at %s (has the instrumented bus run yet?)\n" % db)
+    rep = build_report(junk_min_calls=args.min_calls)
+    if not rep["rows"]:
+        sys.stderr.write("bus_stats: no rows in bus.call_stats (has the instrumented bus "
+                         "run yet?)\n")
         return 1
-    rep = build_report(db, junk_min_calls=args.min_calls)
     print(format_report(rep, top=args.top))
     return 0
 

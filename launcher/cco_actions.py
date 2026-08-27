@@ -190,6 +190,10 @@ def _execute_confirmed(bus, ctx, pick):
                                  total_ms=int((time.time() - _t_start) * 1000))
             return rec
     _t["gates_ms"] = int((time.time() - _tg) * 1000)
+    try:
+        stream_off = bus.out_offset()
+    except Exception:
+        stream_off = None
     t0 = time.time()
     try:
         rec["executed"] = bool(spec["execute"](bus, ctx, pick, before))
@@ -198,12 +202,10 @@ def _execute_confirmed(bus, ctx, pick):
         rec["execute_error"] = repr(e)[:160]
     _t["execute_ms"] = int((time.time() - t0) * 1000)
     _tc = time.time()
-    settle = float(spec.get("confirm_settle_s") or 0.0)
-    if settle > 0.0:
-        common.wait("confirm_settle", settle, atype)
     deadline = time.time() + spec["timeout_s"]
     confirmed, after, polls = False, {}, 0
     doomed = spec.get("doomed")
+    swept_dilemma = False
     while True:
         polls += 1
         try:
@@ -226,6 +228,20 @@ def _execute_confirmed(bus, ctx, pick):
                                  "%.1fs\n" % (pick.get("action_type"), why, time.time() - _tc,
                                               spec["timeout_s"]))
                 break
+        if stream_off is not None and not swept_dilemma and polls >= 2:
+            row, stream_off = bus.wait_row(("dilemma_issued",), timeout=0.0,
+                                           offset=stream_off)
+            if row is not None:
+                swept_dilemma = True
+                sys.stderr.write("cco_actions: %s confirm blocked by an issued dilemma -- "
+                                 "answering it mid-confirm\n" % atype)
+                try:
+                    import interrupts
+                    rec["mid_confirm_interrupts"] = interrupts.resolve(bus) or []
+                except Exception as e:
+                    sys.stderr.write("cco_actions: %s mid-confirm sweep -> %s\n"
+                                     % (atype, repr(e)[:120]))
+                continue
         time.sleep(spec["poll_s"])
     common.waitlog("action_confirm_poll", time.time() - _tc, bool(confirmed),
                    "%s polls=%d" % (atype, polls))
@@ -510,7 +526,16 @@ def _skills_execute(bus, ctx, pick, before):
     if res != "called":
         sys.stderr.write("cco_actions: skills AddPoint %r -> %s\n" % (pick["key"], res))
         return False
-    common.wait("skill_commit_pacing", 0.8, pick["key"])
+    _tp = time.time()
+    allocated = False
+    while time.time() - _tp < 0.8:
+        v = _ev(bus, _G + "return ts(g(cco('CcoCampaignCharacter','%s'),"
+                          "'HasUncommitedSkills'))" % cqi)
+        if v == "true":
+            allocated = True
+            break
+        time.sleep(0.1)
+    common.waitlog("skill_commit_pacing", time.time() - _tp, allocated, pick["key"])
     _ev(bus, _G + "local c=cco('CcoCampaignCharacter','%s'); "
                   "pcall(function() c:Call('CommitSkillChoices') end); return 'called'" % cqi)
     return True
@@ -554,9 +579,13 @@ def _equipped_names(bus, cqi):
 
 
 def _select_character(bus, cqi):
+    off = bus.out_offset()
     _ev(bus, _G + "local c=cco('CcoCampaignCharacter','%s'); pcall(function() c:Call('Select') end); "
                   "return 'ok'" % cqi)
-    common.wait("character_select_settle", 1.0, str(cqi))
+    _ts = time.time()
+    row, _ = bus.wait_row(("character_selected",), timeout=1.0, offset=off, poll=0.05,
+                          pred=lambda r: str(r.get("cqi")) == str(cqi))
+    common.waitlog("character_select_settle", time.time() - _ts, row is not None, str(cqi))
 
 
 def _items_snapshot(bus, ctx, pick):

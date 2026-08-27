@@ -14,14 +14,14 @@ FORMULA_VERSION = 1
 
 DDL = """
 CREATE TABLE IF NOT EXISTS growth_summary(
-  scope TEXT PRIMARY KEY, computed_ts REAL NOT NULL,
+  scope TEXT PRIMARY KEY, computed_ts DOUBLE PRECISION NOT NULL,
   campaigns INTEGER NOT NULL,
   measured INTEGER NOT NULL, single_turn INTEGER NOT NULL, no_turn_rows INTEGER NOT NULL,
   settlements_up INTEGER, settlements_flat INTEGER, settlements_down INTEGER,
   lord_up INTEGER, lord_flat INTEGER, lord_down INTEGER,
-  settlements_mean REAL, lord_mean REAL,
-  settlements_per_turn_mean REAL, lord_per_turn_mean REAL,
-  span_median REAL,
+  settlements_mean DOUBLE PRECISION, lord_mean DOUBLE PRECISION,
+  settlements_per_turn_mean DOUBLE PRECISION, lord_per_turn_mean DOUBLE PRECISION,
+  span_median DOUBLE PRECISION,
   turn_rows_behind_decided INTEGER);
 """
 
@@ -62,7 +62,7 @@ class _GrowthSummary:
                      if r.get("last_decided_turn") is not None
                      and r.get("last_measured_turn") is not None
                      and int(r["last_decided_turn"]) > int(r["last_measured_turn"]))
-        an.execute("INSERT INTO growth_summary VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        an.execute("INSERT INTO growth_summary VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                    ("all", time.time(), len(rows), states[G.MEASURED],
                     states[G.SINGLE_TURN], states[G.NO_TURN_ROWS],
                     s_up, s_flat, s_down, l_up, l_flat, l_down, s_mean, l_mean,

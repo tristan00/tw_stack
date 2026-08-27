@@ -3,11 +3,6 @@
 The README is for humans reading about the project. This file is the contract for agents
 changing or operating it. These rules were set explicitly by the owner; do not relax them.
 
-## The contract
-
-Run campaigns **reliably** (crashes minimized, worst cases handled gracefully) and
-**fast** — 60+ turns per hour wall-clock honest is the floor, higher is better — agnostic
-of model predictive performance. Rank every improvement by projected turns/hour.
 
 ## Models
 
@@ -21,8 +16,10 @@ of model predictive performance. Rank every improvement by projected turns/hour.
   model, so the interrupt mix is `greedy_catboost` / `random` / `ruleset` only.
 - The GNN trains on CUDA. A CPU-only torch wheel is a broken environment to fix, never a
   fallback to accept.
-- **Never retrain the owner's models unrequested.** `run_config` keeps retraining off;
-  the cadence is opt-in via `--retrain-every N`.
+- **Never retrain the owner's models unrequested.** runctl has NO parameter defaults:
+  training happens only when the command line explicitly passes `--retrain-every N`
+  (with an explicit `--retrain-first`/`--no-retrain-first` when N > 0). Harness
+  relaunches force retrain-first off and replay only the recorded launch params.
 - Never delete corpus data without an explicit order, and back up first when ordered.
 
 ## Campaign lifecycle
@@ -62,12 +59,15 @@ of model predictive performance. Rank every improvement by projected turns/hour.
 
 ## Verification
 
-- Verify, don't assume: after changes run `check.py` (21 offline gates) and `pytest -q`
+- Verify, don't assume: after changes run `check.py` (22 offline gates) and `pytest -q`
   (all green is the bar), and verify behavior in the live run, not just syntax.
 - The API test suite assumes a quiet system; single-row mismatches while the run is
   writing are races — re-run the test before treating it as a failure.
-- `runctl.py` is the entrypoint; `run_config.RUN` is the authoritative run description.
-  The CLI's only model surface is `--strategies`.
+- `runctl.py` is the entrypoint. Every run parameter must be stated explicitly on its
+  command line — there are no defaults and `run_config.RUN` no longer feeds any. Each
+  launch's full param set is recorded to `logs/services/last_launch.json`, the only
+  source a harness relaunch may use. The model surface is `--strategies` /
+  `--interrupt-strategies`.
 
 ## Code style
 

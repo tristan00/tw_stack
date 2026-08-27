@@ -4,8 +4,8 @@ from __future__ import annotations
 RUN = {
     "campaigns": 1000,
     "turns": 20,
-    "retrain_every": 100,
-    "retrain_first": True,
+    "retrain_every": 0,
+    "retrain_first": False,
     "strategies": "greedy_catboost=0.3,greedy_gnn=0.3,marwil_gnn=0.1,random=0.3",
     "interrupt_strategies": "greedy_catboost=0.8,random=0.2",
     "ruleset": None,

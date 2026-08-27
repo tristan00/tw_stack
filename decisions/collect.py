@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import re
-import sqlite3
 import sys
 import time
 
@@ -525,7 +524,6 @@ MERC_FLAVOR_ACTIONS = {"raise_dead": "raise_dead", "renown": "recruit_ror",
                        "blessed_spawning": "recruit_blessed",
                        "imperial_supply": "recruit_imperial"}
 
-_MERC_REFERENCE_DB = common.REFERENCE_DB
 _merc_flavor_map = None
 _merc_drop_logged = set()
 
@@ -533,14 +531,15 @@ _merc_drop_logged = set()
 def _merc_flavors():
     global _merc_flavor_map
     if _merc_flavor_map is None:
-        con = sqlite3.connect("file:%s?mode=ro" % _MERC_REFERENCE_DB.replace("\\", "/"), uri=True)
+        from decisions import pg
+        con = pg.connect(autocommit=True, readonly=True, search_path="reference")
         try:
             rows = con.execute("SELECT DISTINCT unit, flavor FROM merc_units").fetchall()
         finally:
             con.close()
         if not rows:
-            raise CollectError("reference merc_units is empty -- rebuild reference.sqlite "
-                               "(advisor/reference/build_reference.py)")
+            raise CollectError("reference merc_units is empty -- rebuild the reference "
+                               "schema (advisor/reference/build_reference.py)")
         m = {}
         for unit, flavor in rows:
             m.setdefault(unit, set()).add(flavor)

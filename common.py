@@ -146,7 +146,7 @@ _TD = posix(TWDATA)
 
 RUNS_ROOT = _TD + "/runs/human"
 RUN_DIR = RUNS_ROOT + "/run"
-DECISIONS_DB = "decisions.sqlite"
+DECISIONS_DB = "decisions.pg"
 
 
 def cli_path(argv, takes_value=()):
@@ -165,8 +165,13 @@ def cli_path(argv, takes_value=()):
 
 def run_dbs(runs_root=None):
     root = native(runs_root) if runs_root else native(RUNS_ROOT)
-    p = os.path.join(root, "run", DECISIONS_DB)
-    return [p] if os.path.exists(p) else []
+    from decisions import pg
+    con = pg.connect(autocommit=True, readonly=True)
+    try:
+        ok = con.execute("SELECT to_regclass('public.decisions')").fetchone()[0]
+    finally:
+        con.close()
+    return [os.path.join(root, "run", DECISIONS_DB)] if ok else []
 SCREEN_DUMP_DIR = RUNS_ROOT + "/screens"
 UNHANDLED_LOG = RUNS_ROOT + "/unhandled_screens.jsonl"
 CLEAR_SCREEN_TRACE = os.path.join(native(RUN_DIR), "clear_screen_trace.jsonl")
@@ -187,15 +192,12 @@ HARNESS_OFF = os.path.join(TWDATA, "HARNESS_OFF")
 
 MODELS = os.path.join(TWDATA, "models")
 MODEL_GLOBAL = os.path.join(MODELS, "global")
-MODEL_LOCAL = os.path.join(MODELS, "local")
 MODEL_INTERRUPT = os.path.join(MODELS, "interrupt")
 MODEL_MAPGRAPH = os.path.join(MODELS, "mapgraph")
 MODEL_MAPGRAPH_GREEDY = os.path.join(MODELS, "mapgraph_greedy")
 MODEL_COLD_START = os.path.join(MODELS, "__cold_start__")
 
 REFERENCE_DIR = os.path.join(TWDATA, "reference")
-REFERENCE_DB = os.path.join(REFERENCE_DIR, "reference.sqlite")
-UNLOCK_DB = os.path.join(REFERENCE_DIR, "agent_action_unlocks.sqlite")
 CCO_TSV = os.path.join(REFERENCE_DIR, "ui3_extraction", "CCO.tsv")
 WIKI_ROOT = _TD + "/wiki"
 
@@ -238,7 +240,6 @@ RUNNER_DATA = posix(os.path.join(TWDATA, "bus"))
 BUS_CMD_PATH = RUNNER_DATA + "/commands.txt"
 BUS_OUT_PATH = RUNNER_DATA + "/twcontrol.jsonl"
 BUS_SEND_LOG = RUNNER_DATA + "/bus_send.jsonl"
-BUS_STATS_DB = RUNNER_DATA + "/bus_stats.sqlite"
 
 GAME_DIR = _setting("TW_GAME_DIR", "game_dir", _find_game, default="")
 GAME_DATA_DIR = posix(GAME_DIR) + "/data"
