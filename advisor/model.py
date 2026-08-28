@@ -13,8 +13,9 @@ import common
 sys.path.insert(0, common.DECISIONS)
 
 import features as F
-from base_model import (RUNS_ROOT, TARGET_PARTS, target, SHORT_HORIZON, SHORT_WEIGHT,
-                        decision_deltas, fit_es, grouped_split, params, _ranks)
+from base_model import (CB_MAIN_ITERATIONS, RUNS_ROOT, TARGET_PARTS, target,
+                        SHORT_HORIZON, SHORT_WEIGHT, decision_deltas, fit_es,
+                        grouped_split, params, _ranks)
 from store import DecisionStore, IncompatibleStore
 
 MODEL_DIR = common.MODEL_GLOBAL
@@ -94,7 +95,8 @@ def train(runs_root=RUNS_ROOT):
     num, cat = F.split_columns(rows)
     X = F.matrix(rows, num, cat)
     cat_idx = list(range(len(num), len(num) + len(cat)))
-    m = fit_es(X, y, cat_idx, groups, "model", fit_report)
+    m = fit_es(X, y, cat_idx, groups, "model", fit_report,
+               iterations=CB_MAIN_ITERATIONS)
     val, _trn = grouped_split(len(X), groups)
     if val:
         pv = list(m.predict(Pool([X[i] for i in val], cat_features=cat_idx)))
@@ -126,7 +128,8 @@ def train(runs_root=RUNS_ROOT):
         if os.path.exists(p):
             os.remove(p)
     return {"trained": True, "rows": len(rows), "mae_in_sample": round(mae, 5),
-            "fit": fit_report, "params": params(), **_counts(data)}
+            "fit": fit_report, "params": params(iterations=CB_MAIN_ITERATIONS),
+            **_counts(data)}
 
 
 def _counts(data):

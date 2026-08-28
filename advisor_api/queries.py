@@ -1299,9 +1299,9 @@ _MODEL_DIRS = (
      "return of each offered action directly, and the arm takes the highest prediction. "
      "No state-only model, no advantage -- the catboost twin of greedy_gnn."),
     ("greedy_catboost interrupt", common.MODEL_INTERRUPT, "catboost",
-     "The advantage model for blocking screens -- battles, dilemmas, occupation choices. "
-     "The only interrupt model: the interrupt mix draws from greedy_catboost, random and "
-     "ruleset."),
+     "One reward regression over the screen, game-state and option features for blocking "
+     "screens -- battles, dilemmas, occupation choices. The only interrupt model: the "
+     "interrupt mix draws from greedy_catboost, random and ruleset."),
     ("marwil_gnn", common.MODEL_MAPGRAPH, "mapgraph",
      "MARWIL/AWR over the graph encoder: the map and its entities as a graph, the action a "
      "node in it, trained by exponentially advantage-weighted imitation of the logged "
@@ -1333,8 +1333,7 @@ def _model_cards() -> list:
                 status = "incomplete"
                 note = "meta.json is missing or unreadable"
         if status == "ready":
-            want = (("model.pt",) if family == "mapgraph" else
-                    ("model.cbm",) if path == common.MODEL_GLOBAL else ("e1.cbm",))
+            want = ("model.pt",) if family == "mapgraph" else ("model.cbm",)
             missing = [f for f in want if not os.path.exists(os.path.join(d, f))]
             if missing:
                 status, note = "incomplete", "missing on disk: %s" % ", ".join(missing)
@@ -1374,22 +1373,15 @@ def _model_cards() -> list:
                 rows.append(("graph schema", "v%s %s" % (meta.get("schema_version"),
                                                          str(meta.get("schema_hash"))[:8])))
             else:
-                cfit = meta.get("fit") or {}
-                for tag, label in (("model", "held-out RMSE"),
-                                   ("e1", "e1 RMSE"), ("e2", "e2 RMSE")):
-                    part = cfit.get(tag) or {}
-                    if part.get("val_rmse") is not None:
-                        rows.append((label, "%.4f" % (_f(part["val_rmse"]) or 0)))
-                r2 = _f((cfit.get("model") or {}).get("val_r2"))
+                cfit = (meta.get("fit") or {}).get("model") or {}
+                if cfit.get("val_rmse") is not None:
+                    rows.append(("held-out RMSE", "%.4f" % (_f(cfit["val_rmse"]) or 0)))
+                r2 = _f(cfit.get("val_r2"))
                 if r2 is not None:
                     rows.append(("held-out R²", "%+.3f" % r2))
-                held = ((cfit.get("model") or cfit.get("e1") or {})).get("val_rows")
+                held = cfit.get("val_rows")
                 if held is not None:
                     rows.append(("held-out rows", "{:,}".format(_i(held, 0) or 0)))
-                for k, label in (("sd_global", "target spread"),
-                                 ("epsilon", "epsilon"), ("beta", "beta")):
-                    if k in meta:
-                        rows.append((label, "%.4g" % (_f(meta[k]) or 0)))
                 screens = meta.get("screens")
                 if isinstance(screens, (list, dict)):
                     rows.append(("screens covered", str(len(screens))))

@@ -43,10 +43,10 @@ class GameStuck(RuntimeError):
     pass
 
 
-GROWTH_WINDOW = 4
-GROWTH_LORD_WINDOW = 3
+GROWTH_WINDOW = 5
+GROWTH_LORD_WINDOW = 4
 GROWTH_MIN_GAIN = 1
-GROWTH_FIRST_CHECK_TURN = 4
+GROWTH_FIRST_CHECK_TURN = 5
 
 GROWTH_METRICS = (("settlements", "settlements", GROWTH_WINDOW),
                   ("lord_level", "legendary lord level", GROWTH_LORD_WINDOW))
@@ -284,7 +284,8 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
                     raise CampaignLost("watchdog fired but the faction is DEAD -- defeat, "
                                        "not a stall (%s)" % stuck["reason"])
                 raise GameStuck("%s: %s" % (stuck["reason"], stuck["detail"]))
-            growth_hist[int(row["turn"] or 0)] = dict(row.get("turn_open") or {})
+            growth_hist[int(row["turn"] or 0)] = dict(row.get("turn_close")
+                                                      or row.get("turn_open") or {})
             done, verdict = _growth_verdict(growth_hist, row["turn"])
             _append(report_path, dict(verdict, kind="growth_check", ts=time.time()))
             if verdict["reason"] == "no_metric_evaluable":
@@ -400,18 +401,24 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
     wounded_seen = [False]
     gate_failed = [False]
 
+    def _state_row(camp):
+        return {"faction": camp.get("faction"), "settlements": camp.get("settlements"),
+                "armies": camp.get("armies"), "treasury": camp.get("treasury"),
+                "income": camp.get("income"), "lord_level": camp.get("lord_level"),
+                "ll_wounded": bool(camp.get("ll_wounded")) or wounded_seen[0],
+                "campaign_turn": camp.get("turn")}
+
     def _turn_open_row():
-        camp0 = (first_record.get("campaign") or {})
-        return {"faction": camp0.get("faction"), "settlements": camp0.get("settlements"),
-                "armies": camp0.get("armies"), "treasury": camp0.get("treasury"),
-                "income": camp0.get("income"), "lord_level": camp0.get("lord_level"),
-                "ll_wounded": bool(camp0.get("ll_wounded")) or wounded_seen[0],
-                "campaign_turn": camp0.get("turn")}
+        return _state_row(first_record.get("campaign") or {})
+
+    def _turn_close_row():
+        return _state_row(last_record.get("campaign")
+                          or first_record.get("campaign") or {})
 
     def _check_gate_before_end():
         if pre_settle is None:
             return False
-        st = _turn_open_row()
+        st = _turn_close_row()
         try:
             failing = bool(pre_settle(st, turn))
         except Exception as e:
@@ -669,11 +676,17 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
         except Exception as e:
             log("   diplo_stream checkpoint -> %s" % repr(e)[:80])
     row_open = _turn_open_row()
+    row_close = _turn_close_row()
     log("   turn_open: turn=%s settlements=%s armies=%s treasury=%s income=%s lord_level=%s"
         % (row_open["campaign_turn"], row_open["settlements"], row_open["armies"],
            row_open["treasury"], row_open["income"], row_open["lord_level"]))
+    if (row_close["settlements"], row_close["lord_level"]) != (row_open["settlements"],
+                                                               row_open["lord_level"]):
+        log("   turn_close: settlements=%s lord_level=%s -- gained during the turn"
+            % (row_close["settlements"], row_close["lord_level"]))
     return TurnResult({"kind": "turn", "turn": turn, "actions": actions, "confirmed": confirmed,
                        "ended_by": ended_by, "picks": picks, "turn_open": row_open,
+                       "turn_close": row_close,
                        "campaign_uuid": ((first_record.get("campaign") or {}).get("campaign_uuid")
                                          or (last_record.get("campaign") or {}).get("campaign_uuid")),
                        "inter_turn": settle, "ts": time.time()})
