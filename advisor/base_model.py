@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
@@ -22,24 +23,48 @@ SHORT_WEIGHT = 0.5
 CB_ITERATIONS = 5000
 CB_LOSS = "RMSE"
 
-CB_TUNED_FROM = ("catboost_fast_k3 rank1 of 170 finished trials: cv_rmse 1.9575 +/- 0.1623, "
-                 "folds [2.1335, 1.7418, 1.9971]; vs combined100-trial-81 production 2.2276 "
-                 "+/- 0.4676 on 20260808 corpus (7339 rows, 209 campaigns), paired mean "
-                 "-0.2701 SE 0.2827 within noise")
+CB_TUNED_FROM = ("optuna catboost_main_20260827_111057 trial 21 of 36 (patience 12, 120s "
+                 "fit cap): split rmse 1.4157, cv 1.49267 +/- 0.04839 vs old production "
+                 "1.50919 +/- 0.05393 on 20260827 corpus (94448 rows, 2814 campaigns), "
+                 "pairwise better on all 3 folds; small-fast runner-up trial 15 (176 "
+                 "trees, 44s) cv 1.49713")
 
 CB_PARAMS = {
-    "depth": 7,
-    "learning_rate": 0.12882996489398976,
-    "l2_leaf_reg": 23.38853026720648,
+    "depth": 8,
+    "learning_rate": 0.036383825640027526,
+    "l2_leaf_reg": 1.3565747026380994,
     "grow_policy": "SymmetricTree",
     "bootstrap_type": "Bernoulli",
-    "subsample": 0.8956008103406774,
-    "random_strength": 9.475469909298225,
-    "border_count": 64,
-    "min_data_in_leaf": 1,
-    "one_hot_max_size": 255,
+    "subsample": 0.7157512597031922,
+    "random_strength": 0.8803026036337803,
+    "border_count": 32,
+    "min_data_in_leaf": 6,
+    "one_hot_max_size": 64,
     "leaf_estimation_iterations": 1,
 }
+
+CB_MAIN_ITERATIONS = 634
+
+CB_INTERRUPT_TUNED_FROM = ("optuna catboost_interrupt_20260827_101340 trial 30 of 35 (60s "
+                           "fit cap, one-model interrupt): split rmse 1.6978, cv 1.63982 "
+                           "+/- 0.02003 vs production-params baseline 1.65084 +/- 0.02873 "
+                           "on 20260827 corpus (20494 rows); 396 trees, ~47s fit")
+
+CB_INTERRUPT_PARAMS = {
+    "depth": 8,
+    "learning_rate": 0.08002610130462377,
+    "l2_leaf_reg": 22.27676846486425,
+    "grow_policy": "SymmetricTree",
+    "bootstrap_type": "Bernoulli",
+    "subsample": 0.9665884328973036,
+    "random_strength": 0.1176281598265645,
+    "border_count": 128,
+    "min_data_in_leaf": 5,
+    "one_hot_max_size": 64,
+    "leaf_estimation_iterations": 1,
+}
+
+CB_INTERRUPT_ITERATIONS = 396
 
 CB_DEPTH = CB_PARAMS["depth"]
 CB_LEARNING_RATE = CB_PARAMS["learning_rate"]
@@ -93,32 +118,36 @@ def stable_split(n, groups, frac=VAL_FRACTION, salt=HOLDOUT_SALT):
     return val, trn
 
 
-def params(iterations=None, learning_rate=None):
-    return dict(CB_PARAMS,
-                learning_rate=float(learning_rate or CB_LEARNING_RATE),
+def params(iterations=None, learning_rate=None, base=None, tuned_from=None):
+    p = dict(base or CB_PARAMS)
+    return dict(p,
+                learning_rate=float(learning_rate or p["learning_rate"]),
                 early_stopping_rounds=CB_EARLY_STOPPING,
                 iteration_cap=int(iterations or CB_ITERATIONS),
                 loss=CB_LOSS, val_fraction=VAL_FRACTION,
-                tuned_from=CB_TUNED_FROM)
+                tuned_from=tuned_from or CB_TUNED_FROM)
 
 
-def regressor(iterations=None, learning_rate=None):
+def regressor(iterations=None, learning_rate=None, base=None):
     from catboost import CatBoostRegressor
-    p = dict(CB_PARAMS)
+    p = dict(base or CB_PARAMS)
     if learning_rate:
         p["learning_rate"] = float(learning_rate)
     return CatBoostRegressor(iterations=int(iterations or CB_ITERATIONS),
                              loss_function=CB_LOSS, verbose=0, train_dir=CB_TRAIN_DIR, **p)
 
 
-def fit_es(X, y, cat_idx, groups, tag, report, iterations=None, learning_rate=None):
+def fit_es(X, y, cat_idx, groups, tag, report, iterations=None, learning_rate=None,
+           base=None):
     from catboost import Pool
     val, trn = grouped_split(len(X), groups)
-    m = regressor(iterations=iterations, learning_rate=learning_rate)
+    m = regressor(iterations=iterations, learning_rate=learning_rate, base=base)
+    t0 = time.time()
     if not val:
         m.fit(Pool(X, y, cat_features=cat_idx))
         report[tag] = {"early_stopping": False, "reason": "too few campaigns to hold out",
-                       "iterations": int(m.tree_count_)}
+                       "iterations": int(m.tree_count_),
+                       "fit_seconds": round(time.time() - t0, 1)}
         return m
     Xt = [X[i] for i in trn]
     yt = [y[i] for i in trn]
@@ -131,6 +160,7 @@ def fit_es(X, y, cat_idx, groups, tag, report, iterations=None, learning_rate=No
     report[tag] = {"early_stopping": True, "val_rows": len(val), "train_rows": len(trn),
                    "best_iteration": int(m.get_best_iteration() or 0),
                    "iterations": int(m.tree_count_),
+                   "fit_seconds": round(time.time() - t0, 1),
                    "val_rmse": round(float((best.get("validation") or {}).get("RMSE", 0.0)), 6)}
     return m
 

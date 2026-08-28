@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 import os
-import pickle
 import random
+import shutil
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -15,11 +15,13 @@ sys.path.insert(0, common.DECISIONS)
 
 import features as F
 import policy as P
-from base_model import (RUNS_ROOT, TARGET_PARTS, target, decision_deltas, fit_es,
-                        params, regressor, _ranks, _sd)
+from base_model import (CB_INTERRUPT_ITERATIONS, CB_INTERRUPT_PARAMS,
+                        CB_INTERRUPT_TUNED_FROM, RUNS_ROOT, TARGET_PARTS, target,
+                        decision_deltas, fit_es, grouped_split, params, _ranks)
 from store import DecisionStore, IncompatibleStore
 
 MODEL_DIR = common.MODEL_INTERRUPT
+MODEL_FILE = "model.cbm"
 MIN_ROWS = 5
 
 
@@ -114,58 +116,68 @@ def gather(runs_root=RUNS_ROOT):
                 s.close()
             except Exception:
                 pass
-    rows, srows, y, groups = [], [], [], []
+    rows, y, groups = [], [], []
     for (screen, chosen, n_opts, campaign, world, panel, camp_id, opts_meta, turn), d in zip(
             pending, deltas):
         yv = target(d)
         if yv is None:
             continue
         rows.append(_row(screen, chosen, n_opts, campaign, world, panel, opts_meta))
-        srows.append(_state_row(screen, n_opts, campaign, world))
         y.append(yv)
         groups.append(camp_id)
-    return {"rows": rows, "state": srows, "y": y, "groups": groups, "runs": seen_runs}
+    return {"rows": rows, "y": y, "groups": groups, "runs": seen_runs}
 
 
 def train(runs_root=RUNS_ROOT):
     from catboost import Pool
     data = gather(runs_root)
-    rows, srows, y = data["rows"], data["state"], data["y"]
+    rows, y = data["rows"], data["y"]
     if len(rows) < MIN_ROWS:
         return {"trained": False, "rows": len(rows), "need": MIN_ROWS, "runs": data["runs"]}
     num, cat = F.split_columns(rows)
     X = F.matrix(rows, num, cat)
     cat_idx = list(range(len(num), len(num) + len(cat)))
-    snum, scat = F.split_columns(srows)
-    Xs = F.matrix(srows, snum, scat)
-    scat_idx = list(range(len(snum), len(snum) + len(scat)))
     fit_report = {}
     groups = data["groups"]
-    e1 = fit_es(X, y, cat_idx, groups, "e1", fit_report)
-    e2 = fit_es(Xs, y, scat_idx, groups, "e2", fit_report)
-    os.makedirs(MODEL_DIR, exist_ok=True)
-    preds = list(e1.predict(Pool(X, cat_features=cat_idx)))
-    spreds = list(e2.predict(Pool(Xs, cat_features=scat_idx)))
-    impacts = [a - b for a, b in zip(preds, spreds)]
-    sd_global = _sd(impacts)
-    meta = {"num": num, "cat": cat, "state_num": snum, "state_cat": scat, "rows": len(rows),
+    m = fit_es(X, y, cat_idx, groups, "model", fit_report,
+               base=CB_INTERRUPT_PARAMS, iterations=CB_INTERRUPT_ITERATIONS)
+    val, _trn = grouped_split(len(X), groups)
+    if val:
+        pv = list(m.predict(Pool([X[i] for i in val], cat_features=cat_idx)))
+        yv = [y[i] for i in val]
+        ybar = sum(yv) / len(yv)
+        sst = sum((v - ybar) ** 2 for v in yv)
+        if sst > 0:
+            sse = sum((a - b) ** 2 for a, b in zip(yv, pv))
+            fit_report["model"]["val_r2"] = round(1.0 - sse / sst, 5)
+    preds = list(m.predict(Pool(X, cat_features=cat_idx)))
+    mae = sum(abs(a - b) for a, b in zip(preds, y)) / len(y)
+    meta = {"num": num, "cat": cat, "rows": len(rows),
+            "mae_in_sample": round(mae, 5), "fit": fit_report,
             "screens": sorted({r["isc_screen"] for r in rows}),
             "screen_rows": {s: sum(1 for r in rows if r["isc_screen"] == s)
                             for s in {r["isc_screen"] for r in rows}},
-            "exp_lo": min(impacts), "exp_hi": max(impacts), "sd_global": sd_global,
-            "beta": P.BETA, "epsilon": P.EPSILON,
-            "campaigns": sorted(set(data["groups"]))}
-    e1.save_model(os.path.join(MODEL_DIR, "e1.cbm"))
-    e2.save_model(os.path.join(MODEL_DIR, "e2.cbm"))
-    json.dump(meta, open(os.path.join(MODEL_DIR, "meta.json"), "w"))
-    legacy = os.path.join(MODEL_DIR, "interrupt.cbm")
-    if os.path.exists(legacy):
-        os.replace(legacy, legacy + ".superseded")
-    mae = sum(abs(a - b) for a, b in zip(preds, y)) / len(y)
+            "campaigns": sorted(set(data["groups"])),
+            "target": ("gain(future_max - decision_snapshot) over %s"
+                       % ",".join(TARGET_PARTS))}
+    stage = MODEL_DIR + ".staging"
+    shutil.rmtree(stage, ignore_errors=True)
+    os.makedirs(stage)
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    m.save_model(os.path.join(stage, MODEL_FILE))
+    json.dump(meta, open(os.path.join(stage, "meta.json"), "w"))
+    for name in (MODEL_FILE, "meta.json"):
+        os.replace(os.path.join(stage, name), os.path.join(MODEL_DIR, name))
+    shutil.rmtree(stage, ignore_errors=True)
+    for stale in ("e1.cbm", "e2.cbm", "interrupt.cbm", "interrupt.cbm.superseded"):
+        p = os.path.join(MODEL_DIR, stale)
+        if os.path.exists(p):
+            os.remove(p)
     return {"trained": True, "rows": len(rows), "mae_in_sample": round(mae, 5),
-            "fit": fit_report, "params": params(),
-            "sd_global": round(sd_global, 6), "screens": meta["screens"],
-            "beta": P.BETA, "epsilon": P.EPSILON, "runs": data["runs"]}
+            "fit": fit_report,
+            "params": params(iterations=CB_INTERRUPT_ITERATIONS, base=CB_INTERRUPT_PARAMS,
+                             tuned_from=CB_INTERRUPT_TUNED_FROM),
+            "screens": meta["screens"], "runs": data["runs"]}
 
 
 class InterruptRanker:
@@ -173,36 +185,28 @@ class InterruptRanker:
     def __init__(self, model_dir=MODEL_DIR, seed=None, strategies=None, ruleset=None):
         self.ready = False
         self.meta = {}
-        self.e1 = self.e2 = None
+        self.model = None
         self.rng = random.Random(seed)
         self.strategies = P.normalize_interrupt_strategies(strategies)
         self.ruleset = ruleset
         try:
             from catboost import CatBoostRegressor
-            p1 = os.path.join(model_dir, "e1.cbm")
-            p2 = os.path.join(model_dir, "e2.cbm")
+            mp = os.path.join(model_dir, MODEL_FILE)
             meta = os.path.join(model_dir, "meta.json")
-            legacy = os.path.join(model_dir, "interrupt.cbm")
-            if os.path.exists(legacy) and not (os.path.exists(p1) and os.path.exists(p2)):
+            stale = [f for f in ("e1.cbm", "e2.cbm", "interrupt.cbm")
+                     if os.path.exists(os.path.join(model_dir, f))]
+            if stale and not os.path.exists(mp):
                 sys.stderr.write(
-                    "interrupt_model: %s holds a single-model interrupt.cbm from before the "
-                    "E1/E2 split and no e1.cbm/e2.cbm. Its predictions are raw values, not "
-                    "impacts, and cannot be ranked as impacts -- REFUSING to load it. Retrain "
-                    "(python advisor\\interrupt_model.py) to replace it.\n" % model_dir)
+                    "interrupt_model: %s holds %s from before the one-model interrupt and "
+                    "no model.cbm -- REFUSING to load it. Retrain "
+                    "(python advisor\\interrupt_model.py) to replace it.\n"
+                    % (model_dir, "/".join(stale)))
                 return
-            if os.path.exists(p1) and os.path.exists(p2) and os.path.exists(meta):
-                self.e1 = CatBoostRegressor()
-                self.e1.load_model(p1)
-                self.e2 = CatBoostRegressor()
-                self.e2.load_model(p2)
+            if os.path.exists(mp) and os.path.exists(meta):
+                self.model = CatBoostRegressor()
+                self.model.load_model(mp)
                 self.meta = json.load(open(meta))
                 self.ready = True
-                if "screen_rows" not in self.meta:
-                    sys.stderr.write(
-                        "interrupt_model: meta.json predates screen_rows -- per-screen record "
-                        "counts UNAVAILABLE. Screens in the fitted set %s keep the model; any "
-                        "other screen is cold_random until the next retrain.\n"
-                        % (self.meta.get("screens") or []))
         except Exception as e:
             sys.stderr.write("interrupt_model: could not load -> %s\n" % repr(e)[:140])
 
@@ -212,16 +216,12 @@ class InterruptRanker:
         from catboost import Pool
         m = self.meta
         num, cat = m.get("num") or [], m.get("cat") or []
-        snum, scat = m.get("state_num") or [], m.get("state_cat") or []
         opts = list(options)
         rows = [_row(screen, o, len(opts), campaign, world, panel, meta) for o in opts]
         X = F.matrix(rows, num, cat)
-        f1 = list(self.e1.predict(Pool(X, cat_features=list(
+        preds = list(self.model.predict(Pool(X, cat_features=list(
             range(len(num), len(num) + len(cat))))))
-        Xs = F.matrix([_state_row(screen, len(opts), campaign, world)], snum, scat)
-        g = list(self.e2.predict(Pool(Xs, cat_features=list(
-            range(len(snum), len(snum) + len(scat))))))[0]
-        return dict(zip(opts, _ranks([v - g for v in f1])))
+        return dict(zip(opts, _ranks(preds)))
 
     def _draw(self):
         roll = self.rng.random()
