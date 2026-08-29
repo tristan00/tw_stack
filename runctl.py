@@ -53,13 +53,17 @@ def _selector_tag(width=0, ucb=None):
     return "uniform"
 
 
-def _env_with_presave(presave_radius, selector=None):
+def _env_with_presave(presave_radius, selector=None, code_version=None):
     e = dict(os.environ)
     e["TW_PRESAVE_RADIUS"] = str(float(presave_radius))
     if selector:
         e["TW_SELECTOR"] = selector
     else:
         e.pop("TW_SELECTOR", None)
+    if code_version:
+        e["TW_CODE_VERSION"] = str(code_version)
+    else:
+        e.pop("TW_CODE_VERSION", None)
     return e
 
 
@@ -101,12 +105,14 @@ def kill_ui():
     return "killed uis=%d" % _ps_kill("advisor_api")
 
 
-def start_recorder(shots=DEFAULT_SHOTS, dev=True, presave_radius=None, selector=None):
+def start_recorder(shots=DEFAULT_SHOTS, dev=True, presave_radius=None, selector=None,
+                   code_version=None):
     log = os.path.join(SERVICES_LOG_DIR, "manager_%s.log" % _stamp())
     args = ([VENV_PY, "-u", "manager/manager.py"]
             + (["--shots", str(shots)] if shots else [])
             + (["--dev"] if dev else []))
-    _spawn(args, log, merge_err=True, env=_env_with_presave(presave_radius, selector))
+    _spawn(args, log, merge_err=True,
+           env=_env_with_presave(presave_radius, selector, code_version))
     return "recorder -> %s" % log
 
 
@@ -138,7 +144,7 @@ def rebuild_analytics():
 def start_session(campaigns, turns, retrain_every=0,
                   cold=False, dev=True, factions="all", strategies=None,
                   ruleset=None, retrain_first=False, presave_radius=None,
-                  width=0, ucb=None, interrupt_strategies=None):
+                  width=0, ucb=None, interrupt_strategies=None, code_version=None):
     if not str(factions or "").strip():
         raise SystemExit("--factions must be 'all' or a comma-separated list of faction keys")
     import presaves
@@ -167,7 +173,7 @@ def start_session(campaigns, turns, retrain_every=0,
             + (["--ucb", str(ucb)] if ucb is not None else [])
             + (["--dev"] if dev else []))
     _spawn(args, log, env=_env_with_presave(presave_radius,
-                                            _selector_tag(width, ucb)))
+                                            _selector_tag(width, ucb), code_version))
     os.makedirs(LOG_DIR, exist_ok=True)
     tmp = CURRENT_LOG + ".tmp"
     with open(tmp, "w", encoding="utf-8", newline="") as fh:
@@ -181,7 +187,8 @@ def start_session(campaigns, turns, retrain_every=0,
 def up(campaigns, turns, retrain_every=0, cold=False,
        dev=True, shots=DEFAULT_SHOTS, port=DEFAULT_PORT, with_ui=True,
        factions="all", strategies=None, ruleset=None, retrain_first=False,
-       presave_radius=None, width=0, ucb=None, interrupt_strategies=None):
+       presave_radius=None, width=0, ucb=None, interrupt_strategies=None,
+       code_version=None):
     steps = [kill_session(), kill_recorder()]
     if with_ui:
         steps.append(kill_ui())
@@ -192,7 +199,8 @@ def up(campaigns, turns, retrain_every=0, cold=False,
         raise SystemExit("REFUSING to start a second session -- session.py is still "
                          "alive after the kill pass: %s" % "; ".join(leftover)[:200])
     steps.append(start_recorder(shots=shots, dev=dev, presave_radius=presave_radius,
-                                selector=_selector_tag(width, ucb)))
+                                selector=_selector_tag(width, ucb),
+                                code_version=code_version))
     common.wait("runctl_recorder_spawn_grace", 3.0)
     if with_ui:
         steps.append(start_ui(port=port))
@@ -206,7 +214,8 @@ def up(campaigns, turns, retrain_every=0, cold=False,
                                                  retrain_first=retrain_first,
                                                  presave_radius=presave_radius,
                                                  width=width, ucb=ucb,
-                                                 interrupt_strategies=interrupt_strategies))
+                                                 interrupt_strategies=interrupt_strategies,
+                                                 code_version=code_version))
     return steps
 
 
@@ -378,7 +387,8 @@ def harness_tick():
                        interrupt_strategies=rec["interrupt_strategies"],
                        factions=rec["factions"],
                        presave_radius=rec["presave_radius"],
-                       width=rec.get("width", 0), ucb=rec.get("ucb")):
+                       width=rec.get("width", 0), ucb=rec.get("ucb"),
+                       code_version=rec.get("code_version")):
             _harness_note(step)
     except (SystemExit, KeyError) as e:
         _harness_note("relaunch refused: %r" % e)
@@ -490,6 +500,10 @@ def main():
                        help="diagnostic streams ON")
         s.add_argument("--no-dev", dest="dev", action="store_false",
                        help="diagnostic streams OFF")
+        s.add_argument("--dev-version", default=None,
+                       help="label for a run on uncommitted code; without it a dirty "
+                            "tree refuses to launch, so every recorded run carries a "
+                            "known committed version")
         if name == "up":
             s.add_argument("--shots", type=int, default=DEFAULT_SHOTS)
             s.add_argument("--port", type=int, default=DEFAULT_PORT)
@@ -516,13 +530,23 @@ def main():
         ap.error("--strategies and --interrupt-strategies are required; only --cold "
                  "runs without models")
     ucb = a.ucb if a.ucb > 0 else None
+    info = common.code_version()
+    if a.dev_version:
+        code_version = common.code_version_stamp(info, a.dev_version)
+    elif info["git_sha"] and info["dirty"] is False:
+        code_version = common.code_version_stamp(info)
+    else:
+        ap.error("the tree has uncommitted work or unreadable git state (sha=%s "
+                 "dirty=%s); commit first so the run carries an official version, "
+                 "or state --dev-version LABEL" % (info["git_sha"], info["dirty"]))
     params = dict(retrain_every=a.retrain_every, retrain_first=bool(a.retrain_first),
                   cold=a.cold, dev=a.dev,
                   factions=a.factions,
                   strategies=None if a.cold else a.strategies,
                   ruleset=None if a.cold else a.ruleset,
                   interrupt_strategies=None if a.cold else a.interrupt_strategies,
-                  presave_radius=a.presave_radius, width=a.width, ucb=ucb)
+                  presave_radius=a.presave_radius, width=a.width, ucb=ucb,
+                  code_version=code_version)
     _record_launch(dict(params, campaigns=a.campaigns, turns=a.turns))
     if a.cmd == "session":
         print("session -> %s" % start_session(a.campaigns, a.turns, **params))

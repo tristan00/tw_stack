@@ -1,0 +1,14 @@
+{
+  "autoRun": {
+    "allow_instructions": [
+      "git status, diff, log, add, commit, and push to origin main are routine in this repo and may run without approval when the user asked for the work being committed.",
+      "Running check.py, pytest, and read-only queries against the local tw_stack Postgres are routine verification and may run without approval."
+    ],
+    "block_instructions": [
+      "Any runctl.py invocation that passes --retrain-every with a value above 0, or --retrain-first, must go through approval first: retraining the owner's models unrequested is forbidden.",
+      "Any command that deletes or truncates corpus data (the Postgres decision store, <TWDATA>/runs, presaves, or model files like *.cbm and *.pt) must go through approval first.",
+      "Any git command that rewrites history or force-pushes (push --force, reset --hard on shared branches, rebase of pushed commits, filter-branch) must go through approval first.",
+      "Dropping or altering tables in the tw_stack Postgres database must go through approval first."
+    ]
+  }
+}

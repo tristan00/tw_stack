@@ -265,7 +265,8 @@ def _postmortem(runs_root, entry, ex, log):
            "error": entry.get("error"), "seconds": round(time.time() - entry.get("started", 0), 1),
            "turns_played": entry.get("turns_played"), "actions": entry.get("actions"),
            "confirmed": entry.get("confirmed"), "ended_by": entry.get("ended_by"),
-           "growth": entry.get("growth"), "run_dir": entry.get("run_dir")}
+           "growth": entry.get("growth"), "run_dir": entry.get("run_dir"),
+           "code_version": os.environ.get("TW_CODE_VERSION")}
     try:
         from bus import _game_alive
         rec["wh3_running"] = _game_alive()
@@ -418,7 +419,9 @@ def run_campaigns(n=3, turns=20, plan="all",
     report = {"started": time.time(), "requested": {"campaigns": n, "turns": turns, "plan": plan,
                                                     "strategies": mix,
                                                     "interrupt_strategies": imix,
-                                                    "ruleset": ruleset_meta},
+                                                    "ruleset": ruleset_meta,
+                                                    "code_version":
+                                                        os.environ.get("TW_CODE_VERSION")},
               "campaigns": []}
     stamp = time.strftime("%Y%m%d_%H%M%S")
     out_path = os.path.join(runs_root, "session_%s.json" % stamp)
@@ -918,6 +921,7 @@ def _trial_row(stretch, gen_n, report, trained, log):
            "interrupt_strategies": (report.get("requested") or {}).get("interrupt_strategies"),
            "ruleset": (report.get("requested") or {}).get("ruleset"),
            "feature_version": _feature_version(),
+           "code_version": (report.get("requested") or {}).get("code_version"),
            "corpus_at_train": report.get("_corpus"),
            "fit": trained,
            "policies": policies,

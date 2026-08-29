@@ -62,10 +62,15 @@ changing or operating it. These rules were set explicitly by the owner; do not r
 - Verify, don't assume: after changes run `check.py` (22 offline gates) and `pytest -q`
   (all green is the bar), and verify behavior in the live run, not just syntax.
 - `runctl.py` is the entrypoint. Every run parameter must be stated explicitly on its
-  command line — there are no defaults and `run_config.RUN` no longer feeds any. Each
-  launch's full param set is recorded to `logs/services/last_launch.json`, the only
-  source a harness relaunch may use. The model surface is `--strategies` /
-  `--interrupt-strategies`.
+ command line — there are no defaults and `run_config.RUN` no longer feeds any. Each
+ launch's full param set is recorded to `logs/services/last_launch.json`, the only
+ source a harness relaunch may use. The model surface is `--strategies` /
+ `--interrupt-strategies`.
+- Every launch carries a code version stamp derived from `VERSION` + the git sha. A
+ dirty tree refuses to launch unless `--dev-version LABEL` is stated; commit first so
+ runs land on an official version. The stamp is recorded in `last_launch.json`,
+ `TW_CODE_VERSION`, `collector_versions` (joining `decisions.version_id`),
+ postmortems and the trial ledger.
 
 ## Code style
 

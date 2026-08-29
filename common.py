@@ -139,6 +139,36 @@ MAPGRAPH = os.path.join(ROOT, "mapgraph")
 REFERENCE = os.path.join(ADVISOR, "reference")
 UI_CAPTURE = os.path.join(ROOT, "ui-capture")
 
+VERSION_FILE = os.path.join(ROOT, "VERSION")
+
+
+def code_version():
+    import subprocess
+    with open(VERSION_FILE, encoding="utf-8") as fh:
+        base = fh.read().strip()
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+    def _git(*args):
+        try:
+            r = subprocess.run(("git",) + args, cwd=ROOT, capture_output=True,
+                               text=True, timeout=20, creationflags=flags)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return (r.stdout or "").strip() if r.returncode == 0 else None
+
+    sha = _git("rev-parse", "--short=12", "HEAD")
+    porcelain = _git("status", "--porcelain")
+    return {"version": base, "git_sha": sha,
+            "dirty": None if porcelain is None else bool(porcelain)}
+
+
+def code_version_stamp(info, dev_label=None):
+    sha = info.get("git_sha") or "unknown"
+    if dev_label:
+        return "%s-dev.%s+g%s%s" % (info["version"], dev_label, sha,
+                                    ".dirty" if info.get("dirty") else "")
+    return "%s+g%s" % (info["version"], sha)
+
 
 TWDATA = _setting("TWDATA", "twdata",
                   default=os.path.join(os.path.dirname(ROOT), "twdata"))
