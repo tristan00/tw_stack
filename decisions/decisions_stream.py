@@ -48,10 +48,17 @@ def run(ctx):
                 if store is not None:
                     store.close()
                 store = DecisionStore(out_dir)
+                cv = os.environ.get("TW_CODE_VERSION")
+                if cv:
+                    store.register_collector(
+                        cv, git_sha=(cv.rsplit("+g", 1)[1].split(".")[0]
+                                     if "+g" in cv else None),
+                        note="code_version")
                 stale = store.finalize_stale_awaiting()
                 cur_dir, after_id, seq = out_dir, journal.last_request_id(out_dir), 0
                 ctx.emit({"kind": "decisions_status", "status": "store_open",
-                          "db": journal.pg.dsn(), "stale_finalized": stale})
+                          "db": journal.pg.dsn(), "stale_finalized": stale,
+                          "code_version": cv})
             rows, after_id = journal.read_requests(out_dir, after_id)
             for row in rows:
                 kind, rid = row.get("kind"), row.get("req_id")

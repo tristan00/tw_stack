@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [],
+    "deny": [
+      "Read(**/reports/health/**)",
+      "Read(D:/twdata/reports/**)",
+      "Read(D:\\twdata\\reports\\**)"
+    ]
+  }
+}

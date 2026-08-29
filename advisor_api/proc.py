@@ -118,6 +118,13 @@ def rebuild_analytics() -> list:
 
 def launch(kind: str, params: dict) -> list:
     import runctl
+    info = common.code_version()
+    if not (info["git_sha"] and info["dirty"] is False):
+        return ["REFUSED: the tree has uncommitted work or unreadable git state "
+                "(sha=%s dirty=%s) -- commit first so the run carries an official "
+                "version, or launch from runctl with --dev-version LABEL"
+                % (info["git_sha"], info["dirty"])]
+    code_version = common.code_version_stamp(info)
     lo, hi = params.get("turns_min") or 2, params.get("turns_max") or 20
     turns = str(hi) if int(lo) == int(hi) else "%s-%s" % (lo, hi)
     cold = kind == "cold"
@@ -129,7 +136,8 @@ def launch(kind: str, params: dict) -> list:
     steps = [runctl.kill_session(), runctl.kill_recorder()]
     common.wait("api_launch_kill_settle", 1.5)
     steps.append(runctl.start_recorder(dev=bool(params.get("dev")),
-                                       presave_radius=float(presave_radius)))
+                                       presave_radius=float(presave_radius),
+                                       code_version=code_version))
     common.wait("api_launch_recorder_grace", 3.0)
     steps.append("session -> %s" % runctl.start_session(
         int(params.get("campaigns") or 10), turns,
@@ -143,5 +151,6 @@ def launch(kind: str, params: dict) -> list:
         ruleset=None if cold else (params.get("ruleset") or None),
         presave_radius=float(presave_radius),
         width=int(params.get("width") or 0),
-        ucb=None if ucb in (None, "") else float(ucb)))
+        ucb=None if ucb in (None, "") else float(ucb),
+        code_version=code_version))
     return steps
