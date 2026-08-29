@@ -525,6 +525,23 @@ class DecisionStore:
         r = self.con.execute("SELECT MAX(decision_id) FROM decisions").fetchone()
         return int(r[0]) if r and r[0] is not None else 0
 
+    def window_floor(self, n):
+        if not n or int(n) <= 0:
+            return None
+        r = self.con.execute(
+            "SELECT MIN(first_decision_id) FROM"
+            " (SELECT first_decision_id FROM campaigns"
+            " WHERE first_decision_id IS NOT NULL"
+            " ORDER BY first_decision_id DESC LIMIT %s) w", (int(n),)).fetchone()
+        return int(r[0]) if r and r[0] is not None else None
+
+    def window_keys(self, n):
+        if not n or int(n) <= 0:
+            return None
+        return {row[0] for row in self.con.execute(
+            "SELECT campaign_key FROM campaigns WHERE first_decision_id IS NOT NULL"
+            " ORDER BY first_decision_id DESC LIMIT %s", (int(n),))}
+
     def _entities_and_offers(self, where="", args=()):
         ents_by_dec = {}
         for did, ei, ck, cid, feats in self.con.execute(
@@ -627,7 +644,7 @@ class DecisionStore:
                          "entities": ents_by_dec.get(did, [])}, hit[0], hit[1]))
         return out
 
-    def taken_rows(self):
+    def taken_rows(self, min_decision=None):
         cur = self.con.cursor(name="taken_rows_stream")
         cur.itersize = 50
         try:
@@ -652,7 +669,9 @@ class DecisionStore:
                 " AND e2.context_kind='province') pv ON TRUE"
                 " WHERE (t.refusal IS NULL OR"
                 " t.refusal NOT IN ('awaiting_execution','campaign_died'))"
-                " ORDER BY t.decision_id")
+                " AND t.decision_id >= %s"
+                " ORDER BY t.decision_id",
+                (int(min_decision) if min_decision is not None else 0,))
             for (did, turn, ckey, cjson, wjson, ck, cid, at, ak, params, counted,
                  ent_seq, ejson, prov_ids, prov_states) in cur:
                 ents = [{"context_kind": "province", "context_id": pid,
@@ -679,14 +698,16 @@ class DecisionStore:
         finally:
             cur.close()
 
-    def campaign_snapshots(self):
+    def campaign_snapshots(self, min_decision=None):
         out = []
         for ckey, ts, cjson, wjson in self.con.execute(
                 "SELECT c.campaign_key,d.ts,bc.z,bw.z FROM decisions d"
                 " JOIN campaigns c ON c.campaign_id=d.campaign_id"
                 " LEFT JOIN blobs bc ON bc.blob_id=d.campaign_blob"
                 " LEFT JOIN blobs bw ON bw.blob_id=d.world_blob"
-                " ORDER BY d.decision_id"):
+                " WHERE d.decision_id >= %s"
+                " ORDER BY d.decision_id",
+                (int(min_decision) if min_decision is not None else 0,)):
             try:
                 c = json.loads(cjson) if cjson else {}
             except Exception:
@@ -698,7 +719,7 @@ class DecisionStore:
             out.append((ckey, ts or 0.0, c, w))
         return out
 
-    def action_sequence(self):
+    def action_sequence(self, min_decision=None):
         return self.con.execute(
             "SELECT c.campaign_key,t.ts,a.action_type FROM taken t"
             " JOIN decisions d ON d.decision_id=t.decision_id"
@@ -707,7 +728,9 @@ class DecisionStore:
             " WHERE a.action_type != 'noop'"
             " AND (t.refusal IS NULL OR"
             " t.refusal NOT IN ('awaiting_execution','campaign_died'))"
-            " ORDER BY t.decision_id").fetchall()
+            " AND t.decision_id >= %s"
+            " ORDER BY t.decision_id",
+            (int(min_decision) if min_decision is not None else 0,)).fetchall()
 
     def interrupt_rows(self):
         out = []

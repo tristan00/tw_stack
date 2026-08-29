@@ -14,6 +14,7 @@ sys.path.insert(0, common.DECISIONS)
 import features as F
 
 RUNS_ROOT = common.RUNS_ROOT
+TRAIN_WINDOW_CAMPAIGNS = 2500
 GAIN_PARTS = ("settlements", "lord_level", "allies", "vassals")
 TARGET_PARTS = GAIN_PARTS
 TARGET_WEIGHTS = {"settlements": 1.0, "lord_level": 1.0, "allies": 1.0, "vassals": 3.0}

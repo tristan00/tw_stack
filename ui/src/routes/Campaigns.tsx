@@ -21,6 +21,7 @@ import {
   type UcbPickPage,
   type UcbPicksPage,
   type UcbRow,
+  type WindowEdgeRow,
 } from '@/lib/api'
 import { clock, n } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -28,6 +29,7 @@ import { cn } from '@/lib/utils'
 const VIEWS = [
   { key: 'starts', label: 'starts', asks: 'what the pool of starts looks like' },
   { key: 'selector', label: 'selector', asks: 'why the selector played this start' },
+  { key: 'window', label: 'window', asks: 'which plays are aging out of the lookback window' },
   { key: 'campaigns', label: 'campaigns', asks: 'which campaign ended how' },
 ]
 const LEGACY: Record<string, string> = { all: 'campaigns', picks: 'selector', matrix: 'starts' }
@@ -162,6 +164,32 @@ const rankCols: Col<UcbRow>[] = [
   { key: 'delta', label: 'Δ to #1', align: 'right', value: (r) => r.delta ?? undefined, sortUndefined: 'last', render: (r) => signed(r.delta) },
 ]
 
+type EdgeRow = WindowEdgeRow & { kind: 'dropped' | 'next' }
+
+const edgeCols: Col<EdgeRow>[] = [
+  {
+    key: 'edge',
+    label: 'edge',
+    value: (r) => (r.kind === 'dropped' ? -r.campaigns_away : r.campaigns_away),
+    render: (r) => (r.kind === 'dropped' ? <Chip state="neutral">dropped</Chip> : <Chip state="warn">next out</Chip>),
+  },
+  {
+    key: 'away',
+    label: 'campaigns',
+    unit: 'since / until',
+    align: 'right',
+    value: (r) => (r.kind === 'dropped' ? -r.campaigns_away : r.campaigns_away),
+    render: (r) => <span className="num">{r.kind === 'dropped' ? `−${r.campaigns_away}` : `+${r.campaigns_away}`}</span>,
+  },
+  { key: 'lord', label: 'lord', value: (r) => lordOf(r), render: (r) => <IdentLabel ident={{ ...r.faction, label: lordOf(r), culture: null }} /> },
+  { key: 'race', label: 'race', value: (r) => r.faction.culture ?? '', render: (r) => <span className="text-dim">{r.faction.culture ?? '—'}</span> },
+  { key: 'map', label: 'map', value: (r) => r.campaign_map?.label ?? '', render: (r) => <MapCell ident={r.campaign_map} /> },
+  { key: 'played', label: 'played', value: (r) => r.played_ts ?? 0, render: (r) => <span className="num">{clock(r.played_ts)}</span> },
+  { key: 'turns', label: 'turns', align: 'right', value: (r) => r.turns ?? undefined, sortUndefined: 'last', render: (r) => dash(r.turns) },
+  { key: 'reward', label: 'reward', align: 'right', value: (r) => r.reward ?? undefined, sortUndefined: 'last', render: (r) => dash(r.reward) },
+  { key: 'n', label: 'start n', unit: 'in window', align: 'right', value: (r) => r.start_n, render: (r) => <span className="num">{r.start_n}</span> },
+]
+
 function Selector() {
   const { data, error, loading, reload } = useApi<UcbPicksPage>('/api/campaigns/picks')
   const f = useFilters()
@@ -201,6 +229,26 @@ function Selector() {
         )}
       </Section>
     </div>
+  )
+}
+
+
+function WindowChurn() {
+  const { data, error, loading, reload } = useApi<UcbPicksPage>('/api/campaigns/picks')
+  const navigate = useNavigate()
+  if (error) return <ErrorState error={error} onRetry={reload} />
+  if (loading || !data) return <Skeleton rows={10} />
+  const edges: EdgeRow[] = [
+    ...(data.dropped_out ?? []).map((r) => ({ ...r, kind: 'dropped' as const })),
+    ...(data.next_out ?? []).map((r) => ({ ...r, kind: 'next' as const })),
+  ]
+  return (
+    <Section
+      title="window churn"
+      scope={{ text: `oldest campaigns at the edge of the trailing ${data.window}-campaign window, last out and next out` }}
+    >
+      <DataTable rows={edges} cols={edgeCols} rowId={(r) => `${r.kind}:${r.campaign.raw}`} onRowClick={(r) => navigate(`/campaigns/${encodeURIComponent(r.campaign.raw)}`)} initialSort={{ key: 'away', desc: false }} pageSize={20} emptyWhat="the window is not full yet, so nothing ages out" />
+    </Section>
   )
 }
 
@@ -301,6 +349,7 @@ export function Campaigns() {
       <SubNav views={VIEWS} />
       {view === 'starts' && <Starts />}
       {view === 'selector' && <Selector />}
+      {view === 'window' && <WindowChurn />}
       {view === 'campaigns' && <AllCampaigns />}
     </div>
   )

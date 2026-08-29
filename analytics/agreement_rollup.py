@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from analytics import store as _store
 from decisions import pg_schema as S
 
-FORMULA_VERSION = 3
+FORMULA_VERSION = 4
 
 TARGET_POINTS = 40
 MIN_BUCKET = 50
@@ -163,6 +163,21 @@ CREATE TABLE IF NOT EXISTS agreement_series(
 """
 
 
+def model_version_windows(gens) -> list:
+    out = []
+    for g in gens:
+        if g["retrained"] or not out:
+            out.append({
+                "trial": (g["trial"] if g["retrained"] else "before-%s" % g["trial"]),
+                "generation": g["generation"], "retrained": g["retrained"],
+                "overlapped_by": g["overlapped_by"],
+                "seg_from_ts": g["seg_from_ts"], "seg_to_ts": g["seg_to_ts"]})
+        else:
+            out[-1]["seg_to_ts"] = g["seg_to_ts"]
+            out[-1]["overlapped_by"] = g["overlapped_by"]
+    return out
+
+
 class _Series(_Rollup):
     NAME = "agreement_series"
     TABLES = ("agreement_series",)
@@ -172,7 +187,8 @@ class _Series(_Rollup):
     def step(self, src, an, lo, hi):
         an.execute("DELETE FROM agreement_series")
         total = 0
-        gens = an.execute("SELECT * FROM model_generations ORDER BY seg_from_ts").fetchall()
+        gens = model_version_windows(an.execute(
+            "SELECT * FROM model_generations ORDER BY seg_from_ts").fetchall())
         for pair in PAIR_KEYS:
             rows = an.execute(
                 "SELECT decision_id, ts, rho, tau_b, rbo, top1_same FROM model_agreement"

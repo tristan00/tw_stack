@@ -614,7 +614,14 @@ _LUA_LORD = (_G +
     "return (math.floor(t)/100)..'|'..table.concat(d,',') end) "
     "if ok and v~=nil then return v end return 'nil|' end)()"
     "..'|'..ts(ch and ch:is_wounded())"
-    "..'|'..ts(ch and ch:loyalty())")
+    "..'|'..ts(ch and ch:loyalty())"
+    "..'|'..(function() if not mf then return '' end "
+    "local n=g(mf,'PendingRecruitmentUnitList.Size') if type(n)~='number' then return '' end "
+    "local q={} for i=0,n-1 do "
+    "local pk=g(mf,'PendingRecruitmentUnitList['..i..'].First.UnitRecordContext.Key') "
+    "local pt=g(mf,'PendingRecruitmentUnitList['..i..'].Second') "
+    "if pk then q[#q+1]=ts(pk)..'~'..ts(pt) end end "
+    "return table.concat(q,',') end)()")
 
 
 def _parse_lord(raw, cqi):
@@ -635,7 +642,18 @@ def _parse_lord(raw, cqi):
             "hp": _num(p[17]) if len(p) > 17 else None,
             "unit_cards": _parse_unit_cards(p[18] if len(p) > 18 else ""),
             "wounded": (p[19] == "true") if len(p) > 19 and p[19] != "" else None,
-            "loyalty": _num(p[20]) if len(p) > 20 else None}
+            "loyalty": _num(p[20]) if len(p) > 20 else None,
+            "pending_queue": _parse_pending_queue(p[21] if len(p) > 21 else "")}
+
+
+def _parse_pending_queue(raw):
+    out = []
+    for chunk in str(raw or "").split(","):
+        bits = chunk.split("~")
+        if len(bits) < 2 or not bits[0] or bits[0] in ("nil", "-"):
+            continue
+        out.append({"key": bits[0], "turns_left": _num(bits[1])})
+    return out
 
 
 def _parse_unit_cards(raw):

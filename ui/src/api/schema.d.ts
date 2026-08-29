@@ -2314,6 +2314,10 @@ export interface components {
              * @default []
              */
             picks: components["schemas"]["UcbPick"][];
+            /** Dropped Out */
+            dropped_out?: components["schemas"]["WindowEdgeRow"][];
+            /** Next Out */
+            next_out?: components["schemas"]["WindowEdgeRow"][];
             /** Cursor */
             cursor?: number | null;
         };
@@ -2362,6 +2366,32 @@ export interface components {
             input?: unknown;
             /** Context */
             ctx?: Record<string, never>;
+        };
+        /** WindowEdgeRow */
+        WindowEdgeRow: {
+            campaign: components["schemas"]["Ident"];
+            /** Leader */
+            leader?: string | null;
+            faction: components["schemas"]["Ident"];
+            campaign_map?: components["schemas"]["Ident"] | null;
+            /** Played Ts */
+            played_ts?: number | null;
+            /** Turns */
+            turns?: number | null;
+            /** Reward */
+            reward?: number | null;
+            /**
+             * Start N
+             * @description how many plays this start currently holds in the window
+             * @default 0
+             */
+            start_n: number;
+            /**
+             * Campaigns Away
+             * @description completed campaigns since it left the window, or until it will
+             * @default 0
+             */
+            campaigns_away: number;
         };
     };
     responses: never;

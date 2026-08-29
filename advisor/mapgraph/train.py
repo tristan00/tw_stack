@@ -60,11 +60,17 @@ def _shard(args):
     st = DecisionStore(_os.path.dirname(db_path), readonly=True)
     try:
         rows = st.labelled_decisions(after=lo, before=hi)
+        from advisor import memory as M2
+        stamps = (M2.replay_stamps(st, [r[0].get("decision_id") for r in rows])
+                  if rows else {})
     finally:
         st.close()
 
     out = []
     for rec, taken, counted in rows:
+        patch = stamps.get(rec.get("decision_id"))
+        if patch:
+            (rec.setdefault("campaign", {})).update(patch)
         head = (rec.get("decision_id"), rec.get("campaign_id"), rec.get("campaign"),
                 rec.get("turn"))
         g = B2.build_graph(rec)
@@ -83,12 +89,15 @@ def _shard(args):
     return out
 
 
-def walk(runs_root=None, limit=None, log=print, workers=None):
+def walk(runs_root=None, limit=None, log=print, workers=None, window=None):
     import concurrent.futures as cf
     import torch
-    from base_model import RUNS_ROOT, TARGET_WEIGHTS, decision_deltas, target
+    from base_model import (RUNS_ROOT, TARGET_WEIGHTS, TRAIN_WINDOW_CAMPAIGNS,
+                            decision_deltas, target)
     from store import DecisionStore, IncompatibleStore
     runs_root = runs_root or RUNS_ROOT
+    if window is None:
+        window = TRAIN_WINDOW_CAMPAIGNS
     dbs = common.run_dbs(runs_root)
 
     from advisor.mapgraph import corpus as CO
@@ -105,16 +114,22 @@ def walk(runs_root=None, limit=None, log=print, workers=None):
         try:
             for camp, turns in st.target_series().items():
                 series.setdefault(camp, {}).update(turns)
-            live.append((db, st.max_decision_id(), st.taken_map()))
+            live.append((db, st.max_decision_id(), st.taken_map(),
+                         st.window_floor(window)))
         finally:
             st.close()
 
     n_workers = 1 if workers is None else workers
     t_walk = time.time()
     slots, built, reused = [], 0, 0
-    for db, hi, taken_now in live:
+    for db, hi, taken_all, floor in live:
         run_key = os.path.basename(os.path.dirname(db))
         cached, cdir = ({}, None) if limit else CO.load(run_key, log=log)
+        taken_now = (taken_all if floor is None else
+                     {did: v for did, v in taken_all.items() if did >= floor})
+        if floor is not None and len(taken_now) < len(taken_all):
+            log("mapgraph.train: window %d campaigns -> %d of %d labelled decisions "
+                "(floor %d)" % (window, len(taken_now), len(taken_all), floor))
 
         want = {}
         for did, (tup, _counted) in taken_now.items():
@@ -128,7 +143,7 @@ def walk(runs_root=None, limit=None, log=print, workers=None):
         jobs = []
         if want:
             if len(want) > 0.5 * max(1, len(taken_now)):
-                jobs = [(db, None, None)]
+                jobs = [(db, (floor - 1) if floor is not None else None, None)]
             else:
                 jobs = [(db, lo - 1, hi2) for lo, hi2 in CO.ranges(want)]
 

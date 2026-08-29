@@ -9,6 +9,7 @@ import common
 
 sys.path.insert(0, common.REFERENCE)
 import features_db as DB
+import memory as MEM
 
 RINGS = (10, 25, 50)
 NEAR_K = {"enemy": 3, "enemysett": 3, "friend": 2, "neutral": 1, "ownsett": 2}
@@ -19,7 +20,8 @@ ACTION_TYPES = ("stance", "building", "research", "skills", "items", "item_unequ
                 "colonize", "horde_building", "garrison", "leave_garrison", "end_turn", "noop",
                 "move", "diplomacy", "hero_action", "recruit_hero",
                 "building_repair", "building_dismantle",
-                "raise_dead", "recruit_ror", "recruit_blessed", "recruit_imperial")
+                "raise_dead", "recruit_ror", "recruit_blessed", "recruit_imperial",
+                "cancel_recruit")
 
 UNIT_RECRUIT_TYPES = ("recruit_unit", "raise_dead", "recruit_ror", "recruit_blessed",
                       "recruit_imperial")
@@ -343,6 +345,77 @@ def lord_recruit_block(state):
     out = {"lrec_inprogress": float(len(ks))}
     for k in ks:
         out["lrec_%s" % k] = 1.0
+    if ks:
+        active = any((c or {}).get("state") == "active"
+                     for c in (state or {}).get("recruitable") or ())
+        out["lord_queue_on_hold"] = 0.0 if active else 1.0
+    else:
+        out["lord_queue_on_hold"] = None
+    return out
+
+
+_EMPTY_MEMLORD = {"lord_recruits_this_turn": None, "lord_queue_turns_to_clear": None,
+                  "lord_queue_queued_this_turn": None, "lord_turns_since_moved": None,
+                  "lord_queue_stalled_units": None, "lord_queue_on_hold": None,
+                  "prov_pending_recruits_others": None,
+                  "prov_recruits_this_turn_others": None}
+
+
+def _queue_turns_to_clear(ages, pending_queue=None):
+    exact = [_f(q.get("turns_left")) for q in (pending_queue or ())]
+    exact = [t for t in exact if t is not None]
+    if exact:
+        return max(exact)
+    if not ages:
+        return 0.0
+    best = None
+    for k, age in ages:
+        d = DB.unit_features(str(k).partition("@")[0]) or {}
+        ct = _f(d.get("create_time"))
+        if ct is None:
+            continue
+        left = max(0.0, ct - float(age))
+        best = left if best is None else max(best, left)
+    return best
+
+
+def lord_memory_block(campaign, entity_cid, st, world, provinces):
+    camp = campaign or {}
+    cqi = str((st or {}).get("cqi") or entity_cid or "")
+    counts = camp.get("recruit_counts_turn") or {}
+    qmap = camp.get("queue_ages") or {}
+    ages = qmap.get(cqi) or []
+    out = {"lord_recruits_this_turn": float(counts.get(cqi, 0)),
+           "lord_queue_queued_this_turn": float(sum(1 for _k, a in ages if a == 0)),
+           "lord_queue_turns_to_clear": _queue_turns_to_clear(
+               ages, (st or {}).get("pending_queue")),
+           "lord_queue_stalled_units": (
+               float(sum((camp.get("queue_stall") or {}).get(cqi)))
+               if (camp.get("queue_stall") or {}).get(cqi) is not None else None),
+           "lord_turns_since_moved": None,
+           "prov_pending_recruits_others": None,
+           "prov_recruits_this_turn_others": None}
+    turn = _f(camp.get("turn"))
+    mv = (camp.get("last_move_turn") or {}).get(cqi)
+    if turn is not None and mv is not None:
+        out["lord_turns_since_moved"] = max(0.0, turn - float(mv))
+    reg = (st or {}).get("region")
+    my_prov = (provinces.get(reg) or {}).get("province") if reg else None
+    if my_prov is None:
+        for a in (world or {}).get("armies") or []:
+            if str(a.get("cqi")) == cqi:
+                my_prov = a.get("province")
+                break
+    if my_prov:
+        po = pr = 0.0
+        for a in (world or {}).get("armies") or []:
+            acqi = str(a.get("cqi") or "")
+            if acqi == cqi or not a.get("has_army") or a.get("province") != my_prov:
+                continue
+            po += float(len(qmap.get(acqi) or ()))
+            pr += float(counts.get(acqi, 0))
+        out["prov_pending_recruits_others"] = po
+        out["prov_recruits_this_turn_others"] = pr
     return out
 
 
@@ -452,7 +525,7 @@ def _db_features(action_type, key):
         return d
     if action_type == "research":
         return DB.tech_features(key)
-    if action_type in UNIT_RECRUIT_TYPES:
+    if action_type in UNIT_RECRUIT_TYPES or action_type == "cancel_recruit":
         return DB.unit_features(key.partition("@")[0])
     if action_type == "skills":
         return DB.skill_features(key)
@@ -699,6 +772,92 @@ def _nearest_dist(items, x, y):
     return round(best, 2) if best is not None else None
 
 
+_EMPTY_REINF = {"opt_enemy_reinf_nearest_dist": None, "opt_enemy_reinf_armies_r10": None,
+                "opt_enemy_reinf_armies_r25": None, "opt_enemy_reinf_units_r10": None,
+                "opt_enemy_reinf_units_r25": None, "opt_enemy_reinf_hp_r10": None,
+                "opt_enemy_reinf_units_samefac_r10": None,
+                "opt_target_garrison_nearby_units": None,
+                "opt_own_reinf_nearest_dist": None, "opt_own_reinf_units_r10": None,
+                "opt_own_reinf_units_r25": None}
+
+
+def _reinf_feats(atype, key, params, world, self_cqi):
+    out = dict(_EMPTY_REINF)
+    if atype not in MEM.PB_ATTACK_TYPES:
+        return out
+    p = params or {}
+    tx, ty = p.get("x"), p.get("y")
+    if tx is None or ty is None:
+        return out
+    tx, ty = float(tx), float(ty)
+    w = world or {}
+    tgt_cqi = str(p.get("target_cqi")) if p.get("target_cqi") is not None else None
+    tgt_fac = p.get("target_faction")
+    nearest = None
+    n10 = n25 = u10 = u25 = hp10 = sf10 = 0.0
+    for h in w.get("hostiles") or []:
+        if h.get("kind") != "army" or h.get("is_armed_citizenry") \
+                or h.get("visible") is False:
+            continue
+        if tgt_cqi is not None and str(h.get("cqi")) == tgt_cqi:
+            continue
+        hx, hy = h.get("x"), h.get("y")
+        if hx is None or hy is None:
+            continue
+        d = math.hypot(float(hx) - tx, float(hy) - ty)
+        if nearest is None or d < nearest:
+            nearest = d
+        if d <= 25:
+            n25 += 1
+            u25 += float(h.get("units") or 0)
+            if d <= 10:
+                n10 += 1
+                u10 += float(h.get("units") or 0)
+                hp10 += float(h.get("hp") or 0)
+                if tgt_fac and h.get("faction") == tgt_fac:
+                    sf10 += float(h.get("units") or 0)
+    out["opt_enemy_reinf_nearest_dist"] = round(nearest, 2) if nearest is not None else None
+    out["opt_enemy_reinf_armies_r10"] = n10
+    out["opt_enemy_reinf_armies_r25"] = n25
+    out["opt_enemy_reinf_units_r10"] = u10
+    out["opt_enemy_reinf_units_r25"] = u25
+    out["opt_enemy_reinf_hp_r10"] = round(hp10, 2)
+    out["opt_enemy_reinf_units_samefac_r10"] = sf10
+    gar = 0.0
+    for h in w.get("hostiles") or []:
+        if h.get("kind") != "settlement":
+            continue
+        if atype == "attack_settlement" and str(h.get("region")) == str(key):
+            continue
+        hx, hy = h.get("x"), h.get("y")
+        if hx is None or hy is None:
+            continue
+        if math.hypot(float(hx) - tx, float(hy) - ty) <= 10:
+            gu, _gh = _enemy_garrison(w, h.get("region"))
+            gar += gu or 0.0
+    out["opt_target_garrison_nearby_units"] = gar
+    own_nearest = None
+    o10 = o25 = 0.0
+    for a in w.get("armies") or []:
+        if not a.get("has_army") or str(a.get("cqi")) == str(self_cqi or ""):
+            continue
+        ax, ay = a.get("x"), a.get("y")
+        if ax is None or ay is None:
+            continue
+        d = math.hypot(float(ax) - tx, float(ay) - ty)
+        if own_nearest is None or d < own_nearest:
+            own_nearest = d
+        if d <= 25:
+            o25 += float(a.get("units") or 0)
+            if d <= 10:
+                o10 += float(a.get("units") or 0)
+    out["opt_own_reinf_nearest_dist"] = (round(own_nearest, 2)
+                                         if own_nearest is not None else None)
+    out["opt_own_reinf_units_r10"] = o10
+    out["opt_own_reinf_units_r25"] = o25
+    return out
+
+
 POINTER_KEYED = frozenset(("move", "attack_army", "diplomacy", "end_turn", "noop"))
 OPTION_KEY_TYPES = tuple(t for t in ACTION_TYPES if t not in POINTER_KEYED)
 
@@ -712,7 +871,8 @@ def _option_key(atype, key):
 
 
 def action_block(offer, locus, treasury, world=None, self_units=None, self_hp=None,
-                 near_before=None, self_cqi=None, self_upkeep=None, income=None):
+                 near_before=None, self_cqi=None, self_upkeep=None, income=None,
+                 campaign=None, self_pending=None):
     atype, key = offer.get("action_type"), str(offer.get("key"))
     params = offer.get("params") or {}
     out = {"opt_type": atype}
@@ -721,6 +881,20 @@ def action_block(offer, locus, treasury, world=None, self_units=None, self_hp=No
     sem = _option_key(atype, key)
     if sem is not None and atype in OPTION_KEY_TYPES:
         out["optk_" + atype] = sem
+    out.update(MEM.prebattle_option_feats(campaign, atype, key, params, world, self_cqi))
+    out.update(_reinf_feats(atype, key, params, world, self_cqi))
+    out["opt_queue_depth_after"] = (
+        (self_pending or 0.0) + 1.0 if atype in UNIT_RECRUIT_TYPES
+        else max((self_pending or 0.0) - 1.0, 0.0) if atype == "cancel_recruit"
+        else None)
+    out["opt_cancel_turns_left"] = (_f(params.get("turns_left"))
+                                    if atype == "cancel_recruit" else None)
+    out["opt_cancel_stalled"] = None
+    if atype == "cancel_recruit":
+        flags = ((campaign or {}).get("queue_stall") or {}).get(str(self_cqi or ""))
+        qi = params.get("queue_index")
+        if flags is not None and qi is not None and 0 <= int(qi) < len(flags):
+            out["opt_cancel_stalled"] = _f(flags[int(qi)])
     out.update(_diplomacy_feats(atype, params, world))
     out.update(_hero_action_feats(atype, params, locus, world))
     out.update(_recruit_hero_feats(atype, params))
@@ -831,17 +1005,21 @@ def state_row(record, entity):
             row.get("lord_stack_upkeep"), _f((record.get("campaign") or {}).get("income")))
         row.update(lord_territory_block(st, world))
         row.update(lord_recruit_block(st))
+        row.update(lord_memory_block(record.get("campaign"), entity.get("context_id"),
+                                     st, world, provinces))
         row.update(province_block(here))
         row.update(province_buildings_block(provinces, here))
         row.update(carried_province_block(provinces, here))
     elif ck == "province":
         row.update(dict(_EMPTY_LORD))
+        row.update(dict(_EMPTY_MEMLORD))
         row.update(province_block(st))
         row.update(province_buildings_block(provinces, st))
         row.update(carried_province_block(provinces, st))
     else:
         cap = next((p for p in provinces.values() if p.get("is_capital")), None)
         row.update(dict(_EMPTY_LORD))
+        row.update(dict(_EMPTY_MEMLORD))
         row.update(province_block(cap))
         row.update(province_buildings_block(provinces, cap))
         row.update(carried_province_block(provinces, cap))
@@ -871,7 +1049,8 @@ def offer_rows(record, entity, base_sink=None):
         row.update(action_block(o, locus, treasury, world=world, self_units=self_units,
                                 self_hp=self_hp, near_before=near_before,
                                 self_cqi=st.get("cqi"), self_upkeep=self_upkeep,
-                                income=income))
+                                income=income, campaign=record.get("campaign"),
+                                self_pending=_f(st.get("pending_recruits"))))
         out.append((o, row))
     if base_sink is not None:
         base_sink[str(entity.get("context_id"))] = base
@@ -942,6 +1121,23 @@ MODEL_COLUMNS = frozenset(tuple("optk_" + _t for _t in OPTION_KEY_TYPES) + (
     "isc_dip_dem_other", "isc_dip_off_other",
     "isc_dip_n_demanded", "isc_dip_n_offered", "isc_dip_n_treaties",
     "isc_dip_amount_demanded", "isc_dip_amount_offered",
+    "opt_last_prebattle_choice_at_loc", "opt_actions_since_prebattle_at_loc",
+    "opt_last_prebattle_result_at_loc", "opt_last_prebattle_casualties_at_loc",
+    "opt_last_prebattle_choice_in_region", "opt_actions_since_prebattle_in_region",
+    "opt_last_prebattle_result_in_region", "opt_last_prebattle_casualties_in_region",
+    "opt_last_prebattle_same_lord", "lord_turns_since_moved",
+    "lord_recruits_this_turn", "lord_queue_turns_to_clear",
+    "lord_queue_queued_this_turn", "opt_queue_depth_after",
+    "prov_pending_recruits_others", "prov_recruits_this_turn_others",
+    "lrec_inprogress", "camp_taken_recruit_unit",
+    "camp_taken_attack_army", "camp_taken_attack_settlement",
+    "opt_enemy_reinf_nearest_dist", "opt_enemy_reinf_armies_r10",
+    "opt_enemy_reinf_armies_r25", "opt_enemy_reinf_units_r10",
+    "opt_enemy_reinf_units_r25", "opt_enemy_reinf_hp_r10",
+    "opt_enemy_reinf_units_samefac_r10", "opt_target_garrison_nearby_units",
+    "opt_own_reinf_nearest_dist", "opt_own_reinf_units_r10", "opt_own_reinf_units_r25",
+    "opt_cancel_turns_left", "opt_cancel_stalled", "camp_taken_cancel_recruit",
+    "lord_queue_on_hold", "lord_queue_stalled_units",
 ))
 
 MODEL_COLUMNS_ENABLED = True

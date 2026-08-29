@@ -144,11 +144,13 @@ def get_picks(limit: int = 2000, before: int | None = None) -> UcbPicksPage:
     cx = q.ucb_context(con, gains)
     series = q.ucb_pick_series(con, gains)
     picks = q.ucb_picks(series, lim, before)
+    dropped, nxt = q.ucb_window_edges(con, gains)
     return UcbPicksPage(
         scope=_scope("one row per UCB start pick, newest first",
                      "score = blend + explore, blend = (mean + H + std) / 3"),
         window=q.UCB.WINDOW, min_plays=q.UCB.MIN_PLAYS, pool=len(cx["pool"]),
         tiles=q.ucb_tiles(series, cx), picks=picks,
+        dropped_out=dropped, next_out=nxt,
         cursor=(picks[-1].pick_id if len(picks) >= lim else None))
 
 

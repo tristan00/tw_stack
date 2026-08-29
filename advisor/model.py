@@ -13,7 +13,9 @@ import common
 sys.path.insert(0, common.DECISIONS)
 
 import features as F
-from base_model import (CB_MAIN_ITERATIONS, RUNS_ROOT, TARGET_PARTS, target,
+import memory as MEM
+from base_model import (CB_MAIN_ITERATIONS, RUNS_ROOT, TARGET_PARTS,
+                        TRAIN_WINDOW_CAMPAIGNS, target,
                         SHORT_HORIZON, SHORT_WEIGHT, decision_deltas, fit_es,
                         grouped_split, params, _ranks)
 from store import DecisionStore, IncompatibleStore
@@ -23,7 +25,24 @@ MODEL_FILE = "model.cbm"
 MIN_ROWS = 40
 
 
-def gather(runs_root=RUNS_ROOT):
+def _note_memory(mem, rec, taken, was_counted, pb_map):
+    if not taken or not taken[2]:
+        return
+    st = None
+    for e in rec.get("entities") or []:
+        if (e.get("context_kind") == taken[0]
+                and str(e.get("context_id")) == str(taken[1])):
+            st = e.get("state") or {}
+            break
+    mem.note_pick(taken[0], taken[1], taken[2], st, was_counted)
+    hit = pb_map.get(rec.get("decision_id"))
+    if hit is not None:
+        mem.note_prebattle(taken[0], taken[1], hit["action_type"], hit["key"],
+                           hit["params"], None, hit["chosen"], hit["result"],
+                           hit["casualties"], zone=hit["zone"])
+
+
+def gather(runs_root=RUNS_ROOT, window=TRAIN_WINDOW_CAMPAIGNS):
     dbs = common.run_dbs(runs_root)
     full, ys, groups, confirmed = [], [], [], []
     n_decisions = skipped = 0
@@ -40,10 +59,12 @@ def gather(runs_root=RUNS_ROOT):
         try:
             with s.snapshot_read():
                 series = s.target_series()
-                campaigns_seen.update(series)
-                act_idx, mov_idx, hist, counts = {}, {}, {}, {}
-                for rec, taken, was_counted in s.taken_rows():
+                pb_map = MEM.prebattle_attributions(s.con)
+                floor = s.window_floor(window)
+                act_idx, mov_idx, hist, counts, mems = {}, {}, {}, {}, {}
+                for rec, taken, was_counted in s.taken_rows(min_decision=floor):
                     n_decisions += 1
+                    campaigns_seen.add(rec.get("campaign_id"))
                     ik = (rec.get("campaign_id"), rec.get("turn"))
                     act_idx[ik] = act_idx.get(ik, 0) + 1
                     (rec.setdefault("campaign", {}))["act_index"] = act_idx[ik]
@@ -54,6 +75,9 @@ def gather(runs_root=RUNS_ROOT):
                     cnt = counts.setdefault(rec.get("campaign_id"), {})
                     F.stamp_prev_actions(rec["campaign"], h)
                     F.stamp_action_counts(rec["campaign"], cnt)
+                    mem = mems.setdefault(rec.get("campaign_id"), MEM.CampaignMemory())
+                    mem.begin_turn(rec.get("turn"))
+                    mem.stamp(rec["campaign"])
                     if taken and taken[2] != "noop":
                         h.append(taken[2])
                         del h[:-F.PREV_ACTIONS]
@@ -61,10 +85,11 @@ def gather(runs_root=RUNS_ROOT):
                     turns = series.get(rec.get("campaign_id")) or {}
                     y = target(decision_deltas(rec.get("campaign"), turns,
                                                rec.get("turn")))
+                    triples = F.decision_rows(rec) if y is not None else None
+                    _note_memory(mem, rec, taken, was_counted, pb_map)
                     if y is None:
                         skipped += 1
                         continue
-                    triples = F.decision_rows(rec)
                     if not triples:
                         continue
                     row = triples[0][2]
@@ -83,9 +108,9 @@ def gather(runs_root=RUNS_ROOT):
             "campaigns": len(campaigns_seen)}
 
 
-def train(runs_root=RUNS_ROOT):
+def train(runs_root=RUNS_ROOT, window=TRAIN_WINDOW_CAMPAIGNS):
     from catboost import Pool
-    data = gather(runs_root)
+    data = gather(runs_root, window=window)
     rows, y = data["full"], data["y"]
     if len(rows) < MIN_ROWS:
         return {"trained": False, "rows": len(rows), "need": MIN_ROWS, **_counts(data)}

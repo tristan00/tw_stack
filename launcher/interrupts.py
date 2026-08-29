@@ -477,6 +477,27 @@ def cancel_declare_war(bus):
     return steps
 
 
+def colonize_blocker(bus):
+    steps = cancel_declare_war_panel(bus)
+    if steps:
+        return steps
+    tree = _tree(bus, nav.DECLARE_WAR_ROOT, 24, 4000)
+    vis = [n for n in tree if n.get("visible")]
+    if not vis:
+        return None
+    title = next((str(n.get("text") or "").strip() for n in vis
+                  if "panel_title" in str(n.get("path") or "") and n.get("text")), "?")
+    ctrls = sorted(str(n.get("id")) for n in vis
+                   if str(n.get("id") or "").startswith("button_"))
+    _report_unhandled(bus, "move_options", ["no per-screen rule matches this confirm"],
+                      ctrls, root=nav.DECLARE_WAR_ROOT)
+    raise UnhandledScreen(
+        "colonize raised a %s confirm titled %r that no per-screen rule matches -- "
+        "the engine holds the order pending and every later command is ignored; "
+        "tree dumped (%d visible nodes, buttons=%s)"
+        % (nav.DECLARE_WAR_ROOT, title, len(vis), ctrls[:6]))
+
+
 def diplomacy_roots(bus, r=None):
     r = roots(bus) if r is None else r
     return [x for x in r if "diplo" in str(x).lower() and x not in DIPLOMACY_HUD_ROOTS]
