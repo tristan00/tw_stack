@@ -190,6 +190,8 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
         executor.disable_ui_hotkeys()
     except Exception as e:
         log("!! could not disable the UI-hide hotkeys: %s" % repr(e)[:120])
+    boost = executor.boost_locomotion()
+    log("locomotion boost: %s" % (boost or "FAILED -- moves run at normal speed"))
     executor.mark_campaign_start()
     import interrupt_model as IM
     import interrupts as I
@@ -398,6 +400,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
     _hk_parts = [{}]
     log("== TURN %s ==" % turn)
     wd.begin_turn(turn)
+    executor.boost_locomotion()
     opening = executor.resolve_interrupts()
     _drain_interrupts(run_dir, log, mem=mem)
     if opening:
