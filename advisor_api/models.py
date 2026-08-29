@@ -211,6 +211,20 @@ class UcbRow(BaseModel):
     chosen: bool = False
 
 
+class WindowEdgeRow(BaseModel):
+    campaign: Ident
+    leader: str | None = None
+    faction: Ident
+    campaign_map: Ident | None = None
+    played_ts: float | None = None
+    turns: int | None = None
+    reward: float | None = None
+    start_n: int = Field(
+        0, description="how many plays this start currently holds in the window")
+    campaigns_away: int = Field(
+        0, description="completed campaigns since it left the window, or until it will")
+
+
 class UcbPicksPage(BaseModel):
     scope: Scope
     window: int = 0
@@ -218,6 +232,8 @@ class UcbPicksPage(BaseModel):
     pool: int = 0
     tiles: list[Metric] = Field(default_factory=list)
     picks: list[UcbPick] = []
+    dropped_out: list[WindowEdgeRow] = Field(default_factory=list)
+    next_out: list[WindowEdgeRow] = Field(default_factory=list)
     cursor: int | None = None
 
 

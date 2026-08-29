@@ -536,6 +536,89 @@ register("recruit_unit", {
 })
 
 
+QUEUED_CARD = "units_panel|main_units_panel|units|QueuedLandUnit %d"
+
+
+def _pending_queue_keys(bus, cqi):
+    raw = _ev(bus, "local c=cm:get_character_by_cqi(%s) "
+                   "if not c or not c:has_military_force() then return '' end "
+                   "local ok,it=pcall(function() return c:military_force():recruitment_items() end) "
+                   "if not ok or not it then return '' end "
+                   "local n=0 pcall(function() n=#it end) "
+                   "local ks={} for i=1,n do ks[#ks+1]=tostring(it[i]) end "
+                   "return table.concat(ks,',')" % cqi, timeout=12.0)
+    return [k for k in str(raw or "").split(",") if k and k not in ("nil", "-")]
+
+
+def _cancel_snapshot(bus, ctx, pick):
+    prepare(bus, "lord", ctx["entity_id"], expect_root="units_panel")
+    r = _roots(bus)
+    return {"treasury": _treasury(bus), "pending": _pending_recruits(bus, ctx["entity_id"]),
+            "units_panel_open": (r is not None and "units_panel" in r)}
+
+
+def _cancel_precheck(bus, ctx, pick, before):
+    if not before.get("units_panel_open"):
+        return False, "units_panel_not_open_CTD_guard"
+    return True, None
+
+
+def _cancel_execute(bus, ctx, pick, before):
+    try:
+        return _cancel_execute_inner(bus, ctx, pick, before)
+    finally:
+        clear_screen(bus, "cancel_finally")
+
+
+def _cancel_execute_inner(bus, ctx, pick, before):
+    ok, why = prepare(bus, "lord", ctx["entity_id"], expect_root="units_panel")
+    if not ok:
+        sys.stderr.write("click_actions: cancel_recruit refused, not a known state -> %s\n"
+                         % why)
+        return False
+    unit, want_i = split_key(pick)
+    keys = _pending_queue_keys(bus, ctx["entity_id"])
+    if not keys:
+        sys.stderr.write("click_actions: cancel_recruit but the queue is empty\n")
+        return False
+    idx = None
+    try:
+        wi = int(want_i) if want_i is not None else None
+    except (TypeError, ValueError):
+        wi = None
+    if wi is not None and 0 <= wi < len(keys) and keys[wi] == unit:
+        idx = wi
+    else:
+        idx = next((i for i, k in enumerate(keys) if k == unit), None)
+    if idx is None:
+        sys.stderr.write("click_actions: unit %r not in the recruitment queue %s\n"
+                         % (unit, keys))
+        return False
+    pick.setdefault("params", {})["queue_index_used"] = idx
+    return _click(bus, QUEUED_CARD % idx)
+
+
+def _cancel_confirm(bus, ctx, pick, before):
+    t = _treasury(bus)
+    after = str(_pending_recruits(bus, ctx["entity_id"]) or "")
+    prior = str(before.get("pending") or "")
+    want = split_key(pick)[0]
+    removed = after.count(want) < prior.count(want)
+    refunded = (t is not None and before.get("treasury") is not None
+                and t > before["treasury"])
+    return removed, {"treasury": t, "pending": after, "pending_before": prior,
+                     "treasury_refunded": refunded,
+                     "queue_index_used": (pick.get("params") or {}).get("queue_index_used")}
+
+
+register("cancel_recruit", {
+    "layer": "click", "signal": "unit_key_left_recruitment_items",
+    "snapshot": _cancel_snapshot, "prechecks": [_cancel_precheck],
+    "execute": _cancel_execute, "confirm": _cancel_confirm,
+    "timeout_s": 2.0, "poll_s": 1.0,
+})
+
+
 MERC_BTN_CONTAINER = ("hud_campaign|hud_center_docker|hud_center|small_bar|button_subpanel_parent|"
                       "button_subpanel|button_group_army|mercenary_recruitment_button_container")
 MERC_DISPLAY = ("units_panel|main_units_panel|recruitment_docker|recruitment_options|"

@@ -7,6 +7,7 @@ import sys
 from advisor.mapgraph import schema as S
 from advisor.mapgraph import guard as G
 from advisor.mapgraph import catalogue as C
+from advisor import memory as M
 
 _TI = {t: i for i, t in enumerate(S.NODE_TYPES)}
 _NREL = S.N_FORWARD_RELATIONS
@@ -358,6 +359,13 @@ def build_graph(record):
         if ntype == "lord":
             vals["units"] = rd.num("units")
             vals["hp"] = rd.num("hp")
+            if row.get("pending_recruits") is not None:
+                vals["pending_recruits"] = rd.num("pending_recruits")
+            mrow = _lord_memory_row(campaign, cqi, row)
+            if mrow:
+                mr = G.Reader(mrow, "char:" + cqi, "memory.lord")
+                for k in mrow:
+                    vals[k] = mr.num(k)
         ci = g.add("c:" + cqi, ntype, vals,
                    agent=S.agent_index(a.get("agent_type")),
                    stance=S.stance_index(a.get("stance")),
@@ -436,6 +444,10 @@ def build_graph(record):
 
     g.finalize()
     _wire_knn(g)
+    near_pts = _target_pts(g)
+    pend_by_cqi = {cqi: st.get("pending_recruits")
+                   for cqi, (kind, st) in char_state.items()
+                   if st and st.get("pending_recruits") is not None}
 
     n_offers = 0
     groups = {}
@@ -445,7 +457,7 @@ def build_graph(record):
         for o in e.get("offers") or []:
             n_offers += 1
             _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me,
-                        region_xy)
+                        region_xy, campaign, world, pend_by_cqi, near_pts)
 
     g.finalize()
     if not g.src:
@@ -519,6 +531,52 @@ def _wire_knn(g):
                 g.edge(i, j, "near")
 
 
+def _lord_memory_row(campaign, cqi, row=None):
+    camp = campaign or {}
+    out = {}
+    counts = camp.get("recruit_counts_turn") or {}
+    if cqi in counts:
+        out["recruits_this_turn"] = counts[cqi]
+    ages = (camp.get("queue_ages") or {}).get(cqi) or ()
+    if ages:
+        out["queue_age_max"] = max(a for _k, a in ages)
+        out["queue_new_this_turn"] = sum(1 for _k, a in ages if a == 0)
+    stall = (camp.get("queue_stall") or {}).get(cqi)
+    if stall is not None:
+        out["queue_stalled"] = float(sum(stall))
+    if (row or {}).get("pending_recruit_keys"):
+        active = any((c or {}).get("state") == "active"
+                     for c in (row or {}).get("recruitable") or ())
+        out["queue_on_hold"] = 0.0 if active else 1.0
+    mv = (camp.get("last_move_turn") or {}).get(cqi)
+    turn = camp.get("turn")
+    if mv is not None and turn is not None:
+        try:
+            out["turns_since_moved"] = max(0.0, float(turn) - float(mv))
+        except (TypeError, ValueError):
+            pass
+    return out
+
+
+def _target_pts(g):
+    out = []
+    lxi = S.TYPE_FIELDS["lord"].index("x")
+    lyi = S.TYPE_FIELDS["lord"].index("y")
+    sxi = S.TYPE_FIELDS["settlement"].index("x")
+    syi = S.TYPE_FIELDS["settlement"].index("y")
+    for i, t in enumerate(g.node_type):
+        tn = S.NODE_TYPES[t]
+        if tn in ("lord", "hero"):
+            x, y = g.x[i][lxi], g.x[i][lyi]
+        elif tn == "settlement":
+            x, y = g.x[i][sxi], g.x[i][syi]
+        else:
+            continue
+        if x or y:
+            out.append((i, x, y))
+    return out
+
+
 def _ego_of(g, ck, cid, prov_of_region, me):
     if ck in ("lord", "hero"):
         return g.id2idx.get("c:" + cid)
@@ -530,6 +588,7 @@ def _ego_of(g, ck, cid, prov_of_region, me):
 
 _CAT_OF_TYPE = {"recruit_unit": "unit", "recruit_ror": "unit", "recruit_blessed": "unit",
                 "recruit_imperial": "unit", "raise_dead": "unit",
+                "cancel_recruit": "unit",
                 "recruit_lord": "agent_subtype", "recruit_hero": "agent_subtype",
                 "research": "tech", "skills": "skill", "rites": "ritual",
                 "edict": "edict", "items": "item", "item_unequip": "item",
@@ -538,7 +597,8 @@ _CAT_OF_TYPE = {"recruit_unit": "unit", "recruit_ror": "unit", "recruit_blessed"
 
 
 def _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me,
-                region_xy=()):
+                region_xy=(), campaign=None, world=None, pending=None,
+                near_pts=()):
     at = str(o.get("action_type") or "")
     key = str(o.get("key") or "")
     params = o.get("params") or {}
@@ -556,6 +616,44 @@ def _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me,
         avals["cost"] = pd.num("repair_cost")
     if params.get("pool_avail") is not None:
         avals["pool_avail"] = pd.num("pool_avail")
+    eid = "offer:%s:%s:%s" % (ck, cid, key)
+    if at in M.PB_ATTACK_TYPES:
+        pb = M.prebattle_option_feats(campaign, at, key, params, world, cid)
+        mrow = {}
+        since = pb["opt_actions_since_prebattle_at_loc"]
+        if since is not None:
+            mrow["pb_choice_loc"] = M.choice_index(pb["opt_last_prebattle_choice_at_loc"])
+            mrow["pb_since_loc"] = min(since, 60.0)
+            mrow["pb_result_loc"] = M.result_index(pb["opt_last_prebattle_result_at_loc"])
+        since_r = pb["opt_actions_since_prebattle_in_region"]
+        if since_r is not None:
+            mrow["pb_choice_reg"] = M.choice_index(
+                pb["opt_last_prebattle_choice_in_region"])
+            mrow["pb_since_reg"] = min(since_r, 60.0)
+            mrow["pb_result_reg"] = M.result_index(
+                pb["opt_last_prebattle_result_in_region"])
+        if pb["opt_last_prebattle_same_lord"] is not None:
+            mrow["pb_same_lord"] = pb["opt_last_prebattle_same_lord"]
+        if mrow:
+            mr = G.Reader(mrow, eid, "memory.prebattle")
+            for k in mrow:
+                avals[k] = mr.num(k)
+    if at in M.RECRUIT_TYPES:
+        depth = {"queue_depth_after": float((pending or {}).get(str(cid)) or 0.0) + 1.0}
+        avals["queue_depth_after"] = G.Reader(depth, eid,
+                                              "memory.queue").num("queue_depth_after")
+    if at == "cancel_recruit":
+        row = {"queue_depth_after": max(float((pending or {}).get(str(cid)) or 0.0) - 1.0,
+                                        0.0)}
+        if params.get("turns_left") is not None:
+            row["cancel_turns_left"] = params["turns_left"]
+        flags = ((campaign or {}).get("queue_stall") or {}).get(str(cid))
+        qi = params.get("queue_index")
+        if flags is not None and qi is not None and 0 <= int(qi) < len(flags):
+            row["cancel_stalled"] = flags[int(qi)]
+        qr = G.Reader(row, eid, "memory.queue")
+        for k in row:
+            avals[k] = qr.num(k)
     ai = g.add("a:%s:%s:%s:%d" % (ck, cid, key, len(g.action_nodes)), "action",
                avals, atype=S.atype_index(at), term=term,
                stance=S.stance_index(key) if at == "stance" else 0)
@@ -572,7 +670,8 @@ def _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me,
 
     kind = _CAT_OF_TYPE.get(at)
     if kind:
-        ck_key = key.split("@", 1)[0] if at.startswith("recruit") else key
+        ck_key = (key.split("@", 1)[0]
+                  if at.startswith("recruit") or at == "cancel_recruit" else key)
         if at in ("building_repair", "building_dismantle", "horde_building"):
             ck_key = str(params.get("building_key") or "") or None
         elif at == "building":
@@ -594,6 +693,17 @@ def _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me,
 
     if tgt is not None:
         g.edge(ai, tgt, "act_target")
+
+    if at in M.PB_ATTACK_TYPES and _pos_ok(params.get("x"), params.get("y")):
+        tx, ty = float(params["x"]), float(params["y"])
+        for j, jx, jy in near_pts:
+            if j == tgt or j == ego:
+                continue
+            d = math.hypot(jx - tx, jy - ty)
+            if d <= 10:
+                g.edge(ai, j, "near_target")
+            elif d <= 25:
+                g.edge(ai, j, "near_target_wide")
 
     subject = params.get("faction") or params.get("target_faction")
     if subject:

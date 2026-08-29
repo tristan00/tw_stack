@@ -23,6 +23,7 @@ sys.path.insert(0, common.DECISIONS)
 
 import features as F
 import journal
+import memory as MEM
 import options as O
 import policy as P
 
@@ -197,6 +198,7 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
               if cold else IM.InterruptRanker(strategies=imix, ruleset=pol.ruleset))
     act_hist = []
     act_counts = {}
+    mem = MEM.CampaignMemory()
     I.reset_answers()
     I.set_chooser(lambda screen, options, campaign, panel=None, record=None, meta=None:
                   ranker.choose(screen, options, F.stamp_action_counts(
@@ -255,7 +257,7 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
                                        "not a stall (%s)" % stuck["reason"])
                 raise GameStuck("%s: %s" % (stuck["reason"], stuck["detail"]))
             row = _run_turn(run_dir, executor, pol, wd, stuck, log,
-                            act_hist, act_counts, pre_settle=_gate_would_fail)
+                            act_hist, act_counts, pre_settle=_gate_would_fail, mem=mem)
             rows.append(row)
             _append(report_path, row)
             log("== turn %s done: %d actions (%d confirmed), ended by %s =="
@@ -357,13 +359,13 @@ def _turn_trail(run_dir, executor, row, turn_index, log):
                rec.get("ui_state"), rec.get("screenshot")))
 
 
-def _drain_interrupts(run_dir, log):
+def _drain_interrupts(run_dir, log, mem=None):
     try:
         import interrupts as I
         recs = I.drain_interrupt_records()
     except Exception as e:
         log("   !! could not drain interrupt records: %s" % repr(e)[:120])
-        return
+        return []
     for r in recs:
         try:
             journal.log_interrupt(run_dir, r)
@@ -372,24 +374,32 @@ def _drain_interrupts(run_dir, log):
     if recs:
         log("   recorded %d interrupt decision(s): %s"
             % (len(recs), ", ".join("%s->%s" % (x.get("kind"), x.get("chosen")) for x in recs)))
+    if mem is not None and recs:
+        try:
+            mem.feed_interrupts(recs)
+        except Exception as e:
+            log("   !! interrupt memory update failed: %s" % repr(e)[:120])
+    return recs
 
 
 def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
-              act_counts=None, pre_settle=None):
+              act_counts=None, pre_settle=None, mem=None):
     import diplo_stream as DS
     import interrupts as I
     act_hist = act_hist if act_hist is not None else []
     act_counts = act_counts if act_counts is not None else {}
+    mem = mem if mem is not None else MEM.CampaignMemory()
     pol.new_turn()
     turn, campaign_uuid = journal.request_turn(run_dir)
     DS.TURN[0] = turn
     DS.CAMPAIGN[0] = campaign_uuid
+    mem.begin_turn(turn)
     _last_done_ts = [None]
     _hk_parts = [{}]
     log("== TURN %s ==" % turn)
     wd.begin_turn(turn)
     opening = executor.resolve_interrupts()
-    _drain_interrupts(run_dir, log)
+    _drain_interrupts(run_dir, log, mem=mem)
     if opening:
         log("   opening interrupts: %s" % ", ".join(str(s) for s in opening))
     actions, confirmed, ended_by, picks = 0, 0, "action_cap", []
@@ -497,6 +507,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
         record["campaign"]["move_index"] = moves + 1
         F.stamp_prev_actions(record["campaign"], act_hist)
         F.stamp_action_counts(record["campaign"], act_counts)
+        mem.stamp(record["campaign"])
         I.set_snapshot(record["campaign"], record)
         last_record = record
         if not first_record:
@@ -511,6 +522,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
                 act_hist.append("end_turn")
                 del act_hist[:-F.PREV_ACTIONS]
                 F.bump_action_counts(act_counts, "end_turn")
+                mem.note_pick("faction", "*", "end_turn", None, True)
             break
         if turn is not None and turn != _last_beat_turn[0]:
             _last_beat_turn[0] = turn
@@ -548,6 +560,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
                 act_hist.append("end_turn")
                 del act_hist[:-F.PREV_ACTIONS]
                 F.bump_action_counts(act_counts, "end_turn")
+                mem.note_pick("faction", "*", "end_turn", None, True)
             break
         _t = time.time()
         journal.log_pick(run_dir, decision_id, pick, P.scores_for_store(ranked), timings=timing)
@@ -592,6 +605,10 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
         ok = bool(result.get("counted"))
         confirmed += 1 if ok else 0
         pol.note_result(pick, ok)
+        mem.note_pick(pick["context_kind"], pick["context_id"], pick["action_type"],
+                      _entity_state_of(record, pick), ok)
+        if pick["action_type"] in MEM.PB_ATTACK_TYPES:
+            mem.note_exec(pick, record.get("world"))
         if ok:
             wd.beat("confirmed:%s" % pick["action_type"])
         log("   %-16s %-34s %s%s"
@@ -629,13 +646,17 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
                 except Exception as e:
                     log("   !! post-attack trace failed: %s" % repr(e)[:120])
                 wd.beat("post_attack_trace")
+            if pick["action_type"] == "colonize":
+                blocked = I.colonize_blocker(executor.bus)
+                if blocked:
+                    log("   colonize blocker: %s" % ", ".join(str(s) for s in blocked))
             pre = executor.resolve_interrupts()
             _hk_parts[0]["post_attack"] = int((time.time() - _t) * 1000)
             if pre:
                 log("   post-attack interrupts: %s" % ", ".join(str(s) for s in pre))
                 wd.beat("post_attack_interrupt")
         _t = time.time()
-        _drain_interrupts(run_dir, log)
+        _drain_interrupts(run_dir, log, mem=mem)
         _hk_parts[0]["drain"] = int((time.time() - _t) * 1000)
         _t = time.time()
         steps = executor.resolve_interrupts()
@@ -690,6 +711,14 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
                        "campaign_uuid": ((first_record.get("campaign") or {}).get("campaign_uuid")
                                          or (last_record.get("campaign") or {}).get("campaign_uuid")),
                        "inter_turn": settle, "ts": time.time()})
+
+
+def _entity_state_of(record, pick):
+    for e in record.get("entities") or []:
+        if (e.get("context_kind") == pick["context_kind"]
+                and str(e.get("context_id")) == str(pick["context_id"])):
+            return e.get("state") or {}
+    return None
 
 
 def _active_from(record, pol):

@@ -430,6 +430,9 @@ def test_no_column_is_empty_in_every_row():
         ("$.rows", "presave_radius"):
             "a campaign carries a radius only when the run booted it from a baked "
             "presave, which is newer than every campaign in this corpus",
+        ("$.rows", "gnn_rank"):
+            "the marwil_gnn arm was cut from the action mix; decisions played since then "
+            "carry no marwil rank, and the audit window holds only such decisions",
         ("$.picks", "entropy"):
             "the selector stores entropy per pick only from the blend formula onward; a "
             "corpus of older picks carries none",

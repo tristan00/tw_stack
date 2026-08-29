@@ -614,7 +614,7 @@ function Drift() {
                   axis === a ? 'bg-raised text-fg font-semibold' : 'text-dim hover:text-fg',
                 )}
               >
-                {a === 'window' ? 'over the run' : 'by generation'}
+                {a === 'window' ? 'over the run' : 'by model version'}
               </button>
             ))}
             </div>

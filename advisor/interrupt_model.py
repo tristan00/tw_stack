@@ -16,7 +16,8 @@ sys.path.insert(0, common.DECISIONS)
 import features as F
 import policy as P
 from base_model import (CB_INTERRUPT_ITERATIONS, CB_INTERRUPT_PARAMS,
-                        CB_INTERRUPT_TUNED_FROM, RUNS_ROOT, TARGET_PARTS, target,
+                        CB_INTERRUPT_TUNED_FROM, RUNS_ROOT, TARGET_PARTS,
+                        TRAIN_WINDOW_CAMPAIGNS, target,
                         decision_deltas, fit_es, grouped_split, params, _ranks)
 from store import DecisionStore, IncompatibleStore
 
@@ -80,7 +81,7 @@ def _row(screen, option, n_options, campaign, world=None, panel=None, meta=None)
     return row
 
 
-def gather(runs_root=RUNS_ROOT):
+def gather(runs_root=RUNS_ROOT, window=TRAIN_WINDOW_CAMPAIGNS):
     pending, deltas = [], []
     seen_runs = 0
     for db in common.run_dbs(runs_root):
@@ -91,13 +92,17 @@ def gather(runs_root=RUNS_ROOT):
         seen_runs += 1
         try:
             series = s.target_series()
+            floor = s.window_floor(window)
+            keys = s.window_keys(window)
             seq, snaps = {}, {}
-            for camp_id, ts, atype in s.action_sequence():
+            for camp_id, ts, atype in s.action_sequence(min_decision=floor):
                 seq.setdefault(camp_id, []).append((ts or 0.0, atype))
-            for camp_id, ts, camp, world in s.campaign_snapshots():
+            for camp_id, ts, camp, world in s.campaign_snapshots(min_decision=floor):
                 snaps.setdefault(camp_id, []).append((ts, camp, world))
             for r in s.interrupt_rows():
                 if not r.get("chosen"):
+                    continue
+                if keys is not None and r.get("campaign_id") not in keys:
                     continue
                 rts = r.get("ts") or 0.0
                 pre = [(c, w) for t, c, w in snaps.get(r.get("campaign_id")) or [] if rts >= t]
@@ -128,9 +133,9 @@ def gather(runs_root=RUNS_ROOT):
     return {"rows": rows, "y": y, "groups": groups, "runs": seen_runs}
 
 
-def train(runs_root=RUNS_ROOT):
+def train(runs_root=RUNS_ROOT, window=TRAIN_WINDOW_CAMPAIGNS):
     from catboost import Pool
-    data = gather(runs_root)
+    data = gather(runs_root, window=window)
     rows, y = data["rows"], data["y"]
     if len(rows) < MIN_ROWS:
         return {"trained": False, "rows": len(rows), "need": MIN_ROWS, "runs": data["runs"]}

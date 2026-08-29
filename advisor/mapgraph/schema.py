@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 import common
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 8
 
 INSTANCE_TYPES = ("faction", "region", "settlement", "province", "slot",
                   "lord", "hero", "action", "cgroup", "screen")
@@ -31,11 +31,17 @@ TYPE_FIELDS = {
     "slot":         (),
     "lord":         ("x", "y", "units", "hp", "rank", "ap_pct",
                      "acted", "is_leader", "in_own_territory",
-                     "skill_points"),
+                     "skill_points", "pending_recruits", "recruits_this_turn",
+                     "queue_age_max", "queue_new_this_turn", "turns_since_moved",
+                     "queue_on_hold", "queue_stalled"),
     "hero":         ("x", "y", "rank", "ap_pct",
                      "acted", "is_leader", "in_own_territory",
                      "skill_points"),
-    "action":       ("x", "y", "cost", "pool_avail"),
+    "action":       ("x", "y", "cost", "pool_avail",
+                     "pb_choice_loc", "pb_since_loc", "pb_result_loc",
+                     "pb_choice_reg", "pb_since_reg", "pb_result_reg",
+                     "pb_same_lord", "queue_depth_after", "cancel_turns_left",
+                     "cancel_stalled"),
     "cgroup":       (),
     "screen":       ("attitude", "amount_demanded", "amount_offered",
                      "strength_them", "strength_us", "settlements"),
@@ -106,6 +112,8 @@ ACT_RELATIONS = (
     "act_on",
     "in_group",
     "of_ego",
+    "near_target",
+    "near_target_wide",
 )
 
 SCREEN_RELATIONS = (
@@ -176,7 +184,7 @@ ACTION_TYPES = ("stance", "building", "research", "skills", "items", "item_unequ
                 "move", "diplomacy", "hero_action", "recruit_hero",
                 "building_repair", "building_dismantle",
                 "raise_dead", "recruit_ror", "recruit_blessed",
-                "recruit_imperial") + SCREEN_ACTION_TYPES
+                "recruit_imperial", "cancel_recruit") + SCREEN_ACTION_TYPES
 ATYPE_VOCAB = len(ACTION_TYPES) + 1
 ATYPE_DIM = 24
 

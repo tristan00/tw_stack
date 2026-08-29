@@ -61,8 +61,6 @@ changing or operating it. These rules were set explicitly by the owner; do not r
 
 - Verify, don't assume: after changes run `check.py` (22 offline gates) and `pytest -q`
   (all green is the bar), and verify behavior in the live run, not just syntax.
-- The API test suite assumes a quiet system; single-row mismatches while the run is
-  writing are races — re-run the test before treating it as a failure.
 - `runctl.py` is the entrypoint. Every run parameter must be stated explicitly on its
   command line — there are no defaults and `run_config.RUN` no longer feeds any. Each
   launch's full param set is recorded to `logs/services/last_launch.json`, the only

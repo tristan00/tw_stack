@@ -48,6 +48,10 @@ CHECKS = [
     ("options", ["-m", "advisor.test_options"], False,
      "generate -> gate -> store end to end: nothing gated is stored, and options.py "
      "touches no bus, db or file"),
+    ("memory", ["-m", "advisor.test_memory"], False,
+     "campaign memory: pre-battle outcomes key by tile and province, pending queues "
+     "track as FIFO multisets, and every new model column is emitted by the feature "
+     "builder"),
     ("battle_facts", ["-m", "launcher.test_battle_facts"], False,
      "battle-result screen parses on every archived dump across 10 races -- the one place "
      "scraping is unavoidable, and the resources bar differs per race"),

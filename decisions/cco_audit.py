@@ -19,6 +19,7 @@ ROOTS = {
 TYPE_HINTS = {
     ("CcoCampaignConstructionItem", "BuildingLevelRecordContext"): "CcoBuildingLevelRecord",
     ("CcoCharacterTraitLevelRecord", "TraitRecordContext"): "CcoCharacterTraitRecord",
+    ("CcoPair", "First"): "CcoCampaignUnit",
 }
 
 _LIST_CTX = "CcoContextList"

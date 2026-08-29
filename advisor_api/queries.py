@@ -25,7 +25,7 @@ from advisor_api.models import (
     InterruptOption, InterruptRow, Metric, ModelCard, OfferRow, OutcomeTally, PairOption,
     PhaseSpan, PolicyRow, Rate, RewardPoint, Scope, Service, StartRow, TimelineAction,
     TimelineLane, TimingRow, TrainingEvent, TrialCorr, TrialRow, UcbPick, UcbRow,
-    HistBin, MatrixCell, ProducedCampaign, StartCampaign, StartPickPoint,
+    HistBin, MatrixCell, ProducedCampaign, StartCampaign, StartPickPoint, WindowEdgeRow,
 )
 from decisions import pg_schema as SS
 
@@ -1693,18 +1693,18 @@ def agreement_matrices() -> list:
         gen_cells.append(AgreementMatrixCell(
             a=a, b=b, pair=key, rho_median=_f(g.get("rho_median")),
             decisions=Count(value=n_gen, noun="decisions",
-                            population="comparable, inside the current model generation"),
+                            population="comparable, under the current model version"),
             note=(g.get("gate") if g.get("gate") else
-                  (None if n_gen else "no comparable decision in this generation yet"))))
+                  (None if n_gen else "no comparable decision under this version yet"))))
     when = (time.strftime("%Y-%m-%d %H:%M", time.localtime(gen_from)) if gen_from else None)
     return [
         AgreementMatrix(
-            key="generation", title="current model generation", arms=arms_, cells=gen_cells,
-            detail=("the newest generation window, open since %s (%s)" % (when, gen_trial)
-                    if when else "no generation window recorded yet")),
+            key="generation", title="current model version", arms=arms_, cells=gen_cells,
+            detail=("in force since %s (%s)" % (when, gen_trial)
+                    if when else "no model version recorded yet")),
         AgreementMatrix(
             key="all", title="all time", arms=arms_, cells=all_cells,
-            detail="every comparable decision in this run dir, across every generation"),
+            detail="every comparable decision in this run dir, across every model version"),
     ]
 
 
@@ -1821,11 +1821,11 @@ ALIGNMENT_CAVEAT = None
 
 
 _GENERATION_CAVEAT = (
-    "Which generation ranked a decision is matched by TIMESTAMP, not recorded: nothing in "
-    "the corpus joins a stored ranking to the weights that produced it. Windows come from "
-    "the training ledger's own start and flush times, clipped so a decision lands in "
-    "exactly one. A generation is numbered within its own session, so a session that "
-    "starts on an already-retrained model begins again at g0.")
+    "Which model version ranked a decision is matched by TIMESTAMP, not recorded: nothing "
+    "in the corpus joins a stored ranking to the weights that produced it. Windows come "
+    "from the training ledger's own start and flush times, clipped so a decision lands in "
+    "exactly one. A version runs from one retrain to the next; a session that starts on "
+    "an already-retrained model (g0) is folded into the version trained before it.")
 
 
 @db.timed
@@ -1847,11 +1847,12 @@ def agreement_series(axis: str = "window", pair: str | None = None):
             axis=axis, ambiguous=Count(value=0, noun="decisions", population="ambiguous"),
             empty_reason=_stale_analytics(e), **head)
     scope = Scope(
-        text=("median rank correlation of %s and %s per model generation" % (po.a, po.b)
+        text=("median rank correlation of %s and %s per model version" % (po.a, po.b)
               if axis == "generation"
               else "median rank correlation of %s and %s over the run, newest last"
               % (po.a, po.b)),
-        detail=("windows come from the training ledger's own start and flush times"
+        detail=("one window per retrain, from the training ledger's own start and flush "
+                "times; sessions that start on an already-trained model fold in"
                 if axis == "generation"
                 else "equal-count buckets of decision id -- wall-clock buckets would put "
                      "three decisions beside three hundred, because a retrain takes the "
@@ -1881,11 +1882,11 @@ def agreement_series(axis: str = "window", pair: str | None = None):
             retrained=bool(r["retrained"]), from_ts=_f(r["from_ts"]),
             to_ts=_f(r["to_ts"]), overlapped_by=r["overlapped_by"],
             decisions=Count(value=n, noun="decisions",
-                            population="comparable, inside this generation's window"),
+                            population="comparable, inside this version's window"),
             rho_median=_f(r["rho_median"]), rho_mean=_f(r["rho_mean"]),
             tau_mean=_f(r["tau_mean"]), rbo_mean=_f(r["rbo_mean"]),
             same_top=Rate(n=_i(r["same_top"], 0) or 0, of=n, noun="decisions",
-                          population="comparable, inside this generation's window")))
+                          population="comparable, inside this version's window")))
     drawable = [p for p in pts if p["rho_median"] is not None]
     return AgreementSeriesPage(
         scope=scope, freshness=fresh, axis=axis, is_alignment=(axis == "generation"),
@@ -1894,7 +1895,8 @@ def agreement_series(axis: str = "window", pair: str | None = None):
         bucket_decisions=(_i(pts[0]["bucket_decisions"]) if pts else None),
         ambiguous=Count(value=_i(s.get("ambiguous"), 0) or 0, noun="decisions",
                         population="whose timestamp falls inside more than one training "
-                                   "window, so which generation ranked them is ambiguous"),
+                                   "window, so which model version ranked them is "
+                                   "ambiguous"),
         points=[point(r) for r in pts], generations=gens,
         empty_reason=(None if drawable else
                       ("no bucket has enough comparable decisions for a median to mean "
@@ -2605,6 +2607,39 @@ def ucb_pick_series(con, gains=None, camp_rows=None, produced=None) -> list:
             gini=(round(UCB.gini(n_list), 3) if n_list else None),
             under_min=sum(1 for n_ in n_list if n_ < UCB.MIN_PLAYS)))
     return out
+
+
+WINDOW_EDGE = 10
+
+
+@db.timed
+def ucb_window_edges(con, gains) -> tuple:
+    if len(gains) <= UCB.WINDOW:
+        return [], []
+    leaders = _start_leaders(con)
+    window = gains[:UCB.WINDOW]
+    counts: dict = {}
+    for g in window:
+        k = (g["campaign_map"], g["faction"])
+        counts[k] = counts.get(k, 0) + 1
+
+    def row(g, away):
+        return WindowEdgeRow(
+            campaign=_camp(g["campaign_key"]),
+            leader=leaders.get(((g["campaign_map"] or ""), g["faction"])),
+            faction=_fac(g["faction"]),
+            campaign_map=(_id(ident.campaign_map(g["campaign_map"]))
+                          if g["campaign_map"] else None),
+            played_ts=_f(g["first_ts"]), turns=_i(g.get("turns_reached")),
+            reward=_f(g.get("reward")),
+            start_n=counts.get((g["campaign_map"], g["faction"]), 0),
+            campaigns_away=away)
+
+    dropped = [row(g, i + 1) for i, g in
+               enumerate(gains[UCB.WINDOW:UCB.WINDOW + WINDOW_EDGE])]
+    nxt = [row(g, i + 1) for i, g in
+           enumerate(reversed(window[-WINDOW_EDGE:]))]
+    return dropped, nxt
 
 
 def ucb_picks(series, limit: int = 200, before: int | None = None) -> list:

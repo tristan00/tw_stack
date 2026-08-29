@@ -144,6 +144,10 @@ def _lord_options(cqi, state, world, campaign):
                              None if c.get("state") == "active" else c.get("state"),
                              unit=c["key"], cost=c.get("cost"),
                              recruitment_disabled=c.get("disabled")))
+    for qi, q in enumerate(state.get("pending_queue") or ()):
+        offers.append(_offer("cancel_recruit", "%s@%d" % (q["key"], qi), True, None,
+                             unit=q["key"], queue_index=qi,
+                             turns_left=q.get("turns_left")))
     has_pts = (state.get("skill_points") or 0) >= 1
     offers.extend(_skill_offers(state.get("skills"), has_pts)[0])
     armies, esetts, osetts, rsetts = _lord_targets(world)
@@ -709,12 +713,12 @@ FORBIDDEN_KEYS = frozenset({"button_attack", "button_spectate"})
 MAX_ACTIONS_PER_ENTITY = 6
 
 FACTION_WIDE_CAPS = frozenset(("recruit_lord", "recruit_hero", "research", "rites",
-                               "building_dismantle", "colonize"))
+                               "building_dismantle", "colonize", "cancel_recruit"))
 PER_TURN_CAPS = {"recruit_lord": 1, "recruit_hero": 1, "recruit_unit": 4, "edict": 1,
                  "research": 1, "rites": 1, "diplomacy": 2, "noop": 0, "stance": 1,
                  "hero_action": 3, "building_dismantle": 0, "raise_dead": 4,
                  "recruit_ror": 1, "recruit_blessed": 4, "recruit_imperial": 1,
-                 "colonize": 1, "item_unequip": 1}
+                 "colonize": 1, "item_unequip": 1, "cancel_recruit": 1}
 COSTS_MOVEMENT = frozenset(("move", "attack_army", "attack_settlement", "colonize",
                             "garrison", "leave_garrison", "hero_action"))
 
@@ -723,10 +727,12 @@ FILLS_THE_ARMY = frozenset(("recruit_unit", "raise_dead", "recruit_ror",
                             "recruit_blessed", "recruit_imperial"))
 
 ATTACK_PAIR_TYPES = frozenset(("attack_army", "attack_settlement"))
-ATTACK_PAIR_CAP = 1
+ATTACK_PAIR_CAP = 2
 DIPLO_TARGET_CAP = 1
 DIPLO_GIFT_CAP = 1
 TURN_ACTION_CAP = 15
+END_TURN_SPACERS = frozenset(("attack_army", "attack_settlement", "colonize"))
+POST_ATTACK_END_TURN_GAP = 2
 
 
 def _is_gift(key):
@@ -756,6 +762,7 @@ class Gate:
         self.type_actions = {}
         self.pair_actions = {}
         self.gift_actions = 0
+        self.recent = []
         self.last_drops = []
 
     def new_turn(self):
@@ -766,6 +773,7 @@ class Gate:
         self.type_actions.clear()
         self.pair_actions.clear()
         self.gift_actions = 0
+        del self.recent[:]
 
     def retire(self, context_kind, context_id):
         self.retired.add((context_kind, str(context_id)))
@@ -774,6 +782,8 @@ class Gate:
         k = (pick["context_kind"], str(pick["context_id"]))
         tk = _cap_key(k[0], k[1], pick["action_type"])
         self.type_actions[tk] = self.type_actions.get(tk, 0) + 1
+        self.recent.append(pick["action_type"])
+        del self.recent[:-8]
         if pick["action_type"] in ATTACK_PAIR_TYPES or pick["action_type"] == "diplomacy":
             pk = _pair_key(k[0], k[1], pick["action_type"], pick["key"])
             self.pair_actions[pk] = self.pair_actions.get(pk, 0) + 1
@@ -805,6 +815,10 @@ class Gate:
         k = (ck, str(cid))
         if actions_taken >= TURN_ACTION_CAP and at != "end_turn":
             return "turn_action_cap:%d" % TURN_ACTION_CAP
+        if (at == "end_turn" and actions_taken < TURN_ACTION_CAP
+                and any(a in END_TURN_SPACERS
+                        for a in self.recent[-POST_ATTACK_END_TURN_GAP:])):
+            return "post_attack_gap:%d" % POST_ATTACK_END_TURN_GAP
         if not o.get("available"):
             return o.get("gate") or "no_gate_recorded"
         if self._no_movement_left(o.get("_state"), at):
