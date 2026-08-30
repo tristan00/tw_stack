@@ -48,7 +48,6 @@ const CURRENT_GROWTH_BASELINE = 'first_decision_snapshot->peak'
 
 const MIX_ARMS: { key: string; model: boolean; cls: string }[] = [
   { key: 'greedy_catboost', model: true, cls: 'bg-cat' },
-  { key: 'marwil_gnn', model: true, cls: 'bg-gnn' },
   { key: 'greedy_gnn', model: true, cls: 'bg-ggnn' },
   { key: 'random', model: false, cls: 'bg-dim' },
   { key: 'ruleset', model: false, cls: 'bg-warn' },
