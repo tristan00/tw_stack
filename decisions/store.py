@@ -378,20 +378,24 @@ class DecisionStore:
         chosen = rec.get("chosen") or {}
         pid = self.con.execute(
             "INSERT INTO ucb_picks(ts,c,total_plays,campaign_map,faction,n,mean,explore,"
-            "score,tied,blend,entropy,std) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+            "score,tied,blend,entropy,std,adjust)"
+            " VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
             " RETURNING pick_id",
             (rec.get("ts") or time.time(), rec.get("c"), _int_or_none(rec.get("total_plays")),
              chosen.get("campaign_map"), chosen.get("faction"),
              _int_or_none(chosen.get("n")), chosen.get("mean"), chosen.get("explore"),
              chosen.get("score"), _int_or_none(rec.get("tied")),
-             chosen.get("blend"), chosen.get("entropy"), chosen.get("std"))).fetchone()[0]
+             chosen.get("blend"), chosen.get("entropy"), chosen.get("std"),
+             _real_or_none(chosen.get("adjust")))).fetchone()[0]
         with self.con.cursor() as cur:
             cur.executemany(
                 "INSERT INTO ucb_pick_rows(pick_id,rank,campaign_map,faction,n,mean,explore,"
-                "score,chosen,blend,entropy,std) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                "score,chosen,blend,entropy,std,adjust)"
+                " VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 [(pid, i + 1, r.get("campaign_map"), r.get("faction"),
                   _int_or_none(r.get("n")), r.get("mean"), r.get("explore"), r.get("score"),
-                  1 if r.get("chosen") else 0, r.get("blend"), r.get("entropy"), r.get("std"))
+                  1 if r.get("chosen") else 0, r.get("blend"), r.get("entropy"), r.get("std"),
+                  _real_or_none(r.get("adjust")))
                  for i, r in enumerate(rows)])
         self.con.commit()
         return pid

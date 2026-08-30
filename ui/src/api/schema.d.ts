@@ -1890,6 +1890,8 @@ export interface components {
             explore?: number | null;
             /** Score */
             score?: number | null;
+            /** Adjust */
+            adjust?: number | null;
             /**
              * Chosen
              * @default false
@@ -1926,6 +1928,8 @@ export interface components {
             explore?: number | null;
             /** Score */
             score?: number | null;
+            /** Adjust */
+            adjust?: number | null;
             /** Rank */
             rank?: number | null;
             /**
@@ -2236,6 +2240,8 @@ export interface components {
             explore?: number | null;
             /** Score */
             score?: number | null;
+            /** Adjust */
+            adjust?: number | null;
             /** Margin */
             margin?: number | null;
             /**
@@ -2346,6 +2352,8 @@ export interface components {
             explore?: number | null;
             /** Score */
             score?: number | null;
+            /** Adjust */
+            adjust?: number | null;
             /** Delta */
             delta?: number | null;
             /**
