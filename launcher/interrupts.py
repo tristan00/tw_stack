@@ -729,8 +729,21 @@ def handle_results(bus):
         last = target
         t0 = time.time()
         roots_before = set(roots(bus))
-        clicked = _click(bus, ctrls[target], settle=2.5)
-        moved = set(roots(bus)) != roots_before
+        if is_captive_option(target):
+            settled = {}
+
+            def _fates_gone():
+                if not any(is_captive_option(c)
+                           for c in live_control_ids(bus, "popup_battle_results")):
+                    settled["gone"] = True
+                    return True
+                return False
+
+            clicked = _click(bus, ctrls[target], settle=1.5, until=_fates_gone)
+            moved = bool(settled.get("gone")) or set(roots(bus)) != roots_before
+        else:
+            clicked = _click(bus, ctrls[target], settle=2.5)
+            moved = set(roots(bus)) != roots_before
         if not clicked and not moved and misses < 1:
             misses += 1
             sys.stderr.write("interrupts: %s did not resolve at click time (results panel "
