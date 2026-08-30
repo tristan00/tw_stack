@@ -72,6 +72,7 @@ def _attack_army_confirm(bus, ctx, pick, before):
 
 
 def _attack_army_doomed(bus, ctx, pick, before, after):
+    before.setdefault("doom_t0", time.time())
     if not after or after.get("pre_battle") is True:
         before["doom_streak"] = 0
         return None
@@ -79,7 +80,7 @@ def _attack_army_doomed(bus, ctx, pick, before, after):
         before["doom_streak"] = 0
         return None
     before["doom_streak"] = before.get("doom_streak", 0) + 1
-    if before["doom_streak"] < 2:
+    if before["doom_streak"] < 2 or time.time() - before["doom_t0"] < _DOOM_FLOOR_S:
         return None
     return ("no pre-battle and acted still %r after %d polls -- the attack never landed"
             % (after.get("acted"), before["doom_streak"]))
@@ -90,7 +91,7 @@ register("attack_army", {
     "snapshot": _attack_army_snapshot, "prechecks": [],
     "execute": _attack_army_execute, "confirm": _attack_army_confirm,
     "doomed": _attack_army_doomed,
-    "timeout_s": 20.0, "poll_s": 2.0, "retryable": False,
+    "timeout_s": 6.0, "poll_s": 0.5, "retryable": False,
 })
 
 
@@ -134,7 +135,7 @@ def _attack_sett_confirm(bus, ctx, pick, before):
 
 
 _SETT_DOOM_POLLS = 2
-_DOOM_FLOOR_S = 2.8
+_DOOM_FLOOR_S = 2.0
 
 
 def _attack_sett_doomed(bus, ctx, pick, before, after):
@@ -166,7 +167,7 @@ register("attack_settlement", {
     "snapshot": _attack_sett_snapshot, "prechecks": [],
     "execute": _attack_sett_execute, "confirm": _attack_sett_confirm,
     "doomed": _attack_sett_doomed,
-    "timeout_s": 20.0, "poll_s": 2.0, "retryable": False,
+    "timeout_s": 6.0, "poll_s": 0.5, "retryable": False,
 })
 
 
@@ -175,7 +176,7 @@ register("colonize", {
     "snapshot": _attack_sett_snapshot, "prechecks": [],
     "execute": _attack_sett_execute, "confirm": _attack_sett_confirm,
     "doomed": _attack_sett_doomed,
-    "timeout_s": 20.0, "poll_s": 2.0, "retryable": False,
+    "timeout_s": 6.0, "poll_s": 0.5, "retryable": False,
 })
 
 
@@ -324,5 +325,5 @@ register("move", {
     "layer": "cm", "signal": "position_changed",
     "snapshot": _move_snapshot, "prechecks": [],
     "execute": _move_execute, "confirm": _move_confirm,
-    "timeout_s": 6.0, "poll_s": 1.0, "retryable": False,
+    "timeout_s": 3.0, "poll_s": 0.25, "retryable": False,
 })
