@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { DataTable, type Col } from '@/components/DataTable'
 import {
   Bar,
@@ -30,6 +30,7 @@ import {
   type Schemas,
   type TrainingPage,
 } from '@/lib/api'
+import { isRetiredArm } from '@/lib/arms'
 import { n } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
@@ -89,7 +90,7 @@ function OnDisk() {
     <div className="space-y-6">
       <Section title="models on disk" scope={data.scope}>
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {data.cards.map((c) => (
+          {data.cards.filter((c) => !isRetiredArm(c.name)).map((c) => (
             <Card key={c.name} className={cn('p-3.5', c.state === 'bad' && 'border-bad')}>
               <div className="flex items-baseline justify-between gap-2">
                 <span className="text-sm font-semibold">{c.name}</span>
@@ -113,7 +114,7 @@ function OnDisk() {
 
       <Section title="fit configuration" scope={{ text: 'read from the model metadata on disk' }}>
         <div className="grid gap-3 md:grid-cols-2">
-          {data.fit.map((f) => (
+          {data.fit.filter((f) => !isRetiredArm(f.family)).map((f) => (
             <Card key={f.family} className="p-3.5">
               <div className="text-sm font-semibold">{f.family}</div>
               <div className="text-dim text-2xs">{f.role}</div>
@@ -147,6 +148,7 @@ function Forcing() {
   )
   if (error) return <ErrorState error={error} onRetry={reload} />
   if (loading || !data) return <Skeleton rows={6} />
+  const tiles = data.tiles.filter((t) => !isRetiredArm(t.model))
   return (
     <Section title="what each model wants to do" scope={data.scope}>
       <Card className="mb-3 flex flex-wrap items-center gap-3 px-3 py-2">
@@ -166,11 +168,11 @@ function Forcing() {
         <CountText count={data.decisions} />
       </Card>
       {}
-      {!data.tiles.length ? (
+      {!tiles.length ? (
         <EmptyState what="no model arm has picked anything yet" why={data.empty_reason} />
       ) : (
         <div className="grid gap-3 md:grid-cols-2">
-          {data.tiles.map((t) => (
+          {tiles.map((t) => (
             <Card key={t.model} className="p-3.5">
               <div className="flex items-baseline justify-between gap-2">
                 <span className="text-sm font-semibold">{t.model}</span>
@@ -235,8 +237,15 @@ function Agreement() {
   const { data, error, loading, reload } = useApi<AgreementPage>(
     `/api/models/agreement${pair ? `?pair=${encodeURIComponent(pair)}` : ''}`,
   )
+  useEffect(() => {
+    if (!pair && data && (isRetiredArm(data.a) || isRetiredArm(data.b))) {
+      const p = (data.pairs ?? []).find((q) => !isRetiredArm(q.a) && !isRetiredArm(q.b))
+      if (p) setPair(p.key)
+    }
+  }, [pair, data])
   if (error) return <ErrorState error={error} onRetry={reload} />
   if (loading || !data) return <Skeleton rows={6} />
+  const pairs = (data.pairs ?? []).filter((p) => !isRetiredArm(p.a) && !isRetiredArm(p.b))
   const a = data.a
   const b = data.b
 
@@ -355,7 +364,12 @@ function Agreement() {
               <Card key={m.key} className="p-3.5">
                 <div className="text-sm font-semibold">{m.title}</div>
                 {m.detail && <div className="text-dim mb-2 text-2xs">{m.detail}</div>}
-                <RhoMatrix arms={m.arms} cells={m.cells ?? []} selected={data.pair} onSelect={setPair} />
+                <RhoMatrix
+                  arms={m.arms.filter((x) => !isRetiredArm(x))}
+                  cells={(m.cells ?? []).filter((cell) => !isRetiredArm(cell.a) && !isRetiredArm(cell.b))}
+                  selected={data.pair}
+                  onSelect={setPair}
+                />
               </Card>
             ))}
           </div>
@@ -366,7 +380,7 @@ function Agreement() {
         scope={data.scope}
         right={
           <div className="flex items-center gap-3">
-            <PairPicker pairs={data.pairs ?? []} value={data.pair} onChange={setPair} />
+            <PairPicker pairs={pairs} value={data.pair} onChange={setPair} />
             <Help>
               Spearman rho compares the two arms' whole orderings of one decision, not just the
               action that was taken. Near +1 they are ranking on the same thing and the second
@@ -452,7 +466,7 @@ function Agreement() {
           }
         >
           <DataTable
-            rows={data.rows}
+            rows={data.rows.filter((r) => !isRetiredArm(r.picked_by.raw))}
             cols={cols}
             rowId={(r) => r.picked_by.raw}
             dense
@@ -590,8 +604,15 @@ function Drift() {
   const { data, error, loading, reload } = useApi<AgreementSeriesPage>(
     `/api/models/agreement/series?axis=${axis}${pair ? `&pair=${encodeURIComponent(pair)}` : ''}`,
   )
+  useEffect(() => {
+    if (!pair && data && (isRetiredArm(data.a) || isRetiredArm(data.b))) {
+      const p = (data.pairs ?? []).find((q) => !isRetiredArm(q.a) && !isRetiredArm(q.b))
+      if (p) setPair(p.key)
+    }
+  }, [pair, data])
   if (error) return <ErrorState error={error} onRetry={reload} />
   if (loading || !data) return <Skeleton rows={6} />
+  const pairs = (data.pairs ?? []).filter((p) => !isRetiredArm(p.a) && !isRetiredArm(p.b))
   const points = data.points ?? []
   const generations = data.generations ?? []
   const drawable = points.some((p) => p.rho_median !== null && p.rho_median !== undefined)
@@ -602,7 +623,7 @@ function Drift() {
         scope={data.scope}
         right={
           <div className="flex flex-wrap items-center gap-3">
-            <PairPicker pairs={data.pairs ?? []} value={data.pair} onChange={setPair} />
+            <PairPicker pairs={pairs} value={data.pair} onChange={setPair} />
             <div className="flex items-center gap-1">
             {(['window', 'generation'] as const).map((a) => (
               <button
@@ -761,7 +782,7 @@ function Correlations() {
           <div key={t.label}>
             <h3 className="mb-1.5 text-sm font-semibold">{t.label}</h3>
             <DataTable
-              rows={t.rows}
+              rows={t.rows.filter((r) => !isRetiredArm(r.arm.raw))}
               cols={corrCols}
               rowId={(r) => `${t.label}-${r.arm.raw}`}
               dense

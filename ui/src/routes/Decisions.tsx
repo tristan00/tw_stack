@@ -23,6 +23,7 @@ import {
   type Schemas,
   type TimelinePage,
 } from '@/lib/api'
+import { isRetiredArm } from '@/lib/arms'
 import { clock, ms, n, stateFill } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
@@ -414,7 +415,9 @@ function Menus() {
 
   const scorers = Array.from(
     new Set(data.coverage.flatMap((c) => Object.keys(c.scored ?? {}))),
-  ).sort()
+  )
+    .filter((arm) => !isRetiredArm(arm))
+    .sort()
   const covCols: Col<ArmCoverage>[] = [
     { key: 'screen', label: 'screen', value: (r) => r.screen.label, render: (r) => r.screen.label },
     { key: 'rows', label: 'seen', align: 'right', value: (r) => r.rows, render: (r) => n(r.rows) },
