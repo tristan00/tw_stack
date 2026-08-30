@@ -1,11 +1,34 @@
 from __future__ import annotations
 
+import json
 import math
+import os
+
+import common
 
 WINDOW = 1000
 MIN_PLAYS = 2
 KEYS = ("mean", "entropy", "std")
 EMPTY = {"n": 0, "mean": 0.0, "entropy": 0.0, "std": 0.0}
+ADJUST_FILE = "ucb_adjust.json"
+
+
+def adjust_path():
+    for d in (common.RULES_DIR, common.RULES_DIR_REPO):
+        p = os.path.join(d, ADJUST_FILE)
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def load_adjustments():
+    p = adjust_path()
+    if not p:
+        return {}, None
+    with open(p, encoding="utf-8") as fh:
+        data = json.load(fh)
+    adj = {str(k): float(v) for k, v in (data.get("adjustments") or {}).items()}
+    return {k: v for k, v in adj.items() if v}, p
 
 
 def entropy_bits(rewards):
@@ -52,12 +75,12 @@ def explore_term(c, total, n):
     return c * math.sqrt(math.log(max(1, total)) / n)
 
 
-def score(d, c, total):
+def score(d, c, total, adjust=0.0):
     if d["n"] < MIN_PLAYS:
         return 0.0, float("inf"), float("inf")
     b = blend(d)
     e = explore_term(c, total, d["n"])
-    return b, e, b + e
+    return b, e, b + e + adjust
 
 
 def gini(values):

@@ -36,6 +36,7 @@ const trajCols: Col<StartPickPoint>[] = [
   { key: 'mean', label: 'mean', align: 'right', value: (r) => r.mean ?? 0, render: (r) => dash(r.mean, 2) },
   { key: 'blend', label: 'blend', align: 'right', value: (r) => r.blend ?? undefined, sortUndefined: 'last', render: (r) => signed(r.blend) },
   { key: 'explore', label: 'explore', align: 'right', value: (r) => r.explore ?? Number.MAX_SAFE_INTEGER, render: (r) => <span className="num">{inf(r.explore)}</span> },
+  { key: 'adjust', label: 'adj', align: 'right', value: (r) => r.adjust ?? 0, render: (r) => (r.adjust ? signed(r.adjust, 1) : <span className="text-dim">—</span>) },
   { key: 'score', label: 'score', align: 'right', value: (r) => r.score ?? Number.MAX_SAFE_INTEGER, render: (r) => <span className="num">{inf(r.score)}</span> },
   { key: 'chosen', label: 'chosen', value: (r) => (r.chosen ? 1 : 0), render: (r) => (r.chosen ? <Chip state="ok">chosen</Chip> : <span className="text-dim">—</span>) },
 ]
@@ -76,7 +77,7 @@ export function StartDetail() {
     { label: 'best reward', value: s.best, sub: s.zero_rate?.of ? `${((100 * s.zero_rate.n) / s.zero_rate.of).toFixed(0)}% zero` : undefined },
     { label: 'blend', value: s.blend == null ? null : `${s.blend >= 0 ? '+' : ''}${n(s.blend, 3)}` },
     { label: 'explore', value: s.n_window ? inf(s.explore) : '∞' },
-    { label: 'score', value: s.in_pool ? inf(s.score) : null, sub: s.rank == null ? undefined : `rank #${s.rank}` },
+    { label: 'score', value: s.in_pool ? inf(s.score) : null, sub: [s.rank == null ? null : `rank #${s.rank}`, s.adjust ? `adj ${s.adjust > 0 ? '+' : ''}${n(s.adjust, 1)}` : null].filter(Boolean).join(' · ') || undefined },
     { label: 'UCB picks', value: s.picks, sub: s.picks_ago == null ? 'never chosen' : `last ${s.picks_ago} picks ago` },
     { label: 'avg turns', value: s.avg_turns == null ? null : n(s.avg_turns, 1), sub: s.sec_per_turn == null ? undefined : `${n(s.sec_per_turn, 1)} s/turn` },
     { label: 'confirmed', value: s.confirm_rate?.of ? `${((100 * s.confirm_rate.n) / s.confirm_rate.of).toFixed(0)}%` : null, sub: s.confirm_rate ? `${n(s.confirm_rate.n)}/${n(s.confirm_rate.of)} actions` : undefined },

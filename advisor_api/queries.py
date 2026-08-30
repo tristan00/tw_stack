@@ -549,16 +549,19 @@ def ucb_context(con, gains=None) -> dict:
     total = max(1, sum(d["n"] for d in stats.values()))
     k = _f(run_config.RUN.get("ucb"))
     c = None if k is None else k * scale
+    adjust, adjust_path = UCB.load_adjustments()
     pool = _pool()
     scored = {}
     for key in set(pool) | set(stats):
         d = stats.get(key) or dict(UCB.EMPTY)
         played = d["n"] >= UCB.MIN_PLAYS
+        a = adjust.get(key[1], 0.0)
         if c is None:
             b, e, s = (UCB.blend(d) if played else None), None, None
         else:
-            b, e, s = UCB.score(d, c, total)
-        scored[key] = {"d": d, "blend": b if played else None, "explore": e, "score": s}
+            b, e, s = UCB.score(d, c, total, a)
+        scored[key] = {"d": d, "blend": b if played else None, "explore": e, "score": s,
+                       "adjust": a}
     order = sorted(pool, key=lambda k: (
         -(scored[k]["score"] if scored[k]["score"] is not None else float("-inf")),
         pool[k].get("file") or ""))
@@ -574,7 +577,7 @@ def ucb_context(con, gains=None) -> dict:
         plays_ago.setdefault((g["campaign_map"], g["faction"]), i)
     top = max([int(round(max(v))) for v in rewards.values()] + [0])
     return {"rewards": rewards, "stats": stats, "total": total, "c": c, "k": k,
-            "scale": scale,
+            "scale": scale, "adjust": adjust, "adjust_path": adjust_path,
             "pool": pool, "scored": scored, "rank": rank, "n_picks": len(picks),
             "pick_count": pick_count, "last_pick": last_pick, "plays_ago": plays_ago,
             "top_reward": top}
@@ -653,7 +656,7 @@ def starts_rows(con, rows=None, cx=None, gains=None) -> list:
         mkey, fkey = key
         b = per.get(key) or {"n": 0, "turns": [], "span_min": 0.0, "att": 0, "conf": 0}
         sc = cx["scored"].get(key) or {"d": dict(UCB.EMPTY), "blend": None,
-                                       "explore": None, "score": None}
+                                       "explore": None, "score": None, "adjust": 0.0}
         d = sc["d"]
         g = gains.get(key)
         rewards = cx["rewards"].get(key) or []
@@ -670,6 +673,7 @@ def starts_rows(con, rows=None, cx=None, gains=None) -> list:
             std=round(d["std"], 4) if d["n"] else None,
             entropy=round(d["entropy"], 4) if d["n"] else None,
             blend=fin(sc["blend"]), explore=fin(sc["explore"]), score=fin(sc["score"]),
+            adjust=(sc.get("adjust") or None),
             rank=cx["rank"].get(key),
             picks=cx["pick_count"].get(key, 0),
             picks_ago=(cx["n_picks"] - 1 - cx["last_pick"][key]
@@ -762,6 +766,11 @@ def starts_page_extras(con, cx=None, gains=None) -> dict:
                sub="scored infinite, played first",
                state="warn" if under else "neutral"),
         Metric(label="C", value=cx["c"], sub="explore = C·sqrt(ln plays / n)"),
+        Metric(label="manual adjust",
+               value=sum(1 for key in cx["pool"] if cx["adjust"].get(key[1])),
+               sub=("/".join((cx["adjust_path"] or "").replace("\\", "/").split("/")[-2:])
+                    if cx["adjust_path"] else "no %s" % UCB.ADJUST_FILE),
+               state="neutral"),
     ]
     return {"tiles": tiles, "maps": [_id(ident.campaign_map(m)) for m in maps if m],
             "reward_bins": _hist(window, "reward", cx["top_reward"]),
@@ -807,19 +816,20 @@ def start_detail(con, mkey: str, fkey: str):
     traj = []
     for r in con.execute(
             "SELECT r.pick_id pick_id, p.ts ts, p.c c, r.rank rank, r.n n, r.mean mean,"
-            " r.blend blend, r.explore explore, r.score score, r.chosen chosen"
+            " r.blend blend, r.explore explore, r.score score, r.adjust adjust,"
+            " r.chosen chosen"
             " FROM ucb_pick_rows r JOIN ucb_picks p ON p.pick_id = r.pick_id"
             " WHERE r.campaign_map = %s AND r.faction = %s ORDER BY r.pick_id",
             (mkey, fkey)):
         score, explore = _f(r["score"]), _f(r["explore"])
         blend = _f(r["blend"])
         if blend is None and score is not None and explore is not None:
-            blend = round(score - explore, 4)
+            blend = round(score - explore - (_f(r["adjust"]) or 0.0), 4)
         traj.append(StartPickPoint(
             pick_id=_i(r["pick_id"], 0), ts=_f(r["ts"]), c=_f(r["c"]),
             rank=_i(r["rank"], 0), ranked=counts.get(_i(r["pick_id"], 0), 0),
             n=_i(r["n"], 0), mean=_f(r["mean"]), blend=blend, explore=explore,
-            score=score, chosen=bool(r["chosen"])))
+            score=score, adjust=_f(r["adjust"]), chosen=bool(r["chosen"])))
     pop = [0] * (cx["top_reward"] + 1)
     for vals in cx["rewards"].values():
         for i, c in enumerate(_bins(vals, cx["top_reward"])):
@@ -2577,7 +2587,7 @@ def ucb_pick_series(con, gains=None, camp_rows=None, produced=None) -> list:
         score, explore = _f(r["score"]), _f(r["explore"])
         blend = _f(r.get("blend"))
         if blend is None and score is not None and explore is not None:
-            blend = round(score - explore, 4)
+            blend = round(score - explore - (_f(r.get("adjust")) or 0.0), 4)
         n_list = ns.get(pid) or []
         prod = None
         ck = produced.get(pid)
@@ -2597,7 +2607,7 @@ def ucb_pick_series(con, gains=None, camp_rows=None, produced=None) -> list:
                           if r["campaign_map"] else None),
             n=_i(r["n"], 0), mean=_f(r["mean"]), blend=blend,
             entropy=_f(r.get("entropy")), std=_f(r.get("std")),
-            explore=explore, score=score,
+            explore=explore, score=score, adjust=_f(r.get("adjust")),
             margin=(round(s1 - s2, 4) if s1 is not None and s2 is not None else None),
             tied=_i(r["tied"], 0), starts=len(n_list),
             repeat=bool(i > 0 and keys[i - 1] == key), produced=prod,
@@ -2696,7 +2706,7 @@ def ucb_pick_rows(con, pick_id: int) -> tuple:
         score, explore = _f(r["score"]), _f(r["explore"])
         blend = _f(r.get("blend"))
         if blend is None and score is not None and explore is not None:
-            blend = round(score - explore, 4)
+            blend = round(score - explore - (_f(r.get("adjust")) or 0.0), 4)
         rows.append(UcbRow(
             leader=leaders.get(((r["campaign_map"] or ""), r["faction"])),
             rank=_i(r["rank"], 0), faction=_fac(r["faction"]),
@@ -2704,7 +2714,7 @@ def ucb_pick_rows(con, pick_id: int) -> tuple:
                           if r["campaign_map"] else None),
             n=_i(r["n"], 0), mean=_f(r["mean"]), entropy=_f(r.get("entropy")),
             std=_f(r.get("std")),
-            blend=blend, explore=explore, score=score,
+            blend=blend, explore=explore, score=score, adjust=_f(r.get("adjust")),
             delta=(round(score - top_score, 4) if score is not None
                    and top_score is not None else None),
             chosen=bool(r["chosen"])))

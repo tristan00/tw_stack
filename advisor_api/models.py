@@ -183,6 +183,7 @@ class UcbPick(BaseModel):
     std: float | None = None
     explore: float | None = None
     score: float | None = None
+    adjust: float | None = None
     margin: float | None = None
     tied: int = 0
     starts: int = 0
@@ -207,6 +208,7 @@ class UcbRow(BaseModel):
     blend: float | None = None
     explore: float | None = None
     score: float | None = None
+    adjust: float | None = None
     delta: float | None = None
     chosen: bool = False
 
@@ -262,6 +264,7 @@ class StartRow(BaseModel):
     blend: float | None = None
     explore: float | None = None
     score: float | None = None
+    adjust: float | None = None
     rank: int | None = None
     picks: int = 0
     picks_ago: int | None = None
@@ -357,6 +360,7 @@ class StartPickPoint(BaseModel):
     blend: float | None = None
     explore: float | None = None
     score: float | None = None
+    adjust: float | None = None
     chosen: bool = False
 
 

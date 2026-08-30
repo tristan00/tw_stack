@@ -439,6 +439,9 @@ def test_no_column_is_empty_in_every_row():
         ("$.picks", "std"):
             "the selector stores std per pick only from the blend formula onward; a "
             "corpus of older picks carries none",
+        ("$.picks", "adjust"):
+            "the selector stores the manual adjust per pick only from the "
+            "rules/ucb_adjust.json feature onward; a corpus of older picks carries none",
     }
     responses = _all_responses()
     bad = []

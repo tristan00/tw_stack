@@ -147,7 +147,8 @@ def get_picks(limit: int = 2000, before: int | None = None) -> UcbPicksPage:
     dropped, nxt = q.ucb_window_edges(con, gains)
     return UcbPicksPage(
         scope=_scope("one row per UCB start pick, newest first",
-                     "score = blend + explore, blend = (mean + H + std) / 3"),
+                     "score = blend + explore + adj, blend = (mean + H + std) / 3, "
+                     "adj = the manual per-faction delta in rules/ucb_adjust.json"),
         window=q.UCB.WINDOW, min_plays=q.UCB.MIN_PLAYS, pool=len(cx["pool"]),
         tiles=q.ucb_tiles(series, cx), picks=picks,
         dropped_out=dropped, next_out=nxt,
@@ -162,8 +163,8 @@ def get_pick(pick_id: int) -> UcbPickPage:
         raise HTTPException(status_code=404, detail="no UCB pick %d" % pick_id)
     return UcbPickPage(
         scope=_scope("every start the selector ranked at this pick, best score first",
-                     "score = blend + C*sqrt(ln(plays)/n); under %d plays the score is "
-                     "infinite and shown without one" % q.UCB.MIN_PLAYS),
+                     "score = blend + C*sqrt(ln(plays)/n) + adj; under %d plays the score "
+                     "is infinite and shown without one" % q.UCB.MIN_PLAYS),
         pick=pick, under_min=under, rows=rows)
 
 

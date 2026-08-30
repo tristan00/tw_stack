@@ -139,6 +139,7 @@ const pickCols: Col<UcbPick>[] = [
   { key: 'std', label: 'std', group: 'blend', align: 'right', value: (r) => r.std ?? undefined, sortUndefined: 'last', render: (r) => dash(r.std, 2) },
   { key: 'blend', label: 'blend', group: 'winning score', align: 'right', value: (r) => r.blend ?? undefined, sortUndefined: 'last', render: (r) => dash(r.blend, 3) },
   { key: 'explore', label: 'explore', group: 'winning score', align: 'right', value: (r) => r.explore ?? Number.MAX_SAFE_INTEGER, render: (r) => <span className="num">{inf(r.explore)}</span> },
+  { key: 'adjust', label: 'adj', group: 'winning score', align: 'right', value: (r) => r.adjust ?? 0, render: (r) => (r.adjust ? signed(r.adjust, 1) : <span className="text-dim">—</span>) },
   { key: 'score', label: 'score', group: 'winning score', align: 'right', value: (r) => r.score ?? Number.MAX_SAFE_INTEGER, render: (r) => <strong className="num">{inf(r.score)}</strong> },
   { key: 'margin', label: 'margin', unit: 'to #2', group: 'winning score', align: 'right', value: (r) => r.margin ?? undefined, sortUndefined: 'last', render: (r) => dash(r.margin, 3) },
   { key: 'tied', label: 'tied', align: 'right', value: (r) => r.tied, render: (r) => (r.tied > 1 ? <Chip state="warn">{n(r.tied)}</Chip> : <span className="num">{r.tied}</span>) },
@@ -160,6 +161,7 @@ const rankCols: Col<UcbRow>[] = [
   { key: 'std', label: 'std', align: 'right', value: (r) => r.std ?? undefined, sortUndefined: 'last', render: (r) => dash(r.std, 2) },
   { key: 'blend', label: 'blend', align: 'right', value: (r) => r.blend ?? undefined, sortUndefined: 'last', render: (r) => dash(r.blend, 3) },
   { key: 'explore', label: 'explore', align: 'right', value: (r) => r.explore ?? Number.MAX_SAFE_INTEGER, render: (r) => <span className="num">{inf(r.explore)}</span> },
+  { key: 'adjust', label: 'adj', align: 'right', value: (r) => r.adjust ?? 0, render: (r) => (r.adjust ? signed(r.adjust, 1) : <span className="text-dim">—</span>) },
   { key: 'score', label: 'score', align: 'right', value: (r) => r.score ?? Number.MAX_SAFE_INTEGER, render: (r) => (r.chosen ? <strong className="num">{inf(r.score)}</strong> : <span className="num">{inf(r.score)}</span>) },
   { key: 'delta', label: 'Δ to #1', align: 'right', value: (r) => r.delta ?? undefined, sortUndefined: 'last', render: (r) => signed(r.delta) },
 ]
