@@ -362,6 +362,31 @@ class Executor:
         sys.stderr.write("executor: disable_ui_hotkeys -> %s\n" % (out,))
         return out
 
+    LOCOMOTION_SPEED_MULT = 4.0
+
+    _LUA_LOCO_BOOST = (
+        "local m=%s "
+        "local ok,res=pcall(function() "
+        "local f=cm:get_local_faction(true) "
+        "if not f then local fl=cm:model():world():faction_list() "
+        "for i=0,fl:num_items()-1 do local x=fl:item_at(i) "
+        "if x:is_human() then f=x break end end end "
+        "if not f then return 'no-faction' end "
+        "local gi=cm.game_interface or cm "
+        "local l=f:character_list() local n=0 "
+        "for i=0,l:num_items()-1 do "
+        "gi:set_character_path_traversal_speed_multiplier(l:item_at(i),m) n=n+1 end "
+        "return 'boosted='..n..' mult='..m end) "
+        "if ok then return tostring(res) end return 'ERR '..tostring(res)")
+
+    def boost_locomotion(self, mult=None):
+        m = float(mult if mult is not None else self.LOCOMOTION_SPEED_MULT)
+        out = self._eval(self._LUA_LOCO_BOOST % m, timeout=10.0)
+        if out is None or str(out).startswith("ERR") or str(out) == "no-faction":
+            sys.stderr.write("executor: boost_locomotion FAILED -> %s\n" % (out,))
+            return None
+        return out
+
     def kill_game(self):
         import subprocess
         import bus as _bus
