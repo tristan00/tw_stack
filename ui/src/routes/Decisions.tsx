@@ -110,6 +110,7 @@ const logCols: Col<DecisionRow>[] = [
     label: 'rank',
     align: 'right',
     group: 'marwil_gnn',
+    optional: true,
     value: (r) => r.gnn_rank ?? 0,
     render: (r) => (r.gnn_rank === null || r.gnn_rank === undefined ? '—' : r.gnn_rank),
   },
@@ -397,11 +398,6 @@ function Menus() {
                   cat {o.exploit.toFixed(2)}
                 </span>
               )}
-              {o.gnn !== null && o.gnn !== undefined && (
-                <span className="num text-gnn ml-1" title="marwil_gnn impact">
-                  gnn {o.gnn.toFixed(3)}
-                </span>
-              )}
             </span>
           ))}
           {!(r.options ?? []).length && <span className="text-dim">no options recorded</span>}
@@ -475,7 +471,7 @@ function Menus() {
         scope={{
           text: 'how often each arm scored a screen, and how often they agreed',
           detail:
-            'only greedy_catboost has an interrupt model now; marwil_gnn scores here are from runs before its interrupt model was retired',
+            'only greedy_catboost has an interrupt model now; scores from retired arms are from older runs',
         }}
       >
         <DataTable rows={data.coverage} cols={covCols} rowId={(r) => r.screen.raw} dense emptyWhat="no screen scored yet" />
