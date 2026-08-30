@@ -238,6 +238,17 @@ def _record_launch(vals):
         sys.stderr.write("runctl: could not record the launch -> %s\n" % repr(e)[:80])
 
 
+def version_unbumped(info):
+    try:
+        prev = str(json.load(open(LAUNCH_RECORD, encoding="utf-8")).get("code_version") or "")
+    except (OSError, ValueError):
+        return None
+    base, sep, sha = prev.partition("+g")
+    if sep and sha and sha != info["git_sha"] and base == info["version"]:
+        return prev
+    return None
+
+
 HARNESS_EVERY_S = 300.0
 HARNESS_STALL_S = 1200.0
 HARNESS_PROGRESS_S = 1800.0
@@ -534,6 +545,12 @@ def main():
     if a.dev_version:
         code_version = common.code_version_stamp(info, a.dev_version)
     elif info["git_sha"] and info["dirty"] is False:
+        prev = version_unbumped(info)
+        if prev:
+            ap.error("the code moved from the last recorded launch (%s -> g%s) but "
+                     "VERSION is still %s -- bump VERSION in the commit that brings "
+                     "the change so no two different codebases share a version"
+                     % (prev, info["git_sha"], info["version"]))
         code_version = common.code_version_stamp(info)
     else:
         ap.error("the tree has uncommitted work or unreadable git state (sha=%s "
