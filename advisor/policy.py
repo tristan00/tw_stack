@@ -115,6 +115,9 @@ class Policy:
     def new_turn(self):
         self.gate.new_turn()
 
+    def new_campaign(self):
+        self.gate.new_campaign()
+
     @property
     def retired(self):
         return self.gate.retired

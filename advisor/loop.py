@@ -193,6 +193,7 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
     boost = executor.boost_locomotion()
     log("locomotion boost: %s" % (boost or "FAILED -- moves run at normal speed"))
     executor.mark_campaign_start()
+    pol.new_campaign()
     import interrupt_model as IM
     import interrupts as I
     _verify_action_catalogues(log)
