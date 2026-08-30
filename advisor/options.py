@@ -716,9 +716,10 @@ FACTION_WIDE_CAPS = frozenset(("recruit_lord", "recruit_hero", "research", "rite
                                "building_dismantle", "colonize", "cancel_recruit"))
 PER_TURN_CAPS = {"recruit_lord": 1, "recruit_hero": 1, "recruit_unit": 4, "edict": 1,
                  "research": 1, "rites": 1, "diplomacy": 2, "noop": 0, "stance": 1,
-                 "hero_action": 3, "building_dismantle": 0, "raise_dead": 4,
+                 "hero_action": 3, "raise_dead": 4,
                  "recruit_ror": 1, "recruit_blessed": 4, "recruit_imperial": 1,
                  "colonize": 1, "item_unequip": 1, "cancel_recruit": 1}
+PER_CAMPAIGN_CAPS = {"building_dismantle": 1}
 COSTS_MOVEMENT = frozenset(("move", "attack_army", "attack_settlement", "colonize",
                             "garrison", "leave_garrison", "hero_action"))
 
@@ -761,9 +762,13 @@ class Gate:
         self.entity_actions = {}
         self.type_actions = {}
         self.pair_actions = {}
+        self.campaign_actions = {}
         self.gift_actions = 0
         self.recent = []
         self.last_drops = []
+
+    def new_campaign(self):
+        self.campaign_actions.clear()
 
     def new_turn(self):
         self.retired.clear()
@@ -782,6 +787,8 @@ class Gate:
         k = (pick["context_kind"], str(pick["context_id"]))
         tk = _cap_key(k[0], k[1], pick["action_type"])
         self.type_actions[tk] = self.type_actions.get(tk, 0) + 1
+        if pick["action_type"] in PER_CAMPAIGN_CAPS:
+            self.campaign_actions[tk] = self.campaign_actions.get(tk, 0) + 1
         self.recent.append(pick["action_type"])
         del self.recent[:-8]
         if pick["action_type"] in ATTACK_PAIR_TYPES or pick["action_type"] == "diplomacy":
@@ -848,6 +855,9 @@ class Gate:
         cap = PER_TURN_CAPS.get(at)
         if cap is not None and self.type_actions.get(_cap_key(k[0], k[1], at), 0) >= cap:
             return "per_turn_cap:%d" % cap
+        ccap = PER_CAMPAIGN_CAPS.get(at)
+        if ccap is not None and self.campaign_actions.get(_cap_key(k[0], k[1], at), 0) >= ccap:
+            return "per_campaign_cap:%d" % ccap
         return None
 
     def apply(self, record, actions_taken=0):
