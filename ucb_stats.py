@@ -6,7 +6,7 @@ import os
 
 import common
 
-WINDOW = 1000
+WINDOW = common.LOOKBACK_CAMPAIGNS
 MIN_PLAYS = 2
 KEYS = ("mean", "entropy", "std")
 EMPTY = {"n": 0, "mean": 0.0, "entropy": 0.0, "std": 0.0}

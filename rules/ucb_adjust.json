@@ -1,11 +1,12 @@
 {
  "_comment": "Manual additions to the UCB start score, keyed by faction key. Applied as score = blend + explore + adjust for starts with enough plays; starts under MIN_PLAYS still score infinite and are played first. A copy at <TWDATA>/rules/ucb_adjust.json overrides this file.",
  "adjustments": {
-  "wh2_main_hef_nagarythe": 1.0,
+  "wh2_main_hef_nagarythe": 1.5,
   "wh3_dlc27_sla_masque_of_slaanesh": 1.0,
   "wh_main_vmp_schwartzhafen": 1.0,
   "wh2_dlc17_bst_taurox": 1.0,
   "wh3_dlc26_kho_arbaal": 1.0,
+  "wh_dlc08_nor_wintertooth": -1.0,
   "wh2_dlc16_wef_sisters_of_twilight": -1.0,
   "wh2_main_def_hag_graef": -1.0
  }
