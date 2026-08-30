@@ -124,6 +124,12 @@ def launch(kind: str, params: dict) -> list:
                 "(sha=%s dirty=%s) -- commit first so the run carries an official "
                 "version, or launch from runctl with --dev-version LABEL"
                 % (info["git_sha"], info["dirty"])]
+    prev = runctl.version_unbumped(info)
+    if prev:
+        return ["REFUSED: the code moved from the last recorded launch (%s -> g%s) "
+                "but VERSION is still %s -- bump VERSION and commit so no two "
+                "different codebases share a version"
+                % (prev, info["git_sha"], info["version"])]
     code_version = common.code_version_stamp(info)
     lo, hi = params.get("turns_min") or 2, params.get("turns_max") or 20
     turns = str(hi) if int(lo) == int(hi) else "%s-%s" % (lo, hi)

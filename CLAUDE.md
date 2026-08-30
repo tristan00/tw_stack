@@ -71,6 +71,10 @@ changing or operating it. These rules were set explicitly by the owner; do not r
  runs land on an official version. The stamp is recorded in `last_launch.json`,
  `TW_CODE_VERSION`, `collector_versions` (joining `decisions.version_id`),
  postmortems and the trial ledger.
+- **Bump `VERSION` in the same commit that brings any change.** An official launch
+ refuses when the git sha moved from the last recorded launch but `VERSION` did not
+ (`runctl.version_unbumped`, enforced in both `runctl` and the UI launch path) — no
+ two different codebases may ever share a version stamp.
 
 ## Code style
 
