@@ -1314,7 +1314,7 @@ def _item_rows(m, cids=None, min_side=5) -> list:
     return out
 
 
-def _resource_columns(rows, floor=3, cap=24) -> list:
+def _resource_columns(rows, floor=2, cap=40) -> list:
     counts: dict = {}
     for r in rows:
         for name in r.resources:
