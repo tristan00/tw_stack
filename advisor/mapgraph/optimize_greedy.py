@@ -20,8 +20,7 @@ STAMP = time.strftime("%Y%m%d_%H%M%S")
 OUT_DIR = os.path.join(common.native(common.LOGS_SERVICES), "optuna_gnn_greedy")
 TRIALS_JSONL = os.path.join(OUT_DIR, "trials_%s.jsonl" % STAMP)
 
-FIXED = {"update": "mlp", "epochs": 60, "patience": 10, "grad_clip": 5.0,
-         "bf16": True, "seed": 0, "device": "cuda", "conv_map": None, "conv_a2e": None}
+FIXED = {"epochs": 60, "patience": 10, "bf16": True, "seed": 0, "device": "cuda"}
 STUDY_PATIENCE = 12
 SAMPLER_SEED = int(time.time()) % 100000
 
@@ -57,28 +56,36 @@ def _log(msg):
 
 
 def _space(trial):
-    p = {"lr": trial.suggest_float("lr", 5e-5, 3e-3, log=True),
-         "weight_decay": trial.suggest_float("weight_decay", 1e-5, 3e-2, log=True),
-         "hidden": trial.suggest_categorical("hidden", [32, 64, 128]),
+    p = {"lr": trial.suggest_float("lr", 1e-5, 3e-3, log=True),
+         "weight_decay": trial.suggest_float("weight_decay", 1e-6, 1e-1, log=True),
+         "hidden": trial.suggest_categorical("hidden", [32, 64, 128, 192, 256]),
          "batch": trial.suggest_categorical("batch", [192, 384, 768]),
-         "dropout": trial.suggest_float("dropout", 0.0, 0.3),
-         "entity_layers": trial.suggest_int("entity_layers", 1, 2),
+         "dropout": trial.suggest_float("dropout", 0.0, 0.5),
+         "grad_clip": trial.suggest_categorical("grad_clip", [0.5, 1.0, 2.0, 5.0, 10.0]),
+         "entity_layers": trial.suggest_int("entity_layers", 1, 3),
          "action_rounds": trial.suggest_int("action_rounds", 1, 4),
          "attn": trial.suggest_categorical("attn", ["none", "act", "map", "all"]),
+         "update": trial.suggest_categorical("update", ["mlp", "linear", "none"]),
          "conv": trial.suggest_categorical("conv", ["sage", "rel"]),
          "conv_e2a": trial.suggest_categorical("conv_e2a", ["rel", "sage"]),
          "map_aggr": trial.suggest_categorical("map_aggr",
                                                ["max", "mean", "add+mean", "mean+max"]),
          "act_aggr": trial.suggest_categorical("act_aggr", ["add+mean", "max", "mean"]),
          "self_transform": trial.suggest_categorical("self_transform", [False, True])}
-    if p["conv"] == "rel" or p["conv_e2a"] == "rel":
-        p["dst_dim"] = trial.suggest_categorical("dst_dim", [32, 48, 96])
+    cm = trial.suggest_categorical("conv_map", ["inherit", "sage", "rel"])
+    ca = trial.suggest_categorical("conv_a2e", ["inherit", "sage", "rel"])
+    p["conv_map"] = None if cm == "inherit" else cm
+    p["conv_a2e"] = None if ca == "inherit" else ca
+    kinds = (p["conv"], p["conv_map"] or p["conv"], p["conv_a2e"] or p["conv"],
+             p["conv_e2a"])
+    if "rel" in kinds:
+        p["dst_dim"] = trial.suggest_categorical("dst_dim", [32, 48, 96, 128])
     else:
         p["dst_dim"] = 48
     return p
 
 
-def run(trials=None, budget_s=300.0, timeout_s=None):
+def run(trials=None, budget_s=600.0, timeout_s=None):
     import optuna
     import torch
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -169,6 +176,6 @@ if __name__ == "__main__":
     common.require_venv()
     a = sys.argv[1:]
     n = int(a[a.index("--trials") + 1]) if "--trials" in a else None
-    b = float(a[a.index("--budget") + 1]) if "--budget" in a else 300.0
+    b = float(a[a.index("--budget") + 1]) if "--budget" in a else 600.0
     t = float(a[a.index("--timeout") + 1]) if "--timeout" in a else None
     raise SystemExit(run(n, b, t))
