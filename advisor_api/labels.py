@@ -193,7 +193,7 @@ def item_effects(key: str) -> str | None:
 
 _RES_PREFIX = re.compile(r"^wh\d?_(main|dlc\d+|pro\d+|twa\d+|cp\d+)_effect_")
 _RES_LEAD = ("character_stat_", "character_", "agent_", "force_all_", "force_",
-             "faction_", "attribute_enable_", "enable_", "economy_")
+             "faction_", "attribute_enable_", "enable_", "economy_", "mod_")
 _RES_TAIL = ("_mod_all", "_mod", "_add", "_characters", "_enemy", "_all")
 
 _item_res_cache: dict | None = None
@@ -201,10 +201,13 @@ _item_res_cache: dict | None = None
 
 def _resource_name(effect: str) -> str:
     k = _RES_PREFIX.sub("", str(effect))
-    for lead in _RES_LEAD:
-        if k.startswith(lead):
-            k = k[len(lead):]
-            break
+    changed = True
+    while changed:
+        changed = False
+        for lead in _RES_LEAD:
+            if k.startswith(lead) and len(k) > len(lead):
+                k = k[len(lead):]
+                changed = True
     for tail in _RES_TAIL:
         if k.endswith(tail):
             k = k[:-len(tail)]
