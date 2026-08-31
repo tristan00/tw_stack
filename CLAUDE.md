@@ -78,6 +78,36 @@ changing or operating it. These rules were set explicitly by the owner; do not r
  (`runctl.version_unbumped`, enforced in both `runctl` and the UI launch path) — no
  two different codebases may ever share a version stamp.
 
+## UI design
+
+- **Design first, code second.** Settle a page's information architecture before writing
+  code: the one question the page answers, the tabs that separate kinds of information,
+  and what each view shows — grounded in what the corpus actually supports (measure the
+  data before designing around it). When the design is contested, mock it visually with
+  real data and get the owner's read; dumb code with UX polish is worthless.
+- **A page owns one question.** Content that answers a different screen's question does
+  not belong on it, no matter how available the data is (the start page carries no
+  selector/UCB scoring — that lives on the selector screen; one plain link is enough).
+- **Minimal prose, low clutter.** Short scope lines, no explainer sentences where a
+  column header can say it, no walls of equal-weight tiles. If a section needs a
+  paragraph to be understood, redesign the section.
+- **Tables: simple self-explanatory cells.** One fact per cell — no chart-in-cell, no
+  color-plus-sign stacking, no two-line cells. Color only where the scale explains
+  itself (a signed Δ-vs-mean column), never on raw values; if something complex needs
+  highlighting, add the simple column that shows it instead. Raw game keys never render
+  alone: pair them with reference-schema localized names (`advisor_api/labels.py`), the
+  raw key in a tooltip or an optional column.
+- **Entities are links.** Lord/campaign names are real anchors (`EntityLink`, one linked
+  text column per table, row-click kept as the secondary target); chips, metrics and
+  timestamps never link.
+- **Inspect in the browser before it lands.** Every UI change is loaded in the running
+  dashboard and looked at — real pages, worst-case data (the largest start, a stuck
+  campaign), screenshots taken. Building clean and typechecking is not done.
+- **Performance is part of the design.** Every view loads and interacts fast on the
+  worst case: per-view API slices fetched lazily, charts decimated server-side, heavy
+  payloads never refetched on every corpus tick. Measure in the browser (LCP, payload,
+  DOM nodes) before and after; the trace is the proof, not the vibe.
+
 ## Code style
 
 - Comments and docstrings are forbidden. Match the file's existing style.
