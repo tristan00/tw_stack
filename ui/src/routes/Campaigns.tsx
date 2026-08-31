@@ -101,13 +101,15 @@ const startCols: Col<StartRow>[] = [
   { key: 'confirm', label: 'confirmed', optional: true, value: (r) => (r.confirm_rate?.of ? r.confirm_rate.n / r.confirm_rate.of : -1), render: (r) => <Bar rate={r.confirm_rate ?? null} /> },
 ]
 
+const defaultStartCols = startCols.filter((c) => c.key !== 'confirm' && c.key !== 'sec_per_turn')
+
 function Starts() {
   const { data, error, loading, reload } = useApi<StartsPage>('/api/campaigns/starts')
   const navigate = useNavigate()
   const mode = useUiMode()
   if (error) return <ErrorState error={error} onRetry={reload} />
   if (loading || !data) return <Skeleton rows={10} />
-  const cols = mode === 'full' ? startCols : startCols.filter((c) => c.key !== 'confirm' && c.key !== 'sec_per_turn')
+  const cols = mode === 'full' ? startCols : defaultStartCols
   return (
     <Section title="starts" scope={data.scope}>
       <DataTable
@@ -175,6 +177,7 @@ const campaignCols: Col<CampaignRow>[] = [
 ]
 
 const DEV_CAMPAIGN_COLS = new Set(['decisions', 'confirm', 'no_action', 'pick', 'ended_because', 'span', 'outcome'])
+const defaultCampaignCols = campaignCols.filter((c) => !DEV_CAMPAIGN_COLS.has(c.key))
 
 function AllCampaigns() {
   const { data, error, loading, reload } = useApi<CampaignsPage>('/api/campaigns')
@@ -183,7 +186,7 @@ function AllCampaigns() {
   const mode = useUiMode()
   if (error) return <ErrorState error={error} onRetry={reload} />
   if (loading || !data) return <Skeleton rows={10} />
-  const cols = mode === 'full' ? campaignCols : campaignCols.filter((c) => !DEV_CAMPAIGN_COLS.has(c.key))
+  const cols = mode === 'full' ? campaignCols : defaultCampaignCols
   const maps = [...new Map(data.rows.filter((r) => r.campaign_map).map((r) => [r.campaign_map!.raw, r.campaign_map!])).values()]
   const races = [...new Set(data.rows.map((r) => r.campaign.culture ?? ''))].filter(Boolean).sort()
   const rows = data.rows.filter(

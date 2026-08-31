@@ -13,7 +13,7 @@ import {
 } from '@tanstack/react-table'
 import { useVirtualizer, type Virtualizer } from '@tanstack/react-virtual'
 import { ArrowDown, ArrowUp, ChevronsUpDown, Columns3, Search } from 'lucide-react'
-import { useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import * as Popover from '@radix-ui/react-popover'
 import { Card, EmptyState, Help } from '@/components/primitives'
 import { cn } from '@/lib/utils'
@@ -92,8 +92,14 @@ export function DataTable<T extends RowData>({
   pageSize,
   pinnedTop,
 }: DataTableProps<T>) {
+  const [searchText, setSearchText] = useState('')
   const [globalFilter, setGlobalFilter] = useState('')
   const [page, setPage] = useState(0)
+
+  useEffect(() => {
+    const id = setTimeout(() => setGlobalFilter(searchText), 200)
+    return () => clearTimeout(id)
+  }, [searchText])
   const [sorting, setSorting] = useState(
     initialSort ? [{ id: initialSort.key, desc: initialSort.desc }] : [],
   )
@@ -166,16 +172,22 @@ export function DataTable<T extends RowData>({
             <label className="border-line bg-surface flex min-w-0 flex-1 items-center gap-1.5 rounded-md border px-2 py-1">
               <Search className="text-dim size-3.5 shrink-0" />
               <input
-                value={globalFilter}
+                value={searchText}
                 onChange={(e) => {
-                  setGlobalFilter(e.target.value)
+                  setSearchText(e.target.value)
                   setPage(0)
                 }}
                 placeholder={searchPlaceholder}
                 className="min-w-0 flex-1 bg-transparent text-xs outline-none"
               />
-              {globalFilter && (
-                <button className="text-dim text-2xs" onClick={() => setGlobalFilter('')}>
+              {searchText && (
+                <button
+                  className="text-dim text-2xs"
+                  onClick={() => {
+                    setSearchText('')
+                    setGlobalFilter('')
+                  }}
+                >
                   clear
                 </button>
               )}

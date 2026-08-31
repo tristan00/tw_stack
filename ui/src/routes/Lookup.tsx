@@ -56,6 +56,8 @@ const cols: Col<LookupCampaignRow>[] = [
   },
 ]
 
+const defaultCols = cols.filter((c) => c.key !== 'outcome')
+
 function LookupView() {
   const navigate = useNavigate()
   const dev = useUiMode() === 'full'
@@ -76,7 +78,7 @@ function LookupView() {
   ]
   return (
     <div className="space-y-5">
-      <ConditionBar facets={data} />
+      <ConditionBar />
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {tiles.map((t) => (
           <MetricTile key={t.label} metric={{ label: t.label, value: t.value, unit: null, sub: t.sub, state: 'neutral', spark: [] }} />
@@ -85,7 +87,7 @@ function LookupView() {
       <Section title="matching campaigns" scope={data.scope}>
         <DataTable
           rows={data.rows ?? []}
-          cols={dev ? cols : cols.filter((c) => c.key !== 'outcome')}
+          cols={dev ? cols : defaultCols}
           rowId={(r) => r.campaign.raw}
           onRowClick={(r) => navigate(`/campaigns/${encodeURIComponent(r.campaign.raw)}`)}
           searchPlaceholder="search campaign, start, outcome…"
@@ -168,8 +170,9 @@ function WeightsTab() {
           {note && <span className="text-dim text-2xs">{note}</span>}
         </div>
         <p className="text-dim text-2xs">
-          analytics reward = Σ weight × gain, per campaign (first → peak). This is not the UCB selector’s reward — the
-          selector, the starts pool and the campaigns page keep the official settlements + lord levels reward.
+          analytics reward = Σ weight × gain, per campaign (first → peak). Every reward on this dashboard uses these
+          weights — campaigns, starts, lookup, catalog, items and positions. The UCB selector’s own scoring and the
+          models’ training target are separate and unaffected.
         </p>
       </Card>
     </Section>

@@ -9,6 +9,7 @@ import sys
 import time
 
 import common
+import retention
 
 TW_STACK = common.ROOT
 VENV_PY = common.VENV_PY
@@ -352,6 +353,10 @@ def _cooled_down():
 
 
 def harness_tick():
+    try:
+        retention.sweep(apply=True, log=_harness_note)
+    except Exception as e:
+        _harness_note("retention sweep failed: %r" % (e,))
     if os.path.exists(common.HARNESS_OFF):
         _harness_note("HARNESS_OFF present -- standing down")
         return "off"

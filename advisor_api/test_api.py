@@ -743,13 +743,15 @@ def test_positions_conditions_narrow_and_shares_sum():
     share = sum(r["share"] or 0 for r in whole["rows"])
     assert 99.0 <= share <= 101.0, share
     assert whole["takes"] == sum(r["n"] for r in whole["rows"])
-    fac = whole["factions"][0]["key"]
+    facets = _client.get("/api/lookup/facets").json()
+    assert facets["factions"] and facets["settlements"]
+    fac = facets["factions"][0]["key"]
     part = _client.get("/api/positions?faction=%s&c=turn::4" % fac).json()
     assert 0 < part["decisions"] < whole["decisions"]
-    sett = whole["settlements"][0]["key"]
+    sett = facets["settlements"][0]["key"]
     held = _client.get("/api/positions?c=has:settlement:%s" % sett).json()
     assert 0 < held["decisions"] < whole["decisions"]
-    assert held["campaigns"] == whole["settlements"][0]["campaigns"]
+    assert held["campaigns"] == facets["settlements"][0]["campaigns"]
     inv = _client.get("/api/positions?c=not:settlement:%s" % sett).json()
     assert inv["decisions"] + held["decisions"] == whole["decisions"]
     rich = _client.get("/api/positions?c=treasury:20000:").json()

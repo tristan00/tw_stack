@@ -13,6 +13,7 @@ import common
 import campaign_growth as CG
 import metrics_db
 import psycopg
+import retention
 from decisions import pg
 
 sys.path.insert(0, common.BUS)
@@ -39,20 +40,26 @@ def _rotate_logs(log):
     import glob
     import shutil
     from bus_launcher import GAME_DIR
-    dirs = [(os.path.join(GAME_DIR, "script_log_*.txt"), ROTATE_MIN_AGE_S)]
-    try:
-        rd = journal.current_run_dir(timeout=5.0)
-        dirs.append((os.path.join(rd, "shots", "*"), 86400))
-    except Exception as e:
-        log("   rotation: run-dir shots skipped (no CURRENT_RUN: %s)" % repr(e)[:60])
+    now = time.time()
+    dropped, dropped_mb = 0, 0.0
+    for p in glob.glob(os.path.join(GAME_DIR, "script_log_*.txt")):
+        try:
+            if now - os.path.getmtime(p) < ROTATE_MIN_AGE_S:
+                continue
+            mb = os.path.getsize(p) / (1024.0 * 1024.0)
+            os.remove(p)
+            dropped += 1
+            dropped_mb += mb
+        except OSError:
+            pass
     stamp = time.strftime("%Y%m%d_%H%M%S")
     dst = os.path.join(LOG_ARCHIVE, stamp)
     moved, moved_mb, skipped = 0, 0.0, 0
-    now = time.time()
-    for pattern, min_age in dirs:
-        for p in glob.glob(pattern):
+    try:
+        rd = journal.current_run_dir(timeout=5.0)
+        for p in glob.glob(os.path.join(rd, "shots", "*")):
             try:
-                if now - os.path.getmtime(p) < min_age:
+                if now - os.path.getmtime(p) < 86400:
                     skipped += 1
                     continue
                 mb = os.path.getsize(p) / (1024.0 * 1024.0)
@@ -62,8 +69,11 @@ def _rotate_logs(log):
                 moved_mb += mb
             except OSError:
                 skipped += 1
-    return "moved %d files (%.0fMB) -> %s, skipped %d (fresh/locked)" % (
-        moved, moved_mb, dst if moved else LOG_ARCHIVE, skipped)
+    except Exception as e:
+        log("   rotation: run-dir shots skipped (no CURRENT_RUN: %s)" % repr(e)[:60])
+    return ("dropped %d script logs (%.0fMB, tail keeps the content), "
+            "archived %d shots (%.0fMB), skipped %d (fresh/locked)" % (
+                dropped, dropped_mb, moved, moved_mb, skipped))
 
 
 BUS_FILES = (common.native(common.BUS_CMD_PATH),
@@ -500,6 +510,10 @@ def run_campaigns(n=3, turns=20, plan="all",
         except Exception as e:
             log("   could not mark the bus offset for this campaign: %s" % repr(e)[:100])
         log("   log rotation: %s" % _rotate_logs(log))
+        try:
+            retention.boundary_pass(log)
+        except Exception as e:
+            log("   retention failed: %s" % repr(e)[:90])
         entry["bus_files"] = _bus_sizes()
         log("   bus: %s" % ", ".join("%s %.1fMB" % (k, v)
                                      for k, v in sorted(entry["bus_files"].items())))

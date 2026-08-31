@@ -224,10 +224,17 @@ def current(con) -> Current:
                    pick_id=_i(pick["pick_id"]) if pick else None)
 
 
+_totals_memo: tuple = (0.0, None)
+
+
 @db.timed
 def totals(con) -> list:
+    global _totals_memo
+    ts, got = _totals_memo
+    if got is not None and time.time() - ts < 60.0:
+        return got
     q = lambda s: con.execute(s).fetchone()[0] or 0
-    return [
+    out = [
         Count(value=q("SELECT COUNT(*) FROM (SELECT campaign_id FROM decisions"
                       " GROUP BY campaign_id HAVING COUNT(*) >= 2)"),
               noun="campaigns", population="with two or more decisions in this run dir"),
@@ -238,6 +245,8 @@ def totals(con) -> list:
         Count(value=q("SELECT COUNT(*) FROM taken WHERE counted=1"),
               noun="actions", population="confirmed by the game"),
     ]
+    _totals_memo = (time.time(), out)
+    return out
 
 
 @db.timed
@@ -426,6 +435,7 @@ def campaign_rows(con, outcomes=None, produced=None) -> list:
     if produced is None:
         produced = pick_campaigns(con)
     produced_by = {v: k for k, v in produced.items()}
+    gmap = {g["campaign_key"]: g for g in gains_all(con)}
     out = []
     for ckey, d in decs.items():
         m = meta.get(ckey)
@@ -472,7 +482,9 @@ def campaign_rows(con, outcomes=None, produced=None) -> list:
         sg, lg = _f(g.get("settlements_growth")), _f(g.get("lord_growth"))
         if sg is not None and lg is not None:
             row.settlements_gained, row.levels_gained = sg, lg
-            row.reward = round(sg + lg, 3)
+            ga = gmap.get(ckey)
+            row.reward = (_f(ga["reward"]) if ga
+                          else _weighted_reward(sg, lg, None, None))
         row.pick_id = produced_by.get(ckey)
         pm = outcomes.get(ckey)
         if pm:
@@ -516,8 +528,8 @@ def gains_all(con) -> list:
     rows = []
     for r in con.execute("SELECT * FROM campaign_gains"):
         g = dict(r)
-        g["reward"] = ((_f(g["settlements_gained"], 0.0) or 0.0)
-                       + (_f(g["levels_gained"], 0.0) or 0.0))
+        g["reward"] = _weighted_reward(g["settlements_gained"], g["levels_gained"],
+                                       g["allies_gained"], g["vassals_gained"])
         rows.append(g)
     rows.sort(key=lambda g: -(_f(g["first_ts"], 0.0) or 0.0))
     return rows
@@ -565,7 +577,8 @@ def ucb_context(con, gains=None) -> dict:
     rewards: dict = {}
     for g in gains[:UCB.WINDOW]:
         rewards.setdefault((g["campaign_map"], g["faction"]), []).append(
-            float(g["reward"] or 0.0))
+            (_f(g["settlements_gained"], 0.0) or 0.0)
+            + (_f(g["levels_gained"], 0.0) or 0.0))
     stats = UCB.start_stats(rewards)
     scale = UCB.window_blend(rewards)
     total = max(1, sum(d["n"] for d in stats.values()))
@@ -843,7 +856,7 @@ def start_head(con, mkey: str, fkey: str, gains=None, cx=None):
             " FROM taken WHERE campaign_id = ANY(%s)", (ids,)).fetchone()
         att, conf = _i(c_["att"], 0) or 0, _i(c_["conf"], 0) or 0
     d = (cx["stats"].get(key) or dict(UCB.EMPTY))
-    rewards = cx["rewards"].get(key) or []
+    mine_rewards = [_f(g["reward"], 0.0) or 0.0 for g in mine]
     counts = con.execute("SELECT n FROM start_counts WHERE campaign_map = %s"
                          " AND faction = %s", key).fetchone()
     row = StartRow(
@@ -853,13 +866,13 @@ def start_head(con, mkey: str, fkey: str, gains=None, cx=None):
         in_pool=key in cx["pool"],
         n=_i(counts["n"], len(mine)) if counts else len(mine),
         n_window=d["n"],
-        mean=round(d["mean"], 4) if d["n"] else None,
-        std=round(d["std"], 4) if d["n"] else None,
-        best=max((_f(g["reward"], 0.0) or 0.0) for g in mine) if mine else None,
-        zero_rate=Rate(n=sum(1 for r in rewards if r <= 0), of=len(rewards),
-                       noun="campaigns",
-                       population="of this start inside the training window that "
-                                  "gained nothing"),
+        mean=round(statistics.mean(mine_rewards), 4) if mine_rewards else None,
+        std=(round(statistics.pstdev(mine_rewards), 4)
+             if len(mine_rewards) > 1 else None),
+        best=max(mine_rewards) if mine_rewards else None,
+        zero_rate=Rate(n=sum(1 for r in mine_rewards if r <= 0),
+                       of=len(mine_rewards), noun="campaigns",
+                       population="of this start that gained nothing"),
         avg_turns=round(sum(turns) / len(turns), 1) if turns else None,
         sec_per_turn=round(span_min * 60.0 / sum(turns), 1) if sum(turns) else None,
         confirm_rate=Rate(n=conf, of=att, noun="actions",
@@ -1086,16 +1099,11 @@ def _pearson(xs, ys):
 @db.timed
 def start_performance(con, mkey: str, fkey: str, gains=None, cx=None) -> dict:
     gains = gains_all(con) if gains is None else gains
-    cx = ucb_context(con, gains) if cx is None else cx
     mine = _start_gains(con, mkey, fkey)
-    top = cx["top_reward"]
-    pop = [0] * (top + 1)
-    for vals in cx["rewards"].values():
-        for i, c in enumerate(_bins(vals, top)):
-            pop[i] += c
-    pool_vals = [v for vals in cx["rewards"].values() for v in vals]
-    window_keys = {g["campaign_key"] for g in gains[:UCB.WINDOW]}
-    mine_window = [g["reward"] for g in mine if g["campaign_key"] in window_keys]
+    pool_vals = [_f(g["reward"], 0.0) or 0.0 for g in gains]
+    mine_vals = [_f(g["reward"], 0.0) or 0.0 for g in mine]
+    top = max([int(round(v)) for v in pool_vals + mine_vals] + [0])
+    pop = _bins(pool_vals, top)
     k = max(1, math.ceil(len(mine) / PERF_BARS))
     bars, totals = [], [g["reward"] for g in mine]
     for i0 in range(0, len(mine), k):
@@ -1136,7 +1144,7 @@ def start_performance(con, mkey: str, fkey: str, gains=None, cx=None) -> dict:
             reward_per_turn=round(sum(rpt) / len(rpt), 2) if rpt else None))
     pairs = [(g["reward"], _i(g["turns_reached"], 0) or 0) for g in mine
              if (_i(g["turns_reached"], 0) or 0) >= 1]
-    return {"bucket": k, "bars": bars, "reward_bins": _bins(mine_window, top),
+    return {"bucket": k, "bars": bars, "reward_bins": _bins(mine_vals, top),
             "population_bins": pop,
             "pool_mean": round(sum(pool_vals) / len(pool_vals), 2) if pool_vals else None,
             "turns_hist": hist, "outcomes": outcomes, "bands": bands,
@@ -1311,7 +1319,6 @@ def start_actions(con, mkey: str, fkey: str) -> list:
 
 
 ITEM_ACTIONS = ("items", "item_unequip")
-_TECH_PREFIX_RE = re.compile(r"^(.*_tech_[a-z0-9]+_)")
 
 
 def _parent_ident(parents, key):
@@ -1649,9 +1656,7 @@ def start_research(con, mkey: str, fkey: str) -> dict:
         " JOIN decisions d ON d.decision_id = o.decision_id"
         " JOIN campaigns c ON c.campaign_id = d.campaign_id"
         " WHERE c.campaign_map = %s AND c.faction = %s", (mkey, fkey))}
-    prefixes = {m2.group(1) for k in (offered | set(taken))
-                for m2 in [_TECH_PREFIX_RE.match(k)] if m2}
-    universe = labels.tech_rows(prefixes)
+    universe = labels.tech_universe(offered | set(taken))
     known = {u["key"] for u in universe}
     for k in set(taken) - known:
         universe.append({"key": k, "technology_key": k, "tier": None,
@@ -2034,9 +2039,7 @@ def _catalog_ref(family, keys) -> dict:
                         .replace("_", " ") or None,
                         "level": _building_level(i), "cost": _i(i.get("create_cost"))}
     elif family == "research":
-        prefixes = {m2.group(1) for k in keys
-                    for m2 in [_TECH_PREFIX_RE.match(k)] if m2}
-        uni = {u["key"]: u for u in labels.tech_rows(prefixes)}
+        uni = {u["key"]: u for u in labels.tech_rows_for(keys)}
         for key in keys:
             u = uni.get(key) or {}
             out[key] = {"tier": _i(u.get("tier")),
@@ -2255,9 +2258,8 @@ def catalog_key_page(con, family: str, key: str) -> dict | None:
         out["chain"] = chain
     elif family == "research":
         ref = _catalog_ref("research", [key]).get(key) or {}
-        prefixes = {m2.group(1) for m2 in [_TECH_PREFIX_RE.match(key)] if m2}
-        tkey = next((u.get("technology_key") for u in labels.tech_rows(prefixes)
-                     if u["key"] == key), None)
+        tkey = next((u.get("technology_key")
+                     for u in labels.tech_rows_for([key])), None)
         parents = labels.tech_parents().get(key) or []
         children = labels.tech_children().get(key) or []
         out.update(tier=ref.get("tier"), points=ref.get("points"),
@@ -2529,6 +2531,11 @@ def _position_facets(data) -> dict:
 
 
 @db.timed
+def lookup_facets(con) -> dict:
+    return _position_facets(_positions_data(con))
+
+
+@db.timed
 def positions_page(con, filters, conditions=None) -> dict:
     data = _positions_data(con)
     rewards = data["rewards"]
@@ -2617,13 +2624,11 @@ def positions_page(con, filters, conditions=None) -> dict:
             if fut is not None and sit_fut is not None else None, keys=keys))
     rows.sort(key=lambda r2: -r2.n)
     camp_rewards = [rewards[c2] for c2 in camp_ids if rewards.get(c2) is not None]
-    out = dict(_position_facets(data))
-    out.update(
+    return dict(
         decisions=n_dec, campaigns=len(camp_ids), takes=takes_n,
         mean_reward=_mean(camp_rewards),
         mean_future=round(sit_fut, 2) if sit_fut is not None else None,
         rows=rows)
-    return out
 
 
 @db.timed
@@ -2666,12 +2671,10 @@ def campaign_lookup(con, filters, conditions=None) -> dict:
         if m["turns_reached"] is not None:
             turns_all.append(_i(m["turns_reached"], 0) or 0)
     rows.sort(key=lambda r2: -(r2.ts or 0.0))
-    out = dict(_position_facets(data))
-    out.update(
+    return dict(
         campaigns=len(rows), decisions=n_dec,
         mean_reward=_mean(rewards), mean_turns=_mean(turns_all, 1),
         rows=rows)
-    return out
 
 
 def _campaign_id_of(con, campaign_key: str):
@@ -2703,9 +2706,7 @@ def campaign_research(con, campaign_key: str) -> dict | None:
             " WHERE a.action_type = 'research'", (cid,)):
         sets.setdefault(_i(r["turn"], 0), set()).add(r["key"])
     offered_all = {k for s in sets.values() for k in s} | {k for _t, k in took}
-    prefixes = {m2.group(1) for k in offered_all
-                for m2 in [_TECH_PREFIX_RE.match(k)] if m2}
-    universe = {u["key"]: u for u in labels.tech_rows(prefixes)}
+    universe = {u["key"]: u for u in labels.tech_universe(offered_all)}
     parents = labels.tech_parents()
     depth = _tech_depth(parents, list(universe))
     rows = []
@@ -4628,7 +4629,10 @@ def ucb_pick_series(con, gains=None, camp_rows=None, produced=None) -> list:
             g = gains.get(ck) or {}
             cm = meta.get(ck)
             prod = ProducedCampaign(
-                campaign=_camp(ck), reward=_f(g.get("reward")),
+                campaign=_camp(ck),
+                reward=(round((_f(g.get("settlements_gained"), 0.0) or 0.0)
+                              + (_f(g.get("levels_gained"), 0.0) or 0.0), 3)
+                        if g else None),
                 turns=(cm[0] if cm else _i(g.get("turns_reached"))),
                 outcome=cm[1] if cm else None,
                 outcome_state=cm[2] if cm else "neutral")
@@ -4674,7 +4678,8 @@ def ucb_window_edges(con, gains) -> tuple:
             campaign_map=(_id(ident.campaign_map(g["campaign_map"]))
                           if g["campaign_map"] else None),
             played_ts=_f(g["first_ts"]), turns=_i(g.get("turns_reached")),
-            reward=_f(g.get("reward")),
+            reward=round((_f(g.get("settlements_gained"), 0.0) or 0.0)
+                         + (_f(g.get("levels_gained"), 0.0) or 0.0), 3),
             start_n=counts.get((g["campaign_map"], g["faction"]), 0),
             campaigns_away=away)
 

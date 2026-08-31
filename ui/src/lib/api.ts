@@ -53,6 +53,7 @@ export type RelatedKey = Schemas['RelatedKey']
 export type ItemSwapRow = Schemas['ItemSwapRow']
 export type RewardWeightsPage = Schemas['RewardWeightsPage']
 export type CampaignLookupPage = Schemas['CampaignLookupPage']
+export type LookupFacets = Schemas['LookupFacets']
 export type LookupCampaignRow = Schemas['LookupCampaignRow']
 export type SkillCharacterRow = Schemas['SkillCharacterRow']
 export type PositionsPage = Schemas['PositionsPage']
@@ -168,13 +169,40 @@ export function useApi<T>(
 
 let sharedSource: EventSource | null = null
 const listeners = new Set<(s: string) => void>()
+const STAMP_THROTTLE_MS = 10000
+let lastEmit = 0
+let pendingStamp: string | null = null
+let pendingTimer: ReturnType<typeof setTimeout> | null = null
+
+function emitStamp(s: string) {
+  lastEmit = Date.now()
+  listeners.forEach((fn) => fn(s))
+}
+
+function onStamp(s: string) {
+  const wait = lastEmit + STAMP_THROTTLE_MS - Date.now()
+  if (wait <= 0) {
+    emitStamp(s)
+    return
+  }
+  pendingStamp = s
+  if (!pendingTimer) {
+    pendingTimer = setTimeout(() => {
+      pendingTimer = null
+      if (pendingStamp !== null) {
+        const p = pendingStamp
+        pendingStamp = null
+        emitStamp(p)
+      }
+    }, wait)
+  }
+}
 
 function ensureSource() {
   if (sharedSource || typeof window === 'undefined') return
   sharedSource = new EventSource('/api/events')
   sharedSource.addEventListener('corpus', (ev) => {
-    const s = (ev as MessageEvent).data ?? ''
-    listeners.forEach((fn) => fn(s))
+    onStamp((ev as MessageEvent).data ?? '')
   })
 }
 

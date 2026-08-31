@@ -31,7 +31,7 @@ from advisor_api.models import (
     CampaignItemsPage, CampaignResearchPage, CampaignSkillsPage, ItemPage, ItemsPage,
     StartItems, StartResearch, StartSkills,
     CampaignBuildingsPage, CampaignLookupPage, CatalogIndexPage, CatalogKeyPage,
-    PositionsPage, RewardWeightsPage, StartBuildings,
+    LookupFacets, PositionsPage, RewardWeightsPage, StartBuildings,
 )
 
 UI_DIST = os.path.join(common.ROOT, "ui", "dist")
@@ -42,16 +42,22 @@ MODE = ("dashboard"
 
 
 _warm_stop = threading.Event()
+_warm_kick = threading.Event()
 
 
 def _warm_loop():
     q._WARM_ALIVE.set()
     while not _warm_stop.is_set():
+        _warm_kick.clear()
         t0 = time.perf_counter()
         steps = q.warm_caches(db.connect())
         print("API warm %.0fms %s" % ((time.perf_counter() - t0) * 1000,
                                       " ".join(steps)))
-        _warm_stop.wait(q.WARM_EVERY_S)
+        remaining = q.WARM_EVERY_S
+        while remaining > 0 and not _warm_stop.is_set():
+            if _warm_kick.wait(min(1.0, remaining)):
+                break
+            remaining -= 1.0
     q._WARM_ALIVE.clear()
 
 
@@ -352,7 +358,8 @@ def get_positions(faction: str | None = None, culture: str | None = None,
         **got)
 
 
-@app.get("/api/lookup", response_model=CampaignLookupPage, tags=["positions"])
+@app.get("/api/lookup", response_model=CampaignLookupPage,
+         response_model_exclude_none=True, tags=["positions"])
 def get_lookup(faction: str | None = None, culture: str | None = None,
                map: str | None = None,
                c: list[str] = Query(default_factory=list)) -> CampaignLookupPage:
@@ -368,16 +375,25 @@ def get_lookup(faction: str | None = None, culture: str | None = None,
                      "analytics weights"), **got)
 
 
+@app.get("/api/lookup/facets", response_model=LookupFacets,
+         response_model_exclude_none=True, tags=["positions"])
+def get_lookup_facets() -> LookupFacets:
+    con = _con()
+    return LookupFacets(
+        scope=_scope("the options the condition composer can offer"),
+        **q.lookup_facets(con))
+
+
 def _weights_page() -> RewardWeightsPage:
     from advisor_api.models import RewardComponent
     w = q.reward_weights()
     defaults = {k: d for k, _l, d in q.REWARD_COMPONENTS}
     return RewardWeightsPage(
         scope=_scope("what one unit of each gain is worth in the analytics reward",
-                     "applies to the catalog, items, positions and the start "
-                     "buildings/research/skills/items tabs; the campaigns page's "
-                     "recorded reward and the UCB selector keep the official "
-                     "1/1 reward and are untouched"),
+                     "the analytics reward is every reward the default dashboard "
+                     "shows: campaigns, starts, lookup, catalog, items, positions "
+                     "and the start tabs; the UCB selector's own scoring and the "
+                     "models' training target are separate and untouched"),
         components=[RewardComponent(key=k, label=l, default=d)
                     for k, l, d in q.REWARD_COMPONENTS],
         weights=w,
@@ -397,6 +413,7 @@ def post_reward_weights(weights: dict[str, float]) -> RewardWeightsPage:
         q.set_reward_weights(weights)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    _warm_kick.set()
     return _weights_page()
 
 
@@ -466,7 +483,8 @@ def get_matrix(kind: str = Query("action", pattern="^(action|interrupt)$")) -> M
         kind=kind, totals=tot_rows, columns=columns, rows=rows)
 
 
-@app.get("/api/campaigns", response_model=CampaignsPage, tags=["campaigns"])
+@app.get("/api/campaigns", response_model=CampaignsPage,
+         response_model_exclude_none=True, tags=["campaigns"])
 def get_campaigns() -> CampaignsPage:
     con = _con()
     outcomes, unjoined = q.outcome_join(con)
@@ -783,11 +801,12 @@ def post_coldstart(params: LaunchDefaults) -> ControlResult:
 @app.get("/api/events", tags=["run"])
 async def events():
     async def gen():
+        import anyio
         last = None
         beat = 0
         while True:
             try:
-                cur = db.stamp()
+                cur = await anyio.to_thread.run_sync(db.stamp)
             except Exception:
                 cur = last
             if cur != last:
