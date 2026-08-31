@@ -863,7 +863,7 @@ class PositionFacetOption(BaseModel):
     campaigns: int = 0
 
 
-class PositionsPage(BaseModel):
+class LookupFacets(BaseModel):
     scope: Scope
     factions: list[PositionFacetOption] = Field(default_factory=list)
     cultures: list[str] = Field(default_factory=list)
@@ -871,6 +871,10 @@ class PositionsPage(BaseModel):
     settlements: list[PositionFacetOption] = Field(default_factory=list)
     resources: list[PositionFacetOption] = Field(default_factory=list)
     hero_types: list[PositionFacetOption] = Field(default_factory=list)
+
+
+class PositionsPage(BaseModel):
+    scope: Scope
     decisions: int = 0
     campaigns: int = 0
     takes: int = 0
@@ -897,12 +901,6 @@ class LookupCampaignRow(BaseModel):
 
 class CampaignLookupPage(BaseModel):
     scope: Scope
-    factions: list[PositionFacetOption] = Field(default_factory=list)
-    cultures: list[str] = Field(default_factory=list)
-    maps: list[Ident] = Field(default_factory=list)
-    settlements: list[PositionFacetOption] = Field(default_factory=list)
-    resources: list[PositionFacetOption] = Field(default_factory=list)
-    hero_types: list[PositionFacetOption] = Field(default_factory=list)
     campaigns: int = 0
     decisions: int = 0
     mean_reward: float | None = None

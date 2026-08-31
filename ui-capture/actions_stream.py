@@ -44,9 +44,18 @@ def _write(con, ts, turn, kind, eid, atype, payload):
                 (kind, str(eid), atype, ts, turn, p))
 
 
+def _mtime(p):
+    try:
+        return os.path.getmtime(p)
+    except OSError:
+        return 0.0
+
+
 def _current_turn(out_dir):
-    best = (None, None)
-    for p in glob.glob(os.path.join(out_dir, "logs", "script_log_*.tail")):
+    paths = sorted(glob.glob(os.path.join(out_dir, "logs", "script_log_*.tail")),
+                   key=_mtime, reverse=True)
+    for p in paths:
+        best = (None, None)
         try:
             with open(p, "rb") as f:
                 f.seek(0, 2)
@@ -62,7 +71,9 @@ def _current_turn(out_dir):
                         best = (r.get("turn"), r.get("faction"))
         except OSError:
             continue
-    return best
+        if best != (None, None):
+            return best
+    return (None, None)
 
 
 def _sweep_entity(bus, con, ts, turn, kind, eid):

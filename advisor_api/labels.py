@@ -84,6 +84,8 @@ def name_for(family: str, key: str) -> str | None:
         return None
     if k.startswith("settlement:"):
         k = k.split(":", 1)[1]
+    if fam == "research":
+        return tech_name(k)
     pre = _LOC_PREFIX.get(fam)
     if pre:
         return _loc(pre + k)
@@ -319,19 +321,47 @@ def tech_parents() -> dict:
     return out
 
 
-def tech_rows(prefixes) -> list:
-    pats = [str(p) + "%" for p in prefixes if p]
-    if not pats:
+def tech_rows_for(keys) -> list:
+    ks = [str(k) for k in keys if k]
+    if not (_have("tech") and ks):
         return []
     return [dict(r) for r in _rows(
         "SELECT key, technology_key, tier, research_points_required"
-        " FROM tech WHERE key LIKE ANY(%s)"
-        " AND COALESCE(is_hidden, 0) = 0", (pats,))]
+        " FROM tech WHERE key = ANY(%s)"
+        " AND COALESCE(is_hidden, 0) = 0", (ks,))]
+
+
+def tech_universe(keys) -> list:
+    ks = [str(k) for k in keys if k]
+    if not (_have("tech") and ks):
+        return []
+    return [dict(r) for r in _rows(
+        "SELECT key, technology_key, tier, research_points_required"
+        " FROM tech WHERE (key = ANY(%s) OR node_set IN"
+        " (SELECT DISTINCT node_set FROM tech WHERE key = ANY(%s)"
+        "  AND node_set IS NOT NULL))"
+        " AND COALESCE(is_hidden, 0) = 0", (ks, ks))]
+
+
+_tech_key_cache: dict = {}
+
+
+def _tech_key(key: str) -> str | None:
+    hit = _tech_key_cache.get(key, "?")
+    if hit != "?":
+        return hit
+    row = _one("SELECT technology_key FROM tech WHERE key = %s",
+               (key,)) if _have("tech") else None
+    got = row["technology_key"] if row and row["technology_key"] else None
+    _tech_key_cache[key] = got
+    return got
 
 
 def tech_name(key: str, technology_key: str | None = None) -> str | None:
-    return (_loc("technologies_onscreen_name_" + (technology_key or key))
-            or _loc("technologies_onscreen_name_" + key))
+    k = str(key or "")
+    tkey = technology_key or _tech_key(k)
+    return (_loc("technologies_onscreen_name_" + (tkey or k))
+            or _loc("technologies_onscreen_name_" + k))
 
 
 _MARKUP_RE = re.compile(r"\[\[.*?\]\]|\\\\n")

@@ -108,6 +108,15 @@ changing or operating it. These rules were set explicitly by the owner; do not r
   payloads never refetched on every corpus tick. Measure in the browser (LCP, payload,
   DOM nodes) before and after; the trace is the proof, not the vibe.
 
+## Analytics
+
+- **Store components, never blended rewards.** Any analytics table, cache or
+  materialized artifact stores raw gain components (settlements, lord levels, allies,
+  vassals, …), never a weighted reward. Reward weights apply at read time — the blend
+  is linear plus a resort in the query — so a weights save must invalidate nothing.
+  Baking a blended reward into any stored artifact re-creates the weight-propagation
+  problem and is forbidden.
+
 ## Code style
 
 - Comments and docstrings are forbidden. Match the file's existing style.

@@ -80,7 +80,7 @@ export function Positions() {
           detail: 'the takes are the programmatic runner’s moves — campaign-only views live on lookup',
         }}
       >
-        <ConditionBar facets={data} />
+        <ConditionBar />
       </Section>
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">

@@ -77,6 +77,12 @@ function famCols(family: Family): Col<CatalogIndexRow>[] {
   return cols
 }
 
+const FAM_COLS: Record<Family, Col<CatalogIndexRow>[]> = {
+  buildings: famCols('buildings'),
+  research: famCols('research'),
+  skills: famCols('skills'),
+}
+
 export function Catalog({ family }: { family: Family }) {
   const { data, error, loading, reload } = useApi<CatalogIndexPage>(`/api/${family}`, [family], { live: false })
   const [params, setParams] = useSearchParams()
@@ -125,7 +131,7 @@ export function Catalog({ family }: { family: Family }) {
         )}
         <DataTable
           rows={rows}
-          cols={famCols(family)}
+          cols={FAM_COLS[family]}
           rowId={(r) => r.key}
           searchPlaceholder={`search ${f.noun}…`}
           pageSize={25}

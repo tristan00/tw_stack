@@ -862,14 +862,14 @@ function Training() {
     },
     {
       key: 'reward_camp',
-      label: 'reward',
+      label: 'UCB reward',
       unit: 'per campaign',
       align: 'right',
       group: 'result',
       value: (r) => r.reward_per_campaign ?? undefined,
       sortUndefined: 'last',
       render: (r) => (
-        <span title="settlements gained + legendary lord levels gained, per campaign — the UCB reward">
+        <span title="settlements gained + legendary lord levels gained, per campaign — the selector's own reward, not the analytics reward">
           {n(r.reward_per_campaign, 2)}
         </span>
       ),
@@ -1014,7 +1014,10 @@ function Training() {
           </span>
         ))}
       </div>
-      <Section title="reward per campaign">
+      <Section
+        title="training-target reward per campaign"
+        scope={{ text: 'the reward the models train against: settlements 1 · lord levels 1 · allies 1 · vassals 3 — not the analytics reward' }}
+      >
         <ChartFrame
           table={
             <DataTable

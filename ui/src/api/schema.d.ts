@@ -378,6 +378,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/lookup/facets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Lookup Facets */
+        get: operations["get_lookup_facets_api_lookup_facets_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/reward-weights": {
         parameters: {
             query?: never;
@@ -1369,18 +1386,6 @@ export interface components {
         /** CampaignLookupPage */
         CampaignLookupPage: {
             scope: components["schemas"]["Scope"];
-            /** Factions */
-            factions?: components["schemas"]["PositionFacetOption"][];
-            /** Cultures */
-            cultures?: string[];
-            /** Maps */
-            maps?: components["schemas"]["Ident"][];
-            /** Settlements */
-            settlements?: components["schemas"]["PositionFacetOption"][];
-            /** Resources */
-            resources?: components["schemas"]["PositionFacetOption"][];
-            /** Hero Types */
-            hero_types?: components["schemas"]["PositionFacetOption"][];
             /**
              * Campaigns
              * @default 0
@@ -2560,6 +2565,22 @@ export interface components {
              */
             outcome_state: "ok" | "warn" | "bad" | "neutral";
         };
+        /** LookupFacets */
+        LookupFacets: {
+            scope: components["schemas"]["Scope"];
+            /** Factions */
+            factions?: components["schemas"]["PositionFacetOption"][];
+            /** Cultures */
+            cultures?: string[];
+            /** Maps */
+            maps?: components["schemas"]["Ident"][];
+            /** Settlements */
+            settlements?: components["schemas"]["PositionFacetOption"][];
+            /** Resources */
+            resources?: components["schemas"]["PositionFacetOption"][];
+            /** Hero Types */
+            hero_types?: components["schemas"]["PositionFacetOption"][];
+        };
         /** MatrixCell */
         MatrixCell: {
             action_type: components["schemas"]["Ident"];
@@ -2946,18 +2967,6 @@ export interface components {
         /** PositionsPage */
         PositionsPage: {
             scope: components["schemas"]["Scope"];
-            /** Factions */
-            factions?: components["schemas"]["PositionFacetOption"][];
-            /** Cultures */
-            cultures?: string[];
-            /** Maps */
-            maps?: components["schemas"]["Ident"][];
-            /** Settlements */
-            settlements?: components["schemas"]["PositionFacetOption"][];
-            /** Resources */
-            resources?: components["schemas"]["PositionFacetOption"][];
-            /** Hero Types */
-            hero_types?: components["schemas"]["PositionFacetOption"][];
             /**
              * Decisions
              * @default 0
@@ -4596,6 +4605,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_lookup_facets_api_lookup_facets_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LookupFacets"];
                 };
             };
         };
