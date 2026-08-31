@@ -282,11 +282,7 @@ def get_item_swaps(gap: int = Query(0, ge=0, le=50),
     got = q._fact_item_swaps(gap=gap, kept_min=kept, allow_reequip=reequip,
                              turn_lo=turn_lo, turn_hi=turn_hi)
     return SwapsPage(
-        scope=_scope("a character took one item off and put another of the same "
-                     "category on, under the knobs above",
-                     "same category = competing for the same slot; the knobs set "
-                     "how many turns the pickup may wait, how long the new item "
-                     "must stay on, and whether the old item may ever return"),
+        scope=_scope("same-category swaps a character kept, under these knobs"),
         events=got["events"], gap=gap, kept_min=kept, allow_reequip=reequip,
         turn_lo=turn_lo, turn_hi=turn_hi, rows=got["rows"])
 
@@ -388,14 +384,9 @@ def get_choices(family: str, censor: int = Query(0, ge=0, le=50),
     con = _con()
     got = q.choices_page(con, family, censor=censor, min_n=min_n)
     return ChoicesPage(
-        scope=_scope("every fork in the %s tree: campaigns that reached it, and "
-                     "what they went on to gain per path taken -- or neither"
-                     % ("building slot" if family == "building" else family),
-                     "cohort = campaigns whose state shows the fork open; an arm "
-                     "is the sibling completed first; future reward counts gains "
-                     "made after the fork was reached, from the same anchor for "
-                     "every arm; the censor knob drops neither-campaigns that "
-                     "died within N turns of reaching the fork"),
+        scope=_scope("every fork in the %s tree, and what each path -- or "
+                     "neither -- went on to gain"
+                     % ("building slot" if family == "building" else family)),
         **got)
 
 
@@ -413,11 +404,7 @@ def get_lookup(faction: str | None = None, culture: str | None = None,
                             search=q_text, page=page, page_size=page_size)
     return CampaignLookupPage(
         scope=_scope("every campaign that ever passed through a matching position, "
-                     "newest first",
-                     "conditions AND together over the recorded state at a single "
-                     "moment of the campaign; a has/has-not condition means the "
-                     "campaign had done that thing by then; rewards use the "
-                     "analytics weights"), **got)
+                     "newest first"), **got)
 
 
 @app.get("/api/lookup/facets", response_model=LookupFacets,
@@ -434,11 +421,7 @@ def _weights_page() -> RewardWeightsPage:
     w = q.reward_weights()
     defaults = {k: d for k, _l, d in q.REWARD_COMPONENTS}
     return RewardWeightsPage(
-        scope=_scope("what one unit of each gain is worth in the analytics reward",
-                     "the analytics reward is every reward the default dashboard "
-                     "shows: campaigns, starts, lookup, catalog, items, positions "
-                     "and the start tabs; the UCB selector's own scoring and the "
-                     "models' training target are separate and untouched"),
+        scope=_scope("what one unit of each gain is worth in the reward"),
         components=[RewardComponent(key=k, label=l, default=d)
                     for k, l, d in q.REWARD_COMPONENTS],
         weights=w,
