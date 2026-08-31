@@ -12,6 +12,7 @@ import { cn } from '@/lib/utils'
 const CATALOG_PATHS = ['/items', '/buildings', '/research', '/skills']
 
 const GAME_NAV = [
+  { to: '/', label: 'now', asks: 'what is happening right now' },
   { to: '/campaigns', label: 'campaigns', asks: 'how are campaigns going' },
   { to: '/lookup', label: 'lookup', asks: 'which campaigns passed through situations like this' },
   { to: '/items', label: 'catalog', asks: 'items, buildings, research and skills across the corpus' },
@@ -209,6 +210,7 @@ export function Layout() {
               )}
               <NavLink
                 to={item.to}
+                end={item.to === '/'}
                 title={item.asks}
                 className={({ isActive }) =>
                   cn(

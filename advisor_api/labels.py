@@ -321,6 +321,19 @@ def tech_parents() -> dict:
     return out
 
 
+def tech_roots() -> dict:
+    if not _have("tech"):
+        return {}
+    parents = tech_parents()
+    out: dict = {}
+    for r in _rows("SELECT key, node_set FROM tech"
+                   " WHERE node_set IS NOT NULL"
+                   " AND COALESCE(is_hidden, 0) = 0 ORDER BY key"):
+        if not parents.get(r["key"]):
+            out.setdefault(str(r["node_set"]), []).append(str(r["key"]))
+    return {ns: ks for ns, ks in out.items() if len(ks) > 1}
+
+
 def tech_rows_for(keys) -> list:
     ks = [str(k) for k in keys if k]
     if not (_have("tech") and ks):

@@ -580,8 +580,41 @@ class ItemsPage(BaseModel):
     categories: list[str] = Field(default_factory=list)
     resources: list[str] = Field(default_factory=list)
     rows: list[ItemRow] = Field(default_factory=list)
-    swap_events: int = 0
-    swaps: list[ItemSwapRow] = Field(default_factory=list)
+
+
+class SwapsPage(BaseModel):
+    scope: Scope
+    events: int = 0
+    gap: int = 0
+    kept_min: int | None = None
+    allow_reequip: bool = False
+    turn_lo: int | None = None
+    turn_hi: int | None = None
+    rows: list[ItemSwapRow] = Field(default_factory=list)
+
+
+class ForkArmRow(BaseModel):
+    key: str | None = None
+    label: str
+    n: int = 0
+    avg_reached_turn: float | None = None
+    avg_picked_turn: float | None = None
+    avg_reward: float | None = None
+    avg_future: float | None = None
+
+
+class ForkRow(BaseModel):
+    fork: str
+    label: str
+    cohort: int = 0
+    arms: list[ForkArmRow] = Field(default_factory=list)
+
+
+class ChoicesPage(BaseModel):
+    scope: Scope
+    censor: int = 0
+    min_n: int = 0
+    forks: list[ForkRow] = Field(default_factory=list)
 
 
 class ItemStartRow(BaseModel):
