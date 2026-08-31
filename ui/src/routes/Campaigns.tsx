@@ -9,6 +9,7 @@ import {
   Section,
   Skeleton,
 } from '@/components/primitives'
+import { useUiMode } from '@/components/Layout'
 import { SubNav, useSubView } from '@/components/SubNav'
 import { mapColor, mapShort } from '@/components/startcharts'
 import {
@@ -103,13 +104,15 @@ const startCols: Col<StartRow>[] = [
 function Starts() {
   const { data, error, loading, reload } = useApi<StartsPage>('/api/campaigns/starts')
   const navigate = useNavigate()
+  const mode = useUiMode()
   if (error) return <ErrorState error={error} onRetry={reload} />
   if (loading || !data) return <Skeleton rows={10} />
+  const cols = mode === 'full' ? startCols : startCols.filter((c) => c.key !== 'confirm')
   return (
     <Section title="starts" scope={data.scope}>
       <DataTable
         rows={data.rows.filter((r) => r.n > 0)}
-        cols={startCols}
+        cols={cols}
         rowId={(r) => startId(r)}
         onRowClick={(r) => navigate(startUrl(startId(r)))}
         initialSort={{ key: 'total_avg', desc: true }}
@@ -171,12 +174,16 @@ const campaignCols: Col<CampaignRow>[] = [
   { key: 'span', label: 'span', unit: 'min', group: 'growth', align: 'right', optional: true, value: (r) => r.span_min ?? 0, render: (r) => dash(r.span_min, 1) },
 ]
 
+const DEV_CAMPAIGN_COLS = new Set(['decisions', 'confirm', 'no_action', 'pick'])
+
 function AllCampaigns() {
   const { data, error, loading, reload } = useApi<CampaignsPage>('/api/campaigns')
   const f = useFilters()
   const navigate = useNavigate()
+  const mode = useUiMode()
   if (error) return <ErrorState error={error} onRetry={reload} />
   if (loading || !data) return <Skeleton rows={10} />
+  const cols = mode === 'full' ? campaignCols : campaignCols.filter((c) => !DEV_CAMPAIGN_COLS.has(c.key))
   const maps = [...new Map(data.rows.filter((r) => r.campaign_map).map((r) => [r.campaign_map!.raw, r.campaign_map!])).values()]
   const races = [...new Set(data.rows.map((r) => r.campaign.culture ?? ''))].filter(Boolean).sort()
   const rows = data.rows.filter(
@@ -209,7 +216,7 @@ function AllCampaigns() {
           <b className="num text-fg">{rows.length}</b> of {data.rows.length}
         </Card>
       </div>
-      <DataTable rows={rows} cols={campaignCols} rowId={(r) => r.campaign.raw} onRowClick={(r) => navigate(`/campaigns/${encodeURIComponent(r.campaign.raw)}`)} searchPlaceholder="search lord, race, outcome…" pageSize={10} emptyWhat="no campaign matches" />
+      <DataTable rows={rows} cols={cols} rowId={(r) => r.campaign.raw} onRowClick={(r) => navigate(`/campaigns/${encodeURIComponent(r.campaign.raw)}`)} searchPlaceholder="search lord, race, outcome…" pageSize={10} emptyWhat="no campaign matches" />
     </Section>
   )
 }

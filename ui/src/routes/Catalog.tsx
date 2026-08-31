@@ -68,7 +68,7 @@ function famCols(family: Family): Col<CatalogIndexRow>[] {
       label: 'Δ reward',
       unit: 'took − passed',
       align: 'right',
-      help: `average campaign reward of campaigns that ${f.verb} it, minus campaigns that saw it on offer and never did. Naive and pooled across starts; shown once both sides have 5+ campaigns.`,
+      help: `avg campaign reward, ${f.verb} − passed on the offer · pooled across starts · needs 5+5 campaigns`,
       value: (r) => r.delta ?? undefined,
       sortUndefined: 'last',
       render: (r) => signedNum(r.delta),

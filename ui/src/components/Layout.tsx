@@ -12,18 +12,20 @@ import { cn } from '@/lib/utils'
 const CATALOG_PATHS = ['/items', '/buildings', '/research', '/skills']
 
 const GAME_NAV = [
-  { to: '/run', label: 'run', asks: 'is it healthy right now' },
   { to: '/campaigns', label: 'campaigns', asks: 'how are campaigns going' },
-  { to: '/decisions', label: 'decisions', asks: 'what did it choose and why' },
-  { to: '/positions', label: 'positions', asks: 'what gets taken in situations like this' },
-  { to: '/items', label: 'catalog', asks: 'items, buildings, research and skills across the run' },
-  { to: '/log', label: 'log', asks: 'what exactly happened, second by second' },
+  { to: '/lookup', label: 'lookup', asks: 'which campaigns passed through situations like this' },
+  { to: '/items', label: 'catalog', asks: 'items, buildings, research and skills across the corpus' },
+  { to: '/status', label: 'status', asks: 'are the services alive and the streams writing' },
 ]
 
 const STACK_NAV = [
+  { to: '/run', label: 'run', asks: 'is the automated run healthy right now' },
+  { to: '/decisions', label: 'decisions', asks: 'what the advisor chose and why' },
+  { to: '/positions', label: 'positions', asks: 'what the advisor took in situations like this' },
+  { to: '/log', label: 'log', asks: 'what exactly happened, second by second' },
   { to: '/selector', label: 'selector', asks: 'why the selector played this start' },
   { to: '/models', label: 'models', asks: 'are the models learning' },
-  { to: '/infra', label: 'infra', asks: 'services and controls' },
+  { to: '/infra', label: 'infra', asks: 'stack controls and launches' },
 ]
 
 const devListeners = new Set<() => void>()
@@ -171,8 +173,8 @@ export function Layout() {
                 )}
                 title={
                   dev
-                    ? 'dev mode on: selector, models and infra are shown — click for the game dashboard alone'
-                    : 'dev mode off: game dashboard alone — click to also show selector, models and infra'
+                    ? 'dev dashboard on — click for the default dashboard alone'
+                    : 'default dashboard — click to also show the dev dashboard (run, decisions, positions, log, selector, models, infra)'
                 }
                 aria-label="toggle dev mode"
               >
@@ -192,10 +194,10 @@ export function Layout() {
         <nav className="flex flex-wrap items-center gap-1">
           {nav.map((item) => (
             <span key={item.to} className="flex items-center">
-              {item.to === '/selector' && (
+              {item.to === '/run' && (
                 <span className="flex items-center" aria-hidden>
                   <span className="bg-line mx-1.5 h-4 w-px" />
-                  <span className="text-dim mr-1 text-2xs tracking-wide uppercase">experiment</span>
+                  <span className="text-dim mr-1 text-2xs tracking-wide uppercase">dev</span>
                 </span>
               )}
               <NavLink

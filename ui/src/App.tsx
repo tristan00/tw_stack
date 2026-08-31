@@ -10,19 +10,23 @@ import { Infra } from '@/routes/Infra'
 import { ItemDetail } from '@/routes/ItemDetail'
 import { Items } from '@/routes/Items'
 import { Log } from '@/routes/Log'
+import { Lookup } from '@/routes/Lookup'
 import { Models } from '@/routes/Models'
 import { Positions } from '@/routes/Positions'
 import { Run } from '@/routes/Run'
 import { Selector } from '@/routes/Selector'
 import { StartDetail } from '@/routes/StartDetail'
+import { Status } from '@/routes/Status'
 
 
 export default function App() {
   return (
     <Routes>
       <Route element={<Layout />}>
-        <Route index element={<Navigate to="/run" replace />} />
+        <Route index element={<Navigate to="/campaigns" replace />} />
         <Route path="/run" element={<Run />} />
+        <Route path="/lookup" element={<Lookup />} />
+        <Route path="/status" element={<Status />} />
         <Route path="/campaigns" element={<Campaigns />} />
         <Route path="/campaigns/:campaignKey" element={<CampaignDetail />} />
         <Route path="/starts/:campaignMap/:faction" element={<StartDetail />} />
@@ -41,7 +45,7 @@ export default function App() {
         <Route path="/models" element={<Models />} />
         <Route path="/log" element={<Log />} />
         <Route path="/infra" element={<Infra />} />
-        <Route path="*" element={<Navigate to="/run" replace />} />
+        <Route path="*" element={<Navigate to="/campaigns" replace />} />
       </Route>
     </Routes>
   )
