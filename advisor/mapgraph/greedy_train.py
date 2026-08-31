@@ -29,7 +29,7 @@ LOSS = ("MSE(q_taken, y_z): one reward prediction per action node, read off the 
         "state-only model")
 
 
-def fit_net(datas, ys, groups, cfg, log=print, on_epoch=None):
+def fit_net(datas, ys, groups, cfg, log=print, on_epoch=None, free_datas=False):
     import torch
     from base_model import stable_split
     from advisor.mapgraph import greedy_net as GN
@@ -57,6 +57,9 @@ def fit_net(datas, ys, groups, cfg, log=print, on_epoch=None):
     loader = T._collate(trn, cfg["batch"], dev, log, "greedy train")
     vloader = T._collate([datas[i] for i in val_idx], cfg["batch"], dev, log,
                          "greedy val") if val_idx else []
+    if free_datas:
+        del trn
+        datas.clear()
     amp = (dev.type == "cuda") and bool(cfg.get("bf16", True))
 
     val_var = None
@@ -177,13 +180,20 @@ def train(runs_root=None, cfg=None, log=None, model_dir=MODEL_DIR, limit=None):
         return {"trained": False, "backend": "mapgraph_greedy", "rows": len(ex),
                 "need": MIN_ROWS, "tally": w["tally"], "n_decisions": w["n_decisions"]}
     datas = T._tensorize(ex)
+    for e in ex:
+        e["data"] = None
+    n_rows = len(datas)
     fit_cfg = _budget(cfg, time.time() - t0, log)
     net, fit, y_mean, y_sd = fit_net(datas, [e["y"] for e in ex],
-                                     [e["campaign_id"] for e in ex], fit_cfg, log=log)
+                                     [e["campaign_id"] for e in ex], fit_cfg, log=log,
+                                     free_datas=True)
+    if fit["device"] == "cuda":
+        import torch
+        torch.cuda.empty_cache()
     meta = _meta("mapgraph_greedy", dict(fit_cfg, time_budget_s=cfg["time_budget_s"]),
                  ex, fit, y_mean, y_sd, w["tally"])
     _save(model_dir, net, meta)
-    return {"trained": True, "backend": "mapgraph_greedy", "rows": len(datas), "fit": fit,
+    return {"trained": True, "backend": "mapgraph_greedy", "rows": n_rows, "fit": fit,
             "campaigns": len(meta["campaigns"]), "tally": w["tally"],
             "model_dir": model_dir,
             "walk_seconds": round(time.time() - t0 - fit["seconds"], 1)}

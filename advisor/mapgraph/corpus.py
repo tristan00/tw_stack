@@ -88,7 +88,7 @@ def load(run_key, log=print):
         meta = json.load(open(man, encoding="utf-8"))
         out = {}
         for name in meta["shards"]:
-            for rec in torch.load(os.path.join(d, name), weights_only=False):
+            for rec in torch.load(os.path.join(d, name), weights_only=False, mmap=True):
                 out[rec[0]] = rec
         log("mapgraph.corpus: %d cached graphs from %d shard(s)"
             % (len(out), len(meta["shards"])))

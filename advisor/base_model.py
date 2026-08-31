@@ -135,7 +135,8 @@ def regressor(iterations=None, learning_rate=None, base=None):
     if learning_rate:
         p["learning_rate"] = float(learning_rate)
     return CatBoostRegressor(iterations=int(iterations or CB_ITERATIONS),
-                             loss_function=CB_LOSS, verbose=0, train_dir=CB_TRAIN_DIR, **p)
+                             loss_function=CB_LOSS, verbose=0, train_dir=CB_TRAIN_DIR,
+                             allow_writing_files=False, **p)
 
 
 def fit_es(X, y, cat_idx, groups, tag, report, iterations=None, learning_rate=None,
