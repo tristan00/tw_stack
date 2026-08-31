@@ -65,12 +65,17 @@ class Metric(BaseModel):
 class Current(BaseModel):
     campaign: Ident | None = None
     leader: str | None = None
+    faction_key: str | None = None
+    campaign_map: Ident | None = None
     turn: int | None = None
     settlements: float | None = None
     power_rank: float | None = None
     lord_level: float | None = None
     stored_campaigns: int | None = None
     age_seconds: float | None = None
+    decisions: int | None = None
+    started_ts: float | None = None
+    pick_id: int | None = None
 
 
 class TimingRow(BaseModel):
@@ -310,6 +315,7 @@ class MatrixCell(BaseModel):
     total_ms: float | None = None
     per_try_ms: float | None = None
     state: State = "neutral"
+    counted: Rate | None = None
 
 
 class MatrixTotal(BaseModel):
@@ -345,33 +351,126 @@ class StartCampaign(BaseModel):
     ended_because: str | None = None
     decisions: int = 0
     confirm_rate: Rate | None = None
-    pick_id: int | None = None
-    in_window: bool = False
-
-
-class StartPickPoint(BaseModel):
-    pick_id: int
-    ts: float | None = None
-    c: float | None = None
-    rank: int
-    ranked: int = 0
-    n: int = 0
-    mean: float | None = None
-    blend: float | None = None
-    explore: float | None = None
-    score: float | None = None
-    adjust: float | None = None
-    chosen: bool = False
+    first_research: Ident | None = None
+    first_skill: Ident | None = None
+    first_building: Ident | None = None
 
 
 class StartDetail(BaseModel):
     scope: Scope
     start: StartRow
     window: int
-    campaigns: list[StartCampaign] = Field(default_factory=list)
-    trajectory: list[StartPickPoint] = Field(default_factory=list)
+    last_played: StartCampaign | None = None
+
+
+class StartCampaignsPage(BaseModel):
+    scope: Scope
+    rows: list[StartCampaign] = Field(default_factory=list)
+
+
+class PerfBar(BaseModel):
+    id: str
+    label: str
+    ts: float | None = None
+    settlements: float = 0.0
+    levels: float = 0.0
+    total_max: float | None = None
+    n: int = 1
+    trail: float | None = None
+
+
+class LengthBand(BaseModel):
+    label: str
+    n: int = 0
+    avg_reward: float | None = None
+    reward_per_turn: float | None = None
+
+
+class OutcomeCount(BaseModel):
+    outcome: Ident
+    state: State = "neutral"
+    n: int = 0
+    avg_turns: float | None = None
+
+
+class StartPerformance(BaseModel):
+    scope: Scope
+    window: int
+    bucket: int = 1
+    bars: list[PerfBar] = Field(default_factory=list)
+    reward_bins: list[int] = Field(default_factory=list)
     population_bins: list[int] = Field(default_factory=list)
-    actions: list[MatrixCell] = Field(default_factory=list)
+    pool_mean: float | None = None
+    turns_hist: list[int] = Field(default_factory=list)
+    outcomes: list[OutcomeCount] = Field(default_factory=list)
+    bands: list[LengthBand] = Field(default_factory=list)
+    reward_turns_r: float | None = None
+
+
+class OpeningBranch(BaseModel):
+    key: str
+    label: str | None = None
+    n: int = 0
+    share: float | None = None
+    avg_reward: float | None = None
+    delta_mean: float | None = None
+    avg_turns: float | None = None
+    reward_per_turn: float | None = None
+    offered: int = 0
+    taken: int = 0
+
+
+class OpeningOffer(BaseModel):
+    key: str
+    label: str | None = None
+    offered: int = 0
+    taken: int = 0
+    avg_reward_taken: float | None = None
+
+
+class OpeningFamily(BaseModel):
+    family: str
+    label: str
+    coverage: Rate
+    avg_offers: float | None = None
+    spread: float | None = None
+    branches: list[OpeningBranch] = Field(default_factory=list)
+    pooled: OpeningBranch | None = None
+    offers: list[OpeningOffer] = Field(default_factory=list)
+
+
+class RibbonBucket(BaseModel):
+    label: str
+    shares: list[float] = Field(default_factory=list)
+
+
+class ConquestStep(BaseModel):
+    step: int
+    key: str
+    label: str | None = None
+    reached: int = 0
+    of: int = 0
+    median_turn: float | None = None
+
+
+class StartOpenings(BaseModel):
+    scope: Scope
+    band: str
+    campaigns: int = 0
+    mean_reward: float | None = None
+    sd_reward: float | None = None
+    families: list[OpeningFamily] = Field(default_factory=list)
+    ribbon_family: str = "building"
+    ribbon_keys: list[str] = Field(default_factory=list)
+    ribbon_labels: list[str] = Field(default_factory=list)
+    ribbon: list[RibbonBucket] = Field(default_factory=list)
+    conquest: list[ConquestStep] = Field(default_factory=list)
+    no_settlement: int = 0
+
+
+class StartActions(BaseModel):
+    scope: Scope
+    cells: list[MatrixCell] = Field(default_factory=list)
 
 
 class RewardPoint(BaseModel):
@@ -394,6 +493,21 @@ class DiploEvent(BaseModel):
     state: State = "neutral"
 
 
+class Verdict(BaseModel):
+    kind: str | None = None
+    text: str
+    detail: str | None = None
+    pct: float | None = None
+    roots: list[str] = Field(default_factory=list)
+
+
+class TurnRollup(BaseModel):
+    turn: int
+    decisions: int = 0
+    confirmed: int = 0
+    refused: int = 0
+
+
 class CampaignDetail(BaseModel):
     scope: Scope
     row: CampaignRow
@@ -403,7 +517,13 @@ class CampaignDetail(BaseModel):
         description="reward columns holding one distinct value across this campaign; the "
                     "client hides them by default rather than shipping a dead column")
     diplomacy: list[DiploEvent]
-    decisions: list["DecisionRow"]
+    verdict: Verdict | None = None
+    turns: list[TurnRollup] = Field(default_factory=list)
+
+
+class CampaignDecisions(BaseModel):
+    scope: Scope
+    rows: list["DecisionRow"] = Field(default_factory=list)
 
 
 class DecisionRow(BaseModel):
@@ -415,6 +535,7 @@ class DecisionRow(BaseModel):
     entity: str | None = None
     action_type: Ident | None = None
     action_key: str | None = None
+    target: str | None = None
     result: Ident | None = None
     result_state: State = "neutral"
     refusal: Ident | None = None

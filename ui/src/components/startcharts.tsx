@@ -914,74 +914,117 @@ export function RankingBars({ rows, top = 15, onSelect }: { rows: RankingBarRow[
 }
 
 
-export interface TrajPoint {
-  id: number
-  rank: number
-  ranked: number
-  chosen: boolean
-  c: number | null | undefined
-  sub?: string
+export interface StackBucket {
+  label: string
+  shares: number[]
 }
 
-export function Trajectory({ points, onSelect, height = 200 }: { points: TrajPoint[]; onSelect?: (id: number) => void; height?: number }) {
+const STACK_COLORS = ['var(--accent)', 'var(--ggnn)', 'var(--gnn)']
+
+export function StackShares({ buckets, keys, height = 110 }: { buckets: StackBucket[]; keys: string[]; height?: number }) {
   const [ref, w] = useMeasure<HTMLDivElement>()
   const [hover, setHover] = useState<number | null>(null)
   const width = Math.max(320, w)
   const iw = width - P.l - P.r
-  const top0 = P.t + RIB
-  const ph = height - top0 - P.b
-  const len = points.length
-  const maxRank = Math.max(2, ...points.map((p) => p.ranked || p.rank))
-  const sx = (i: number) => P.l + (iw * (i + 0.5)) / Math.max(1, len)
-  const sy = (r: number) => top0 + (ph * (r - 1)) / (maxRank - 1)
-  const xsPos = points.map((_, i) => sx(i))
-  const xt = len > 1 ? [0, Math.floor(len / 2), len - 1] : [0]
+  const ph = height - P.t - P.b
+  const gw = iw / Math.max(1, buckets.length)
   return (
     <div ref={ref} className="min-w-0">
-      <svg
-        width={width}
-        height={height}
-        className="block"
-        onPointerMove={(e) => {
-          const r = (e.currentTarget as SVGSVGElement).getBoundingClientRect()
-          const i = Math.round(((e.clientX - r.left - P.l) / iw) * len - 0.5)
-          setHover(i >= 0 && i < len ? i : null)
-        }}
-        onPointerLeave={() => setHover(null)}
-        onClick={() => hover !== null && points[hover] && onSelect?.(points[hover].id)}
-        style={{ cursor: onSelect ? 'pointer' : undefined }}
-      >
-        <Ribbon xs={xsPos} values={points.map((p) => p.c)} y={P.t} width={width} />
-        {[1, Math.round(maxRank / 4), Math.round(maxRank / 2), maxRank].map((r) => (
-          <g key={r}>
-            <line x1={P.l} x2={width - P.r} y1={sy(r)} y2={sy(r)} stroke="var(--line)" shapeRendering="crispEdges" />
-            <text x={P.l - 5} y={sy(r) + 3.5} textAnchor="end" fontSize="10" className="num fill-[var(--dim)]">#{r}</text>
+      <svg width={width} height={height} className="block">
+        {[0, 0.5, 1].map((v) => (
+          <g key={v}>
+            <line x1={P.l} x2={width - P.r} y1={P.t + ph * (1 - v)} y2={P.t + ph * (1 - v)} stroke="var(--line)" shapeRendering="crispEdges" />
+            <text x={P.l - 5} y={P.t + ph * (1 - v) + 3.5} textAnchor="end" fontSize="10" className="num fill-[var(--dim)]">{(100 * v).toFixed(0)}%</text>
           </g>
         ))}
-        <path d={'M' + points.map((p, i) => `${sx(i).toFixed(1)},${sy(p.rank).toFixed(1)}`).join('L')} fill="none" stroke="var(--dim)" strokeWidth="1.25" opacity="0.8" />
-        {points.map((p, i) =>
-          p.chosen ? <circle key={p.id} cx={sx(i)} cy={sy(p.rank)} r="4" fill="var(--accent)" stroke="var(--surface)" strokeWidth="1.5" /> : null,
-        )}
-        {hover !== null && points[hover] && (
-          <g>
-            <line x1={sx(hover)} x2={sx(hover)} y1={top0} y2={top0 + ph} stroke="var(--dim)" opacity="0.6" />
-            <circle cx={sx(hover)} cy={sy(points[hover].rank)} r="4.5" fill="var(--fg)" stroke="var(--surface)" strokeWidth="1.5" />
-          </g>
-        )}
-        {xt.map((i) => (
-          <text key={i} x={sx(i)} y={height - 8} textAnchor={i === 0 ? 'start' : i === len - 1 ? 'end' : 'middle'} fontSize="10" className="num fill-[var(--dim)]">{points[i]?.id}</text>
-        ))}
-      </svg>
-      <Legend items={[{ label: 'rank at pick', color: 'var(--dim)', shape: 'line' }, { label: 'chosen', color: 'var(--accent)' }]} />
-      <HoverLine fallback={`${len} picks · chosen ${points.filter((p) => p.chosen).length}×`}>
-        {hover !== null && points[hover] ? (
+        {buckets.map((b, i) => {
+          const x0 = P.l + i * gw + 1
+          const bw = Math.max(1, gw - 2)
+          let acc = 0
+          return (
+            <g key={b.label} onPointerEnter={() => setHover(i)} onPointerLeave={() => setHover(null)}>
+              <rect x={P.l + i * gw} y={P.t} width={gw} height={ph} fill="transparent" />
+              {b.shares.map((s, k) => {
+                const h = (ph * s) / 100
+                acc += h
+                return <rect key={k} x={x0} y={P.t + ph - acc} width={bw} height={Math.max(0, h - 1)} fill={STACK_COLORS[k % STACK_COLORS.length]} opacity={hover === null || hover === i ? 0.9 : 0.5} />
+              })}
+            </g>
+          )
+        })}
+        <line x1={P.l} x2={width - P.r} y1={P.t + ph} y2={P.t + ph} stroke="var(--line)" shapeRendering="crispEdges" />
+        {buckets.length > 0 && (
           <>
-            pick <b className="num text-fg">{points[hover].id}</b> · rank <b className="num text-fg">#{points[hover].rank}</b> of {points[hover].ranked}
-            {points[hover].chosen ? <span className="text-accent"> · chosen</span> : null}
-            {points[hover].sub ? <span> · {points[hover].sub}</span> : null}
+            <text x={P.l} y={height - 8} fontSize="10" className="num fill-[var(--dim)]">{buckets[0].label}</text>
+            <text x={width - P.r} y={height - 8} textAnchor="end" fontSize="10" className="num fill-[var(--dim)]">{buckets[buckets.length - 1].label}</text>
+          </>
+        )}
+      </svg>
+      <Legend items={keys.map((k, i) => ({ label: k, color: STACK_COLORS[i % STACK_COLORS.length], shape: 'square' as const })).concat([{ label: 'other', color: 'var(--raised)', shape: 'square' as const }])} />
+      <HoverLine fallback={`${buckets.length} buckets in play order`}>
+        {hover !== null && buckets[hover] ? (
+          <>
+            <b className="num text-fg">{buckets[hover].label}</b>
+            {keys.map((k, k2) => (
+              <span key={k} className="ml-2">
+                {k} <b className="num text-fg">{buckets[hover].shares[k2]?.toFixed(0) ?? 0}%</b>
+              </span>
+            ))}
           </>
         ) : null}
       </HoverLine>
+    </div>
+  )
+}
+
+
+export function Steps({ label, delta, values, turns, height = 96 }: { label: string; delta: string; values: (number | null | undefined)[]; turns: number[]; height?: number }) {
+  const [ref, w] = useMeasure<HTMLDivElement>()
+  const [hover, setHover] = useState<number | null>(null)
+  const width = Math.max(200, w)
+  const pts = values.map((v, i) => ({ v, t: turns[i] })).filter((p): p is { v: number; t: number } => p.v !== null && p.v !== undefined)
+  const lo = Math.min(...pts.map((p) => p.v))
+  const hi = Math.max(...pts.map((p) => p.v))
+  const span = hi - lo || 1
+  const sx = (i: number) => 8 + (i * (width - 20)) / Math.max(1, pts.length - 1)
+  const sy = (v: number) => 12 + (height - 34) * (1 - (v - lo) / span)
+  let d = ''
+  pts.forEach((p, i) => {
+    if (i === 0) d += `M${sx(i).toFixed(1)},${sy(p.v).toFixed(1)}`
+    else d += `L${sx(i).toFixed(1)},${sy(pts[i - 1].v).toFixed(1)}L${sx(i).toFixed(1)},${sy(p.v).toFixed(1)}`
+  })
+  return (
+    <div ref={ref} className="bg-surface border-line min-w-0 flex-1 rounded-lg border px-3 py-2.5">
+      <div className="flex items-baseline justify-between text-2xs">
+        <span className="text-dim">{label}</span>
+        <span className="num">{delta}</span>
+      </div>
+      <svg
+        width={width}
+        height={height - 30}
+        className="mt-1 block"
+        onPointerMove={(e) => {
+          const r = (e.currentTarget as SVGSVGElement).getBoundingClientRect()
+          const i = Math.round(((e.clientX - r.left - 8) / (width - 20)) * (pts.length - 1))
+          setHover(i >= 0 && i < pts.length ? i : null)
+        }}
+        onPointerLeave={() => setHover(null)}
+      >
+        <path d={d} fill="none" stroke="var(--accent)" strokeWidth="1.6" />
+        {pts.length <= 20 && pts.map((p, i) => <circle key={i} cx={sx(i)} cy={sy(p.v)} r="2.4" fill="var(--accent)" />)}
+        {hover !== null && pts[hover] && (
+          <circle cx={sx(hover)} cy={sy(pts[hover].v)} r="3.5" fill="var(--fg)" stroke="var(--surface)" strokeWidth="1.5" />
+        )}
+      </svg>
+      <div className="text-dim min-h-4 text-2xs">
+        {hover !== null && pts[hover] ? (
+          <>
+            turn <b className="num text-fg">{pts[hover].t}</b> · <b className="num text-fg">{fmtN(pts[hover].v)}</b>
+          </>
+        ) : (
+          `turns ${pts[0]?.t ?? '—'}–${pts[pts.length - 1]?.t ?? '—'}`
+        )}
+      </div>
     </div>
   )
 }
@@ -1042,7 +1085,14 @@ export function RewardBars({ items, onSelect, height = 180, trailing = 5 }: { it
           <text key={i} x={sx(i) + gw / 2} y={height - 6} textAnchor={i === 0 ? 'start' : i === len - 1 ? 'end' : 'middle'} fontSize="10" className="num fill-[var(--dim)]">{i + 1}</text>
         ))}
       </svg>
-      <Legend items={[{ label: 'settlements gained', color: 'var(--accent)', shape: 'square' }, { label: 'lord levels gained', color: 'var(--ggnn)', shape: 'square' }, { label: `trailing ${trailing} mean`, color: 'var(--fg)', shape: 'line' }, { label: 'UCB pick', color: 'var(--fg)', shape: 'ring' }]} />
+      <Legend
+        items={[
+          { label: 'settlements gained', color: 'var(--accent)', shape: 'square' },
+          { label: 'lord levels gained', color: 'var(--ggnn)', shape: 'square' },
+          { label: `trailing ${trailing} mean`, color: 'var(--fg)', shape: 'line' },
+          ...(items.some((i) => i.picked) ? [{ label: 'UCB pick', color: 'var(--fg)', shape: 'ring' as const }] : []),
+        ]}
+      />
       <HoverLine fallback={`${len} campaigns`}>
         {hover !== null && items[hover] ? (
           <>

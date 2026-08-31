@@ -1,9 +1,11 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import math
 import os
+import re
 import statistics
 import sys
 import time
@@ -17,15 +19,17 @@ import metrics_db
 import run_config
 import ucb_stats as UCB
 from advisor_api import analytics_db as adb
-from advisor_api import db, ident
+from advisor_api import db, ident, labels
 from advisor_api.models import (
     ActionTypeRow, ActivityRow, AgreementPage, AgreementRankRow, AgreementSummary,
-    ArmCoverage, CampaignRow, Count, CorrelationRow, CorrelationTile, Current,
-    CampaignReward, DecisionRow, DiploEvent, EntityState, ForcingBar, ForcingTile, Ident,
-    InterruptOption, InterruptRow, Metric, ModelCard, OfferRow, OutcomeTally, PairOption,
-    PhaseSpan, PolicyRow, Rate, RewardPoint, Scope, Service, StartRow, TimelineAction,
-    TimelineLane, TimingRow, TrainingEvent, TrialCorr, TrialRow, UcbPick, UcbRow,
-    HistBin, MatrixCell, ProducedCampaign, StartCampaign, StartPickPoint, WindowEdgeRow,
+    ArmCoverage, CampaignRow, ConquestStep, Count, CorrelationRow, CorrelationTile,
+    Current, CampaignReward, DecisionRow, DiploEvent, EntityState, ForcingBar,
+    ForcingTile, Ident, InterruptOption, InterruptRow, LengthBand, Metric, ModelCard,
+    OfferRow, OpeningBranch, OpeningFamily, OpeningOffer, OutcomeCount, OutcomeTally,
+    PairOption, PerfBar, PhaseSpan, PolicyRow, Rate, RewardPoint, RibbonBucket, Scope,
+    Service, StartRow, TimelineAction, TimelineLane, TimingRow, TrainingEvent, TrialCorr,
+    TrialRow, TurnRollup, UcbPick, UcbRow, HistBin, MatrixCell, ProducedCampaign,
+    StartCampaign, Verdict, WindowEdgeRow,
 )
 from decisions import pg_schema as SS
 
@@ -185,7 +189,8 @@ def join_outcomes(con) -> dict:
 @db.timed
 def current(con) -> Current:
     row = con.execute(
-        "SELECT d.turn, d.ts, c.campaign_key, c.leader, b.z"
+        "SELECT d.turn, d.ts, d.campaign_id, c.campaign_key, c.leader, c.faction,"
+        "       c.campaign_map, b.z"
         " FROM decisions d JOIN campaigns c ON c.campaign_id = d.campaign_id"
         " LEFT JOIN blobs b ON b.blob_id = d.campaign_blob"
         " ORDER BY d.decision_id DESC LIMIT 1").fetchone()
@@ -193,13 +198,23 @@ def current(con) -> Current:
         return Current()
     camp = _jload(row["z"]) if row["z"] is not None else {}
     stored = con.execute("SELECT SUM(n) FROM start_counts").fetchone()
+    span = con.execute("SELECT COUNT(*) n, MIN(ts) t0 FROM decisions"
+                       " WHERE campaign_id = %s", (row["campaign_id"],)).fetchone()
+    pick = con.execute("SELECT pick_id FROM ucb_picks WHERE campaign_map = %s"
+                       " AND faction = %s ORDER BY pick_id DESC LIMIT 1",
+                       (row["campaign_map"], row["faction"])).fetchone()
     return Current(campaign=_camp(row["campaign_key"]), turn=_i(row["turn"]),
-                   leader=row["leader"],
+                   leader=row["leader"], faction_key=row["faction"],
+                   campaign_map=_id(ident.campaign_map(row["campaign_map"]))
+                   if row["campaign_map"] else None,
                    settlements=_f(camp.get("settlements")),
                    power_rank=_f(camp.get("power_rank")),
                    lord_level=_f(camp.get("lord_level")),
                    stored_campaigns=_i(stored[0]) if stored else None,
-                   age_seconds=max(0.0, time.time() - (_f(row["ts"]) or 0.0)))
+                   age_seconds=max(0.0, time.time() - (_f(row["ts"]) or 0.0)),
+                   decisions=_i(span["n"]) if span else None,
+                   started_ts=_f(span["t0"]) if span else None,
+                   pick_id=_i(pick["pick_id"]) if pick else None)
 
 
 @db.timed
@@ -783,23 +798,139 @@ def ucb_pick_counts(con) -> dict:
         "SELECT pick_id, COUNT(*) n FROM ucb_pick_rows GROUP BY pick_id")}
 
 
-def start_detail(con, mkey: str, fkey: str):
-    gains = gains_all(con)
-    cx = ucb_context(con, gains)
-    produced = pick_campaigns(con)
-    rows = campaign_rows(con, produced=produced)
-    row = next((r for r in starts_rows(con, rows, cx, gains)
-                if (r.campaign_map.raw if r.campaign_map else "") == mkey
-                and r.faction.raw == fkey), None)
-    if row is None:
+OPEN_FAMILIES = ("building", "skills", "research", "items")
+OPEN_BANDS = {"1-3": (1, 3), "4-6": (4, 6), "7+": (7, 10 ** 6)}
+FAMILY_LABEL = {"building": "first building", "skills": "first skill",
+                "research": "first research", "items": "first item"}
+PERF_BARS = 240
+RIBBON_BUCKET_MIN = 15
+RIBBON_BUCKETS_MAX = 24
+
+
+@db.timed
+def start_head(con, mkey: str, fkey: str, gains=None, cx=None):
+    gains = gains_all(con) if gains is None else gains
+    cx = ucb_context(con, gains) if cx is None else cx
+    key = (mkey, fkey)
+    mine = [g for g in gains if (g["campaign_map"] or "") == mkey
+            and g["faction"] == fkey]
+    if not mine and key not in cx["pool"]:
+        return None, gains, cx
+    ids = [_i(r["campaign_id"], 0) for r in con.execute(
+        "SELECT campaign_id FROM campaigns WHERE campaign_map = %s AND faction = %s",
+        key)]
+    turns, span_min = [], 0.0
+    if ids:
+        for r in con.execute(
+                "SELECT MAX(turn) t, MIN(ts) t0, MAX(ts) t1 FROM decisions"
+                " WHERE campaign_id = ANY(%s) GROUP BY campaign_id", (ids,)):
+            if r["t"] is not None:
+                turns.append(_i(r["t"], 0) or 0)
+            span_min += ((_f(r["t1"]) or 0.0) - (_f(r["t0"]) or 0.0)) / 60.0
+    att = conf = 0
+    if ids:
+        c_ = con.execute(
+            "SELECT SUM(CASE WHEN refusal IN ('awaiting_execution','campaign_died')"
+            "  THEN 0 ELSE 1 END) att,"
+            " SUM(CASE WHEN counted = 1 THEN 1 ELSE 0 END) conf"
+            " FROM taken WHERE campaign_id = ANY(%s)", (ids,)).fetchone()
+        att, conf = _i(c_["att"], 0) or 0, _i(c_["conf"], 0) or 0
+    d = (cx["stats"].get(key) or dict(UCB.EMPTY))
+    rewards = cx["rewards"].get(key) or []
+    counts = con.execute("SELECT n FROM start_counts WHERE campaign_map = %s"
+                         " AND faction = %s", key).fetchone()
+    row = StartRow(
+        faction=_fac(fkey),
+        leader=_start_leaders(con).get((mkey or "", fkey)),
+        campaign_map=_id(ident.campaign_map(mkey)) if mkey else None,
+        in_pool=key in cx["pool"],
+        n=_i(counts["n"], len(mine)) if counts else len(mine),
+        n_window=d["n"],
+        mean=round(d["mean"], 4) if d["n"] else None,
+        std=round(d["std"], 4) if d["n"] else None,
+        best=max((_f(g["reward"], 0.0) or 0.0) for g in mine) if mine else None,
+        zero_rate=Rate(n=sum(1 for r in rewards if r <= 0), of=len(rewards),
+                       noun="campaigns",
+                       population="of this start inside the training window that "
+                                  "gained nothing"),
+        avg_turns=round(sum(turns) / len(turns), 1) if turns else None,
+        sec_per_turn=round(span_min * 60.0 / sum(turns), 1) if sum(turns) else None,
+        confirm_rate=Rate(n=conf, of=att, noun="actions",
+                          population="attempted across this start's campaigns"))
+    return row, gains, cx
+
+
+@db.timed
+def start_last_played(con, mkey: str, fkey: str) -> StartCampaign | None:
+    mine = _start_gains(con, mkey, fkey)
+    if not mine:
         return None
+    g = mine[-1]
+    outcome = g["outcome"]
+    return StartCampaign(
+        campaign=_camp(g["campaign_key"]), ts=_f(g["first_ts"]),
+        turns=_i(g["turns_reached"]), reward=_f(g["reward"]),
+        settlements_gained=_f(g["settlements_gained"]),
+        levels_gained=_f(g["levels_gained"]),
+        outcome=_phrase(outcome) if outcome else None,
+        outcome_state=_OUTCOME_STATE.get(outcome or "", "neutral"))
+
+
+@db.timed
+def start_firsts(con, mkey: str, fkey: str) -> dict:
+    out: dict = {}
+    for r in con.execute(
+            "SELECT DISTINCT ON (t.campaign_id, a.action_type)"
+            " t.campaign_id, a.action_type, a.action_key, t.decision_id"
+            " FROM taken t"
+            " JOIN actions a ON a.action_id = t.action_id"
+            " JOIN campaigns c ON c.campaign_id = t.campaign_id"
+            " WHERE c.campaign_map = %s AND c.faction = %s AND t.counted = 1"
+            "   AND a.action_type = ANY(%s)"
+            " ORDER BY t.campaign_id, a.action_type, t.decision_id",
+            (mkey, fkey, list(OPEN_FAMILIES))):
+        out.setdefault(_i(r["campaign_id"], 0), {})[r["action_type"]] = (
+            r["action_key"], _i(r["decision_id"], 0))
+    return out
+
+
+def _open_ident(fam, key):
+    if not key:
+        return None
+    return Ident(raw=key, label=labels.name_for(fam, key) or labels.pretty(key))
+
+
+_STAMPED: dict = {}
+
+
+def _stamped(name, build):
+    key = (db.stamp(), int(time.time() / 60))
+    hit = _STAMPED.get(name)
+    if hit and hit[0] == key:
+        return hit[1]
+    v = build()
+    _STAMPED[name] = (key, v)
+    return v
+
+
+def campaign_row(con, campaign_key: str):
+    rows = _stamped("campaign_rows", lambda: campaign_rows(con))
+    return next((r for r in rows if r.campaign.raw == campaign_key), None)
+
+
+def start_campaigns_slice(con, mkey: str, fkey: str) -> list:
+    rows = _stamped("campaign_rows", lambda: campaign_rows(con))
     by_camp = {r.campaign.raw: r for r in rows}
-    produced_by = {v: k for k, v in produced.items()}
+    ids = {r["campaign_key"]: _i(r["campaign_id"], 0) for r in con.execute(
+        "SELECT campaign_id, campaign_key FROM campaigns"
+        " WHERE campaign_map = %s AND faction = %s", (mkey, fkey))}
+    firsts = start_firsts(con, mkey, fkey)
     camps = []
-    for i, g in enumerate(gains):
+    for g in gains_all(con):
         if (g["campaign_map"] or "") != mkey or g["faction"] != fkey:
             continue
         cr = by_camp.get(g["campaign_key"])
+        f = firsts.get(ids.get(g["campaign_key"]) or -1, {})
         camps.append(StartCampaign(
             campaign=_camp(g["campaign_key"]), ts=_f(g["first_ts"]),
             turns=(cr.turns if cr else _i(g["turns_reached"])),
@@ -810,40 +941,321 @@ def start_detail(con, mkey: str, fkey: str):
             ended_because=cr.ended_because if cr else None,
             decisions=cr.decisions if cr else 0,
             confirm_rate=cr.confirm_rate if cr else None,
-            pick_id=produced_by.get(g["campaign_key"]),
-            in_window=i < UCB.WINDOW))
-    counts = ucb_pick_counts(con)
-    traj = []
+            first_research=_open_ident("research", (f.get("research") or (None,))[0]),
+            first_skill=_open_ident("skills", (f.get("skills") or (None,))[0]),
+            first_building=_open_ident("building", (f.get("building") or (None,))[0])))
+    return camps
+
+
+def _start_gains(con, mkey: str, fkey: str) -> list:
+    out = []
     for r in con.execute(
-            "SELECT r.pick_id pick_id, p.ts ts, p.c c, r.rank rank, r.n n, r.mean mean,"
-            " r.blend blend, r.explore explore, r.score score, r.adjust adjust,"
-            " r.chosen chosen"
-            " FROM ucb_pick_rows r JOIN ucb_picks p ON p.pick_id = r.pick_id"
-            " WHERE r.campaign_map = %s AND r.faction = %s ORDER BY r.pick_id",
-            (mkey, fkey)):
-        score, explore = _f(r["score"]), _f(r["explore"])
-        blend = _f(r["blend"])
-        if blend is None and score is not None and explore is not None:
-            blend = round(score - explore - (_f(r["adjust"]) or 0.0), 4)
-        traj.append(StartPickPoint(
-            pick_id=_i(r["pick_id"], 0), ts=_f(r["ts"]), c=_f(r["c"]),
-            rank=_i(r["rank"], 0), ranked=counts.get(_i(r["pick_id"], 0), 0),
-            n=_i(r["n"], 0), mean=_f(r["mean"]), blend=blend, explore=explore,
-            score=score, adjust=_f(r["adjust"]), chosen=bool(r["chosen"])))
-    pop = [0] * (cx["top_reward"] + 1)
+            "SELECT c.campaign_id, c.campaign_key, c.outcome,"
+            "       g.settlements_gained, g.levels_gained, g.turns_reached, g.first_ts"
+            " FROM campaigns c JOIN campaign_gains g ON g.campaign_key = c.campaign_key"
+            " WHERE c.campaign_map = %s AND c.faction = %s"
+            " ORDER BY g.first_ts", (mkey, fkey)):
+        d = dict(r)
+        d["reward"] = ((_f(d["settlements_gained"], 0.0) or 0.0)
+                       + (_f(d["levels_gained"], 0.0) or 0.0))
+        out.append(d)
+    return out
+
+
+def _pearson(xs, ys):
+    n = len(xs)
+    if n < 12:
+        return None
+    mx, my = sum(xs) / n, sum(ys) / n
+    sxx = sum((x - mx) ** 2 for x in xs)
+    syy = sum((y - my) ** 2 for y in ys)
+    if sxx <= 0 or syy <= 0:
+        return None
+    sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    return round(sxy / math.sqrt(sxx * syy), 3)
+
+
+@db.timed
+def start_performance(con, mkey: str, fkey: str, gains=None, cx=None) -> dict:
+    gains = gains_all(con) if gains is None else gains
+    cx = ucb_context(con, gains) if cx is None else cx
+    mine = _start_gains(con, mkey, fkey)
+    top = cx["top_reward"]
+    pop = [0] * (top + 1)
     for vals in cx["rewards"].values():
-        for i, c in enumerate(_bins(vals, cx["top_reward"])):
+        for i, c in enumerate(_bins(vals, top)):
             pop[i] += c
-    grid, _ = matrix(con, "action")
+    pool_vals = [v for vals in cx["rewards"].values() for v in vals]
+    window_keys = {g["campaign_key"] for g in gains[:UCB.WINDOW]}
+    mine_window = [g["reward"] for g in mine if g["campaign_key"] in window_keys]
+    k = max(1, math.ceil(len(mine) / PERF_BARS))
+    bars, totals = [], [g["reward"] for g in mine]
+    for i0 in range(0, len(mine), k):
+        chunk = mine[i0:i0 + k]
+        setts = sum((_f(g["settlements_gained"], 0.0) or 0.0) for g in chunk) / len(chunk)
+        lvls = sum((_f(g["levels_gained"], 0.0) or 0.0) for g in chunk) / len(chunk)
+        i1 = i0 + len(chunk) - 1
+        lo = max(0, i1 - 4)
+        bars.append(PerfBar(
+            id=chunk[-1]["campaign_key"],
+            label=("campaign %d" % (i0 + 1) if k == 1
+                   else "campaigns %d-%d" % (i0 + 1, i1 + 1)),
+            ts=_f(chunk[-1]["first_ts"]), settlements=round(setts, 2),
+            levels=round(lvls, 2),
+            total_max=round(max(g["reward"] for g in chunk), 1), n=len(chunk),
+            trail=round(sum(totals[lo:i1 + 1]) / len(totals[lo:i1 + 1]), 2)))
+    max_t = max([_i(g["turns_reached"], 0) or 0 for g in mine] + [1])
+    hist = [0] * min(max_t, 40)
+    for g in mine:
+        t = _i(g["turns_reached"], 0) or 0
+        if t >= 1:
+            hist[min(t, len(hist)) - 1] += 1
+    outs: dict = {}
+    for g in mine:
+        o = g["outcome"] or "no_ending_recorded"
+        outs.setdefault(o, []).append(_i(g["turns_reached"], 0) or 0)
+    outcomes = [OutcomeCount(outcome=_phrase(o), state=_OUTCOME_STATE.get(o, "neutral"),
+                             n=len(ts), avg_turns=round(sum(ts) / len(ts), 1) if ts else None)
+                for o, ts in sorted(outs.items(), key=lambda kv: -len(kv[1]))]
+    bands = []
+    for label, (lo_t, hi_t) in (("short · 1-3 turns", (1, 3)), ("mid · 4-6 turns", (4, 6)),
+                                ("long · 7+ turns", (7, 10 ** 6))):
+        sel = [g for g in mine if lo_t <= (_i(g["turns_reached"], 0) or 0) <= hi_t]
+        rpt = [g["reward"] / (_i(g["turns_reached"], 0) or 1) for g in sel]
+        bands.append(LengthBand(
+            label=label, n=len(sel),
+            avg_reward=round(sum(g["reward"] for g in sel) / len(sel), 2) if sel else None,
+            reward_per_turn=round(sum(rpt) / len(rpt), 2) if rpt else None))
+    pairs = [(g["reward"], _i(g["turns_reached"], 0) or 0) for g in mine
+             if (_i(g["turns_reached"], 0) or 0) >= 1]
+    return {"bucket": k, "bars": bars, "reward_bins": _bins(mine_window, top),
+            "population_bins": pop,
+            "pool_mean": round(sum(pool_vals) / len(pool_vals), 2) if pool_vals else None,
+            "turns_hist": hist, "outcomes": outcomes, "bands": bands,
+            "reward_turns_r": _pearson([p[0] for p in pairs], [p[1] for p in pairs])}
+
+
+@db.timed
+def start_openings(con, mkey: str, fkey: str, band: str = "all") -> dict:
+    meta = {}
+    for g in _start_gains(con, mkey, fkey):
+        t = _i(g["turns_reached"], 0) or 0
+        lo, hi = OPEN_BANDS.get(band, (0, 10 ** 6))
+        if band == "all" or lo <= t <= hi:
+            meta[_i(g["campaign_id"], 0)] = (g["reward"], t, g["campaign_key"])
+    rewards = [v[0] for v in meta.values()]
+    mean_r = sum(rewards) / len(rewards) if rewards else None
+    sd_r = statistics.pstdev(rewards) if len(rewards) > 1 else None
+    firsts = start_firsts(con, mkey, fkey)
+    offered: dict = {}
+    for r in con.execute(
+            "WITH f AS ("
+            " SELECT DISTINCT ON (t.campaign_id, a.action_type)"
+            "  t.campaign_id, a.action_type, t.decision_id"
+            " FROM taken t"
+            " JOIN actions a ON a.action_id = t.action_id"
+            " JOIN campaigns c ON c.campaign_id = t.campaign_id"
+            " WHERE c.campaign_map = %s AND c.faction = %s AND t.counted = 1"
+            "   AND a.action_type = ANY(%s)"
+            " ORDER BY t.campaign_id, a.action_type, t.decision_id)"
+            " SELECT f.action_type, a2.action_key,"
+            "        COUNT(DISTINCT f.campaign_id) offered"
+            " FROM f JOIN offers o ON o.decision_id = f.decision_id"
+            " JOIN actions a2 ON a2.action_id = o.action_id"
+            "  AND a2.action_type = f.action_type"
+            " GROUP BY 1, 2", (mkey, fkey, list(OPEN_FAMILIES))):
+        offered[(r["action_type"], r["action_key"])] = _i(r["offered"], 0) or 0
+    families = []
+    for fam in OPEN_FAMILIES:
+        by_key: dict = {}
+        for cid, picks in firsts.items():
+            if cid not in meta or fam not in picks:
+                continue
+            by_key.setdefault(picks[fam][0], []).append(meta[cid])
+        covered = sum(len(v) for v in by_key.values())
+        stats = []
+        for key, vals in by_key.items():
+            rs = [v[0] for v in vals]
+            ts = [max(1, v[1]) for v in vals]
+            n = len(vals)
+            avg = sum(rs) / n
+            stats.append(OpeningBranch(
+                key=key, label=labels.name_for(fam, key) or labels.pretty(key), n=n,
+                share=round(100.0 * n / covered, 1) if covered else None,
+                avg_reward=round(avg, 2),
+                delta_mean=round(avg - mean_r, 2) if mean_r is not None else None,
+                avg_turns=round(sum(ts) / n, 1),
+                reward_per_turn=round(sum(r / t for r, t in zip(rs, ts)) / n, 2),
+                offered=offered.get((fam, key), 0), taken=n))
+        stats.sort(key=lambda b: -b.n)
+        head, tail = stats[:8], stats[8:]
+        pooled = None
+        if tail:
+            pn = sum(b.n for b in tail)
+            pooled = OpeningBranch(
+                key="", label="other (%d branches)" % len(tail), n=pn,
+                share=round(100.0 * pn / covered, 1) if covered else None,
+                avg_reward=round(sum(b.avg_reward * b.n for b in tail) / pn, 2)
+                if pn else None)
+        offers = [OpeningOffer(key=k2, label=labels.name_for(fam, k2) or labels.pretty(k2),
+                               offered=off, taken=next((b.n for b in stats if b.key == k2), 0),
+                               avg_reward_taken=next(
+                                   (b.avg_reward for b in stats if b.key == k2), None))
+                  for (f2, k2), off in offered.items() if f2 == fam and off >= 10]
+        offers.sort(key=lambda o: (-o.offered, o.taken))
+        big = [b for b in head if b.n >= 10]
+        spread = (round(max(b.avg_reward for b in big) - min(b.avg_reward for b in big), 2)
+                  if len(big) >= 2 else None)
+        pairs = sum(off for (f3, _k3), off in offered.items() if f3 == fam)
+        families.append(OpeningFamily(
+            family=fam, label=FAMILY_LABEL[fam],
+            coverage=Rate(n=covered, of=len(meta), noun="campaigns",
+                          population="in this band that took a first %s" % fam),
+            avg_offers=round(pairs / covered, 1) if covered else None,
+            spread=spread, branches=head, pooled=pooled, offers=offers[:12]))
+    families.sort(key=lambda f: -(f.spread if f.spread is not None else -1))
+    ordered = sorted(meta.items(), key=lambda kv: kv[1][2])
+    seq = []
+    for cid, _m in ordered:
+        picks = firsts.get(cid) or {}
+        seq.append((picks.get("building") or (None,))[0])
+    counts: dict = {}
+    for k4 in seq:
+        if k4:
+            counts[k4] = counts.get(k4, 0) + 1
+    rib_keys = [k5 for k5, _n in sorted(counts.items(), key=lambda kv: -kv[1])[:3]]
+    bsize = max(RIBBON_BUCKET_MIN, math.ceil(len(seq) / RIBBON_BUCKETS_MAX) if seq else 1)
+    ribbon = []
+    for i0 in range(0, len(seq), bsize):
+        chunk = seq[i0:i0 + bsize]
+        shares = [round(100.0 * sum(1 for s in chunk if s == k6) / len(chunk), 1)
+                  for k6 in rib_keys]
+        ribbon.append(RibbonBucket(label="c%d-%d" % (i0 + 1, i0 + len(chunk)),
+                                   shares=shares))
+    steps: dict = {}
+    conquered = set()
+    for r in con.execute(
+            "SELECT t.campaign_id, a.action_key, d.turn,"
+            "  ROW_NUMBER() OVER (PARTITION BY t.campaign_id ORDER BY t.decision_id) step"
+            " FROM taken t"
+            " JOIN actions a ON a.action_id = t.action_id"
+            " JOIN decisions d ON d.decision_id = t.decision_id"
+            " JOIN campaigns c ON c.campaign_id = t.campaign_id"
+            " WHERE c.campaign_map = %s AND c.faction = %s AND t.counted = 1"
+            "   AND a.action_type = 'attack_settlement'", (mkey, fkey)):
+        cid = _i(r["campaign_id"], 0)
+        if cid not in meta:
+            continue
+        conquered.add(cid)
+        s = _i(r["step"], 0) or 0
+        if 1 <= s <= 6:
+            steps.setdefault(s, []).append((r["action_key"], _i(r["turn"])))
+    conquest = []
+    for s in sorted(steps):
+        rows_ = steps[s]
+        keys = {}
+        for k7, _t in rows_:
+            keys[k7] = keys.get(k7, 0) + 1
+        mode = max(keys.items(), key=lambda kv: kv[1])[0]
+        turns = sorted(t for _k, t in rows_ if t is not None)
+        conquest.append(ConquestStep(
+            step=s, key=mode,
+            label=labels.name_for("attack_settlement", mode) or labels.pretty(mode),
+            reached=len(rows_), of=len(conquered),
+            median_turn=float(turns[len(turns) // 2]) if turns else None))
+    return {"band": band, "campaigns": len(meta),
+            "mean_reward": round(mean_r, 2) if mean_r is not None else None,
+            "sd_reward": round(sd_r, 2) if sd_r is not None else None,
+            "families": families, "ribbon_family": "building",
+            "ribbon_keys": rib_keys,
+            "ribbon_labels": [labels.name_for("building", k8) or labels.pretty(k8)
+                              for k8 in rib_keys],
+            "ribbon": ribbon, "conquest": conquest,
+            "no_settlement": len(meta) - len(conquered)}
+
+
+@db.timed
+def start_actions(con, mkey: str, fkey: str) -> list:
     cells = []
-    for atype, (tried, ok, ms) in sorted((grid.get(fkey) or {}).items()):
-        rate = Rate(n=ok, of=tried, noun="actions",
-                    population="attempted of this type by this faction")
-        cells.append(MatrixCell(action_type=_phrase(atype), rate=rate,
-                                total_ms=round(ms, 0) or None,
-                                per_try_ms=round(ms / tried, 0) if tried else None))
+    for r in con.execute(
+            "SELECT a.action_type,"
+            " SUM(CASE WHEN t.refusal IN ('awaiting_execution','campaign_died')"
+            "  THEN 0 ELSE 1 END) tried,"
+            " SUM(CASE WHEN t.counted = 1 THEN 1 ELSE 0 END) ok,"
+            " COUNT(*) n, SUM(COALESCE(t.latency_ms, 0)) ms"
+            " FROM taken t"
+            " JOIN actions a ON a.action_id = t.action_id"
+            " JOIN campaigns c ON c.campaign_id = t.campaign_id"
+            " WHERE c.faction = %s GROUP BY 1", (fkey,)):
+        tried = _i(r["tried"], 0) or 0
+        ok = _i(r["ok"], 0) or 0
+        ms = _f(r["ms"], 0.0) or 0.0
+        cells.append(MatrixCell(
+            action_type=_phrase(r["action_type"]),
+            rate=Rate(n=ok, of=tried, noun="actions",
+                      population="attempted of this type by this faction"),
+            total_ms=round(ms, 0) or None,
+            per_try_ms=round(ms / tried, 0) if tried else None,
+            counted=Rate(n=ok, of=_i(r["n"], 0) or 0, noun="attempts",
+                         population="of this type that count toward a confirm rate")))
     cells.sort(key=lambda c: (c.rate.pct if c.rate.pct is not None else 999, -c.rate.of))
-    return row, camps, traj, pop, cells
+    return cells
+
+
+_VERDICT_RE = re.compile(r"^(\w+):?\s*\{", re.S)
+_VERDICT_NUM = re.compile(r"'(\w+)':\s*(-?\d+(?:\.\d+)?)")
+_VERDICT_ROOT = re.compile(r"'([\w./-]+)'")
+
+
+def campaign_verdict(text) -> Verdict | None:
+    if not text:
+        return None
+    raw = str(text).strip()
+    m = _VERDICT_RE.match(raw)
+    if not m:
+        return Verdict(kind=None, text=raw)
+    kind = m.group(1)
+    body = raw[m.end() - 1:]
+    try:
+        d = ast.literal_eval(body)
+        if not isinstance(d, dict):
+            d = {}
+    except (ValueError, SyntaxError):
+        d = {k: float(v) for k, v in _VERDICT_NUM.findall(body)}
+        ri = body.find("'roots'")
+        if ri >= 0:
+            d["roots"] = _VERDICT_ROOT.findall(body[body.find("[", ri):])
+    roots = [str(r) for r in (d.get("roots") or [])]
+    if kind == "turn_time_cap":
+        turn, ts_, cap = _f(d.get("turn")), _f(d.get("turn_s")), _f(d.get("cap_s"))
+        return Verdict(
+            kind=kind,
+            text="Turn %s hit the turn-time cap."
+                 % (int(turn) if turn is not None else "?"),
+            detail=("%.1fs elapsed of the %.1fs budget" % (ts_, cap))
+            if ts_ is not None and cap else None,
+            pct=round(100.0 * ts_ / cap, 0) if ts_ is not None and cap else None,
+            roots=roots)
+    return Verdict(kind=kind, text=kind.replace("_", " "),
+                   detail="; ".join("%s %s" % (k, v) for k, v in d.items()
+                                    if k != "roots") or None,
+                   roots=roots)
+
+
+@db.timed
+def campaign_turn_rollup(con, campaign_key: str) -> list:
+    return [TurnRollup(turn=_i(r["turn"], 0) or 0, decisions=_i(r["n"], 0) or 0,
+                       confirmed=_i(r["conf"], 0) or 0, refused=_i(r["refused"], 0) or 0)
+            for r in con.execute(
+                "SELECT d.turn, COUNT(*) n,"
+                " SUM(CASE WHEN t.counted = 1 THEN 1 ELSE 0 END) conf,"
+                " SUM(CASE WHEN t.refusal IS NOT NULL AND t.refusal NOT IN"
+                "  ('awaiting_execution','campaign_died') THEN 1 ELSE 0 END) refused"
+                " FROM taken t"
+                " JOIN decisions d ON d.decision_id = t.decision_id"
+                " JOIN campaigns c ON c.campaign_id = d.campaign_id"
+                " WHERE c.campaign_key = %s AND d.turn IS NOT NULL"
+                " GROUP BY d.turn ORDER BY d.turn DESC", (campaign_key,))]
 
 
 @db.timed
@@ -1017,6 +1429,7 @@ def decisions_page(con, offset=0, limit=DECISIONS_PAGE, action_type=None, policy
             campaign=_camp(r["campaign_id"]), turn=_i(r["turn"]), offers=n_off,
             entity="%s %s" % (r["context_kind"] or "", r["context_id"] or ""),
             action_type=_phrase(r["action_type"]), action_key=r["action_key"],
+            target=labels.target_for(r["action_type"], r["action_key"]),
             result=_phrase(res), result_state=state, refusal=_phrase(r["refusal"]),
             policy=_phrase(r["policy"]),
             exploit=_f(o["exploit"]) if o else None,

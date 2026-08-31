@@ -1,9 +1,34 @@
 import * as Popover from '@radix-ui/react-popover'
 import { HelpCircle } from 'lucide-react'
 import type { ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 import type { Count, Ident, Metric, Rate, Scope, State } from '@/lib/api'
 import { n, pct, pctValue, stateBg, stateFill, stateText } from '@/lib/format'
 import { cn } from '@/lib/utils'
+
+
+export function EntityLink({
+  to,
+  children,
+  title,
+  className,
+}: {
+  to: string
+  children: ReactNode
+  title?: string
+  className?: string
+}) {
+  return (
+    <Link
+      to={to}
+      title={title}
+      onClick={(e) => e.stopPropagation()}
+      className={cn('linka', className)}
+    >
+      {children}
+    </Link>
+  )
+}
 
 
 export function CountText({ count, className }: { count: Count; className?: string }) {

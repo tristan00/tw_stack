@@ -72,6 +72,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/campaigns/starts/{campaign_map}/{faction}/performance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Start Performance */
+        get: operations["get_start_performance_api_campaigns_starts__campaign_map___faction__performance_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/starts/{campaign_map}/{faction}/openings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Start Openings */
+        get: operations["get_start_openings_api_campaigns_starts__campaign_map___faction__openings_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/starts/{campaign_map}/{faction}/campaigns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Start Campaigns */
+        get: operations["get_start_campaigns_api_campaigns_starts__campaign_map___faction__campaigns_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/starts/{campaign_map}/{faction}/actions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Start Actions */
+        get: operations["get_start_actions_api_campaigns_starts__campaign_map___faction__actions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/campaigns/picks": {
         parameters: {
             query?: never;
@@ -149,6 +217,23 @@ export interface paths {
         };
         /** Get Campaign */
         get: operations["get_campaign_api_campaigns__campaign_key__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_key}/decisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Campaign Decisions */
+        get: operations["get_campaign_decisions_api_campaigns__campaign_key__decisions_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -807,6 +892,12 @@ export interface components {
             compared: number;
             agree?: components["schemas"]["Rate"] | null;
         };
+        /** CampaignDecisions */
+        CampaignDecisions: {
+            scope: components["schemas"]["Scope"];
+            /** Rows */
+            rows?: components["schemas"]["DecisionRow"][];
+        };
         /** CampaignDetail */
         CampaignDetail: {
             scope: components["schemas"]["Scope"];
@@ -820,8 +911,9 @@ export interface components {
             constant_columns?: string[];
             /** Diplomacy */
             diplomacy: components["schemas"]["DiploEvent"][];
-            /** Decisions */
-            decisions: components["schemas"]["DecisionRow"][];
+            verdict?: components["schemas"]["Verdict"] | null;
+            /** Turns */
+            turns?: components["schemas"]["TurnRollup"][];
         };
         /** CampaignReward */
         CampaignReward: {
@@ -959,6 +1051,27 @@ export interface components {
             /** Rows */
             rows: components["schemas"]["CampaignRow"][];
         };
+        /** ConquestStep */
+        ConquestStep: {
+            /** Step */
+            step: number;
+            /** Key */
+            key: string;
+            /** Label */
+            label?: string | null;
+            /**
+             * Reached
+             * @default 0
+             */
+            reached: number;
+            /**
+             * Of
+             * @default 0
+             */
+            of: number;
+            /** Median Turn */
+            median_turn?: number | null;
+        };
         /** ControlResult */
         ControlResult: {
             /** Ok */
@@ -1053,6 +1166,9 @@ export interface components {
             campaign?: components["schemas"]["Ident"] | null;
             /** Leader */
             leader?: string | null;
+            /** Faction Key */
+            faction_key?: string | null;
+            campaign_map?: components["schemas"]["Ident"] | null;
             /** Turn */
             turn?: number | null;
             /** Settlements */
@@ -1065,6 +1181,12 @@ export interface components {
             stored_campaigns?: number | null;
             /** Age Seconds */
             age_seconds?: number | null;
+            /** Decisions */
+            decisions?: number | null;
+            /** Started Ts */
+            started_ts?: number | null;
+            /** Pick Id */
+            pick_id?: number | null;
         };
         /** DecisionAgreement */
         DecisionAgreement: {
@@ -1123,6 +1245,8 @@ export interface components {
             action_type?: components["schemas"]["Ident"] | null;
             /** Action Key */
             action_key?: string | null;
+            /** Target */
+            target?: string | null;
             result?: components["schemas"]["Ident"] | null;
             /**
              * Result State
@@ -1472,6 +1596,20 @@ export interface components {
              */
             dev: boolean;
         };
+        /** LengthBand */
+        LengthBand: {
+            /** Label */
+            label: string;
+            /**
+             * N
+             * @default 0
+             */
+            n: number;
+            /** Avg Reward */
+            avg_reward?: number | null;
+            /** Reward Per Turn */
+            reward_per_turn?: number | null;
+        };
         /** LogPage */
         LogPage: {
             scope: components["schemas"]["Scope"];
@@ -1514,6 +1652,7 @@ export interface components {
              * @enum {string}
              */
             state: "ok" | "warn" | "bad" | "neutral";
+            counted?: components["schemas"]["Rate"] | null;
         };
         /** MatrixPage */
         MatrixPage: {
@@ -1677,6 +1816,91 @@ export interface components {
              */
             taken: boolean;
         };
+        /** OpeningBranch */
+        OpeningBranch: {
+            /** Key */
+            key: string;
+            /** Label */
+            label?: string | null;
+            /**
+             * N
+             * @default 0
+             */
+            n: number;
+            /** Share */
+            share?: number | null;
+            /** Avg Reward */
+            avg_reward?: number | null;
+            /** Delta Mean */
+            delta_mean?: number | null;
+            /** Avg Turns */
+            avg_turns?: number | null;
+            /** Reward Per Turn */
+            reward_per_turn?: number | null;
+            /**
+             * Offered
+             * @default 0
+             */
+            offered: number;
+            /**
+             * Taken
+             * @default 0
+             */
+            taken: number;
+        };
+        /** OpeningFamily */
+        OpeningFamily: {
+            /** Family */
+            family: string;
+            /** Label */
+            label: string;
+            coverage: components["schemas"]["Rate"];
+            /** Avg Offers */
+            avg_offers?: number | null;
+            /** Spread */
+            spread?: number | null;
+            /** Branches */
+            branches?: components["schemas"]["OpeningBranch"][];
+            pooled?: components["schemas"]["OpeningBranch"] | null;
+            /** Offers */
+            offers?: components["schemas"]["OpeningOffer"][];
+        };
+        /** OpeningOffer */
+        OpeningOffer: {
+            /** Key */
+            key: string;
+            /** Label */
+            label?: string | null;
+            /**
+             * Offered
+             * @default 0
+             */
+            offered: number;
+            /**
+             * Taken
+             * @default 0
+             */
+            taken: number;
+            /** Avg Reward Taken */
+            avg_reward_taken?: number | null;
+        };
+        /** OutcomeCount */
+        OutcomeCount: {
+            outcome: components["schemas"]["Ident"];
+            /**
+             * State
+             * @default neutral
+             * @enum {string}
+             */
+            state: "ok" | "warn" | "bad" | "neutral";
+            /**
+             * N
+             * @default 0
+             */
+            n: number;
+            /** Avg Turns */
+            avg_turns?: number | null;
+        };
         /** OutcomeTally */
         OutcomeTally: {
             outcome: components["schemas"]["Ident"];
@@ -1698,6 +1922,34 @@ export interface components {
             /** B */
             b: string;
             comparable: components["schemas"]["Count"];
+        };
+        /** PerfBar */
+        PerfBar: {
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+            /** Ts */
+            ts?: number | null;
+            /**
+             * Settlements
+             * @default 0
+             */
+            settlements: number;
+            /**
+             * Levels
+             * @default 0
+             */
+            levels: number;
+            /** Total Max */
+            total_max?: number | null;
+            /**
+             * N
+             * @default 1
+             */
+            n: number;
+            /** Trail */
+            trail?: number | null;
         };
         /** PhaseSpan */
         PhaseSpan: {
@@ -1768,6 +2020,13 @@ export interface components {
             /** Decisions */
             decisions: number;
         };
+        /** RibbonBucket */
+        RibbonBucket: {
+            /** Label */
+            label: string;
+            /** Shares */
+            shares?: number[];
+        };
         /** RunPage */
         RunPage: {
             scope: components["schemas"]["Scope"];
@@ -1811,6 +2070,12 @@ export interface components {
             /** Detail */
             detail?: string | null;
         };
+        /** StartActions */
+        StartActions: {
+            scope: components["schemas"]["Scope"];
+            /** Cells */
+            cells?: components["schemas"]["MatrixCell"][];
+        };
         /** StartCampaign */
         StartCampaign: {
             campaign: components["schemas"]["Ident"];
@@ -1839,13 +2104,15 @@ export interface components {
              */
             decisions: number;
             confirm_rate?: components["schemas"]["Rate"] | null;
-            /** Pick Id */
-            pick_id?: number | null;
-            /**
-             * In Window
-             * @default false
-             */
-            in_window: boolean;
+            first_research?: components["schemas"]["Ident"] | null;
+            first_skill?: components["schemas"]["Ident"] | null;
+            first_building?: components["schemas"]["Ident"] | null;
+        };
+        /** StartCampaignsPage */
+        StartCampaignsPage: {
+            scope: components["schemas"]["Scope"];
+            /** Rows */
+            rows?: components["schemas"]["StartCampaign"][];
         };
         /** StartDetail */
         StartDetail: {
@@ -1853,50 +2120,69 @@ export interface components {
             start: components["schemas"]["StartRow"];
             /** Window */
             window: number;
-            /** Campaigns */
-            campaigns?: components["schemas"]["StartCampaign"][];
-            /** Trajectory */
-            trajectory?: components["schemas"]["StartPickPoint"][];
+            last_played?: components["schemas"]["StartCampaign"] | null;
+        };
+        /** StartOpenings */
+        StartOpenings: {
+            scope: components["schemas"]["Scope"];
+            /** Band */
+            band: string;
+            /**
+             * Campaigns
+             * @default 0
+             */
+            campaigns: number;
+            /** Mean Reward */
+            mean_reward?: number | null;
+            /** Sd Reward */
+            sd_reward?: number | null;
+            /** Families */
+            families?: components["schemas"]["OpeningFamily"][];
+            /**
+             * Ribbon Family
+             * @default building
+             */
+            ribbon_family: string;
+            /** Ribbon Keys */
+            ribbon_keys?: string[];
+            /** Ribbon Labels */
+            ribbon_labels?: string[];
+            /** Ribbon */
+            ribbon?: components["schemas"]["RibbonBucket"][];
+            /** Conquest */
+            conquest?: components["schemas"]["ConquestStep"][];
+            /**
+             * No Settlement
+             * @default 0
+             */
+            no_settlement: number;
+        };
+        /** StartPerformance */
+        StartPerformance: {
+            scope: components["schemas"]["Scope"];
+            /** Window */
+            window: number;
+            /**
+             * Bucket
+             * @default 1
+             */
+            bucket: number;
+            /** Bars */
+            bars?: components["schemas"]["PerfBar"][];
+            /** Reward Bins */
+            reward_bins?: number[];
             /** Population Bins */
             population_bins?: number[];
-            /** Actions */
-            actions?: components["schemas"]["MatrixCell"][];
-        };
-        /** StartPickPoint */
-        StartPickPoint: {
-            /** Pick Id */
-            pick_id: number;
-            /** Ts */
-            ts?: number | null;
-            /** C */
-            c?: number | null;
-            /** Rank */
-            rank: number;
-            /**
-             * Ranked
-             * @default 0
-             */
-            ranked: number;
-            /**
-             * N
-             * @default 0
-             */
-            n: number;
-            /** Mean */
-            mean?: number | null;
-            /** Blend */
-            blend?: number | null;
-            /** Explore */
-            explore?: number | null;
-            /** Score */
-            score?: number | null;
-            /** Adjust */
-            adjust?: number | null;
-            /**
-             * Chosen
-             * @default false
-             */
-            chosen: boolean;
+            /** Pool Mean */
+            pool_mean?: number | null;
+            /** Turns Hist */
+            turns_hist?: number[];
+            /** Outcomes */
+            outcomes?: components["schemas"]["OutcomeCount"][];
+            /** Bands */
+            bands?: components["schemas"]["LengthBand"][];
+            /** Reward Turns R */
+            reward_turns_r?: number | null;
         };
         /** StartRow */
         StartRow: {
@@ -2206,6 +2492,26 @@ export interface components {
                 [key: string]: components["schemas"]["TrialCorr"];
             };
         };
+        /** TurnRollup */
+        TurnRollup: {
+            /** Turn */
+            turn: number;
+            /**
+             * Decisions
+             * @default 0
+             */
+            decisions: number;
+            /**
+             * Confirmed
+             * @default 0
+             */
+            confirmed: number;
+            /**
+             * Refused
+             * @default 0
+             */
+            refused: number;
+        };
         /** UcbPick */
         UcbPick: {
             /** Pick Id */
@@ -2375,6 +2681,19 @@ export interface components {
             /** Context */
             ctx?: Record<string, never>;
         };
+        /** Verdict */
+        Verdict: {
+            /** Kind */
+            kind?: string | null;
+            /** Text */
+            text: string;
+            /** Detail */
+            detail?: string | null;
+            /** Pct */
+            pct?: number | null;
+            /** Roots */
+            roots?: string[];
+        };
         /** WindowEdgeRow */
         WindowEdgeRow: {
             campaign: components["schemas"]["Ident"];
@@ -2505,6 +2824,136 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["StartDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_start_performance_api_campaigns_starts__campaign_map___faction__performance_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_map: string;
+                faction: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StartPerformance"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_start_openings_api_campaigns_starts__campaign_map___faction__openings_get: {
+        parameters: {
+            query?: {
+                band?: string;
+            };
+            header?: never;
+            path: {
+                campaign_map: string;
+                faction: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StartOpenings"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_start_campaigns_api_campaigns_starts__campaign_map___faction__campaigns_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_map: string;
+                faction: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StartCampaignsPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_start_actions_api_campaigns_starts__campaign_map___faction__actions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_map: string;
+                faction: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StartActions"];
                 };
             };
             /** @description Validation Error */
@@ -2650,6 +3099,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CampaignDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_campaign_decisions_api_campaigns__campaign_key__decisions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CampaignDecisions"];
                 };
             };
             /** @description Validation Error */

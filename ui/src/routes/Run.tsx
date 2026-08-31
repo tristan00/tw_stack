@@ -1,8 +1,8 @@
-import { Card, Dot, ErrorState, MetricTile, Section, Skeleton } from '@/components/primitives'
+import { Card, Dot, EntityLink, ErrorState, MetricTile, Section, Skeleton } from '@/components/primitives'
 import { CountText } from '@/components/primitives'
 import { DataTable, type Col } from '@/components/DataTable'
 import { useApi, type RunPage, type Schemas } from '@/lib/api'
-import { ms, stateText } from '@/lib/format'
+import { ago, clock, ms, n, stateText } from '@/lib/format'
 
 type TimingRow = Schemas['TimingRow']
 
@@ -34,8 +34,57 @@ export function Run() {
   if (error) return <ErrorState error={error} onRetry={reload} />
   if (loading || !data) return <Skeleton rows={8} />
 
+  const cur = data.current
+  const live = cur?.campaign && (cur.age_seconds ?? 1e9) < 600
   return (
     <div className="space-y-7">
+      {cur?.campaign && (
+        <Card className="px-3.5 py-2.5">
+          <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-sm">
+            <span className="text-dim text-2xs uppercase tracking-wide">
+              {live ? 'now playing' : 'last played'}
+            </span>
+            <EntityLink
+              to={`/campaigns/${encodeURIComponent(cur.campaign.raw)}`}
+              className="font-semibold"
+            >
+              {cur.leader ?? cur.campaign.label}
+            </EntityLink>
+            {cur.faction_key && (
+              <EntityLink
+                to={`/starts/${encodeURIComponent(cur.campaign_map?.raw ?? '')}/${encodeURIComponent(cur.faction_key)}`}
+                className="text-dim text-xs"
+              >
+                {cur.campaign.culture ?? 'its start'} on {cur.campaign_map?.label ?? '—'}
+              </EntityLink>
+            )}
+            {cur.turn !== null && cur.turn !== undefined && (
+              <span className="text-dim num text-xs">turn {cur.turn}</span>
+            )}
+            {cur.pick_id !== null && cur.pick_id !== undefined && (
+              <EntityLink
+                to={`/campaigns?view=selector&pick=${cur.pick_id}`}
+                className="text-dim num text-xs"
+              >
+                pick #{cur.pick_id}
+              </EntityLink>
+            )}
+            {cur.decisions !== null && cur.decisions !== undefined && (
+              <EntityLink
+                to={`/campaigns/${encodeURIComponent(cur.campaign.raw)}?tab=decisions`}
+                className="text-dim num text-xs"
+              >
+                decisions {n(cur.decisions)}
+              </EntityLink>
+            )}
+            <span className="text-dim num ml-auto text-2xs">
+              {live
+                ? `started ${clock(cur.started_ts)}`
+                : `state ${ago(cur.age_seconds ?? 0)}`}
+            </span>
+          </div>
+        </Card>
+      )}
       <Section title="right now" scope={data.scope}>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {data.throughput.map((m) => (

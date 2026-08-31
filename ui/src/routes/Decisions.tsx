@@ -6,8 +6,8 @@ import {
   Card,
   Chip,
   CountText,
+  EntityLink,
   ErrorState,
-  IdentLabel,
   MetricTile,
   RateText,
   Section,
@@ -50,7 +50,14 @@ const logCols: Col<DecisionRow>[] = [
     label: 'campaign',
     group: 'decision',
     value: (r) => r.campaign?.label ?? '',
-    render: (r) => <IdentLabel ident={r.campaign} showCulture={false} />,
+    render: (r) =>
+      r.campaign ? (
+        <EntityLink to={`/campaigns/${encodeURIComponent(r.campaign.raw)}`} title={r.campaign.raw}>
+          {r.campaign.label}
+        </EntityLink>
+      ) : (
+        <span className="text-dim">—</span>
+      ),
   },
   {
     key: 'turn',
@@ -363,7 +370,14 @@ function Menus() {
       key: 'campaign',
       label: 'campaign',
       value: (r) => r.campaign?.label ?? '',
-      render: (r) => <IdentLabel ident={r.campaign} showCulture={false} />,
+      render: (r) =>
+        r.campaign ? (
+          <EntityLink to={`/campaigns/${encodeURIComponent(r.campaign.raw)}`} title={r.campaign.raw}>
+            {r.campaign.label}
+          </EntityLink>
+        ) : (
+          <span className="text-dim">—</span>
+        ),
     },
     {
       key: 'result',
@@ -515,7 +529,13 @@ function Timeline() {
           return (
             <Card key={`${lane.campaign.raw}-${lane.turn}`} className="overflow-hidden">
               <div className="border-line bg-raised/40 flex flex-wrap items-baseline gap-3 border-b px-3 py-1.5">
-                <IdentLabel ident={lane.campaign} showCulture={false} className="text-xs font-semibold" />
+                <EntityLink
+                  to={`/campaigns/${encodeURIComponent(lane.campaign.raw)}`}
+                  title={lane.campaign.raw}
+                  className="text-xs font-semibold"
+                >
+                  {lane.campaign.label}
+                </EntityLink>
                 <span className="text-dim text-2xs">turn {lane.turn}</span>
                 <RateText rate={lane.confirmed} />
                 <span className="text-dim ml-auto num text-2xs">{lane.in_turn_s}s in turn</span>
