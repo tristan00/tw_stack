@@ -72,35 +72,6 @@ def offer_key(r):
             r.get("action_type"), str(r.get("key")))
 
 
-class MarwilGnn:
-
-    def __init__(self, gnn):
-        self.gnn = gnn
-        self.last_scores = {}
-        self.scored = None
-
-    @property
-    def ready(self):
-        return bool(self.gnn is not None and self.gnn.ready)
-
-    def pick(self, elig, record):
-        scored, self.scored = self.scored, None
-        if scored:
-            self.last_scores = scored
-            best, best_v = None, None
-            for r in elig:
-                v = scored.get(offer_key(r))
-                if v is not None and (best_v is None or v > best_v):
-                    best, best_v = r, v
-            if best is not None:
-                return best
-        self.last_scores = {}
-        best = self.gnn.pick(elig, record)
-        impact = getattr(self.gnn, "last_impact", None) or []
-        self.last_scores = {offer_key(r): float(v) for r, v in zip(elig, impact)}
-        return best
-
-
 class GreedyGnn:
 
     def __init__(self, ggnn):
@@ -131,7 +102,7 @@ class GreedyGnn:
         return best
 
 
-def build(name, rng=None, ranker=None, ruleset=None, gnn=None, ggnn=None):
+def build(name, rng=None, ranker=None, ruleset=None, ggnn=None):
     name = arms.canonical(name)
     if name == "random":
         return Random(rng)
@@ -139,8 +110,6 @@ def build(name, rng=None, ranker=None, ruleset=None, gnn=None, ggnn=None):
         return GreedyCatboost(ranker)
     if name == "ruleset":
         return Ruleset(ruleset)
-    if name == "marwil_gnn":
-        return MarwilGnn(gnn)
     if name == "greedy_gnn":
         return GreedyGnn(ggnn)
     raise ValueError("unknown strategy %r -- known: %s" % (name, ", ".join(NAMES)))

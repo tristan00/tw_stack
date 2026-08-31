@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 
-NAMES = ("random", "greedy_catboost", "ruleset", "marwil_gnn", "greedy_gnn")
+NAMES = ("random", "greedy_catboost", "ruleset", "greedy_gnn")
 
-TRAINABLE = ("greedy_catboost", "marwil_gnn", "greedy_gnn")
+TRAINABLE = ("greedy_catboost", "greedy_gnn")
+
+RETIRED = ("marwil_gnn",)
 
 INTERRUPT_NAMES = ("random", "greedy_catboost", "ruleset")
 
@@ -43,17 +45,17 @@ def arm_of(policy) -> str | None:
     if p == UNRECORDED or p in NOT_A_DRAW:
         return p
     p = canonical(p)
-    if p in NAMES:
+    if p in NAMES or p in RETIRED:
         return p
     if p.startswith("ruleset(") and p.endswith(")"):
         return "ruleset"
     if p.endswith(_FALLBACK):
         stem = canonical(p[:-len(_FALLBACK)])
-        if stem in NAMES:
+        if stem in NAMES or stem in RETIRED:
             return stem
     if _DELEGATED in p:
         stem = canonical(p.split(_DELEGATED, 1)[0])
-        if stem in NAMES:
+        if stem in NAMES or stem in RETIRED:
             return stem
     raise ValueError(
         "arms.arm_of: %r is not a policy shape this project writes. advisor/policy.py "

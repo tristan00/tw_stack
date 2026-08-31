@@ -253,7 +253,7 @@ HARNESS_EVERY_S = 300.0
 HARNESS_STALL_S = 1200.0
 HARNESS_PROGRESS_S = 1800.0
 HARNESS_COOLDOWN_S = 1800.0
-_PROGRESS_MARKS = ("== turn ", "mapgraph.train: epoch", "retrained before run")
+_PROGRESS_MARKS = ("== turn ", "mapgraph.greedy_train: epoch", "retrained before run")
 
 
 def _harness_note(msg):

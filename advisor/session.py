@@ -323,15 +323,9 @@ def _require_models(mix, imix, cold, log, bootstrap=False):
     if "greedy_catboost" in imix and not IM.InterruptRanker(strategies=imix).ready:
         problems.append("greedy_catboost: interrupt model did not load from %s"
                         % IM.MODEL_DIR)
-    if "marwil_gnn" in mix or "greedy_gnn" in mix:
+    if "greedy_gnn" in mix:
         if common.ROOT not in sys.path:
             sys.path.insert(0, common.ROOT)
-    if "marwil_gnn" in mix:
-        from advisor.mapgraph import rank as GR
-        if not GR.Ranker().ready:
-            problems.append("marwil_gnn: mapgraph model did not load from %s"
-                            % common.MODEL_MAPGRAPH)
-    if "greedy_gnn" in mix:
         from advisor.mapgraph import greedy_rank as GGR
         if not GGR.Ranker().ready:
             problems.append("greedy_gnn: mapgraph greedy model did not load from %s"
@@ -508,18 +502,9 @@ def run_campaigns(n=3, turns=20, plan="all",
                     irep = IM.train()
                     entry["retrain_interrupt"] = irep
                     log("   interrupt model: %s" % json.dumps(irep)[:200])
-                if "marwil_gnn" in mix or "greedy_gnn" in mix:
+                if "greedy_gnn" in mix:
                     if common.ROOT not in sys.path:
                         sys.path.insert(0, common.ROOT)
-                if "marwil_gnn" in mix:
-                    from advisor.mapgraph import train as GT
-                    t1 = time.time()
-                    grep = GT.train(log=log)
-                    grep["seconds"] = round(time.time() - t1, 1)
-                    entry["retrain_gnn"] = grep
-                    log("   gnn model: %s" % json.dumps(grep, default=str)[:220])
-                    trained = trained or entry.get("retrain_gnn")
-                if "greedy_gnn" in mix:
                     from advisor.mapgraph import greedy_train as GGT
                     t1 = time.time()
                     ggrep = GGT.train(log=log)
@@ -528,7 +513,6 @@ def run_campaigns(n=3, turns=20, plan="all",
                     log("   greedy gnn model: %s" % json.dumps(ggrep, default=str)[:220])
                     trained = trained or entry.get("retrain_greedy_gnn")
                 for what, r in (("catboost", rep), ("interrupt", entry.get("retrain_interrupt")),
-                                ("gnn", entry.get("retrain_gnn")),
                                 ("greedy_gnn", entry.get("retrain_greedy_gnn"))):
                     if r is not None and not r.get("trained"):
                         raise P.ModelUnavailable(
@@ -590,10 +574,6 @@ def run_campaigns(n=3, turns=20, plan="all",
                     raise P.ModelUnavailable(
                         "campaign %d: main ranker is not ready after preload (models under "
                         "%s)" % (i + 1, common.MODELS))
-                if pol.gnn is not None and not pol.gnn.ready:
-                    raise P.ModelUnavailable(
-                        "campaign %d: mapgraph model is not ready after preload (%s)"
-                        % (i + 1, common.MODEL_MAPGRAPH))
                 if pol.ggnn is not None and not pol.ggnn.ready:
                     raise P.ModelUnavailable(
                         "campaign %d: mapgraph greedy model is not ready after preload (%s)"
@@ -602,9 +582,6 @@ def run_campaigns(n=3, turns=20, plan="all",
                                "trained(%d rows)"
                                % ((ranker.meta or {}).get("rows", 0) if ranker else 0))
             log("policy: %s" % entry["policy"])
-            if pol.gnn is not None:
-                entry["gnn_policy"] = "trained(%d rows)" % (pol.gnn.meta or {}).get("rows", 0)
-                log("gnn: %s" % entry["gnn_policy"])
             if pol.ggnn is not None:
                 entry["greedy_gnn_policy"] = ("trained(%d rows)"
                                               % (pol.ggnn.meta or {}).get("rows", 0))

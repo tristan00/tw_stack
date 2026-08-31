@@ -19,12 +19,11 @@ sys.path.insert(0, common.DECISIONS)
 
 MODEL_DIR = common.MODEL_MAPGRAPH_GREEDY
 
-_MARWIL_ONLY = ("adv_tau", "adv_clip", "value_weight")
-CFG = {k: v for k, v in T.CFG.items() if k not in _MARWIL_ONLY}
+CFG = dict(T.CFG)
 MIN_ROWS = S.MIN_ROWS
 
 TARGET = ("base_model.target(decision_deltas(...)), z-scored -- identical to the CatBoost "
-          "and MARWIL target, unmodified")
+          "target, unmodified")
 LOSS = ("MSE(q_taken, y_z): one reward prediction per action node, read off the action "
         "node plus the pooled graph and g_ctx; no advantage, no value head, no "
         "state-only model")

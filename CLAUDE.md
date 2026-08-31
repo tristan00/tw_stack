@@ -6,13 +6,15 @@ changing or operating it. These rules were set explicitly by the owner; do not r
 
 ## Models
 
-- Trainable arms (`greedy_catboost`, `marwil_gnn`, `greedy_gnn` on actions;
-  `greedy_catboost` on blocking screens) are hard dependencies. Missing/unloadable models
+- Trainable arms (`greedy_catboost`, `greedy_gnn` on actions;
+  `greedy_catboost` on blocking screens) are hard dependencies. `marwil_gnn` is retired:
+  no trainer, no ranker, no mix membership — only `arms.RETIRED` recognition so historical
+  corpus rows stay readable. Do not analyse, retrain, or resurrect it. Missing/unloadable models
   refuse to start; a retrain that raises or reports `trained: false` kills the session;
   predict failures raise `ModelUnavailable`. Never let a run silently play random in a
   trainable arm's place. Only `--cold` runs modelless.
 - Two mixes, not one: `--strategies` draws the action arm per decision,
-  `--interrupt-strategies` draws the blocking-screen arm. The graph arms have no interrupt
+  `--interrupt-strategies` draws the blocking-screen arm. The graph arm has no interrupt
   model, so the interrupt mix is `greedy_catboost` / `random` / `ruleset` only.
 - The GNN trains on CUDA. A CPU-only torch wheel is a broken environment to fix, never a
   fallback to accept.

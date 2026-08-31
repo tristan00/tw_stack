@@ -92,19 +92,14 @@ class Policy:
         self.ruleset = R.RuleSet.load(ruleset) if ruleset else None
         if "ruleset" in self.strategies and self.ruleset is None:
             raise ValueError("strategy mix includes 'ruleset' but no ruleset name was given")
-        self.gnn = None
         self.ggnn = None
-        if "marwil_gnn" in self.strategies or "greedy_gnn" in self.strategies:
+        if "greedy_gnn" in self.strategies:
             if common.ROOT not in sys.path:
                 sys.path.insert(0, common.ROOT)
-        if "marwil_gnn" in self.strategies:
-            from advisor.mapgraph import rank as GNN
-            self.gnn = GNN.Ranker()
-        if "greedy_gnn" in self.strategies:
             from advisor.mapgraph import greedy_rank as GGNN
             self.ggnn = GGNN.Ranker()
         self.members = {name: S.build(name, rng=self.rng, ranker=self.ranker,
-                                      ruleset=self.ruleset, gnn=self.gnn, ggnn=self.ggnn)
+                                      ruleset=self.ruleset, ggnn=self.ggnn)
                         for name in self.strategies}
         self.fallback = self.members.get("random") or S.build("random", rng=self.rng)
         self.max_actions_per_entity = max_actions_per_entity
@@ -135,11 +130,8 @@ class Policy:
             for i, r in enumerate(ranked):
                 r["rank"] = i + 1
         graph = (self._graph(record)
-                 if (ranked and (self.gnn is not None or self.ggnn is not None)) else None)
-        gnn_scores = self._score_with_gnn(ranked, record, graph)
+                 if (ranked and self.ggnn is not None) else None)
         ggnn_scores = self._score_with_greedy(ranked, record, graph)
-        if "marwil_gnn" in self.members:
-            self.members["marwil_gnn"].scored = gnn_scores
         if "greedy_gnn" in self.members:
             self.members["greedy_gnn"].scored = ggnn_scores
             self.members["greedy_gnn"].graph = graph
@@ -149,7 +141,6 @@ class Policy:
                             "n_dropped": len(self.last_drops), "actions_taken": actions_taken,
                             "drop_reasons": _tally(d["reason"] for d in self.last_drops),
                             "eligible_types": _tally(r["action_type"] for r in elig),
-                            "gnn_scored": len(gnn_scores or {}),
                             "ggnn_scored": len(ggnn_scores or {}),
                             "mix": dict(self.strategies), "mode": None, "roll": None}
         if not elig:
@@ -187,12 +178,6 @@ class Policy:
     def _graph(self, record):
         from advisor.mapgraph import build as B
         return B.build_graph(record)
-
-    def _score_with_gnn(self, ranked, record, graph=None):
-        if self.gnn is None or not ranked:
-            return None
-        impact = self.gnn.score_elig(ranked, record, graph=graph)
-        return self._stamp(ranked, impact, "gnn_impact", "gnn_rank")
 
     def _score_with_greedy(self, ranked, record, graph=None):
         if self.ggnn is None or not ranked:
