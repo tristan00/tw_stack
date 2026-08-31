@@ -49,6 +49,8 @@ def kwargs(dbname=None, user=None, autocommit=False):
 def connect(dbname=None, user=None, autocommit=False, readonly=False, row_factory=None,
             search_path=None):
     import psycopg
+    if search_path is None:
+        search_path = os.environ.get("TW_PG_SEARCH_PATH") or None
     kw = kwargs(dbname=dbname, user=user, autocommit=autocommit)
     if row_factory is not None:
         kw["row_factory"] = row_factory

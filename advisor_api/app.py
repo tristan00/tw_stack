@@ -59,7 +59,9 @@ def _warm_loop():
 async def _lifespan(_app):
     proc.start()
     _warm_stop.clear()
-    threading.Thread(target=_warm_loop, name="cache-warm", daemon=True).start()
+    if os.environ.get("TW_API_NO_WARM", "").strip().lower() not in ("1", "true",
+                                                                    "yes"):
+        threading.Thread(target=_warm_loop, name="cache-warm", daemon=True).start()
     try:
         yield
     finally:

@@ -34,7 +34,9 @@ def analytics_path(run_dir: str) -> str:
     return "%s search_path=%s" % (pg.dsn(), SCHEMA)
 
 
-def connect(path: str | None = None, readonly: bool = False, schema: str = SCHEMA):
+def connect(path: str | None = None, readonly: bool = False, schema: str | None = None):
+    if schema is None:
+        schema = os.environ.get("TW_ANALYTICS_SCHEMA") or SCHEMA
     con = pg.connect(autocommit=True, readonly=readonly,
                      row_factory=pg.row_factory, search_path="%s, public" % schema)
     if not readonly:

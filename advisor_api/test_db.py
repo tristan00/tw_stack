@@ -6,6 +6,13 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+os.environ["TW_PG_SEARCH_PATH"] = "test_fixture"
+os.environ["TW_ANALYTICS_SCHEMA"] = "test_fixture_analytics"
+
+from advisor_api import fixture
+
+fixture.ensure()
+
 from advisor_api import db
 
 
