@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { DataTable, type Col } from '@/components/DataTable'
 import { CatalogNav, TookCell, dashNum, signedNum } from '@/components/catalog'
 import { EntityLink, ErrorState, Section, Skeleton } from '@/components/primitives'
@@ -41,18 +41,21 @@ function famCols(family: Family): Col<CatalogIndexRow>[] {
   }
   if (family === 'research') {
     cols.push(
-      { key: 'line', label: 'line', value: (r) => r.line ?? '', render: (r) => <span className="text-dim">{r.line ?? '—'}</span> },
       { key: 'tier', label: 'tier', align: 'right', value: (r) => r.tier ?? 0, render: (r) => dashNum(r.tier) },
       { key: 'points', label: 'points', align: 'right', value: (r) => r.points ?? undefined, sortUndefined: 'last', render: (r) => dashNum(r.points) },
     )
   }
   if (family === 'skills') {
-    cols.push({
-      key: 'characters',
-      label: 'most ranked by',
-      value: (r) => r.characters ?? '',
-      render: (r) => <span className="text-dim">{r.characters ?? '—'}</span>,
-    })
+    cols.push(
+      {
+        key: 'characters',
+        label: 'most ranked by',
+        value: (r) => r.characters ?? '',
+        render: (r) => <span className="text-dim">{r.characters ?? '—'}</span>,
+      },
+      { key: 'unlock', label: 'unlocks at', unit: 'rank', align: 'right', optional: true, value: (r) => r.unlock_rank ?? 0, render: (r) => dashNum(r.unlock_rank) },
+      { key: 'ranks', label: 'avg ranks', align: 'right', value: (r) => r.avg_ranks ?? undefined, sortUndefined: 'last', render: (r) => dashNum(r.avg_ranks, 1) },
+    )
   }
   cols.push(
     { key: 'took', label: f.verb, align: 'right', value: (r) => r.took?.n ?? 0, render: (r) => <TookCell rate={r.took} /> },
@@ -76,7 +79,14 @@ function famCols(family: Family): Col<CatalogIndexRow>[] {
 
 export function Catalog({ family }: { family: Family }) {
   const { data, error, loading, reload } = useApi<CatalogIndexPage>(`/api/${family}`, [family], { live: false })
-  const [cat, setCat] = useState('')
+  const [params, setParams] = useSearchParams()
+  const cat = params.get('cat') ?? ''
+  const setCat = (v: string) => {
+    const next = new URLSearchParams(params)
+    if (v) next.set('cat', v)
+    else next.delete('cat')
+    setParams(next, { replace: true })
+  }
   if (error) return <ErrorState error={error} onRetry={reload} />
   if (loading || !data) return <Skeleton rows={10} />
   const f = FAMILY[family]

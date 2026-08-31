@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { DataTable, type Col } from '@/components/DataTable'
-import { CatalogNav } from '@/components/catalog'
+import { CatalogNav, TookCell } from '@/components/catalog'
 import { EntityLink, ErrorState, Section, Skeleton } from '@/components/primitives'
 import { useApi, type ItemRow, type ItemsPage } from '@/lib/api'
 import { n } from '@/lib/format'
@@ -30,7 +30,13 @@ export const itemCols = (resources: string[] = []): Col<ItemRow>[] => [
   { key: 'key', label: 'key', optional: true, value: (r) => r.key, render: (r) => <span className="num text-dim text-2xs">{r.key}</span> },
   { key: 'cat', label: 'category', value: (r) => r.category ?? '', render: (r) => <span className="text-dim">{r.category ?? '—'}</span> },
   { key: 'held', label: 'held in', align: 'right', value: (r) => r.held_in, render: (r) => <span className="num">{n(r.held_in)}</span> },
-  { key: 'eq', label: 'worn in', align: 'right', value: (r) => r.equipped_in, render: (r) => <span className="num">{n(r.equipped_in)}</span> },
+  {
+    key: 'eq',
+    label: 'worn',
+    align: 'right',
+    value: (r) => (r.held_in ? r.equipped_in / r.held_in : 0),
+    render: (r) => <TookCell rate={{ n: r.equipped_in, of: r.held_in, noun: 'campaigns', population: 'that held it and wore it' }} />,
+  },
   { key: 'bench', label: 'benched in', align: 'right', value: (r) => r.benched_in, render: (r) => (r.benched_in ? <span className="num">{n(r.benched_in)}</span> : <span className="text-dim">—</span>) },
   {
     key: 'req',
@@ -85,7 +91,14 @@ export const itemCols = (resources: string[] = []): Col<ItemRow>[] => [
 
 export function Items() {
   const { data, error, loading, reload } = useApi<ItemsPage>('/api/items', [], { live: false })
-  const [cat, setCat] = useState('')
+  const [params, setParams] = useSearchParams()
+  const cat = params.get('cat') ?? ''
+  const setCat = (v: string) => {
+    const next = new URLSearchParams(params)
+    if (v) next.set('cat', v)
+    else next.delete('cat')
+    setParams(next, { replace: true })
+  }
   if (error) return <ErrorState error={error} onRetry={reload} />
   if (loading || !data) return <Skeleton rows={10} />
   const rows = (data.rows ?? []).filter((r) => !cat || r.category === cat)

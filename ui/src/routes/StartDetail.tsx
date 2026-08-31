@@ -461,7 +461,19 @@ function ResearchTab({ base }: { base: string }) {
       ),
     },
     { key: 'key', label: 'key', optional: true, value: (r) => r.key, render: (r) => <span className="num text-dim text-2xs">{r.key}</span> },
-    { key: 'parent', label: 'parent', value: (r) => r.parent?.label ?? '', render: (r) => <span className="text-dim">{r.parent?.label ?? '—'}</span> },
+    {
+      key: 'parent',
+      label: 'parent',
+      value: (r) => r.parent?.label ?? '',
+      render: (r) =>
+        r.parent ? (
+          <EntityLink to={`/research/${encodeURIComponent(r.parent.raw)}`} title={r.parent.raw} className="text-dim">
+            {r.parent.label}
+          </EntityLink>
+        ) : (
+          <span className="text-dim">—</span>
+        ),
+    },
     ...(hasLine
       ? [{ key: 'line', label: 'line', value: (r: TechRow) => r.line ?? '', render: (r: TechRow) => <span className="text-dim">{r.line ?? '—'}</span> } as Col<TechRow>]
       : []),
@@ -551,7 +563,26 @@ function SkillsTab({ base }: { base: string }) {
       ),
     },
     { key: 'key', label: 'key', optional: true, value: (r) => r.key, render: (r) => <span className="num text-dim text-2xs">{r.key}</span> },
-    { key: 'parent', label: 'parent', value: (r) => r.parent ?? '', render: (r) => <span className="text-dim">{r.parent ?? '—'}</span> },
+    {
+      key: 'parent',
+      label: 'parent',
+      value: (r) => (r.parents ?? []).map((x) => x.label).join(' '),
+      render: (r) =>
+        (r.parents ?? []).length ? (
+          <span className="text-dim">
+            {(r.parents ?? []).map((x, i) => (
+              <span key={x.raw}>
+                {i > 0 && ' + '}
+                <EntityLink to={`/skills/${encodeURIComponent(x.raw)}`} title={x.raw} className="text-dim">
+                  {x.label}
+                </EntityLink>
+              </span>
+            ))}
+          </span>
+        ) : (
+          <span className="text-dim">—</span>
+        ),
+    },
     { key: 'line', label: 'line', value: (r) => r.line ?? '', render: (r) => <span className="text-dim">{r.line ?? '—'}</span> },
     { key: 'tier', label: 'tier', align: 'right', value: (r) => r.tier ?? 0, render: (r) => dash(r.tier) },
     { key: 'max', label: 'max ranks', align: 'right', value: (r) => r.max_ranks ?? 0, render: (r) => dash(r.max_ranks) },

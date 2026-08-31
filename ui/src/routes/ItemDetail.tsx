@@ -126,7 +126,11 @@ export function ItemDetail() {
         </div>
         <h1 className="mt-1 flex flex-wrap items-baseline gap-3">
           <span className="text-lg font-semibold">{data.label ?? data.key}</span>
-          {data.category && <Chip state="neutral">{data.category}</Chip>}
+          {data.category && (
+            <EntityLink to={`/items?cat=${encodeURIComponent(data.category)}`} title={`every ${data.category} item`}>
+              <Chip state="neutral">{data.category}</Chip>
+            </EntityLink>
+          )}
           {data.lord_share != null && (
             <span className="text-dim text-xs">
               worn by lords {n(data.lord_share)}% · heroes {n(100 - data.lord_share)}%

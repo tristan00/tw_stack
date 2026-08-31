@@ -1579,6 +1579,10 @@ export interface components {
             points?: number | null;
             /** Characters */
             characters?: string | null;
+            /** Unlock Rank */
+            unlock_rank?: number | null;
+            /** Avg Ranks */
+            avg_ranks?: number | null;
             took?: components["schemas"]["Rate"] | null;
             /**
              * Starts
@@ -1603,6 +1607,8 @@ export interface components {
             key: string;
             /** Label */
             label?: string | null;
+            /** Description */
+            description?: string | null;
             /** Category */
             category?: string | null;
             /** Level */
@@ -1643,6 +1649,8 @@ export interface components {
             delta?: number | null;
             /** Chain */
             chain?: components["schemas"]["ChainLevel"][];
+            /** Related */
+            related?: components["schemas"]["RelatedKey"][];
             /** By Character */
             by_character?: components["schemas"]["SkillCharacterRow"][];
             /** By Start */
@@ -1684,6 +1692,7 @@ export interface components {
              * @default 0
              */
             constructed_in: number;
+            took?: components["schemas"]["Rate"] | null;
             /**
              * This
              * @default false
@@ -2816,6 +2825,10 @@ export interface components {
             maps?: components["schemas"]["Ident"][];
             /** Settlements */
             settlements?: components["schemas"]["PositionFacetOption"][];
+            /** Resources */
+            resources?: components["schemas"]["PositionFacetOption"][];
+            /** Hero Types */
+            hero_types?: components["schemas"]["PositionFacetOption"][];
             /**
              * Decisions
              * @default 0
@@ -2861,6 +2874,30 @@ export interface components {
             noun: string;
             /** Population */
             population: string;
+        };
+        /** RelatedKey */
+        RelatedKey: {
+            /** Key */
+            key: string;
+            /** Label */
+            label?: string | null;
+            /**
+             * Kind
+             * @default unlocks
+             */
+            kind: string;
+            /** Tier */
+            tier?: number | null;
+            /** Points */
+            points?: number | null;
+            /** Unlock Rank */
+            unlock_rank?: number | null;
+            /**
+             * Took In
+             * @default 0
+             */
+            took_in: number;
+            took?: components["schemas"]["Rate"] | null;
         };
         /** RewardPoint */
         RewardPoint: {
@@ -2952,6 +2989,7 @@ export interface components {
              * @default 0
              */
             campaigns: number;
+            ranked?: components["schemas"]["Rate"] | null;
             /** Avg Ranks */
             avg_ranks?: number | null;
             /** Avg Turn */
@@ -2963,8 +3001,8 @@ export interface components {
             key: string;
             /** Label */
             label?: string | null;
-            /** Parent */
-            parent?: string | null;
+            /** Parents */
+            parents?: components["schemas"]["Ident"][];
             /** Line */
             line?: string | null;
             /** Tier */
@@ -4336,17 +4374,7 @@ export interface operations {
                 faction?: string | null;
                 culture?: string | null;
                 map?: string | null;
-                holds?: string | null;
-                turn_min?: number | null;
-                turn_max?: number | null;
-                settlements_min?: number | null;
-                settlements_max?: number | null;
-                income_min?: number | null;
-                income_max?: number | null;
-                power_rank_min?: number | null;
-                power_rank_max?: number | null;
-                lord_level_min?: number | null;
-                lord_level_max?: number | null;
+                c?: string[];
             };
             header?: never;
             path?: never;

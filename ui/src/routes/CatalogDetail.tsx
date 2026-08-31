@@ -1,8 +1,8 @@
 import { useParams } from 'react-router-dom'
 import { DataTable, type Col } from '@/components/DataTable'
-import { ByStartTable, RecentTable, dashNum } from '@/components/catalog'
+import { ByStartTable, RecentTable, TookCell, dashNum } from '@/components/catalog'
 import { Chip, EntityLink, ErrorState, MetricTile, Section, Skeleton } from '@/components/primitives'
-import { useApi, type CatalogKeyPage, type ChainLevel, type SkillCharacterRow } from '@/lib/api'
+import { useApi, type CatalogKeyPage, type ChainLevel, type RelatedKey, type SkillCharacterRow } from '@/lib/api'
 import { n, pct } from '@/lib/format'
 
 type Family = 'buildings' | 'research' | 'skills'
@@ -26,10 +26,46 @@ function facts(family: Family, d: CatalogKeyPage): string | null {
     const parts = []
     if (d.tier != null) parts.push(`tier ${d.tier}`)
     if (d.points != null) parts.push(`${n(d.points)} points`)
-    if (d.parent) parts.push(`after ${d.parent.label}`)
     return parts.join(' · ') || null
   }
   return d.unlock_rank != null && d.unlock_rank > 0 ? `unlocks at rank ${d.unlock_rank}` : null
+}
+
+function RelatedTable({ rows, family, verb }: { rows: RelatedKey[]; family: string; verb: string }) {
+  const research = family === 'research'
+  const cols: Col<RelatedKey>[] = [
+    {
+      key: 'kind',
+      label: 'link',
+      value: (r) => r.kind,
+      render: (r) => <Chip state={r.kind === 'requires' ? 'neutral' : 'ok'}>{r.kind}</Chip>,
+    },
+    {
+      key: 'name',
+      label: research ? 'tech' : 'skill',
+      value: (r) => r.label ?? r.key,
+      render: (r) =>
+        r.took_in ? (
+          <EntityLink to={`/${family}/${encodeURIComponent(r.key)}`} title={r.key}>
+            {r.label ?? r.key}
+          </EntityLink>
+        ) : (
+          <span title={r.key} className="text-dim">
+            {r.label ?? r.key}
+          </span>
+        ),
+    },
+    ...(research
+      ? ([
+          { key: 'tier', label: 'tier', align: 'right', value: (r) => r.tier ?? 0, render: (r) => dashNum(r.tier) },
+          { key: 'points', label: 'points', align: 'right', value: (r) => r.points ?? undefined, sortUndefined: 'last', render: (r) => dashNum(r.points) },
+        ] as Col<RelatedKey>[])
+      : ([
+          { key: 'rank', label: 'unlocks at rank', align: 'right', value: (r) => r.unlock_rank ?? 0, render: (r) => dashNum(r.unlock_rank) },
+        ] as Col<RelatedKey>[])),
+    { key: 'rate', label: verb, align: 'right', value: (r) => r.took_in, render: (r) => <TookCell rate={r.took} /> },
+  ]
+  return <DataTable rows={rows} cols={cols} rowId={(r) => `${r.kind}:${r.key}`} dense pageSize={10} emptyWhat="no link in the reference tree" />
 }
 
 function ChainTable({ chain }: { chain: ChainLevel[] }) {
@@ -53,7 +89,7 @@ function ChainTable({ chain }: { chain: ChainLevel[] }) {
         ),
     },
     { key: 'cost', label: 'cost', align: 'right', value: (r) => r.cost ?? undefined, sortUndefined: 'last', render: (r) => dashNum(r.cost) },
-    { key: 'n', label: 'constructed in', unit: 'campaigns', align: 'right', value: (r) => r.constructed_in, render: (r) => dashNum(r.constructed_in) },
+    { key: 'rate', label: 'constructed', align: 'right', value: (r) => r.took?.n ?? 0, render: (r) => <TookCell rate={r.took} /> },
   ]
   return <DataTable rows={chain} cols={cols} rowId={(r) => r.key} dense emptyWhat="no chain in the reference schema" />
 }
@@ -62,7 +98,7 @@ function CharacterTable({ rows }: { rows: SkillCharacterRow[] }) {
   const cols: Col<SkillCharacterRow>[] = [
     { key: 'char', label: 'character', value: (r) => r.label ?? r.subtype, render: (r) => <span title={r.subtype}>{r.label ?? r.subtype}</span> },
     { key: 'kind', label: 'kind', value: (r) => r.kind, render: (r) => <span className="text-dim">{r.kind}</span> },
-    { key: 'n', label: 'ranked in', unit: 'campaigns', align: 'right', value: (r) => r.campaigns, render: (r) => <span className="num">{n(r.campaigns)}</span> },
+    { key: 'n', label: 'ranked', align: 'right', value: (r) => (r.ranked?.of ? r.ranked.n / r.ranked.of : 0), render: (r) => <TookCell rate={r.ranked} /> },
     { key: 'ranks', label: 'avg ranks', align: 'right', value: (r) => r.avg_ranks ?? undefined, sortUndefined: 'last', render: (r) => dashNum(r.avg_ranks, 1) },
     { key: 'turn', label: 'avg turn', unit: 'first', align: 'right', value: (r) => r.avg_turn ?? undefined, sortUndefined: 'last', render: (r) => dashNum(r.avg_turn, 1) },
   ]
@@ -121,10 +157,15 @@ export function CatalogDetail({ family }: { family: Family }) {
         </div>
         <h1 className="mt-1 flex flex-wrap items-baseline gap-3">
           <span className="text-lg font-semibold">{data.label ?? data.key}</span>
-          {data.category && <Chip state="neutral">{data.category}</Chip>}
+          {data.category && (
+            <EntityLink to={`/${family}?cat=${encodeURIComponent(data.category)}`} title={`every ${data.category} in the catalog`}>
+              <Chip state="neutral">{data.category}</Chip>
+            </EntityLink>
+          )}
           {data.line && <Chip state="neutral">{data.line}</Chip>}
           {factLine && <span className="text-dim text-xs">{factLine}</span>}
         </h1>
+        {data.description && <div className="text-dim mt-1 max-w-3xl text-xs">{data.description}</div>}
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -136,6 +177,20 @@ export function CatalogDetail({ family }: { family: Family }) {
       {family === 'buildings' && (data.chain ?? []).length > 1 && (
         <Section title="its chain" scope={{ text: 'every level of the same building chain' }}>
           <ChainTable chain={data.chain ?? []} />
+        </Section>
+      )}
+
+      {family !== 'buildings' && (data.related ?? []).length > 0 && (
+        <Section
+          title="requires & unlocks"
+          scope={{
+            text:
+              family === 'research'
+                ? 'its neighbours in the tech tree, from the reference schema'
+                : 'its neighbours pooled across every character tree that carries it, from the reference schema',
+          }}
+        >
+          <RelatedTable rows={data.related ?? []} family={family} verb={verb} />
         </Section>
       )}
 

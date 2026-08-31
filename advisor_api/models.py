@@ -498,7 +498,7 @@ class StartResearch(BaseModel):
 class SkillRow(BaseModel):
     key: str
     label: str | None = None
-    parent: str | None = None
+    parents: list[Ident] = Field(default_factory=list)
     line: str | None = None
     tier: int | None = None
     max_ranks: int | None = None
@@ -720,6 +720,8 @@ class CatalogIndexRow(BaseModel):
     tier: int | None = None
     points: int | None = None
     characters: str | None = None
+    unlock_rank: int | None = None
+    avg_ranks: float | None = None
     took: Rate | None = None
     starts: int = 0
     avg_turn: float | None = None
@@ -762,7 +764,19 @@ class ChainLevel(BaseModel):
     level: int | None = None
     cost: int | None = None
     constructed_in: int = 0
+    took: Rate | None = None
     this: bool = False
+
+
+class RelatedKey(BaseModel):
+    key: str
+    label: str | None = None
+    kind: str = "unlocks"
+    tier: int | None = None
+    points: int | None = None
+    unlock_rank: int | None = None
+    took_in: int = 0
+    took: Rate | None = None
 
 
 class SkillCharacterRow(BaseModel):
@@ -770,6 +784,7 @@ class SkillCharacterRow(BaseModel):
     label: str | None = None
     kind: str = "lord"
     campaigns: int = 0
+    ranked: Rate | None = None
     avg_ranks: float | None = None
     avg_turn: float | None = None
 
@@ -779,6 +794,7 @@ class CatalogKeyPage(BaseModel):
     family: str
     key: str
     label: str | None = None
+    description: str | None = None
     category: str | None = None
     level: int | None = None
     cost: int | None = None
@@ -797,6 +813,7 @@ class CatalogKeyPage(BaseModel):
     avg_reward_passed: float | None = None
     delta: float | None = None
     chain: list[ChainLevel] = Field(default_factory=list)
+    related: list[RelatedKey] = Field(default_factory=list)
     by_character: list[SkillCharacterRow] = Field(default_factory=list)
     by_start: list[CatalogStartRow] = Field(default_factory=list)
     recent: list[CatalogCampaignRow] = Field(default_factory=list)
@@ -833,6 +850,8 @@ class PositionsPage(BaseModel):
     cultures: list[str] = Field(default_factory=list)
     maps: list[Ident] = Field(default_factory=list)
     settlements: list[PositionFacetOption] = Field(default_factory=list)
+    resources: list[PositionFacetOption] = Field(default_factory=list)
+    hero_types: list[PositionFacetOption] = Field(default_factory=list)
     decisions: int = 0
     campaigns: int = 0
     takes: int = 0

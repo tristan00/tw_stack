@@ -334,6 +334,24 @@ def tech_name(key: str, technology_key: str | None = None) -> str | None:
             or _loc("technologies_onscreen_name_" + key))
 
 
+_MARKUP_RE = re.compile(r"\[\[.*?\]\]|\\\\n")
+
+
+def _clean_text(txt) -> str | None:
+    got = re.sub(r"\s+", " ", _MARKUP_RE.sub(" ", str(txt or ""))).strip()
+    return got or None
+
+
+def tech_description(key: str, technology_key: str | None = None) -> str | None:
+    return _clean_text(
+        _loc("technologies_short_description_" + (technology_key or key))
+        or _loc("technologies_short_description_" + key))
+
+
+def skill_description(key: str) -> str | None:
+    return _clean_text(_loc("character_skills_localised_description_" + key))
+
+
 _skill_line_cache: dict = {}
 
 
@@ -387,8 +405,7 @@ def tech_group_name(group: str | None) -> str | None:
     if not group:
         return None
     got = (_loc("technology_ui_groups_onscreen_name_" + group)
-           or _loc("uied_component_texts_localised_string_" + group)
-           or pretty(group))
+           or _loc("uied_component_texts_localised_string_" + group))
     return None if not got or got.isdigit() else got
 
 
@@ -399,6 +416,26 @@ def skill_parents() -> dict:
     for r in _rows("SELECT DISTINCT child, parent FROM skill_links ORDER BY 1, 2"):
         out.setdefault(r["child"], []).append(r["parent"])
     return out
+
+
+def _invert(parents: dict) -> dict:
+    out: dict = {}
+    for child, ps in parents.items():
+        for p in ps:
+            out.setdefault(p, []).append(child)
+    return out
+
+
+def tech_children() -> dict:
+    return _invert(tech_parents())
+
+
+def skill_children() -> dict:
+    return _invert(skill_parents())
+
+
+def pooled_resource_name(key: str) -> str:
+    return _loc("pooled_resources_display_name_" + str(key)) or pretty(key)
 
 
 def subtype_name(subtype: str) -> str | None:
