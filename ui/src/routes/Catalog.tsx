@@ -1,8 +1,10 @@
+import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { DataTable, type Col } from '@/components/DataTable'
 import { CatalogNav, TookCell, dashNum, signedNum } from '@/components/catalog'
 import { EntityLink, ErrorState, Section, Skeleton } from '@/components/primitives'
-import { useApi, type CatalogIndexPage, type CatalogIndexRow } from '@/lib/api'
+import { SubNav, useSubView } from '@/components/SubNav'
+import { useApi, type CatalogIndexPage, type CatalogIndexRow, type ChoicesPage, type ForkArmRow } from '@/lib/api'
 import { n } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
@@ -83,7 +85,147 @@ const FAM_COLS: Record<Family, Col<CatalogIndexRow>[]> = {
   skills: famCols('skills'),
 }
 
+const CHOICE_FAMILY: Record<Family, string> = {
+  buildings: 'building',
+  research: 'research',
+  skills: 'skills',
+}
+
+type ChoiceRow = { fork: string; forkLabel: string; cohort: number; arm: ForkArmRow }
+
+const choiceCols = (family: Family): Col<ChoiceRow>[] => [
+  {
+    key: 'fork',
+    label: family === 'buildings' ? 'settlement' : 'fork',
+    value: (r) => r.forkLabel,
+    render: (r) =>
+      family !== 'buildings' && !r.fork.startsWith('root:') ? (
+        <EntityLink to={`/${family}/${encodeURIComponent(r.fork)}`} title={r.fork}>
+          {r.forkLabel}
+        </EntityLink>
+      ) : (
+        <span>{r.forkLabel}</span>
+      ),
+  },
+  {
+    key: 'arm',
+    label: family === 'buildings' ? 'first commitment' : 'picked first',
+    value: (r) => r.arm.label,
+    render: (r) =>
+      r.arm.key == null ? (
+        <span className="text-dim">neither</span>
+      ) : family === 'buildings' ? (
+        <span>{r.arm.label}</span>
+      ) : (
+        <EntityLink to={`/${family}/${encodeURIComponent(r.arm.key)}`} title={r.arm.key}>
+          {r.arm.label}
+        </EntityLink>
+      ),
+  },
+  { key: 'n', label: 'campaigns', align: 'right', value: (r) => r.arm.n, render: (r) => <span className="num">{n(r.arm.n)}</span> },
+  {
+    key: 'share',
+    label: 'share',
+    unit: 'of cohort',
+    align: 'right',
+    help: 'this arm’s campaigns over every campaign that reached the fork',
+    value: (r) => r.arm.n / Math.max(1, r.cohort),
+    render: (r) => <span className="num">{Math.round((100 * r.arm.n) / Math.max(1, r.cohort))}%</span>,
+  },
+  { key: 'reached', label: 'reached', unit: 'avg turn', align: 'right', optional: true, value: (r) => r.arm.avg_reached_turn ?? undefined, sortUndefined: 'last', render: (r) => dashNum(r.arm.avg_reached_turn, 1) },
+  { key: 'picked', label: 'picked', unit: 'avg turn', align: 'right', value: (r) => r.arm.avg_picked_turn ?? undefined, sortUndefined: 'last', render: (r) => dashNum(r.arm.avg_picked_turn, 1) },
+  {
+    key: 'reward',
+    label: 'avg reward',
+    unit: 'campaign',
+    align: 'right',
+    help: 'the whole campaign’s analytics reward, averaged over this arm',
+    value: (r) => r.arm.avg_reward ?? undefined,
+    sortUndefined: 'last',
+    render: (r) => dashNum(r.arm.avg_reward, 2),
+  },
+  {
+    key: 'future',
+    label: 'avg future reward',
+    align: 'right',
+    help: 'gains made after the fork was reached — peak minus state at the fork, analytics weights, same anchor for every arm of a fork',
+    value: (r) => r.arm.avg_future ?? undefined,
+    sortUndefined: 'last',
+    render: (r) => dashNum(r.arm.avg_future, 2),
+  },
+]
+
+function ChoicesView({ family }: { family: Family }) {
+  const [censor, setCensor] = useState('3')
+  const [minN, setMinN] = useState('20')
+  const { data, error, loading, reload } = useApi<ChoicesPage>(
+    `/api/choices/${CHOICE_FAMILY[family]}?censor=${censor}&min_n=${minN}`,
+    [family, censor, minN],
+    { live: false },
+  )
+  if (error) return <ErrorState error={error} onRetry={reload} />
+  if (loading || !data) return <Skeleton rows={10} />
+  const rows: ChoiceRow[] = (data.forks ?? []).flatMap((fk) =>
+    (fk.arms ?? []).map((arm) => ({ fork: fk.fork, forkLabel: fk.label, cohort: fk.cohort, arm })),
+  )
+  return (
+    <Section
+      title={`${FAMILY[family].noun} choices`}
+      scope={{
+        text: `${data.scope.text} · ${n((data.forks ?? []).length)} forks`,
+        detail: data.scope.detail ?? undefined,
+      }}
+    >
+      <div className="mb-3 flex flex-wrap items-center gap-3 text-xs">
+        <label className="flex items-center gap-1.5">
+          <span className="text-dim">neither needs</span>
+          <select value={censor} onChange={(e) => setCensor(e.target.value)} className="border-line bg-surface rounded-md border px-2 py-1">
+            <option value="0">any survival</option>
+            <option value="3">3+ turns past the fork</option>
+            <option value="5">5+ turns past the fork</option>
+            <option value="10">10+ turns past the fork</option>
+          </select>
+        </label>
+        <label className="flex items-center gap-1.5">
+          <span className="text-dim">cohort at least</span>
+          <select value={minN} onChange={(e) => setMinN(e.target.value)} className="border-line bg-surface rounded-md border px-2 py-1">
+            <option value="0">anything</option>
+            <option value="10">10 campaigns</option>
+            <option value="20">20 campaigns</option>
+            <option value="50">50 campaigns</option>
+          </select>
+        </label>
+      </div>
+      <DataTable
+        rows={rows}
+        cols={choiceCols(family)}
+        rowId={(r) => `${r.fork}>${r.arm.key ?? 'neither'}`}
+        searchPlaceholder="search fork, choice…"
+        pageSize={25}
+        emptyWhat="no fork clears these knobs"
+      />
+    </Section>
+  )
+}
+
+const CATALOG_TABS = [
+  { key: 'all', label: 'index', asks: 'every key, take rates and reward deltas' },
+  { key: 'choices', label: 'choices', asks: 'at each fork, what did picking one path over the others go on to gain' },
+]
+
 export function Catalog({ family }: { family: Family }) {
+  const tab = useSubView(CATALOG_TABS, 'tab')
+  return (
+    <div>
+      <CatalogNav active={`/${family}`} />
+      <SubNav views={CATALOG_TABS} param="tab" />
+      {tab === 'all' && <CatalogIndex family={family} />}
+      {tab === 'choices' && <ChoicesView family={family} />}
+    </div>
+  )
+}
+
+function CatalogIndex({ family }: { family: Family }) {
   const { data, error, loading, reload } = useApi<CatalogIndexPage>(`/api/${family}`, [family], { live: false })
   const [params, setParams] = useSearchParams()
   const cat = params.get('cat') ?? ''
@@ -101,7 +243,6 @@ export function Catalog({ family }: { family: Family }) {
   )
   return (
     <div>
-      <CatalogNav active={`/${family}`} />
       <Section
         title={f.title}
         scope={{

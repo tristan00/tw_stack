@@ -30,9 +30,10 @@ from advisor_api.models import (
     StartPerformance, TimelinePage, TrainingPage, CorrelationsPage, UcbPickPage,
     UcbPicksPage,
     CampaignItemsPage, CampaignResearchPage, CampaignSkillsPage, ItemPage, ItemsPage,
+    SwapsPage,
     StartItems, StartResearch, StartSkills,
     CampaignBuildingsPage, CampaignLookupPage, CatalogIndexPage, CatalogKeyPage,
-    LookupFacets, PositionsPage, RewardWeightsPage, StartBuildings,
+    ChoicesPage, LookupFacets, PositionsPage, RewardWeightsPage, StartBuildings,
 )
 
 UI_DIST = os.path.join(common.ROOT, "ui", "dist")
@@ -271,6 +272,25 @@ def get_items() -> ItemsPage:
         **got)
 
 
+@app.get("/api/items/swaps", response_model=SwapsPage,
+         response_model_exclude_none=True, tags=["catalog"])
+def get_item_swaps(gap: int = Query(0, ge=0, le=50),
+                   kept: int | None = Query(None, ge=0, le=100),
+                   reequip: bool = False,
+                   turn_lo: int | None = Query(None, ge=0),
+                   turn_hi: int | None = Query(None, ge=0)) -> SwapsPage:
+    got = q._fact_item_swaps(gap=gap, kept_min=kept, allow_reequip=reequip,
+                             turn_lo=turn_lo, turn_hi=turn_hi)
+    return SwapsPage(
+        scope=_scope("a character took one item off and put another of the same "
+                     "category on, under the knobs above",
+                     "same category = competing for the same slot; the knobs set "
+                     "how many turns the pickup may wait, how long the new item "
+                     "must stay on, and whether the old item may ever return"),
+        events=got["events"], gap=gap, kept_min=kept, allow_reequip=reequip,
+        turn_lo=turn_lo, turn_hi=turn_hi, rows=got["rows"])
+
+
 @app.get("/api/items/{item_key}", response_model=ItemPage, tags=["catalog"])
 def get_item(item_key: str) -> ItemPage:
     con = _con()
@@ -356,6 +376,26 @@ def get_positions(faction: str | None = None, culture: str | None = None,
                      "had done that thing at or before the decision; rewards use "
                      "the analytics weights from the reward weights tab; future "
                      "reward = what the campaign still gained after the decision"),
+        **got)
+
+
+@app.get("/api/choices/{family}", response_model=ChoicesPage,
+         response_model_exclude_none=True, tags=["catalog"])
+def get_choices(family: str, censor: int = Query(0, ge=0, le=50),
+                min_n: int = Query(0, ge=0, le=1000)) -> ChoicesPage:
+    if family not in ("research", "skills", "building"):
+        raise HTTPException(404, "no choices view for %r" % family)
+    con = _con()
+    got = q.choices_page(con, family, censor=censor, min_n=min_n)
+    return ChoicesPage(
+        scope=_scope("every fork in the %s tree: campaigns that reached it, and "
+                     "what they went on to gain per path taken -- or neither"
+                     % ("building slot" if family == "building" else family),
+                     "cohort = campaigns whose state shows the fork open; an arm "
+                     "is the sibling completed first; future reward counts gains "
+                     "made after the fork was reached, from the same anchor for "
+                     "every arm; the censor knob drops neither-campaigns that "
+                     "died within N turns of reaching the fork"),
         **got)
 
 

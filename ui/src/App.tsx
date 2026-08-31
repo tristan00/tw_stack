@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { Layout } from '@/components/Layout'
 import { Campaigns } from '@/routes/Campaigns'
+import { Home } from '@/routes/Home'
 import { CampaignDetail } from '@/routes/CampaignDetail'
 import { Catalog } from '@/routes/Catalog'
 import { CatalogDetail } from '@/routes/CatalogDetail'
@@ -23,7 +24,7 @@ export default function App() {
   return (
     <Routes>
       <Route element={<Layout />}>
-        <Route index element={<Navigate to="/campaigns" replace />} />
+        <Route index element={<Home />} />
         <Route path="/run" element={<Run />} />
         <Route path="/lookup" element={<Lookup />} />
         <Route path="/status" element={<Status />} />
@@ -45,7 +46,7 @@ export default function App() {
         <Route path="/models" element={<Models />} />
         <Route path="/log" element={<Log />} />
         <Route path="/infra" element={<Infra />} />
-        <Route path="*" element={<Navigate to="/campaigns" replace />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>
   )

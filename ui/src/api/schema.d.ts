@@ -225,6 +225,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/items/swaps": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Item Swaps */
+        get: operations["get_item_swaps_api_items_swaps_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/items/{item_key}": {
         parameters: {
             query?: never;
@@ -353,6 +370,23 @@ export interface paths {
         };
         /** Get Positions */
         get: operations["get_positions_api_positions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/choices/{family}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Choices */
+        get: operations["get_choices_api_choices__family__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1811,6 +1845,22 @@ export interface components {
              */
             this: boolean;
         };
+        /** ChoicesPage */
+        ChoicesPage: {
+            scope: components["schemas"]["Scope"];
+            /**
+             * Censor
+             * @default 0
+             */
+            censor: number;
+            /**
+             * Min N
+             * @default 0
+             */
+            min_n: number;
+            /** Forks */
+            forks?: components["schemas"]["ForkRow"][];
+        };
         /** ConquestStep */
         ConquestStep: {
             /** Step */
@@ -2175,6 +2225,40 @@ export interface components {
             /** Bars */
             bars: components["schemas"]["ForcingBar"][];
         };
+        /** ForkArmRow */
+        ForkArmRow: {
+            /** Key */
+            key?: string | null;
+            /** Label */
+            label: string;
+            /**
+             * N
+             * @default 0
+             */
+            n: number;
+            /** Avg Reached Turn */
+            avg_reached_turn?: number | null;
+            /** Avg Picked Turn */
+            avg_picked_turn?: number | null;
+            /** Avg Reward */
+            avg_reward?: number | null;
+            /** Avg Future */
+            avg_future?: number | null;
+        };
+        /** ForkRow */
+        ForkRow: {
+            /** Fork */
+            fork: string;
+            /** Label */
+            label: string;
+            /**
+             * Cohort
+             * @default 0
+             */
+            cohort: number;
+            /** Arms */
+            arms?: components["schemas"]["ForkArmRow"][];
+        };
         /** GenerationRow */
         GenerationRow: {
             trial: components["schemas"]["Ident"];
@@ -2452,13 +2536,6 @@ export interface components {
             resources?: string[];
             /** Rows */
             rows?: components["schemas"]["ItemRow"][];
-            /**
-             * Swap Events
-             * @default 0
-             */
-            swap_events: number;
-            /** Swaps */
-            swaps?: components["schemas"]["ItemSwapRow"][];
         };
         /** LaunchDefaults */
         LaunchDefaults: {
@@ -3556,6 +3633,33 @@ export interface components {
             /** Rows */
             rows: components["schemas"]["StartRow"][];
         };
+        /** SwapsPage */
+        SwapsPage: {
+            scope: components["schemas"]["Scope"];
+            /**
+             * Events
+             * @default 0
+             */
+            events: number;
+            /**
+             * Gap
+             * @default 0
+             */
+            gap: number;
+            /** Kept Min */
+            kept_min?: number | null;
+            /**
+             * Allow Reequip
+             * @default false
+             */
+            allow_reequip: boolean;
+            /** Turn Lo */
+            turn_lo?: number | null;
+            /** Turn Hi */
+            turn_hi?: number | null;
+            /** Rows */
+            rows?: components["schemas"]["ItemSwapRow"][];
+        };
         /** TechRow */
         TechRow: {
             /** Key */
@@ -4391,6 +4495,41 @@ export interface operations {
             };
         };
     };
+    get_item_swaps_api_items_swaps_get: {
+        parameters: {
+            query?: {
+                gap?: number;
+                kept?: number | null;
+                reequip?: boolean;
+                turn_lo?: number | null;
+                turn_hi?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SwapsPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_item_api_items__item_key__get: {
         parameters: {
             query?: never;
@@ -4596,6 +4735,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PositionsPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_choices_api_choices__family__get: {
+        parameters: {
+            query?: {
+                censor?: number;
+                min_n?: number;
+            };
+            header?: never;
+            path: {
+                family: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChoicesPage"];
                 };
             };
             /** @description Validation Error */

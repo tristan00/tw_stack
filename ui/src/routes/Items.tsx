@@ -1,15 +1,16 @@
+import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { DataTable, type Col } from '@/components/DataTable'
 import { CatalogNav, TookCell } from '@/components/catalog'
 import { EntityLink, ErrorState, Section, Skeleton } from '@/components/primitives'
 import { SubNav, useSubView } from '@/components/SubNav'
-import { useApi, type ItemRow, type ItemsPage, type ItemSwapRow } from '@/lib/api'
+import { useApi, type ItemRow, type ItemsPage, type ItemSwapRow, type SwapsPage } from '@/lib/api'
 import { n } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 const TABS = [
   { key: 'items', label: 'items', asks: 'does wearing an item pay' },
-  { key: 'swaps', label: 'kept swaps', asks: 'which permanent same-turn item swaps happen, and how those campaigns go' },
+  { key: 'swaps', label: 'kept swaps', asks: 'which kept item swaps happen, and how those campaigns go' },
 ]
 
 export const itemDelta = (v: number | null | undefined) =>
@@ -173,22 +174,93 @@ function ItemsIndex({ data }: { data: ItemsPage }) {
   )
 }
 
-function SwapsView({ data }: { data: ItemsPage }) {
+function KnobSelect({ value, onChange, options, label }: {
+  value: string
+  onChange: (v: string) => void
+  options: { v: string; label: string }[]
+  label: string
+}) {
+  return (
+    <label className="flex items-center gap-1.5">
+      <span className="text-dim">{label}</span>
+      <select value={value} onChange={(e) => onChange(e.target.value)} className="border-line bg-surface rounded-md border px-2 py-1">
+        {options.map((o) => (
+          <option key={o.v} value={o.v}>{o.label}</option>
+        ))}
+      </select>
+    </label>
+  )
+}
+
+function SwapsView() {
+  const [gap, setGap] = useState('0')
+  const [kept, setKept] = useState('forever')
+  const [reequip, setReequip] = useState('0')
+  const [turnLo, setTurnLo] = useState('')
+  const [turnHi, setTurnHi] = useState('')
+  const qs = new URLSearchParams({ gap })
+  if (kept !== 'forever') qs.set('kept', kept)
+  if (reequip === '1') qs.set('reequip', 'true')
+  if (turnLo) qs.set('turn_lo', turnLo)
+  if (turnHi) qs.set('turn_hi', turnHi)
+  const { data, error, loading, reload } = useApi<SwapsPage>(`/api/items/swaps?${qs.toString()}`, [qs.toString()], { live: false })
+  if (error) return <ErrorState error={error} onRetry={reload} />
+  if (loading || !data) return <Skeleton rows={8} />
   return (
     <Section
       title="kept swaps"
       scope={{
-        text: `a character took one item off and put another of the same category on the same turn, then kept the new one for the rest of the campaign · ${n(data.swap_events)} swap${data.swap_events === 1 ? '' : 's'} across ${n((data.swaps ?? []).length)} pairs`,
-        detail: 'same category = competing for the same slot · the old item stays off too · Δ compares each swapping campaign to its own start’s mean reward',
+        text: `a character took one item off and put another of the same category on · ${n(data.events)} swap${data.events === 1 ? '' : 's'} across ${n((data.rows ?? []).length)} pairs under these knobs`,
+        detail: 'same category = competing for the same slot · Δ compares each swapping campaign to its own start’s mean reward · the strict default: picked up the same turn, kept for the rest of the campaign, the old item never returns',
       }}
     >
+      <div className="mb-3 flex flex-wrap items-center gap-3 text-xs">
+        <KnobSelect
+          label="pickup within"
+          value={gap}
+          onChange={setGap}
+          options={[
+            { v: '0', label: 'the same turn' },
+            { v: '1', label: '1 turn' },
+            { v: '2', label: '2 turns' },
+            { v: '5', label: '5 turns' },
+          ]}
+        />
+        <KnobSelect
+          label="kept for"
+          value={kept}
+          onChange={setKept}
+          options={[
+            { v: 'forever', label: 'the rest of the campaign' },
+            { v: '5', label: '5+ turns' },
+            { v: '3', label: '3+ turns' },
+            { v: '1', label: '1+ turn' },
+            { v: '0', label: 'any time' },
+          ]}
+        />
+        <KnobSelect
+          label="old item"
+          value={reequip}
+          onChange={setReequip}
+          options={[
+            { v: '0', label: 'stays off' },
+            { v: '1', label: 'may return' },
+          ]}
+        />
+        <label className="flex items-center gap-1.5">
+          <span className="text-dim">swap turn</span>
+          <input value={turnLo} onChange={(e) => setTurnLo(e.target.value.replace(/\D/g, ''))} placeholder="min" className="border-line bg-surface num w-12 rounded-md border px-1.5 py-1 text-right" />
+          <span className="text-dim">–</span>
+          <input value={turnHi} onChange={(e) => setTurnHi(e.target.value.replace(/\D/g, ''))} placeholder="max" className="border-line bg-surface num w-12 rounded-md border px-1.5 py-1 text-right" />
+        </label>
+      </div>
       <DataTable
-        rows={data.swaps ?? []}
+        rows={data.rows ?? []}
         cols={swapCols}
         rowId={(r) => `${r.removed.raw}>${r.equipped.raw}`}
         searchPlaceholder="search swap…"
         pageSize={25}
-        emptyWhat="no campaign ever made a permanent same-turn swap"
+        emptyWhat="no swap matches these knobs"
       />
     </Section>
   )
@@ -204,7 +276,7 @@ export function Items() {
       <CatalogNav active="/items" />
       <SubNav views={TABS} param="tab" />
       {tab === 'items' && <ItemsIndex data={data} />}
-      {tab === 'swaps' && <SwapsView data={data} />}
+      {tab === 'swaps' && <SwapsView />}
     </div>
   )
 }

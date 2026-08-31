@@ -33,7 +33,8 @@ from advisor_api.models import (
     StartCampaign, Verdict, WindowEdgeRow,
     BehaviourRow, BuildingRow, CampaignBuildingRow, CampaignCharacter,
     CampaignItemEvent, CampaignSkillRow, CampaignTechRow, CatalogCampaignRow,
-    CatalogIndexRow, CatalogStartRow, ChainLevel, ItemCampaignRow, ItemRow,
+    CatalogIndexRow, CatalogStartRow, ChainLevel, ForkArmRow, ForkRow,
+    ItemCampaignRow, ItemRow,
     ItemStartRow, ItemSwapRow, LookupCampaignRow, PositionFacetOption,
     PositionKeyRow, PositionTypeRow, RelatedKey, SkillCharacterRow, SkillRow,
     StartCharacterRow, TechRow,
@@ -1570,11 +1571,12 @@ def start_items(con, mkey: str, fkey: str) -> dict:
 
 
 @db.timed
-def _fact_item_swaps() -> dict:
+def _fact_item_swaps(gap=0, kept_min=None, allow_reequip=False,
+                     turn_lo=None, turn_hi=None) -> dict:
     camp = {int(r["campaign_id"]): r for r in adb.rows(
         "WITH " + _FACT_CAMPS +
-        " SELECT campaign_id, campaign_map, faction, reward FROM camps",
-        _fact_params())}
+        " SELECT campaign_id, campaign_map, faction, reward, turns_reached"
+        " FROM camps", _fact_params())}
     means: dict = {}
     for c in camp.values():
         means.setdefault((c["campaign_map"], c["faction"]), []).append(
@@ -1589,31 +1591,54 @@ def _fact_item_swaps() -> dict:
     events = 0
     pairs: dict = {}
     for (cid, _ctx), evs in per.items():
-        off_dids: dict = {}
-        on_dids: dict = {}
-        by_turn: dict = {}
+        end_turn = _i((camp.get(cid) or {}).get("turns_reached"))
+        offs: dict = {}
+        ons: dict = {}
         for kind, key, turn, did in evs:
-            (off_dids if kind == "off" else on_dids).setdefault(key, []).append(did)
-            if turn is not None:
-                u, e = by_turn.setdefault(turn, ([], []))
-                (u if kind == "off" else e).append((key, did))
-        for turn, (u, e) in by_turn.items():
-            for ak, adid in u:
-                for bk, bdid in e:
-                    if ak == bk:
+            (offs if kind == "off" else ons).setdefault(key, []).append(
+                (turn, did))
+        for ak, alist in offs.items():
+            cat = labels.item_category(ak)
+            if not cat:
+                continue
+            for aturn, adid in alist:
+                if aturn is None:
+                    continue
+                if turn_lo is not None and aturn < turn_lo:
+                    continue
+                if turn_hi is not None and aturn > turn_hi:
+                    continue
+                if not allow_reequip and any(
+                        d2 > adid for _t2, d2 in ons.get(ak, ())):
+                    continue
+                best = None
+                for bk, blist in ons.items():
+                    if bk == ak or labels.item_category(bk) != cat:
                         continue
-                    cat = labels.item_category(ak)
-                    if not cat or labels.item_category(bk) != cat:
+                    for bturn, bdid in blist:
+                        if bturn is None or bdid < adid:
+                            continue
+                        if bturn - aturn > (gap or 0):
+                            continue
+                        if best is None or bdid < best[2]:
+                            best = (bk, bturn, bdid)
+                if best is None:
+                    continue
+                bk, bturn, bdid = best
+                later_offs = [t2 for t2, d2 in offs.get(bk, ()) if d2 > bdid]
+                if kept_min is None:
+                    if later_offs:
                         continue
-                    if any(d2 > bdid for d2 in off_dids.get(bk, ())):
+                else:
+                    kept_until = min(later_offs) if later_offs else end_turn
+                    if kept_until is None \
+                            or kept_until - bturn < kept_min:
                         continue
-                    if any(d2 > adid for d2 in on_dids.get(ak, ())):
-                        continue
-                    events += 1
-                    p = pairs.setdefault((ak, bk), {"cids": set(), "turns": [],
-                                                    "cat": cat})
-                    p["cids"].add(cid)
-                    p["turns"].append(turn)
+                events += 1
+                p = pairs.setdefault((ak, bk), {"cids": set(), "turns": [],
+                                                "cat": cat})
+                p["cids"].add(cid)
+                p["turns"].append(aturn)
     rows = []
     for (ak, bk), p in pairs.items():
         rewards = [_f(camp[cid]["reward"]) for cid in p["cids"] if cid in camp]
@@ -1639,10 +1664,8 @@ def _fact_item_swaps() -> dict:
 def items_page(con) -> dict:
     rows = _fact_item_rows()
     cats = sorted({r.category for r in rows if r.category})
-    swaps = _fact_item_swaps()
     return {"total": len(rows), "categories": cats,
-            "resources": _resource_columns(rows), "rows": rows,
-            "swap_events": swaps["events"], "swaps": swaps["rows"]}
+            "resources": _resource_columns(rows), "rows": rows}
 
 
 def item_page(con, key: str) -> dict | None:
@@ -2170,6 +2193,196 @@ def _fact_key_stats(family, keys) -> dict:
             if rt is not None and rp is not None and tn >= 5
             and (onn - tn) >= 5 else None}
     return out
+
+
+def _fact_turn_states() -> tuple:
+    states: dict = {}
+    for r in adb.rows(
+            "SELECT DISTINCT ON (campaign_id, turn) campaign_id, turn,"
+            " settlements, lord_level, allies, vassals"
+            " FROM decision_features WHERE turn IS NOT NULL"
+            " ORDER BY campaign_id, turn, decision_id"):
+        states.setdefault(int(r["campaign_id"]), []).append(
+            (int(r["turn"]), _f(r["settlements"], 0.0) or 0.0,
+             _f(r["lord_level"], 0.0) or 0.0,
+             _f(r["allies"], 0.0) or 0.0, _f(r["vassals"], 0.0) or 0.0))
+    peaks = {int(r["campaign_id"]): (
+        _f(r["ps"], 0.0) or 0.0, _f(r["pl"], 0.0) or 0.0,
+        _f(r["pa"], 0.0) or 0.0, _f(r["pv"], 0.0) or 0.0)
+        for r in adb.rows(
+            "SELECT campaign_id, MAX(settlements) ps, MAX(lord_level) pl,"
+            " MAX(allies) pa, MAX(vassals) pv FROM decision_features"
+            " GROUP BY 1")}
+    return states, peaks
+
+
+def _future_reward(states, peaks, cid, anchor_turn):
+    pk = peaks.get(cid)
+    seq = states.get(cid)
+    if pk is None or not seq or anchor_turn is None:
+        return None
+    anchor = None
+    for row in seq:
+        if row[0] >= anchor_turn:
+            anchor = row
+            break
+    if anchor is None:
+        anchor = seq[-1]
+    w = reward_weights()
+    return (w["settlements"] * max(0.0, pk[0] - anchor[1])
+            + w["lord_levels"] * max(0.0, pk[1] - anchor[2])
+            + w["allies"] * max(0.0, pk[2] - anchor[3])
+            + w["vassals"] * max(0.0, pk[3] - anchor[4]))
+
+
+def _fork_specs(family) -> list:
+    out = []
+    if family == "research":
+        for parent, kids in labels.tech_children().items():
+            if len(kids) > 1:
+                out.append((parent, parent, sorted(set(kids))))
+        for ns, roots in labels.tech_roots().items():
+            out.append(("root:" + ns, None, roots))
+    elif family == "skills":
+        for parent, kids in labels.skill_children().items():
+            if len(kids) > 1:
+                out.append((parent, parent, sorted(set(kids))))
+    return out
+
+
+@db.timed
+def choices_page(con, family: str, censor=0, min_n=0) -> dict:
+    camp = {int(r["campaign_id"]): r for r in adb.rows(
+        "WITH " + _FACT_CAMPS +
+        " SELECT campaign_id, reward, turns_reached FROM camps",
+        _fact_params())}
+    states, peaks = _fact_turn_states()
+    forks = []
+    if family == "building":
+        per_region: dict = {}
+        for r in adb.rows(
+                "SELECT campaign_id cid, ctx, key, MIN(first_seen_turn) seen,"
+                " MIN(acquired_turn) turn, MIN(acquired_decision) dec"
+                " FROM acquisitions WHERE family = 'building' AND ctx <> ''"
+                " GROUP BY 1, 2, 3"):
+            per_region.setdefault(str(r["ctx"]), {}).setdefault(
+                int(r["cid"]), []).append(
+                (r["key"], _i(r["seen"]), _i(r["turn"]), _i(r["dec"])))
+        info = labels.building_info(
+            {k for camps in per_region.values() for rows in camps.values()
+             for k, _s, _t, _d in rows})
+        for region, camps in per_region.items():
+            arms: dict = {}
+            cohort = 0
+            for cid, rows in camps.items():
+                if cid not in camp:
+                    continue
+                cohort += 1
+                reached = min((s for _k, s, _t, _d in rows if s is not None),
+                              default=None)
+                built = [(d, t, k) for k, _s, t, d in rows
+                         if d is not None and t is not None
+                         and reached is not None and t > reached]
+                if built:
+                    d, t, k = min(built)
+                    cat = str((info.get(k) or {}).get("chain_category") or "")
+                    arm = cat.replace("_", " ") or "uncategorised"
+                else:
+                    end = _i(camp[cid]["turns_reached"], 0) or 0
+                    if reached is not None and end - reached < censor:
+                        continue
+                    arm, t = None, None
+                e = arms.setdefault(arm, {"n": 0, "reached": [], "picked": [],
+                                          "rewards": [], "futures": []})
+                e["n"] += 1
+                if reached is not None:
+                    e["reached"].append(reached)
+                if t is not None:
+                    e["picked"].append(t)
+                e["rewards"].append(_f(camp[cid]["reward"], 0.0) or 0.0)
+                fut = _future_reward(states, peaks, cid, reached)
+                if fut is not None:
+                    e["futures"].append(fut)
+            if cohort >= min_n and arms:
+                forks.append((region,
+                              labels.name_for("attack_settlement", region)
+                              or labels.pretty(region), cohort, arms))
+    else:
+        specs = _fork_specs(family)
+        keys = sorted({k for _f2, p, kids in specs for k in kids}
+                      | {p for _f2, p, _k in specs if p})
+        acq: dict = {}
+        for r in adb.rows(
+                "SELECT campaign_id cid, key, MIN(first_seen_turn) seen,"
+                " MIN(acquired_turn) turn, MIN(acquired_decision) dec"
+                " FROM acquisitions WHERE family = %(fam)s"
+                " AND key = ANY(%(keys)s) GROUP BY 1, 2",
+                {"fam": family, "keys": keys}):
+            acq.setdefault(int(r["cid"]), {})[r["key"]] = (
+                _i(r["seen"]), _i(r["turn"]), _i(r["dec"]))
+        for fork_key, parent, kids in specs:
+            arms: dict = {}
+            cohort = 0
+            for cid, got in acq.items():
+                if cid not in camp:
+                    continue
+                if parent is not None:
+                    pa = got.get(parent)
+                    if not pa or pa[1] is None:
+                        continue
+                    reached = pa[1]
+                else:
+                    seen = [got[k][0] for k in kids
+                            if k in got and got[k][0] is not None]
+                    if not seen:
+                        continue
+                    reached = min(seen)
+                cohort += 1
+                taken = [(got[k][2], got[k][1], k) for k in kids
+                         if k in got and got[k][2] is not None
+                         and (parent is None or got[k][1] is None
+                              or got[k][1] >= reached)]
+                if taken:
+                    _d, t, k = min(taken)
+                    arm = k
+                else:
+                    end = _i(camp[cid]["turns_reached"], 0) or 0
+                    if end - reached < censor:
+                        continue
+                    arm, t = None, None
+                e = arms.setdefault(arm, {"n": 0, "reached": [], "picked": [],
+                                          "rewards": [], "futures": []})
+                e["n"] += 1
+                e["reached"].append(reached)
+                if t is not None:
+                    e["picked"].append(t)
+                e["rewards"].append(_f(camp[cid]["reward"], 0.0) or 0.0)
+                fut = _future_reward(states, peaks, cid, reached)
+                if fut is not None:
+                    e["futures"].append(fut)
+            if cohort >= min_n and arms:
+                label = (_fam_label(family, parent) if parent
+                         else "tree start · " + fork_key.split(":", 1)[1])
+                forks.append((fork_key, label, cohort, arms))
+    forks.sort(key=lambda f2: -f2[2])
+    out = []
+    for fork_key, label, cohort, arms in forks:
+        arm_rows = []
+        for arm, e in sorted(arms.items(),
+                             key=lambda kv: (kv[0] is None, -kv[1]["n"])):
+            arm_rows.append(ForkArmRow(
+                key=arm,
+                label=("neither" if arm is None
+                       else arm if family == "building"
+                       else _fam_label(family, arm)),
+                n=e["n"],
+                avg_reached_turn=_mean(e["reached"], 1),
+                avg_picked_turn=_mean(e["picked"], 1),
+                avg_reward=_mean(e["rewards"]),
+                avg_future=_mean(e["futures"])))
+        out.append(ForkRow(fork=fork_key, label=label, cohort=cohort,
+                           arms=arm_rows))
+    return {"censor": censor, "min_n": min_n, "forks": out}
 
 
 @db.timed
