@@ -1423,6 +1423,42 @@
    ]
   ]
  },
+ "character_skill_categories_tables": {
+  "2": [
+   [
+    "key",
+    "StringU8"
+   ],
+   [
+    "max_indent",
+    "I32"
+   ],
+   [
+    "min_indent",
+    "I32"
+   ],
+   [
+    "order",
+    "I32"
+   ],
+   [
+    "col_r",
+    "I32"
+   ],
+   [
+    "col_g",
+    "I32"
+   ],
+   [
+    "col_b",
+    "I32"
+   ],
+   [
+    "agent_subtype_override",
+    "OptionalStringU8"
+   ]
+  ]
+ },
  "character_skill_level_details_tables": {
   "0": [
    [

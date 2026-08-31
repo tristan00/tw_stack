@@ -2458,6 +2458,8 @@ export interface components {
             label?: string | null;
             /** Parent */
             parent?: string | null;
+            /** Line */
+            line?: string | null;
             /** Tier */
             tier?: number | null;
             /** Max Ranks */
@@ -2781,6 +2783,8 @@ export interface components {
             /** Label */
             label?: string | null;
             parent?: components["schemas"]["Ident"] | null;
+            /** Line */
+            line?: string | null;
             /** Tier */
             tier?: number | null;
             /** Points */

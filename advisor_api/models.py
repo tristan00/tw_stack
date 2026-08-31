@@ -477,6 +477,7 @@ class TechRow(BaseModel):
     key: str
     label: str | None = None
     parent: Ident | None = None
+    line: str | None = None
     tier: int | None = None
     points: int | None = None
     took: Rate | None = None
@@ -498,6 +499,7 @@ class SkillRow(BaseModel):
     key: str
     label: str | None = None
     parent: str | None = None
+    line: str | None = None
     tier: int | None = None
     max_ranks: int | None = None
     took: Rate | None = None

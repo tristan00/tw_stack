@@ -1455,6 +1455,7 @@ def start_research(con, mkey: str, fkey: str) -> dict:
                          "research_points_required": None})
     parents = labels.tech_parents()
     depth = _tech_depth(parents, [u["key"] for u in universe])
+    groups = labels.tech_groups()
     rows = []
     for u in universe:
         got = taken.get(u["key"]) or []
@@ -1464,6 +1465,7 @@ def start_research(con, mkey: str, fkey: str) -> dict:
             key=u["key"],
             label=labels.tech_name(u["key"], u.get("technology_key")),
             parent=_parent_ident(parents, u["key"]),
+            line=labels.tech_group_name(groups.get(u["key"])),
             tier=depth.get(u["key"]),
             points=_i(u["research_points_required"]),
             took=Rate(n=len(got), of=len(mine), noun="campaigns",
@@ -1541,6 +1543,7 @@ def start_skills(con, mkey: str, fkey: str, subtype: str | None = None) -> dict:
                              "max": _i(node.get("total_levels"))}
     tree_keys = set(struct)
     all_parents = labels.skill_parents()
+    lines = labels.skill_lines(chosen)
     first_turn: dict = {}
     cqis_by_camp = {cid: pc["cqis"] for cid, pc in per_camp.items()}
     for r in con.execute(
@@ -1569,6 +1572,7 @@ def start_skills(con, mkey: str, fkey: str, subtype: str | None = None) -> dict:
             key=k, label=labels.name_for("skills", k) or labels.pretty(k),
             parent=" + ".join(
                 labels.name_for("skills", p) or labels.pretty(p) for p in ps) or None,
+            line=labels.skill_line_of(lines, k),
             tier=st["tier"], max_ranks=st["max"],
             took=Rate(n=len(took), of=of_n, noun="campaigns",
                       population="with this character that ranked it"),
@@ -1635,6 +1639,7 @@ def campaign_research(con, campaign_key: str) -> dict | None:
             turn=turn, key=key,
             label=labels.tech_name(key, u.get("technology_key")),
             parent=_parent_ident(parents, key),
+            line=labels.tech_group_name(labels.tech_groups().get(key)),
             tier=depth.get(key),
             points=_i(u.get("research_points_required")),
             completed_turn=done, in_progress=done is None and not seen_later))
