@@ -638,5 +638,76 @@ def _verify(cur):
               f"release={got['release']!r}")
 
 
+def build_extra():
+    con = pg.connect(search_path="reference")
+    cur = con.cursor()
+    schema = load_db_schema()
+    dfiles, dd = parse_pack(GAME + "/db.pack")
+    report = {}
+
+    def src(table):
+        rows, meta = decode_db_table(dfiles, dd, table, schema)
+        report[table] = meta
+        return rows, meta
+
+    links, lmeta = src("technology_node_links_tables")
+    if lmeta["ok"]:
+        cur.execute("DROP TABLE IF EXISTS tech_links")
+        cur.execute("CREATE TABLE tech_links (child TEXT, parent TEXT, visible INT)")
+        for r in links:
+            cur.execute("INSERT INTO tech_links VALUES (%s, %s, %s)",
+                        (r["child_key"], r["parent_key"],
+                         1 if r.get("visible_in_ui") else 0))
+        cur.execute("CREATE INDEX idx_tech_links_child ON tech_links (child)")
+
+    ancs, ameta = src("ancillaries_tables")
+    if ameta["ok"]:
+        cur.execute("DROP TABLE IF EXISTS ancillaries")
+        cur.execute("CREATE TABLE ancillaries (key TEXT PRIMARY KEY, type TEXT,"
+                    " category TEXT, subcategory TEXT, legendary INT, transferrable INT,"
+                    " randomly_dropped INT, uniqueness_score INT)")
+        for r in ancs:
+            cur.execute("INSERT INTO ancillaries VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
+                        " ON CONFLICT (key) DO NOTHING",
+                        (r["key"], r["type"], r["category"], r.get("subcategory") or "",
+                         1 if r.get("legendary_item") else 0,
+                         1 if r.get("transferrable") else 0,
+                         1 if r.get("randomly_dropped") else 0,
+                         r.get("uniqueness_score") or 0))
+
+    fx, fmeta = src("ancillary_to_effects_tables")
+    if fmeta["ok"]:
+        cur.execute("DROP TABLE IF EXISTS ancillary_effects")
+        cur.execute("CREATE TABLE ancillary_effects (ancillary TEXT, effect TEXT,"
+                    " effect_scope TEXT, value REAL)")
+        for r in fx:
+            cur.execute("INSERT INTO ancillary_effects VALUES (%s, %s, %s, %s)",
+                        (r["ancillary"], r["effect"], r["effect_scope"], r["value"]))
+        cur.execute("CREATE INDEX idx_anc_effects ON ancillary_effects (ancillary)")
+
+    effs, emeta = src("effects_tables")
+    if emeta["ok"]:
+        cur.execute("DROP TABLE IF EXISTS effects_meta")
+        cur.execute("CREATE TABLE effects_meta (effect TEXT PRIMARY KEY, priority INT,"
+                    " positive_good INT)")
+        for r in effs:
+            cur.execute("INSERT INTO effects_meta VALUES (%s, %s, %s)"
+                        " ON CONFLICT (effect) DO NOTHING",
+                        (r["effect"], r.get("priority") or 0,
+                         1 if r.get("is_positive_value_good") else 0))
+
+    cur.execute("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)")
+    _rep(cur, "meta", ("extra_built", str(time.time())))
+    con.commit()
+    for t, m in report.items():
+        tag = "OK" if m["ok"] else "SKIP"
+        print(f"  [{tag}] {t:38s} ver={m['version']} rows={m['rows']} :: {m['reason']}")
+    for t in ("tech_links", "ancillaries", "ancillary_effects", "effects_meta"):
+        n = cur.execute("SELECT COUNT(*) FROM " + t).fetchone()[0]
+        print(f"  {t:16s} {n} rows")
+    con.close()
+
+
 if __name__ == "__main__":
-    build()
+    import sys as _sys
+    build_extra() if "extra" in _sys.argv else build()

@@ -21,6 +21,7 @@ import {
   StackShares,
   mapColor,
 } from '@/components/startcharts'
+import { itemCols } from '@/routes/Items'
 import {
   useApi,
   type ConquestStep,
@@ -28,12 +29,17 @@ import {
   type OpeningBranch,
   type OpeningFamily,
   type OpeningOffer,
+  type SkillRow,
   type StartActions,
   type StartCampaign,
   type StartCampaignsPage,
   type StartDetail as Detail,
+  type StartItems,
   type StartOpenings,
   type StartPerformance,
+  type StartResearch,
+  type StartSkills,
+  type TechRow,
 } from '@/lib/api'
 import { clock, n } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -41,6 +47,9 @@ import { cn } from '@/lib/utils'
 const TABS = [
   { key: 'performance', label: 'performance', asks: 'is this start earning when played' },
   { key: 'openings', label: 'openings', asks: 'what do the strategies do with it, and does it matter' },
+  { key: 'research', label: 'research', asks: 'which techs it researches, against the whole tree' },
+  { key: 'skills', label: 'skills', asks: 'how its characters spend their points' },
+  { key: 'items', label: 'items', asks: 'does wearing an item pay' },
   { key: 'campaigns', label: 'campaigns', asks: 'the individual runs' },
   { key: 'actions', label: 'actions', asks: 'is the machinery executing cleanly here' },
 ]
@@ -429,6 +438,154 @@ function CampaignsTab({ base }: { base: string }) {
   )
 }
 
+const tookPct = (r: { took?: { n: number; of: number } | null }) =>
+  r.took?.of ? (
+    <span className={cn('num', !r.took.n && 'text-dim')}>{((100 * r.took.n) / r.took.of).toFixed(0)}%</span>
+  ) : (
+    <span className="text-dim">—</span>
+  )
+
+function ResearchTab({ base }: { base: string }) {
+  const { data, error, loading, reload } = useApi<StartResearch>(`${base}/research`, [], { live: false })
+  if (error) return <ErrorState error={error} onRetry={reload} />
+  if (loading || !data) return <Skeleton rows={8} />
+  const cols: Col<TechRow>[] = [
+    {
+      key: 'tech',
+      label: 'tech',
+      value: (r) => r.label ?? r.key,
+      render: (r) => <span title={r.key} className={cn(!r.took?.n && 'opacity-50')}>{r.label ?? r.key}</span>,
+    },
+    { key: 'key', label: 'key', optional: true, value: (r) => r.key, render: (r) => <span className="num text-dim text-2xs">{r.key}</span> },
+    { key: 'parent', label: 'parent', value: (r) => r.parent?.label ?? '', render: (r) => <span className="text-dim">{r.parent?.label ?? '—'}</span> },
+    { key: 'tier', label: 'tier', align: 'right', value: (r) => r.tier ?? 0, render: (r) => dash(r.tier) },
+    { key: 'points', label: 'points', align: 'right', optional: true, value: (r) => r.points ?? 0, render: (r) => dash(r.points) },
+    { key: 'took', label: 'took it', align: 'right', value: (r) => r.took?.n ?? 0, render: tookPct },
+    { key: 'turn', label: 'avg turn', align: 'right', value: (r) => r.avg_turn ?? undefined, sortUndefined: 'last', render: (r) => dash(r.avg_turn, 1) },
+    { key: 'reward', label: 'avg reward', align: 'right', value: (r) => r.avg_reward ?? undefined, sortUndefined: 'last', render: (r) => dash(r.avg_reward, 2) },
+    { key: 'delta', label: 'Δ mean', align: 'right', value: (r) => r.delta_mean ?? undefined, sortUndefined: 'last', render: (r) => signedDelta(r.delta_mean) },
+  ]
+  return (
+    <Section
+      title="techs"
+      scope={{
+        text: `all ${n(data.universe)} techs in this start's tree, one row each · ${n(data.started_ever)} ever started`,
+        detail: `avg reward is over the campaigns that started it · start mean ${n(data.mean_reward, 2)}`,
+      }}
+    >
+      <DataTable rows={data.rows ?? []} cols={cols} rowId={(r) => r.key} searchPlaceholder="search tech…" pageSize={25} emptyWhat="no tech recorded for this start" />
+    </Section>
+  )
+}
+
+function SkillsTab({ base }: { base: string }) {
+  const [params, setParams] = useSearchParams()
+  const sub = params.get('subtype') ?? ''
+  const { data, error, loading, reload } = useApi<StartSkills>(
+    `${base}/skills${sub ? `?subtype=${encodeURIComponent(sub)}` : ''}`,
+    [sub],
+    { live: false },
+  )
+  if (error) return <ErrorState error={error} onRetry={reload} />
+  if (loading || !data) return <Skeleton rows={8} />
+  const cols: Col<SkillRow>[] = [
+    {
+      key: 'skill',
+      label: 'skill',
+      value: (r) => r.label ?? r.key,
+      render: (r) => <span title={r.key} className={cn(!r.took?.n && 'opacity-50')}>{r.label ?? r.key}</span>,
+    },
+    { key: 'key', label: 'key', optional: true, value: (r) => r.key, render: (r) => <span className="num text-dim text-2xs">{r.key}</span> },
+    { key: 'tier', label: 'tier', align: 'right', value: (r) => r.tier ?? 0, render: (r) => dash(r.tier) },
+    { key: 'max', label: 'max ranks', align: 'right', value: (r) => r.max_ranks ?? 0, render: (r) => dash(r.max_ranks) },
+    { key: 'took', label: 'ranked it', align: 'right', value: (r) => r.took?.n ?? 0, render: tookPct },
+    { key: 'ranks', label: 'avg ranks', align: 'right', value: (r) => r.avg_ranks ?? undefined, sortUndefined: 'last', render: (r) => dash(r.avg_ranks, 1) },
+    { key: 'turn', label: 'avg turn', align: 'right', value: (r) => r.avg_turn ?? undefined, sortUndefined: 'last', render: (r) => dash(r.avg_turn, 1) },
+    { key: 'reward', label: 'avg reward', align: 'right', value: (r) => r.avg_reward ?? undefined, sortUndefined: 'last', render: (r) => dash(r.avg_reward, 2) },
+    { key: 'delta', label: 'Δ mean', align: 'right', value: (r) => r.delta_mean ?? undefined, sortUndefined: 'last', render: (r) => signedDelta(r.delta_mean) },
+  ]
+  const pick = (s: string) => {
+    const next = new URLSearchParams(params)
+    if (s === data.subtype || !s) next.delete('subtype')
+    else next.set('subtype', s)
+    setParams(next, { replace: true })
+  }
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2 text-2xs">
+        <span className="text-dim">character:</span>
+        {(data.subtypes ?? []).map((o) => (
+          <button
+            key={o.subtype}
+            onClick={() => pick(o.subtype)}
+            className={cn(
+              'rounded-full px-2 py-0.5',
+              o.subtype === data.subtype ? 'bg-raised text-fg font-semibold' : 'bg-surface border-line border hover:text-fg',
+            )}
+          >
+            {o.label ?? o.subtype} · {o.kind} · {n(o.campaigns)}
+          </button>
+        ))}
+        <span className="text-dim ml-auto">
+          avg rank reached {n(data.avg_rank, 1)} · avg {n(data.avg_unspent, 1)} points unspent
+        </span>
+      </div>
+      <Section
+        title="skills"
+        scope={{
+          text: `all ${n((data.rows ?? []).length)} nodes of this character's tree, one row each · ${n(data.taken_ever)} ever ranked`,
+          detail: `ranks read from live snapshots · start mean ${n(data.mean_reward, 2)}`,
+        }}
+      >
+        <DataTable rows={data.rows ?? []} cols={cols} rowId={(r) => r.key} searchPlaceholder="search skill…" pageSize={25} emptyWhat="no snapshot recorded for this character" />
+      </Section>
+    </div>
+  )
+}
+
+function ItemsTab({ base }: { base: string }) {
+  const { data, error, loading, reload } = useApi<StartItems>(`${base}/items`, [], { live: false })
+  if (error) return <ErrorState error={error} onRetry={reload} />
+  if (loading || !data) return <Skeleton rows={8} />
+  return (
+    <div className="space-y-7">
+      <Section
+        title="does wearing it pay"
+        scope={{ text: 'one row per item this faction ever held · benched = held in the pool, never worn' }}
+        right={<EntityLink to="/items" className="text-dim text-xs">all items →</EntityLink>}
+      >
+        <DataTable rows={data.rows ?? []} cols={itemCols(false)} rowId={(r) => r.key} searchPlaceholder="search item…" pageSize={25} emptyWhat="no item was ever held" />
+      </Section>
+      <Section title="equip behaviour vs outcomes" scope={{ text: 'does how the strategies handle the inventory track how campaigns go' }}>
+        <Card className="overflow-hidden">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-line text-dim border-b text-left text-2xs">
+                <th className="px-3 py-1.5 font-normal">behaviour</th>
+                <th className="px-3 py-1.5 text-right font-normal">campaigns</th>
+                <th className="px-3 py-1.5 text-right font-normal">avg reward</th>
+                <th className="px-3 py-1.5 text-right font-normal">avg equips</th>
+                <th className="px-3 py-1.5 text-right font-normal">avg unequips</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(data.behaviour ?? []).map((b) => (
+                <tr key={b.label} className="border-line border-b last:border-0">
+                  <td className="px-3 py-1.5">{b.label}</td>
+                  <td className="num px-3 py-1.5 text-right">{n(b.campaigns)}</td>
+                  <td className="num px-3 py-1.5 text-right">{b.avg_reward == null ? '—' : n(b.avg_reward, 2)}</td>
+                  <td className="num px-3 py-1.5 text-right">{b.avg_equips == null ? '—' : n(b.avg_equips, 1)}</td>
+                  <td className="num px-3 py-1.5 text-right">{b.avg_unequips == null ? '—' : n(b.avg_unequips, 1)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      </Section>
+    </div>
+  )
+}
+
 function ActionsTab({ base, faction }: { base: string; faction: string }) {
   const { data, error, loading, reload } = useApi<StartActions>(`${base}/actions`, [], { live: false })
   if (error) return <ErrorState error={error} onRetry={reload} />
@@ -523,6 +680,9 @@ export function StartDetail() {
       <SubNav views={TABS} param="tab" />
       <div className={tab === 'performance' ? '' : 'hidden'}>{seen.performance && <PerformanceTab base={base} lord={lord} />}</div>
       <div className={tab === 'openings' ? '' : 'hidden'}>{seen.openings && <OpeningsTab base={base} />}</div>
+      <div className={tab === 'research' ? '' : 'hidden'}>{seen.research && <ResearchTab base={base} />}</div>
+      <div className={tab === 'skills' ? '' : 'hidden'}>{seen.skills && <SkillsTab base={base} />}</div>
+      <div className={tab === 'items' ? '' : 'hidden'}>{seen.items && <ItemsTab base={base} />}</div>
       <div className={tab === 'campaigns' ? '' : 'hidden'}>{seen.campaigns && <CampaignsTab base={base} />}</div>
       <div className={tab === 'actions' ? '' : 'hidden'}>{seen.actions && <ActionsTab base={base} faction={s.faction.label} />}</div>
     </div>

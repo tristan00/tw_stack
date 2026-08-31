@@ -473,6 +473,189 @@ class StartActions(BaseModel):
     cells: list[MatrixCell] = Field(default_factory=list)
 
 
+class TechRow(BaseModel):
+    key: str
+    label: str | None = None
+    parent: Ident | None = None
+    tier: int | None = None
+    points: int | None = None
+    took: Rate | None = None
+    avg_turn: float | None = None
+    avg_reward: float | None = None
+    delta_mean: float | None = None
+
+
+class StartResearch(BaseModel):
+    scope: Scope
+    mean_reward: float | None = None
+    started_ever: int = 0
+    universe: int = 0
+    has_parents: bool = False
+    rows: list[TechRow] = Field(default_factory=list)
+
+
+class SkillRow(BaseModel):
+    key: str
+    label: str | None = None
+    line: str | None = None
+    tier: int | None = None
+    max_ranks: int | None = None
+    took: Rate | None = None
+    avg_ranks: float | None = None
+    avg_turn: float | None = None
+    avg_reward: float | None = None
+    delta_mean: float | None = None
+
+
+class SubtypeOpt(BaseModel):
+    subtype: str
+    label: str | None = None
+    kind: str = "lord"
+    campaigns: int = 0
+
+
+class StartSkills(BaseModel):
+    scope: Scope
+    mean_reward: float | None = None
+    subtypes: list[SubtypeOpt] = Field(default_factory=list)
+    subtype: str | None = None
+    avg_rank: float | None = None
+    avg_unspent: float | None = None
+    taken_ever: int = 0
+    rows: list[SkillRow] = Field(default_factory=list)
+
+
+class ItemRow(BaseModel):
+    key: str
+    label: str | None = None
+    category: str | None = None
+    effects: str | None = None
+    held_in: int = 0
+    equipped_in: int = 0
+    avg_reward_equipped: float | None = None
+    avg_reward_benched: float | None = None
+    delta: float | None = None
+
+
+class BehaviourRow(BaseModel):
+    label: str
+    campaigns: int = 0
+    avg_reward: float | None = None
+    avg_equips: float | None = None
+    avg_unequips: float | None = None
+
+
+class StartItems(BaseModel):
+    scope: Scope
+    rows: list[ItemRow] = Field(default_factory=list)
+    behaviour: list[BehaviourRow] = Field(default_factory=list)
+
+
+class ItemsPage(BaseModel):
+    scope: Scope
+    total: int = 0
+    categories: list[str] = Field(default_factory=list)
+    rows: list[ItemRow] = Field(default_factory=list)
+
+
+class ItemStartRow(BaseModel):
+    campaign_map: Ident | None = None
+    faction: Ident
+    leader: str | None = None
+    held_in: int = 0
+    equipped_in: int = 0
+    avg_reward_equipped: float | None = None
+    avg_reward_benched: float | None = None
+    delta: float | None = None
+
+
+class ItemCampaignRow(BaseModel):
+    campaign: Ident
+    ts: float | None = None
+    leader: str | None = None
+    equip_turn: int | None = None
+    turns_worn: int | None = None
+    reward: float | None = None
+
+
+class ItemPage(BaseModel):
+    scope: Scope
+    key: str
+    label: str | None = None
+    category: str | None = None
+    effects: str | None = None
+    acquisition: str | None = None
+    lord_share: float | None = None
+    held_in: int = 0
+    starts: int = 0
+    equip_rate: Rate | None = None
+    delta: float | None = None
+    avg_equip_turn: float | None = None
+    churned_in: int = 0
+    by_start: list[ItemStartRow] = Field(default_factory=list)
+    recent: list[ItemCampaignRow] = Field(default_factory=list)
+
+
+class CampaignTechRow(BaseModel):
+    turn: int | None = None
+    key: str
+    label: str | None = None
+    parent: Ident | None = None
+    tier: int | None = None
+    points: int | None = None
+    completed_turn: int | None = None
+    in_progress: bool = False
+
+
+class CampaignResearchPage(BaseModel):
+    scope: Scope
+    rows: list[CampaignTechRow] = Field(default_factory=list)
+    completed: int = 0
+    universe: int = 0
+
+
+class CampaignSkillRow(BaseModel):
+    turn: int | None = None
+    character: str | None = None
+    key: str
+    label: str | None = None
+    line: str | None = None
+    rank: int | None = None
+    max_ranks: int | None = None
+
+
+class CampaignCharacter(BaseModel):
+    cqi: str
+    kind: str = "lord"
+    label: str | None = None
+    rank: int | None = None
+    points_unspent: int | None = None
+    slots: int = 0
+    wearing: list[Ident] = Field(default_factory=list)
+
+
+class CampaignSkillsPage(BaseModel):
+    scope: Scope
+    characters: list[CampaignCharacter] = Field(default_factory=list)
+    rows: list[CampaignSkillRow] = Field(default_factory=list)
+
+
+class CampaignItemEvent(BaseModel):
+    turn: int | None = None
+    character: str | None = None
+    action: str = "equip"
+    key: str
+    label: str | None = None
+    category: str | None = None
+
+
+class CampaignItemsPage(BaseModel):
+    scope: Scope
+    events: list[CampaignItemEvent] = Field(default_factory=list)
+    characters: list[CampaignCharacter] = Field(default_factory=list)
+    pool: list[Ident] = Field(default_factory=list)
+
+
 class RewardPoint(BaseModel):
     turn: int
     income: float | None = None

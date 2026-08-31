@@ -30,6 +30,9 @@ from advisor_api.models import (
     Service, StartRow, TimelineAction, TimelineLane, TimingRow, TrainingEvent, TrialCorr,
     TrialRow, TurnRollup, UcbPick, UcbRow, HistBin, MatrixCell, ProducedCampaign,
     StartCampaign, Verdict, WindowEdgeRow,
+    BehaviourRow, CampaignCharacter, CampaignItemEvent, CampaignSkillRow,
+    CampaignTechRow, ItemCampaignRow, ItemRow, ItemStartRow, SkillRow, SubtypeOpt,
+    TechRow,
 )
 from decisions import pg_schema as SS
 
@@ -1200,6 +1203,536 @@ def start_actions(con, mkey: str, fkey: str) -> list:
                          population="of this type that count toward a confirm rate")))
     cells.sort(key=lambda c: (c.rate.pct if c.rate.pct is not None else 999, -c.rate.of))
     return cells
+
+
+ITEM_ACTIONS = ("items", "item_unequip")
+_TECH_PREFIX_RE = re.compile(r"^(.*_tech_[a-z0-9]+_)")
+
+
+def _parent_ident(parents, key):
+    got = parents.get(key) or []
+    if not got:
+        return None
+    names = [labels.tech_name(p) or labels.pretty(p) for p in got]
+    return Ident(raw=got[0], label=" + ".join(n for n in names if n))
+
+
+def _tech_depth(parents, keys) -> dict:
+    depth: dict = {}
+
+    def walk(k, seen):
+        if k in depth:
+            return depth[k]
+        if k in seen:
+            return 1
+        ps = parents.get(k) or []
+        depth[k] = 1 + max([walk(p, seen | {k}) for p in ps], default=0)
+        return depth[k]
+
+    for k in keys:
+        walk(k, set())
+    return depth
+
+
+def _mean(vals, digits=2):
+    return round(sum(vals) / len(vals), digits) if vals else None
+
+
+@db.timed
+def _item_matrix_build(con) -> dict:
+    camp = {}
+    for r in con.execute(
+            "SELECT c.campaign_id, c.campaign_key, c.faction, c.campaign_map, c.leader,"
+            " g.settlements_gained, g.levels_gained, g.turns_reached, g.first_ts"
+            " FROM campaigns c JOIN campaign_gains g ON g.campaign_key = c.campaign_key"):
+        d = dict(r)
+        d["reward"] = ((_f(d["settlements_gained"], 0.0) or 0.0)
+                       + (_f(d["levels_gained"], 0.0) or 0.0))
+        camp[_i(r["campaign_id"], 0)] = d
+    pairs = {}
+    for r in con.execute(
+            "SELECT t.campaign_id cid, a.action_key key,"
+            " MIN(CASE WHEN a.action_type = 'items' THEN d.turn END) equip_turn,"
+            " SUM(CASE WHEN a.action_type = 'items' THEN 1 ELSE 0 END) equips,"
+            " SUM(CASE WHEN a.action_type = 'item_unequip' THEN 1 ELSE 0 END) unequips"
+            " FROM taken t"
+            " JOIN actions a ON a.action_id = t.action_id"
+            " JOIN decisions d ON d.decision_id = t.decision_id"
+            " WHERE t.counted = 1 AND a.action_type = ANY(%s)"
+            " GROUP BY 1, 2", (list(ITEM_ACTIONS),)):
+        pairs[(_i(r["cid"], 0), r["key"])] = {
+            "equipped": True, "equip_turn": _i(r["equip_turn"]),
+            "equips": _i(r["equips"], 0) or 0, "unequips": _i(r["unequips"], 0) or 0}
+    for r in con.execute(
+            "SELECT DISTINCT d.campaign_id cid, a.action_key key"
+            " FROM offers o"
+            " JOIN actions a ON a.action_id = o.action_id AND a.action_type = 'items'"
+            " JOIN decisions d ON d.decision_id = o.decision_id"):
+        k = (_i(r["cid"], 0), r["key"])
+        if k not in pairs:
+            pairs[k] = {"equipped": False, "equip_turn": None, "equips": 0, "unequips": 0}
+    return {"camp": camp, "pairs": pairs}
+
+
+def item_matrix(con) -> dict:
+    return _stamped("item_matrix", lambda: _item_matrix_build(con))
+
+
+def _item_ident(key):
+    return labels.name_for("items", key) or labels.pretty(key)
+
+
+def _item_rows(m, cids=None, min_side=5) -> list:
+    per: dict = {}
+    for (cid, key), v in m["pairs"].items():
+        if cids is not None and cid not in cids:
+            continue
+        c = m["camp"].get(cid)
+        if not c:
+            continue
+        e = per.setdefault(key, {"held": 0, "eq": 0, "req": [], "rb": []})
+        e["held"] += 1
+        if v["equipped"]:
+            e["eq"] += 1
+            e["req"].append(c["reward"])
+        else:
+            e["rb"].append(c["reward"])
+    out = []
+    for key, e in per.items():
+        req, rb = _mean(e["req"]), _mean(e["rb"])
+        both = len(e["req"]) >= min_side and len(e["rb"]) >= min_side
+        out.append(ItemRow(
+            key=key, label=_item_ident(key), category=labels.item_category(key),
+            effects=labels.item_effects(key), held_in=e["held"], equipped_in=e["eq"],
+            avg_reward_equipped=req if both else None,
+            avg_reward_benched=rb if both else None,
+            delta=round(req - rb, 2) if both and req is not None and rb is not None
+            else None))
+    out.sort(key=lambda r: (-r.equipped_in, -r.held_in, r.key))
+    return out
+
+
+def start_items(con, mkey: str, fkey: str) -> dict:
+    m = item_matrix(con)
+    cids = {cid for cid, c in m["camp"].items()
+            if (c["campaign_map"] or "") == mkey and c["faction"] == fkey}
+    per_c: dict = {}
+    for (cid, key), v in m["pairs"].items():
+        if cid not in cids:
+            continue
+        pc = per_c.setdefault(cid, {"held": 0, "eq": 0, "equips": 0, "uneq": 0,
+                                    "churn": False})
+        pc["held"] += 1
+        pc["equips"] += v["equips"]
+        pc["uneq"] += v["unequips"]
+        if v["equipped"]:
+            pc["eq"] += 1
+        if v["equips"] >= 2 and v["unequips"] >= 1:
+            pc["churn"] = True
+    groups = (("wore something from every held item", lambda p: p["held"] == p["eq"]),
+              ("left held items benched", lambda p: p["eq"] < p["held"]),
+              ("churned the same item", lambda p: p["churn"]))
+    behaviour = []
+    for label, fn in groups:
+        sel = [(cid, p) for cid, p in per_c.items() if fn(p)]
+        behaviour.append(BehaviourRow(
+            label=label, campaigns=len(sel),
+            avg_reward=_mean([m["camp"][cid]["reward"] for cid, _p in sel]),
+            avg_equips=_mean([p["equips"] for _c, p in sel], 1),
+            avg_unequips=_mean([p["uneq"] for _c, p in sel], 1)))
+    return {"rows": _item_rows(m, cids), "behaviour": behaviour}
+
+
+def items_page(con) -> dict:
+    m = item_matrix(con)
+    rows = _item_rows(m)
+    cats = sorted({r.category for r in rows if r.category})
+    return {"total": len(rows), "categories": cats, "rows": rows}
+
+
+def item_page(con, key: str) -> dict | None:
+    m = item_matrix(con)
+    hits = {cid: v for (cid, k), v in m["pairs"].items()
+            if k == key and cid in m["camp"]}
+    if not hits:
+        return None
+    by_start: dict = {}
+    eq_turns, churned, starts = [], 0, set()
+    for cid, v in hits.items():
+        c = m["camp"].get(cid)
+        if not c:
+            continue
+        sk = ((c["campaign_map"] or ""), c["faction"])
+        starts.add(sk)
+        e = by_start.setdefault(sk, {"held": 0, "eq": 0, "req": [], "rb": [],
+                                     "leader": None})
+        e["leader"] = e["leader"] or c["leader"]
+        e["held"] += 1
+        if v["equipped"]:
+            e["eq"] += 1
+            e["req"].append(c["reward"])
+            if v["equip_turn"] is not None:
+                eq_turns.append(v["equip_turn"])
+            if v["equips"] >= 2 and v["unequips"] >= 1:
+                churned += 1
+        else:
+            e["rb"].append(c["reward"])
+    req_all = [r for e in by_start.values() for r in e["req"]]
+    rb_all = [r for e in by_start.values() for r in e["rb"]]
+    eq_n = sum(e["eq"] for e in by_start.values())
+    rows = []
+    for (mk, fk), e in sorted(by_start.items(), key=lambda kv: -kv[1]["held"]):
+        req, rb = _mean(e["req"]), _mean(e["rb"])
+        both = len(e["req"]) >= 3 and len(e["rb"]) >= 3
+        rows.append(ItemStartRow(
+            campaign_map=_id(ident.campaign_map(mk)) if mk else None,
+            faction=_fac(fk), leader=e["leader"], held_in=e["held"],
+            equipped_in=e["eq"],
+            avg_reward_equipped=req if both else None,
+            avg_reward_benched=rb if both else None,
+            delta=round(req - rb, 2) if both and req is not None and rb is not None
+            else None))
+    lords = con.execute(
+        "SELECT SUM(CASE WHEN a.context_kind = 'lord' THEN 1 ELSE 0 END) l, COUNT(*) n"
+        " FROM taken t JOIN actions a ON a.action_id = t.action_id"
+        " WHERE t.counted = 1 AND a.action_type = 'items' AND a.action_key = %s",
+        (key,)).fetchone()
+    recent = []
+    worn = {cid: v for cid, v in hits.items() if v["equipped"]}
+    for cid in sorted(worn, key=lambda c2: -(_f(m["camp"][c2]["first_ts"], 0.0) or 0.0))[:8]:
+        c = m["camp"][cid]
+        v = worn[cid]
+        turns = _i(c["turns_reached"], 0) or 0
+        et = v["equip_turn"]
+        recent.append(ItemCampaignRow(
+            campaign=_camp(c["campaign_key"]), ts=_f(c["first_ts"]), leader=c["leader"],
+            equip_turn=et, turns_worn=max(0, turns - et + 1) if et else None,
+            reward=_f(c["reward"])))
+    req_m, rb_m = _mean(req_all), _mean(rb_all)
+    return {
+        "key": key, "label": _item_ident(key), "category": labels.item_category(key),
+        "effects": labels.item_effects(key),
+        "acquisition": labels._loc("ancillaries_explanation_text_" + key),
+        "lord_share": round(100.0 * _i(lords["l"], 0) / _i(lords["n"], 1), 0)
+        if lords and _i(lords["n"], 0) else None,
+        "held_in": len(hits), "starts": len(starts),
+        "equip_rate": Rate(n=eq_n, of=len(hits), noun="campaigns",
+                           population="that held it and wore it"),
+        "delta": round(req_m - rb_m, 2)
+        if req_m is not None and rb_m is not None and len(req_all) >= 5
+        and len(rb_all) >= 5 else None,
+        "avg_equip_turn": _mean(eq_turns, 1), "churned_in": churned,
+        "by_start": rows, "recent": recent}
+
+
+@db.timed
+def start_research(con, mkey: str, fkey: str) -> dict:
+    mine = _start_gains(con, mkey, fkey)
+    rewards = {_i(g["campaign_id"], 0): g["reward"] for g in mine}
+    mean_r = _mean(list(rewards.values()))
+    taken: dict = {}
+    for r in con.execute(
+            "SELECT a.action_key key, t.campaign_id cid, MIN(d.turn) turn"
+            " FROM taken t"
+            " JOIN actions a ON a.action_id = t.action_id"
+            " JOIN decisions d ON d.decision_id = t.decision_id"
+            " JOIN campaigns c ON c.campaign_id = t.campaign_id"
+            " WHERE c.campaign_map = %s AND c.faction = %s AND t.counted = 1"
+            " AND a.action_type = 'research' GROUP BY 1, 2", (mkey, fkey)):
+        taken.setdefault(r["key"], []).append((_i(r["cid"], 0), _i(r["turn"])))
+    offered = {r["key"] for r in con.execute(
+        "SELECT DISTINCT a.action_key key FROM offers o"
+        " JOIN actions a ON a.action_id = o.action_id AND a.action_type = 'research'"
+        " JOIN decisions d ON d.decision_id = o.decision_id"
+        " JOIN campaigns c ON c.campaign_id = d.campaign_id"
+        " WHERE c.campaign_map = %s AND c.faction = %s", (mkey, fkey))}
+    prefixes = {m2.group(1) for k in (offered | set(taken))
+                for m2 in [_TECH_PREFIX_RE.match(k)] if m2}
+    universe = labels.tech_rows(prefixes)
+    known = {u["key"] for u in universe}
+    for k in set(taken) - known:
+        universe.append({"key": k, "technology_key": k, "tier": None,
+                         "research_points_required": None})
+    parents = labels.tech_parents()
+    depth = _tech_depth(parents, [u["key"] for u in universe])
+    rows = []
+    for u in universe:
+        got = taken.get(u["key"]) or []
+        rs = [rewards[cid] for cid, _t in got if cid in rewards]
+        avg_r = _mean(rs)
+        rows.append(TechRow(
+            key=u["key"],
+            label=labels.tech_name(u["key"], u.get("technology_key")),
+            parent=_parent_ident(parents, u["key"]),
+            tier=depth.get(u["key"]),
+            points=_i(u["research_points_required"]),
+            took=Rate(n=len(got), of=len(mine), noun="campaigns",
+                      population="of this start that started it"),
+            avg_turn=_mean([t for _c, t in got if t is not None], 1),
+            avg_reward=avg_r,
+            delta_mean=round(avg_r - mean_r, 2)
+            if avg_r is not None and mean_r is not None else None))
+    rows.sort(key=lambda r2: (-(r2.took.n if r2.took else 0), r2.tier or 999, r2.key))
+    return {"mean_reward": mean_r, "started_ever": len(taken), "universe": len(rows),
+            "has_parents": bool(parents), "rows": rows}
+
+
+def _start_snapshots(con, mkey: str, fkey: str) -> list:
+    def build():
+        out = []
+        for r in con.execute(
+                "SELECT DISTINCT ON (c.campaign_id, e.context_id)"
+                " c.campaign_id cid, e.context_kind kind, e.context_id cqi, b.z"
+                " FROM entities e"
+                " JOIN decisions d ON d.decision_id = e.decision_id"
+                " JOIN campaigns c ON c.campaign_id = d.campaign_id"
+                " JOIN blobs b ON b.blob_id = e.features_blob"
+                " WHERE c.campaign_map = %s AND c.faction = %s"
+                " AND e.context_kind IN ('lord', 'hero')"
+                " ORDER BY c.campaign_id, e.context_id, e.decision_id DESC",
+                (mkey, fkey)):
+            z = _jload(r["z"])
+            if isinstance(z, dict):
+                out.append({"cid": _i(r["cid"], 0), "kind": r["kind"],
+                            "cqi": str(r["cqi"]), "z": z})
+        return out
+    return _stamped(("start_snapshots", mkey, fkey), build)
+
+
+def start_skills(con, mkey: str, fkey: str, subtype: str | None = None) -> dict:
+    snaps = _start_snapshots(con, mkey, fkey)
+    mine = _start_gains(con, mkey, fkey)
+    rewards = {_i(g["campaign_id"], 0): g["reward"] for g in mine}
+    mean_r = _mean(list(rewards.values()))
+    by_sub: dict = {}
+    for s in snaps:
+        st = str(s["z"].get("subtype") or "")
+        if st:
+            e = by_sub.setdefault(st, {"kind": s["kind"], "cids": set()})
+            e["cids"].add(s["cid"])
+    opts = [SubtypeOpt(subtype=st, label=labels.subtype_name(st), kind=e["kind"],
+                       campaigns=len(e["cids"]))
+            for st, e in by_sub.items()]
+    opts.sort(key=lambda o: (o.kind != "lord", -o.campaigns))
+    chosen = subtype if subtype in by_sub else (opts[0].subtype if opts else None)
+    if not chosen:
+        return {"mean_reward": mean_r, "subtypes": [], "subtype": None,
+                "avg_rank": None, "avg_unspent": None, "taken_ever": 0, "rows": []}
+    sel = [s for s in snaps if str(s["z"].get("subtype") or "") == chosen]
+    per_camp: dict = {}
+    for s in sel:
+        pc = per_camp.setdefault(s["cid"], {"levels": {}, "rank": 0, "pts": None,
+                                            "cqis": set()})
+        pc["cqis"].add(s["cqi"])
+        pc["rank"] = max(pc["rank"], _i(s["z"].get("rank"), 0) or 0)
+        pts = _i(s["z"].get("skill_points"))
+        pc["pts"] = pts if pc["pts"] is None else min(pc["pts"], pts or 0)
+        for node in s["z"].get("skills") or []:
+            k = str(node.get("key") or "")
+            lv = _i(node.get("level"), 0) or 0
+            if k:
+                pc["levels"][k] = max(pc["levels"].get(k, 0), lv)
+    struct: dict = {}
+    for s in sorted(sel, key=lambda s2: -s2["cid"]):
+        for node in s["z"].get("skills") or []:
+            k = str(node.get("key") or "")
+            if k and k not in struct:
+                struct[k] = {"tier": _i(node.get("tier")),
+                             "max": _i(node.get("total_levels"))}
+    first_turn: dict = {}
+    cqis_by_camp = {cid: pc["cqis"] for cid, pc in per_camp.items()}
+    for r in con.execute(
+            "SELECT t.campaign_id cid, a.context_id cqi, a.action_key key,"
+            " MIN(d.turn) turn"
+            " FROM taken t"
+            " JOIN actions a ON a.action_id = t.action_id"
+            " JOIN decisions d ON d.decision_id = t.decision_id"
+            " JOIN campaigns c ON c.campaign_id = t.campaign_id"
+            " WHERE c.campaign_map = %s AND c.faction = %s AND t.counted = 1"
+            " AND a.action_type = 'skills' GROUP BY 1, 2, 3", (mkey, fkey)):
+        cid = _i(r["cid"], 0)
+        if str(r["cqi"]) in cqis_by_camp.get(cid, ()):
+            k = r["key"]
+            t = _i(r["turn"])
+            if t is not None:
+                first_turn.setdefault(k, []).append(t)
+    rows = []
+    of_n = len(per_camp)
+    for k, st in struct.items():
+        took = [cid for cid, pc in per_camp.items() if pc["levels"].get(k)]
+        rs = [rewards[cid] for cid in took if cid in rewards]
+        avg_r = _mean(rs)
+        rows.append(SkillRow(
+            key=k, label=labels.name_for("skills", k) or labels.pretty(k),
+            line=labels.skill_line(k), tier=st["tier"], max_ranks=st["max"],
+            took=Rate(n=len(took), of=of_n, noun="campaigns",
+                      population="with this character that ranked it"),
+            avg_ranks=_mean([per_camp[cid]["levels"][k] for cid in took], 1),
+            avg_turn=_mean(first_turn.get(k) or [], 1),
+            avg_reward=avg_r,
+            delta_mean=round(avg_r - mean_r, 2)
+            if avg_r is not None and mean_r is not None else None))
+    rows.sort(key=lambda r2: (-(r2.took.n if r2.took else 0), r2.tier or 99, r2.key))
+    return {"mean_reward": mean_r, "subtypes": opts, "subtype": chosen,
+            "avg_rank": _mean([pc["rank"] for pc in per_camp.values()], 1),
+            "avg_unspent": _mean([pc["pts"] for pc in per_camp.values()
+                                  if pc["pts"] is not None], 1),
+            "taken_ever": sum(1 for r2 in rows if r2.took and r2.took.n),
+            "rows": rows}
+
+
+def _campaign_id_of(con, campaign_key: str):
+    row = con.execute("SELECT campaign_id, faction, campaign_map, leader"
+                      " FROM campaigns WHERE campaign_key = %s",
+                      (campaign_key,)).fetchone()
+    return dict(row) if row else None
+
+
+@db.timed
+def campaign_research(con, campaign_key: str) -> dict | None:
+    meta = _campaign_id_of(con, campaign_key)
+    if not meta:
+        return None
+    cid = _i(meta["campaign_id"], 0)
+    took = [(_i(r["turn"]), r["key"]) for r in con.execute(
+        "SELECT d.turn, a.action_key key FROM taken t"
+        " JOIN actions a ON a.action_id = t.action_id"
+        " JOIN decisions d ON d.decision_id = t.decision_id"
+        " WHERE t.campaign_id = %s AND t.counted = 1 AND a.action_type = 'research'"
+        " ORDER BY t.decision_id", (cid,))]
+    sets: dict = {}
+    for r in con.execute(
+            "WITH f AS (SELECT DISTINCT ON (turn) turn, decision_id FROM decisions"
+            " WHERE campaign_id = %s AND turn IS NOT NULL ORDER BY turn, decision_id)"
+            " SELECT f.turn, a.action_key key FROM f"
+            " JOIN offers o ON o.decision_id = f.decision_id"
+            " JOIN actions a ON a.action_id = o.action_id"
+            " WHERE a.action_type = 'research'", (cid,)):
+        sets.setdefault(_i(r["turn"], 0), set()).add(r["key"])
+    offered_all = {k for s in sets.values() for k in s} | {k for _t, k in took}
+    prefixes = {m2.group(1) for k in offered_all
+                for m2 in [_TECH_PREFIX_RE.match(k)] if m2}
+    universe = {u["key"]: u for u in labels.tech_rows(prefixes)}
+    parents = labels.tech_parents()
+    depth = _tech_depth(parents, list(universe))
+    rows = []
+    for turn, key in took:
+        done = None
+        seen_later = False
+        for t2 in sorted(sets):
+            if turn is not None and t2 > turn and sets[t2]:
+                seen_later = True
+                if key not in sets[t2]:
+                    done = t2
+                    break
+        u = universe.get(key) or {}
+        rows.append(CampaignTechRow(
+            turn=turn, key=key,
+            label=labels.tech_name(key, u.get("technology_key")),
+            parent=_parent_ident(parents, key),
+            tier=depth.get(key),
+            points=_i(u.get("research_points_required")),
+            completed_turn=done, in_progress=done is None and not seen_later))
+    return {"rows": rows, "completed": sum(1 for r2 in rows if r2.completed_turn),
+            "universe": len(universe)}
+
+
+def _campaign_chars(con, campaign_key: str) -> list:
+    meta = _campaign_id_of(con, campaign_key)
+    if not meta:
+        return []
+    out = []
+    for r in con.execute(
+            "SELECT DISTINCT ON (e.context_id) e.context_kind kind, e.context_id cqi,"
+            " b.z FROM entities e"
+            " JOIN decisions d ON d.decision_id = e.decision_id"
+            " JOIN blobs b ON b.blob_id = e.features_blob"
+            " WHERE d.campaign_id = %s AND e.context_kind IN ('lord', 'hero')"
+            " ORDER BY e.context_id, e.decision_id DESC",
+            (_i(meta["campaign_id"], 0),)):
+        z = _jload(r["z"])
+        if not isinstance(z, dict):
+            continue
+        sub = str(z.get("subtype") or "")
+        label = labels.subtype_name(sub) if sub else None
+        out.append(CampaignCharacter(
+            cqi=str(r["cqi"]), kind=r["kind"], label=label,
+            rank=_i(z.get("rank")), points_unspent=_i(z.get("skill_points")),
+            slots=len(z.get("equipped") or []),
+            wearing=[Ident(raw=str(e2.get("key") or ""),
+                           label=str(e2.get("name") or "")
+                           or _item_ident(str(e2.get("key") or "")))
+                     for e2 in z.get("equipped") or []]))
+    out.sort(key=lambda c2: (c2.kind != "lord", -(c2.rank or 0)))
+    if meta["leader"]:
+        lead = next((c2 for c2 in out if c2.kind == "lord"), None)
+        if lead:
+            lead.label = meta["leader"]
+    return out
+
+
+@db.timed
+def campaign_skills(con, campaign_key: str) -> dict | None:
+    meta = _campaign_id_of(con, campaign_key)
+    if not meta:
+        return None
+    chars = _campaign_chars(con, campaign_key)
+    label_of = {c.cqi: c.label for c in chars}
+    rows = []
+    for r in con.execute(
+            "SELECT d.turn, a.context_id cqi, a.action_key key, a.params"
+            " FROM taken t"
+            " JOIN actions a ON a.action_id = t.action_id"
+            " JOIN decisions d ON d.decision_id = t.decision_id"
+            " WHERE t.campaign_id = %s AND t.counted = 1 AND a.action_type = 'skills'"
+            " ORDER BY t.decision_id", (_i(meta["campaign_id"], 0),)):
+        p = _jload(r["params"]) or {}
+        rows.append(CampaignSkillRow(
+            turn=_i(r["turn"]), character=label_of.get(str(r["cqi"])),
+            key=r["key"],
+            label=labels.name_for("skills", r["key"]) or labels.pretty(r["key"]),
+            line=labels.skill_line(r["key"]),
+            rank=(_i(p.get("level"), 0) or 0) + 1,
+            max_ranks=_i(p.get("total_levels"))))
+    return {"characters": chars, "rows": rows}
+
+
+@db.timed
+def campaign_items(con, campaign_key: str) -> dict | None:
+    meta = _campaign_id_of(con, campaign_key)
+    if not meta:
+        return None
+    chars = _campaign_chars(con, campaign_key)
+    label_of = {c.cqi: c.label for c in chars}
+    events = []
+    for r in con.execute(
+            "SELECT d.turn, a.context_id cqi, a.action_type kind, a.action_key key"
+            " FROM taken t"
+            " JOIN actions a ON a.action_id = t.action_id"
+            " JOIN decisions d ON d.decision_id = t.decision_id"
+            " WHERE t.campaign_id = %s AND t.counted = 1"
+            " AND a.action_type = ANY(%s)"
+            " ORDER BY t.decision_id",
+            (_i(meta["campaign_id"], 0), list(ITEM_ACTIONS))):
+        events.append(CampaignItemEvent(
+            turn=_i(r["turn"]), character=label_of.get(str(r["cqi"])),
+            action="equip" if r["kind"] == "items" else "unequip",
+            key=r["key"], label=_item_ident(r["key"]),
+            category=labels.item_category(r["key"])))
+    pool_row = con.execute(
+        "SELECT MAX(o.decision_id) did FROM offers o"
+        " JOIN actions a ON a.action_id = o.action_id AND a.action_type = 'items'"
+        " JOIN decisions d ON d.decision_id = o.decision_id"
+        " WHERE d.campaign_id = %s", (_i(meta["campaign_id"], 0),)).fetchone()
+    pool = []
+    if pool_row and pool_row["did"]:
+        pool = [Ident(raw=r["key"], label=_item_ident(r["key"]))
+                for r in con.execute(
+                    "SELECT DISTINCT a.action_key key FROM offers o"
+                    " JOIN actions a ON a.action_id = o.action_id"
+                    " AND a.action_type = 'items'"
+                    " WHERE o.decision_id = %s ORDER BY 1", (pool_row["did"],))]
+    return {"events": events, "characters": chars, "pool": pool}
 
 
 _VERDICT_RE = re.compile(r"^(\w+):?\s*\{", re.S)

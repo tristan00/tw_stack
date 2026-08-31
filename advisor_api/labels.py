@@ -114,6 +114,122 @@ def name_for(family: str, key: str) -> str | None:
     return None
 
 
+_ITEM_CATS = (("_anc_weapon", "weapon"), ("_anc_armour", "armour"),
+              ("_anc_talisman", "talisman"), ("_anc_enchanted", "enchanted"),
+              ("_anc_arcane", "arcane"), ("_anc_banner", "banner"),
+              ("_anc_follower", "follower"), ("_anc_mount", "mount"),
+              ("_anc_magic", "magic"), ("_anc_rune", "rune"))
+
+
+def _rows(sql, args=()):
+    with _lock:
+        try:
+            return _ref().execute(sql, args).fetchall()
+        except Exception:
+            global _con
+            _con = None
+            return []
+
+
+_HAVE: dict = {}
+
+
+def _have(table: str) -> bool:
+    if table not in _HAVE:
+        row = _one("SELECT 1 FROM information_schema.tables"
+                   " WHERE table_schema = 'reference' AND table_name = %s", (table,))
+        _HAVE[table] = bool(row)
+    return _HAVE[table]
+
+
+def item_category(key: str) -> str | None:
+    row = _one("SELECT category FROM ancillaries WHERE key = %s",
+               (key,)) if _have("ancillaries") else None
+    if row and row["category"] and row["category"] != "general":
+        return str(row["category"]).replace("_", " ")
+    k = str(key or "")
+    for frag, cat in _ITEM_CATS:
+        if frag in k:
+            return cat
+    return None
+
+
+_NUM_RE = re.compile(r"%\+?\.?\d*[nfd]")
+
+_SCOPES = (("character_to_character", "self"), ("character_to_force", "army"),
+           ("character_to_province", "province"), ("character_to_faction", "faction"),
+           ("character_to_region", "region"), ("faction_to_faction", "faction"))
+
+
+def _fmt_effect(desc, value, scope):
+    txt = str(desc or "")
+    if _NUM_RE.search(txt):
+        txt = _NUM_RE.sub(("%+g" % value) if value is not None else "", txt, count=1)
+    elif value is not None and value not in (0.0, 1.0):
+        txt = "%+g %s" % (value, txt)
+    txt = re.sub(r"\s+", " ", txt).strip()
+    if len(txt) > 1 and txt[0] == '"' and txt[-1] == '"':
+        txt = txt[1:-1]
+    sc = ""
+    for frag, short in _SCOPES:
+        if str(scope or "").startswith(frag):
+            sc = short
+            break
+    return "%s (%s)" % (txt, sc) if sc and sc != "self" else txt
+
+
+def item_effects(key: str) -> str | None:
+    if not _have("ancillary_effects"):
+        return None
+    rows = _rows("SELECT effect, effect_scope, value FROM ancillary_effects"
+                 " WHERE ancillary = %s ORDER BY effect", (key,))
+    parts = []
+    for r in rows:
+        desc = _loc("effects_description_" + str(r["effect"] or ""))
+        parts.append(_fmt_effect(desc or pretty(r["effect"]), r["value"],
+                                 r["effect_scope"]))
+    return " · ".join(p for p in parts if p) or None
+
+
+def tech_parents() -> dict:
+    if not _have("tech_links"):
+        return {}
+    out: dict = {}
+    for r in _rows("SELECT child, parent FROM tech_links ORDER BY child, parent"):
+        if r["parent"]:
+            out.setdefault(r["child"], []).append(r["parent"])
+    return out
+
+
+def tech_rows(prefixes) -> list:
+    pats = [str(p) + "%" for p in prefixes if p]
+    if not pats:
+        return []
+    return [dict(r) for r in _rows(
+        "SELECT key, technology_key, tier, research_points_required"
+        " FROM tech WHERE key LIKE ANY(%s)"
+        " AND COALESCE(is_hidden, 0) = 0", (pats,))]
+
+
+def tech_name(key: str, technology_key: str | None = None) -> str | None:
+    return (_loc("technologies_onscreen_name_" + (technology_key or key))
+            or _loc("technologies_onscreen_name_" + key))
+
+
+def skill_line(key: str) -> str | None:
+    if not _have("skill_nodes"):
+        return None
+    row = _one("SELECT line FROM skill_nodes WHERE skill = %s LIMIT 1", (key,))
+    return str(row["line"]).replace("_", " ") if row and row["line"] else None
+
+
+def subtype_name(subtype: str) -> str | None:
+    got = _loc("agent_subtypes_onscreen_name_override_" + str(subtype))
+    if got and got.lower() != "legendary lord":
+        return got
+    return pretty(subtype).title() or None
+
+
 def target_for(family: str, key: str) -> str | None:
     k = str(key or "")
     if not k or k == "end_turn":
