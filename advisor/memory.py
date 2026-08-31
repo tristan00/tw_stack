@@ -250,10 +250,13 @@ _PB_ATTRIB_SQL = (
     " AND i.ts - t.ts <= %s")
 
 
-def prebattle_attributions(con):
+def prebattle_attributions(con, camps=None):
     out = {}
-    for did, chosen, pz, at, akey, params, zone in con.execute(
-            _PB_ATTRIB_SQL, (PB_WINDOW_S,)):
+    sql, args = _PB_ATTRIB_SQL, [PB_WINDOW_S]
+    if camps is not None:
+        sql += " AND i.campaign_id = ANY(%s)"
+        args.append(sorted(camps))
+    for did, chosen, pz, at, akey, params, zone in con.execute(sql, tuple(args)):
         try:
             panel = json.loads(pz or "{}")
         except ValueError:
@@ -277,7 +280,12 @@ def replay_stamps(store, want):
 
 def _replay_stamps(store, want):
     want = {int(d) for d in (want or ())}
-    pb = prebattle_attributions(store.con)
+    if not want:
+        return {}
+    camps = sorted(r[0] for r in store.con.execute(
+        "SELECT DISTINCT campaign_id FROM decisions WHERE decision_id = ANY(%s)",
+        (sorted(want),)))
+    pb = prebattle_attributions(store.con, camps)
     mems = {}
     out = {}
     cur = store.con.cursor(name="memory_replay_stream")
@@ -297,7 +305,8 @@ def _replay_stamps(store, want):
             " LEFT JOIN blobs be ON be.blob_id=e.features_blob"
             " WHERE (t.refusal IS NULL OR"
             " t.refusal NOT IN ('awaiting_execution','campaign_died'))"
-            " ORDER BY t.decision_id")
+            " AND d.campaign_id = ANY(%s)"
+            " ORDER BY t.decision_id", (camps,))
         for did, turn, camp, ck, cid, at, counted, pend, sx, sy, pq in cur:
             mem = mems.get(camp)
             if mem is None:
