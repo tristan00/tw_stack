@@ -265,6 +265,7 @@ function OpeningsTab({ base }: { base: string }) {
 
 function PerformanceTab({ base, lord }: { base: string; lord: string }) {
   const navigate = useNavigate()
+  const dev = useUiMode() === 'full'
   const { data, error, loading, reload } = useApi<StartPerformance>(`${base}/performance`, [], { live: false })
   if (error) return <ErrorState error={error} onRetry={reload} />
   if (loading || !data) return <Skeleton rows={8} />
@@ -316,7 +317,10 @@ function PerformanceTab({ base, lord }: { base: string; lord: string }) {
             </div>
           </ChartFrame>
         </Section>
-        <Section title="length &amp; outcome" scope={{ text: 'how long its campaigns live and how they end' }}>
+        <Section
+          title={dev ? 'length & outcome' : 'length'}
+          scope={{ text: dev ? 'how long its campaigns live and how they end' : 'how long its campaigns live' }}
+        >
           <Card className="space-y-3 px-3.5 py-3">
             <Histogram
               bins={(data.turns_hist ?? []).map((v, i) => ({ x: i + 1, counts: { n: v } }))}
@@ -324,20 +328,22 @@ function PerformanceTab({ base, lord }: { base: string; lord: string }) {
               height={120}
               xLabel="turns reached"
             />
-            <div className="grid grid-cols-2 gap-4">
-              <table className="w-full text-xs">
-                <tbody>
-                  {(data.outcomes ?? []).map((o) => (
-                    <tr key={o.outcome.raw}>
-                      <td className="py-0.5">
-                        <Chip state={o.state ?? 'neutral'}>{o.outcome.label}</Chip>
-                      </td>
-                      <td className="num py-0.5 text-right">{n(o.n)}</td>
-                      <td className="num text-dim py-0.5 text-right">{n(o.avg_turns, 1)} t̄</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className={cn('grid gap-4', dev ? 'grid-cols-2' : 'grid-cols-1')}>
+              {dev && (
+                <table className="w-full text-xs">
+                  <tbody>
+                    {(data.outcomes ?? []).map((o) => (
+                      <tr key={o.outcome.raw}>
+                        <td className="py-0.5">
+                          <Chip state={o.state ?? 'neutral'}>{o.outcome.label}</Chip>
+                        </td>
+                        <td className="num py-0.5 text-right">{n(o.n)}</td>
+                        <td className="num text-dim py-0.5 text-right">{n(o.avg_turns, 1)} t̄</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
               <table className="w-full text-xs">
                 <thead>
                   <tr className="text-dim text-2xs">
@@ -434,7 +440,7 @@ function CampaignsTab({ base }: { base: string }) {
       )}
       <DataTable
         rows={rows}
-        cols={mode === 'full' ? cols : cols.filter((c) => c.key !== 'decisions' && c.key !== 'confirm')}
+        cols={mode === 'full' ? cols : cols.filter((c) => !['decisions', 'confirm', 'outcome', 'why'].includes(c.key))}
         rowId={(r) => r.campaign.raw}
         onRowClick={(r) => navigate(`/campaigns/${encodeURIComponent(r.campaign.raw)}`)}
         searchPlaceholder="search campaign…"
@@ -753,7 +759,11 @@ export function StartDetail() {
     { label: 'plays', value: s.n, sub: `${s.n_window} in window` },
     { label: 'mean reward', value: s.mean == null ? null : n(s.mean, 2), sub: s.std == null ? undefined : `± ${n(s.std, 2)} std` },
     { label: 'best reward', value: s.best, sub: s.zero_rate?.of ? `${((100 * s.zero_rate.n) / s.zero_rate.of).toFixed(0)}% zero` : undefined },
-    { label: 'avg turns', value: s.avg_turns == null ? null : n(s.avg_turns, 1), sub: s.sec_per_turn == null ? undefined : `${n(s.sec_per_turn, 1)} s/turn` },
+    {
+      label: 'avg turns',
+      value: s.avg_turns == null ? null : n(s.avg_turns, 1),
+      sub: mode === 'full' && s.sec_per_turn != null ? `${n(s.sec_per_turn, 1)} s/turn` : undefined,
+    },
     ...(mode === 'full'
       ? [
           {
@@ -789,7 +799,7 @@ export function StartDetail() {
           {last && (
             <span className="text-dim ml-auto text-2xs">
               last played {clock(last.ts)}
-              {last.outcome ? ` · ${last.outcome.label.toLowerCase()}` : ''}
+              {mode === 'full' && last.outcome ? ` · ${last.outcome.label.toLowerCase()}` : ''}
               {last.reward != null ? `, reward ${n(last.reward)}` : ''}
             </span>
           )}

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ConditionBar, useConditionQuery } from '@/components/conditions'
+import { useUiMode } from '@/components/Layout'
 import { DataTable, type Col } from '@/components/DataTable'
 import { Card, Chip, EntityLink, ErrorState, MetricTile, Section, Skeleton } from '@/components/primitives'
 import { SubNav, useSubView } from '@/components/SubNav'
@@ -57,6 +58,7 @@ const cols: Col<LookupCampaignRow>[] = [
 
 function LookupView() {
   const navigate = useNavigate()
+  const dev = useUiMode() === 'full'
   const qs = useConditionQuery()
   const { data, error, loading, reload } = useApi<CampaignLookupPage>(
     `/api/lookup${qs ? `?${qs}` : ''}`,
@@ -83,7 +85,7 @@ function LookupView() {
       <Section title="matching campaigns" scope={data.scope}>
         <DataTable
           rows={data.rows ?? []}
-          cols={cols}
+          cols={dev ? cols : cols.filter((c) => c.key !== 'outcome')}
           rowId={(r) => r.campaign.raw}
           onRowClick={(r) => navigate(`/campaigns/${encodeURIComponent(r.campaign.raw)}`)}
           searchPlaceholder="search campaign, start, outcome…"

@@ -93,7 +93,10 @@ export function QuickJump() {
         key: `c:${c.campaign.raw}`,
         to: `/campaigns/${encodeURIComponent(c.campaign.raw)}`,
         label: lord,
-        sub: `${c.campaign.raw.slice(-12)} · ${c.outcome?.label ?? 'running'} · ${c.ended_when ?? ''}`,
+        sub:
+          mode === 'full'
+            ? `${c.campaign.raw.slice(-12)} · ${c.outcome?.label ?? 'running'} · ${c.ended_when ?? ''}`
+            : `${c.campaign.raw.slice(-12)} · ${c.ended_when ?? ''}`,
         kind: 'campaign',
         hay: `${lord} ${c.campaign.raw} ${c.outcome?.label ?? ''}`,
       })
