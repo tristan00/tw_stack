@@ -1,17 +1,10 @@
-import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ConditionBar, useConditionQuery } from '@/components/conditions'
 import { useUiMode } from '@/components/Layout'
 import { DataTable, useServerTable, type Col } from '@/components/DataTable'
-import { Card, Chip, EntityLink, ErrorState, MetricTile, Section, Skeleton } from '@/components/primitives'
-import { SubNav, useSubView } from '@/components/SubNav'
-import { post, useApi, type CampaignLookupPage, type LookupCampaignRow, type RewardWeightsPage } from '@/lib/api'
+import { Chip, EntityLink, ErrorState, MetricTile, Section, Skeleton } from '@/components/primitives'
+import { useApi, type CampaignLookupPage, type LookupCampaignRow } from '@/lib/api'
 import { clock, n } from '@/lib/format'
-
-const TABS = [
-  { key: 'lookup', label: 'lookup', asks: 'which campaigns passed through situations like this, and how they went' },
-  { key: 'weights', label: 'reward weights', asks: 'what one unit of each gain is worth in the analytics reward' },
-]
 
 const dash = (v: number | null | undefined, digits = 0) =>
   v == null ? <span className="text-dim">—</span> : <span className="num">{n(v, digits)}</span>
@@ -58,7 +51,7 @@ const cols: Col<LookupCampaignRow>[] = [
 
 const defaultCols = cols.filter((c) => c.key !== 'outcome')
 
-function LookupView() {
+export function Lookup() {
   const navigate = useNavigate()
   const dev = useUiMode() === 'full'
   const qs = useConditionQuery()
@@ -74,7 +67,7 @@ function LookupView() {
   const tiles = [
     { label: 'campaigns', value: n(data.campaigns), sub: 'ever in a matching situation' },
     { label: 'matching positions', value: n(data.decisions), sub: 'recorded moments matching every condition' },
-    { label: 'mean reward', value: data.mean_reward == null ? '—' : n(data.mean_reward, 2), sub: 'of those campaigns, analytics weights' },
+    { label: 'mean reward', value: data.mean_reward == null ? '—' : n(data.mean_reward, 2), sub: 'of those campaigns' },
     { label: 'mean turns', value: data.mean_turns == null ? '—' : n(data.mean_turns, 1), sub: 'they reached' },
   ]
   return (
@@ -96,97 +89,6 @@ function LookupView() {
           emptyWhat="no campaign ever passed through a matching situation"
         />
       </Section>
-    </div>
-  )
-}
-
-function WeightsTab() {
-  const { data, error, loading, reload } = useApi<RewardWeightsPage>('/api/reward-weights', [], { live: false })
-  const [draft, setDraft] = useState<Record<string, string> | null>(null)
-  const [saving, setSaving] = useState(false)
-  const [note, setNote] = useState('')
-  if (error) return <ErrorState error={error} onRetry={reload} />
-  if (loading || !data) return <Skeleton rows={4} />
-  const weights = data.weights ?? {}
-  const current = draft ?? Object.fromEntries((data.components ?? []).map((c) => [c.key, String(weights[c.key] ?? c.default)]))
-  const dirty = (data.components ?? []).some((c) => Number(current[c.key]) !== (weights[c.key] ?? c.default))
-  const save = async () => {
-    setSaving(true)
-    setNote('')
-    try {
-      const body = Object.fromEntries(Object.entries(current).map(([k, v]) => [k, Number(v) || 0]))
-      await post('/api/reward-weights', body)
-      setDraft(null)
-      setNote('saved — caches are rebuilding in the background; reward numbers refresh over the next minute or two')
-      reload()
-    } catch (e) {
-      setNote(`could not save: ${(e as Error).message}`)
-    } finally {
-      setSaving(false)
-    }
-  }
-  return (
-    <Section title="reward weights" scope={data.scope}>
-      <Card className="max-w-xl space-y-3 px-4 py-3">
-        <table className="w-full text-xs">
-          <thead>
-            <tr className="border-line text-dim border-b text-left text-2xs">
-              <th className="py-1.5 font-normal">counted gain</th>
-              <th className="py-1.5 text-right font-normal">weight</th>
-              <th className="py-1.5 text-right font-normal">default</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(data.components ?? []).map((c) => (
-              <tr key={c.key} className="border-line border-b last:border-0">
-                <td className="py-1.5">{c.label}</td>
-                <td className="py-1.5 text-right">
-                  <input
-                    value={current[c.key]}
-                    onChange={(e) => setDraft({ ...current, [c.key]: e.target.value.replace(/[^\d.]/g, '') })}
-                    className="border-line bg-surface num w-20 rounded-md border px-2 py-1 text-right"
-                  />
-                </td>
-                <td className="num text-dim py-1.5 text-right">{n(c.default, 1)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => void save()}
-            disabled={!dirty || saving}
-            className="border-line bg-surface hover:text-fg rounded-md border px-3 py-1 text-xs disabled:opacity-40"
-          >
-            {saving ? 'saving…' : 'save weights'}
-          </button>
-          {!data.is_default && (
-            <button
-              onClick={() => setDraft(Object.fromEntries((data.components ?? []).map((c) => [c.key, String(c.default)])))}
-              className="text-dim hover:text-fg text-2xs"
-            >
-              reset to defaults
-            </button>
-          )}
-          {note && <span className="text-dim text-2xs">{note}</span>}
-        </div>
-        <p className="text-dim text-2xs">
-          analytics reward = Σ weight × gain, per campaign (first → peak). Every reward on this dashboard uses these
-          weights — campaigns, starts, lookup, catalog, items and positions. The UCB selector’s own scoring and the
-          models’ training target are separate and unaffected.
-        </p>
-      </Card>
-    </Section>
-  )
-}
-
-export function Lookup() {
-  const tab = useSubView(TABS, 'tab')
-  return (
-    <div>
-      <SubNav views={TABS} param="tab" />
-      {tab === 'lookup' && <LookupView />}
-      {tab === 'weights' && <WeightsTab />}
     </div>
   )
 }

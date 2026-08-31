@@ -9,7 +9,7 @@ import { n } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 const TABS = [
-  { key: 'items', label: 'items', asks: 'does wearing an item pay' },
+  { key: 'items', label: 'index', asks: 'does wearing an item pay' },
   { key: 'swaps', label: 'kept swaps', asks: 'which kept item swaps happen, and how those campaigns go' },
 ]
 
@@ -210,8 +210,7 @@ function SwapsView() {
     <Section
       title="kept swaps"
       scope={{
-        text: `a character took one item off and put another of the same category on · ${n(data.events)} swap${data.events === 1 ? '' : 's'} across ${n((data.rows ?? []).length)} pairs under these knobs`,
-        detail: 'same category = competing for the same slot · Δ compares each swapping campaign to its own start’s mean reward · the strict default: picked up the same turn, kept for the rest of the campaign, the old item never returns',
+        text: `${n(data.events)} swap${data.events === 1 ? '' : 's'} across ${n((data.rows ?? []).length)} pairs under these knobs`,
       }}
     >
       <div className="mb-3 flex flex-wrap items-center gap-3 text-xs">

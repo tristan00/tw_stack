@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { EntityLink, Dot } from '@/components/primitives'
 import { QuickJump } from '@/components/QuickJump'
+import { RewardControl } from '@/components/reward'
 import { mapShort } from '@/components/startcharts'
 import { useApi, type RunPage } from '@/lib/api'
 import { ago } from '@/lib/format'
@@ -172,6 +173,7 @@ export function Layout() {
         <div className="mb-2 flex items-center justify-between gap-4">
           <StatusLine />
           <span className="flex shrink-0 items-center gap-1.5">
+            <RewardControl />
             {server === 'full' && (
               <button
                 onClick={() => setDevMode(!dev)}

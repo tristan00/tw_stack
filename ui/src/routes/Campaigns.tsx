@@ -23,8 +23,8 @@ import { n } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 const VIEWS = [
-  { key: 'starts', label: 'starts', asks: 'what the pool of starts looks like' },
   { key: 'campaigns', label: 'campaigns', asks: 'which campaign ended how' },
+  { key: 'starts', label: 'starts', asks: 'what the pool of starts looks like' },
 ]
 const LEGACY: Record<string, string> = { all: 'campaigns', matrix: 'starts' }
 
