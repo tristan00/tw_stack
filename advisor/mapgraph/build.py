@@ -290,9 +290,11 @@ def build_graph(record):
         vals = {}
         if st is not None:
             corr = st.get("corruption") or {}
-            pd = G.Reader({"corruption": max([float(v) for v in corr.values()] or [0.0])},
-                          "province:" + prov, "entities.province.state.corruption")
-            vals["corruption"] = pd.num("corruption")
+            crow = {"corr_" + str(k).rsplit("_", 1)[-1]: v for k, v in corr.items()}
+            pd = G.Reader(crow, "province:" + prov, "entities.province.state.corruption")
+            for ck in crow:
+                if ck in S.FIELD_POS["province"]:
+                    vals[ck] = pd.num(ck)
             sd = G.Reader(st, "province:" + prov, "entities.province.state")
             if st.get("growth_per_turn") is not None:
                 vals["growth_per_turn"] = sd.num("growth_per_turn")
@@ -554,22 +556,34 @@ def _wire_char(g, ci, cqi, row, faction, prov_of_region, st):
 
 
 def _wire_knn(g):
-    pts = []
     xi = S.TYPE_FIELDS["lord"].index("x")
     yi = S.TYPE_FIELDS["lord"].index("y")
+    sxi = S.TYPE_FIELDS["settlement"].index("x")
+    syi = S.TYPE_FIELDS["settlement"].index("y")
+    pts = []
     for i, t in enumerate(g.node_type):
-        if S.NODE_TYPES[t] in ("lord", "hero"):
-            pts.append((i, g.x[i][xi], g.x[i][yi]))
+        tn = S.NODE_TYPES[t]
+        if tn in ("lord", "hero"):
+            x, y = g.x[i][xi], g.x[i][yi]
+        elif tn == "settlement":
+            x, y = g.x[i][sxi], g.x[i][syi]
+        else:
+            continue
+        if x or y:
+            pts.append((i, x, y))
     if len(pts) < 2:
         return
-    xy = {i: (x, y) for i, x, y in pts}
+    seen = set()
     for i, x0, y0 in pts:
-        d = sorted(((math.hypot(x0 - x1, y0 - y1), j) for j, x1, y1 in pts if j != i))
-        for dd, j in d[:S.KNN_K]:
-            if j > i:
-                x1, y1 = xy[j]
-                ux, uy = ((x1 - x0) / dd, (y1 - y0) / dd) if dd > 0 else (0.0, 0.0)
-                g.edge(i, j, "near", val=dd, ux=ux, uy=uy)
+        d = sorted(((math.hypot(x0 - x1, y0 - y1), j, x1, y1)
+                    for j, x1, y1 in pts if j != i))
+        for dd, j, x1, y1 in d[:S.KNN_K]:
+            pair = (i, j) if i < j else (j, i)
+            if pair in seen:
+                continue
+            seen.add(pair)
+            ux, uy = ((x1 - x0) / dd, (y1 - y0) / dd) if dd > 0 else (0.0, 0.0)
+            g.edge(i, j, "near", val=dd, ux=ux, uy=uy)
 
 
 def _lord_memory_row(campaign, cqi, row=None):
@@ -744,8 +758,7 @@ def _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me,
             if d > 25:
                 continue
             ux, uy = ((jx - tx) / d, (jy - ty) / d) if d > 0 else (0.0, 0.0)
-            g.edge(ai, j, "near_target" if d <= 10 else "near_target_wide",
-                   val=d, ux=ux, uy=uy)
+            g.edge(ai, j, "near_target", val=d, ux=ux, uy=uy)
 
     subject = params.get("faction") or params.get("target_faction")
     if subject:

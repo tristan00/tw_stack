@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 import common
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 INSTANCE_TYPES = ("faction", "region", "settlement", "province", "slot",
                   "lord", "hero", "action", "cgroup", "screen")
@@ -27,7 +27,9 @@ TYPE_FIELDS = {
     "region":       ("x", "y", "public_order", "income",
                      "is_capital", "is_ruin"),
     "settlement":   ("garrison_units", "x", "y"),
-    "province":     ("corruption", "growth_per_turn", "free_slots", "max_slots",
+    "province":     ("corr_chaos", "corr_khorne", "corr_nurgle", "corr_skaven",
+                     "corr_slaanesh", "corr_tzeentch", "corr_vampiric",
+                     "growth_per_turn", "free_slots", "max_slots",
                      "settlement_level", "can_set_edict"),
     "slot":         (),
     "lord":         ("x", "y", "units", "hp", "rank", "ap_pct",
@@ -122,7 +124,6 @@ ACT_RELATIONS = (
     "in_group",
     "of_ego",
     "near_target",
-    "near_target_wide",
 )
 
 SCREEN_RELATIONS = (
@@ -230,7 +231,7 @@ G_CTX_FIELDS = ("turn", "treasury", "income", "settlements", "armies",
 G_CTX_DIM = len(G_CTX_FIELDS)
 
 
-KNN_K = 4
+KNN_K = 16
 MODEL_DIR = common.MODEL_MAPGRAPH
 MIN_ROWS = 40
 
