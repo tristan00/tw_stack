@@ -21,7 +21,7 @@ _SKILL_REL = {"active": "skill_active", "locked_due_to_rank": "skill_rank_locked
 class Graph:
     __slots__ = ("_nodes", "_edges",
                  "x", "node_type", "race_idx", "agent_idx", "stance_idx", "subtype_idx",
-                 "atype_idx", "term_idx", "cat_idx", "src", "dst", "rel",
+                 "atype_idx", "term_idx", "cat_idx", "src", "dst", "rel", "val",
                  "id2idx", "node_ids", "action_nodes", "action_keys", "own_mask", "g_ctx",
                  "player_faction", "counts", "provenance")
 
@@ -37,7 +37,7 @@ class Graph:
         self.atype_idx = []
         self.term_idx = []
         self.cat_idx = []
-        self.src, self.dst, self.rel = [], [], []
+        self.src, self.dst, self.rel, self.val = [], [], [], []
         self.id2idx = {}
         self.node_ids = []
         self.action_nodes = []
@@ -74,11 +74,12 @@ class Graph:
             self.action_nodes.append(idx)
         return idx
 
-    def edge(self, i, j, rel):
+    def edge(self, i, j, rel, val=0.0):
         if i is None or j is None:
             return
         r = S.REL_INDEX[rel]
-        self._edges.extend((i, j, r, j, i, r + _NREL))
+        v = float(val)
+        self._edges.extend((i, j, r, v, j, i, r + _NREL, v))
 
     def finalize(self):
         if self._nodes:
@@ -87,7 +88,7 @@ class Graph:
              self.stance_idx, self.subtype_idx, self.atype_idx, self.term_idx,
              self.cat_idx, self.own_mask) = [list(c) for c in cols]
         e = self._edges
-        self.src, self.dst, self.rel = e[0::3], e[1::3], e[2::3]
+        self.src, self.dst, self.rel, self.val = e[0::4], e[1::4], e[2::4], e[3::4]
         return self
 
     def cat_node(self, kind, key):
@@ -103,6 +104,15 @@ class Graph:
             ch = C.chain_of(key)
             if ch:
                 self.edge(idx, self.cat_node("chain", ch), "of_chain")
+            nx = C.next_level_of(key)
+            if nx:
+                self.edge(idx, self.cat_node("building", nx), "chain_next_level")
+        elif kind == "tech":
+            for pk in C.tech_parents_of(key):
+                self.edge(idx, self.cat_node("tech", pk), "tech_requires")
+        elif kind == "item":
+            for ek, v in C.item_effects_of(key):
+                self.edge(idx, self.cat_node("effect", ek), "grants", val=v)
         return idx
 
 
@@ -214,6 +224,19 @@ def build_graph(record):
         cur = cur.get("key")
     if cur:
         g.edge(mi, g.cat_node("tech", str(cur)), "researching")
+
+    held: dict = {}
+    for a in camp_state.get("anc_pool") or ():
+        k = str((a or {}).get("key") or "")
+        if k:
+            held[k] = held.get(k, 0) + 1
+    for a in camp_state.get("equipped_all") or ():
+        k = str((a or {}).get("key") or "")
+        if k in held:
+            held[k] -= 1
+    for k, free in held.items():
+        if free > 0:
+            g.edge(mi, g.cat_node("item", k), "holds_free")
 
     prov_of_region = {}
     region_xy = []
@@ -508,11 +531,23 @@ def _wire_char(g, ci, cqi, row, faction, prov_of_region, st):
     for sk in (st or {}).get("hidden_skills") or ():
         if sk:
             g.edge(ci, g.cat_node("skill", str(sk)), "innate")
+    tree = []
     for sk in (st or {}).get("skills") or ():
         skey = str((sk or {}).get("key") or "")
         rel = _SKILL_REL.get(str((sk or {}).get("status") or ""))
         if skey and rel:
             g.edge(ci, g.cat_node("skill", skey), rel)
+            tree.append(skey)
+    for skey in tree:
+        si = g.id2idx.get("skill:" + skey)
+        for pk in C.skill_parents_of(skey):
+            pi = g.id2idx.get("skill:" + pk)
+            if pi is not None:
+                g.edge(si, pi, "skill_child_of")
+    for eq in (st or {}).get("equipped") or ():
+        ek = str((eq or {}).get("key") or "")
+        if ek:
+            g.edge(ci, g.cat_node("item", ek), "wears")
 
 
 def _wire_knn(g):

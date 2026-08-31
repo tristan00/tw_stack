@@ -531,6 +531,11 @@ def _db_features(action_type, key):
         return DB.skill_features(key)
     if action_type == "rites":
         return DB.ritual_features(key)
+    if action_type in ("items", "item_unequip"):
+        d = dict(DB.ancillary_features(key))
+        for r, v in DB.ancillary_resources(key).items():
+            d["res_" + r] = v
+        return d
     return {}
 
 
@@ -945,6 +950,13 @@ def action_block(offer, locus, treasury, world=None, self_units=None, self_hp=No
     out["opt_candidate_index"] = _f(params.get("candidate_index"))
     out["opt_rite_index"] = _f(params.get("rite_index"))
     out["opt_is_active"] = _f(params.get("active"))
+    if atype == "skills":
+        out["opt_skill_level"] = _f(params.get("level"))
+        out["opt_skill_total_levels"] = _f(params.get("total_levels"))
+        out["opt_skill_tier"] = _f(params.get("tier"))
+    else:
+        out["opt_skill_level"] = out["opt_skill_total_levels"] = None
+        out["opt_skill_tier"] = None
     db = _db_features(atype, key) or {}
     cost = None
     for k, v in db.items():
@@ -1043,6 +1055,15 @@ def offer_rows(record, entity, base_sink=None):
     near_before = {k: v for k, v in base.items() if k.startswith("near_")}
     income = _f((record.get("campaign") or {}).get("income"))
     self_upkeep = base.get("lord_stack_upkeep")
+    pool_cats: dict = {}
+    for o in entity.get("offers") or []:
+        if o.get("action_type") == "items":
+            cat = str((DB.ancillary_features(str(o.get("key"))) or {}).get("category")
+                      or "")
+            pool_cats[str(o.get("key"))] = cat
+    cat_counts: dict = {}
+    for cat in pool_cats.values():
+        cat_counts[cat] = cat_counts.get(cat, 0) + 1
     out = []
     for o in entity.get("offers") or []:
         row = dict(base)
@@ -1051,6 +1072,18 @@ def offer_rows(record, entity, base_sink=None):
                                 self_cqi=st.get("cqi"), self_upkeep=self_upkeep,
                                 income=income, campaign=record.get("campaign"),
                                 self_pending=_f(st.get("pending_recruits"))))
+        atype = o.get("action_type")
+        if atype in ("items", "item_unequip"):
+            k = str(o.get("key"))
+            cat = pool_cats.get(k)
+            if cat is None:
+                cat = str((DB.ancillary_features(k) or {}).get("category") or "")
+            same = float(cat_counts.get(cat, 0))
+            row["opt_item_pool_free"] = float(len(pool_cats))
+            row["opt_item_pool_same_type"] = (max(0.0, same - 1.0)
+                                              if atype == "items" else same)
+        else:
+            row["opt_item_pool_free"] = row["opt_item_pool_same_type"] = None
         out.append((o, row))
     if base_sink is not None:
         base_sink[str(entity.get("context_id"))] = base
@@ -1138,7 +1171,12 @@ MODEL_COLUMNS = frozenset(tuple("optk_" + _t for _t in OPTION_KEY_TYPES) + (
     "opt_own_reinf_nearest_dist", "opt_own_reinf_units_r10", "opt_own_reinf_units_r25",
     "opt_cancel_turns_left", "opt_cancel_stalled", "camp_taken_cancel_recruit",
     "lord_queue_on_hold", "lord_queue_stalled_units",
-))
+    "opt_db_category", "opt_db_legendary", "opt_db_transferrable",
+    "opt_db_uniqueness_score",
+    "opt_item_pool_free", "opt_item_pool_same_type",
+    "opt_skill_level", "opt_skill_total_levels", "opt_skill_tier",
+    "opt_db_tier", "opt_db_required_parents", "opt_db_level", "opt_db_building_chain",
+) + tuple("opt_db_res_" + _r for _r in DB.ITEM_RESOURCES))
 
 MODEL_COLUMNS_ENABLED = True
 

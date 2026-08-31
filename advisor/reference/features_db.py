@@ -58,6 +58,68 @@ def ritual_features(key):
     return _lookup("rituals", "key", key)
 
 
+def ancillary_features(key):
+    return _lookup("ancillaries", "key", key)
+
+
+ITEM_RESOURCES = (
+    "melee_attack", "armour", "melee_defence",
+    "weapon_strength", "ward_save", "magic_attacks",
+    "ap_damage", "physical_resistance", "public_order",
+    "magic_resistance", "action_success_chance", "campaign_post_battle_loot",
+    "corruption_reduction", "charge_bonus", "speed",
+    "missile_resistance", "winds_of_magic_pool_cap", "causes_fear",
+    "bonus_vs_large", "wound_recovery_time", "field_line_of_sight",
+    "movement_range", "fire_resistance", "bonus_vs_infantry",
+    "miscast", "causes_terror", "leadership_aura_size",
+    "campaign_replenishment_rate", "aura_leadership_effect", "stalk",
+    "missile_damage", "campaign_recruitment_cost", "gdp",
+    "flaming_attacks", "battle_barrier_health", "poison_attacks",
+    "campaign_upkeep", "technology_research_points", "stat_vigour_loss_reduction",
+    "ancillary_drop",
+)
+
+_RES_SET = frozenset(ITEM_RESOURCES)
+_RES_PREFIX = re.compile(r"^wh\d?_(main|dlc\d+|pro\d+|twa\d+|cp\d+)_effect_")
+_RES_LEAD = ("character_stat_", "character_", "agent_", "force_all_", "force_",
+             "faction_", "attribute_enable_", "enable_", "economy_", "mod_")
+_RES_TAIL = ("_mod_all", "_mod", "_add", "_characters", "_enemy", "_all")
+
+_res_cache = {}
+
+
+def _resource_name(effect):
+    k = _RES_PREFIX.sub("", str(effect))
+    changed = True
+    while changed:
+        changed = False
+        for lead in _RES_LEAD:
+            if k.startswith(lead) and len(k) > len(lead):
+                k = k[len(lead):]
+                changed = True
+    for tail in _RES_TAIL:
+        if k.endswith(tail):
+            k = k[:-len(tail)]
+            break
+    return k
+
+
+def ancillary_resources(key):
+    key = str(key or "")
+    hit = _res_cache.get(key)
+    if hit is None:
+        out = {}
+        for row in _connect().execute(
+                "SELECT effect, value FROM ancillary_effects WHERE ancillary=%s",
+                (key,)).fetchall():
+            name = _resource_name(row["effect"])
+            if name in _RES_SET:
+                out[name] = out.get(name, 0.0) + float(row["value"] or 0.0)
+        _res_cache[key] = out
+        hit = out
+    return dict(hit)
+
+
 def label(key):
     row = _connect().execute("SELECT text FROM loc WHERE key=%s", (key,)).fetchone()
     return row["text"] if row else None
