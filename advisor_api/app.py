@@ -31,7 +31,7 @@ from advisor_api.models import (
     CampaignItemsPage, CampaignResearchPage, CampaignSkillsPage, ItemPage, ItemsPage,
     StartItems, StartResearch, StartSkills,
     CampaignBuildingsPage, CatalogIndexPage, CatalogKeyPage, PositionsPage,
-    StartBuildings,
+    RewardWeightsPage, StartBuildings,
 )
 
 UI_DIST = os.path.join(common.ROOT, "ui", "dist")
@@ -344,10 +344,42 @@ def get_positions(faction: str | None = None, culture: str | None = None,
         scope=_scope("what gets taken in situations like this, by action type",
                      "conditions AND together over the decision's recorded state "
                      "and its history; a has/has-not condition means the campaign "
-                     "had done that thing at or before the decision; score = what "
-                     "the acting policy thought of each offer; Δ = the taken "
-                     "action's score minus the mean score of everything on offer "
-                     "at that decision"), **got)
+                     "had done that thing at or before the decision; rewards use "
+                     "the analytics weights from the reward weights tab; future "
+                     "reward = what the campaign still gained after the decision"),
+        **got)
+
+
+def _weights_page() -> RewardWeightsPage:
+    from advisor_api.models import RewardComponent
+    w = q.reward_weights()
+    defaults = {k: d for k, _l, d in q.REWARD_COMPONENTS}
+    return RewardWeightsPage(
+        scope=_scope("what one unit of each gain is worth in the analytics reward",
+                     "applies to the catalog, items, positions and the start "
+                     "buildings/research/skills/items tabs; the campaigns page's "
+                     "recorded reward and the UCB selector keep the official "
+                     "1/1 reward and are untouched"),
+        components=[RewardComponent(key=k, label=l, default=d)
+                    for k, l, d in q.REWARD_COMPONENTS],
+        weights=w,
+        is_default=all(w[k] == defaults[k] for k in w))
+
+
+@app.get("/api/reward-weights", response_model=RewardWeightsPage,
+         tags=["positions"])
+def get_reward_weights() -> RewardWeightsPage:
+    return _weights_page()
+
+
+@app.post("/api/reward-weights", response_model=RewardWeightsPage,
+          tags=["positions"])
+def post_reward_weights(weights: dict[str, float]) -> RewardWeightsPage:
+    try:
+        q.set_reward_weights(weights)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _weights_page()
 
 
 @app.get("/api/campaigns/picks", response_model=UcbPicksPage, tags=["campaigns"])

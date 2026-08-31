@@ -152,12 +152,14 @@ and the dashboard reading it. That combination tracks a game you play yourself.
     python runctl.py dashboard --record    # also start the recorder, then boot the game
                                            # yourself with the mod pack installed
 
-Dashboard-only mode (`--dashboard` on `advisor_api.app`, or `TW_DASHBOARD_ONLY=1`) keeps
-the game pages — run, campaigns, starts, campaign detail with its buildings / research /
-skills / items tabs, the positions lookup, the item / building / research / skill
-catalog, decisions and the log — and hides the stack-only surfaces: the selector, the
-model pages and the launch controls. Pages that grade decisions with model scores simply
-show counts when no model ever scored the corpus.
+The game dashboard is every viewer's default: run, campaigns, starts, campaign detail
+with its buildings / research / skills / items tabs, the positions lookup with its
+reward-weights tab, the item / building / research / skill catalog, decisions and the
+log. The experiment surfaces — the selector, the model pages, the launch controls —
+live behind the dev-mode flask button in the header, off until clicked and remembered
+per browser. Dashboard-only mode (`--dashboard` on `advisor_api.app`, or
+`TW_DASHBOARD_ONLY=1`) removes that button entirely, so a shared instance can never
+show the experiment side.
 
 What it needs: postgres reachable (`TW_PG_*`, see `decisions/pg.py`), the reference
 schema loaded for localized names, and — for `--record` — the compiled mod pack

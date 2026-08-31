@@ -1,4 +1,4 @@
-import { Moon, Sun } from 'lucide-react'
+import { FlaskConical, Moon, Sun } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { EntityLink, Dot } from '@/components/primitives'
@@ -26,9 +26,46 @@ const STACK_NAV = [
   { to: '/infra', label: 'infra', asks: 'services and controls' },
 ]
 
-export function useUiMode(): 'full' | 'dashboard' {
+const devListeners = new Set<() => void>()
+
+function devModeOn(): boolean {
+  try {
+    return localStorage.getItem('devmode') === '1'
+  } catch {
+    return false
+  }
+}
+
+function setDevMode(on: boolean) {
+  try {
+    localStorage.setItem('devmode', on ? '1' : '0')
+  } catch {
+    return
+  }
+  devListeners.forEach((fn) => fn())
+}
+
+function useServerMode(): 'full' | 'dashboard' {
   const { data } = useApi<{ mode?: string }>('/api/health', [], { live: false })
   return data?.mode === 'dashboard' ? 'dashboard' : 'full'
+}
+
+function useDevMode(): boolean {
+  const [dev, setDev] = useState(devModeOn)
+  useEffect(() => {
+    const fn = () => setDev(devModeOn())
+    devListeners.add(fn)
+    return () => {
+      devListeners.delete(fn)
+    }
+  }, [])
+  return dev
+}
+
+export function useUiMode(): 'full' | 'dashboard' {
+  const server = useServerMode()
+  const dev = useDevMode()
+  return server === 'dashboard' ? 'dashboard' : dev ? 'full' : 'dashboard'
 }
 
 type Theme = 'system' | 'light' | 'dark'
@@ -114,7 +151,9 @@ function StatusLine() {
 
 export function Layout() {
   const { theme, setTheme } = useTheme()
-  const mode = useUiMode()
+  const server = useServerMode()
+  const dev = useDevMode()
+  const mode = server === 'dashboard' ? 'dashboard' : dev ? 'full' : 'dashboard'
   const { pathname } = useLocation()
   const nav = mode === 'dashboard' ? GAME_NAV : [...GAME_NAV, ...STACK_NAV]
   return (
@@ -122,19 +161,43 @@ export function Layout() {
       <header className="border-line mb-4 border-b pb-3">
         <div className="mb-2 flex items-center justify-between gap-4">
           <StatusLine />
-          <button
-            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-            className="border-line text-dim hover:text-fg shrink-0 rounded-md border p-1.5"
-            title={`theme: ${theme} — click to switch`}
-            aria-label="switch theme"
-          >
-            {theme === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />}
-          </button>
+          <span className="flex shrink-0 items-center gap-1.5">
+            {server === 'full' && (
+              <button
+                onClick={() => setDevMode(!dev)}
+                className={cn(
+                  'border-line rounded-md border p-1.5',
+                  dev ? 'text-accent' : 'text-dim hover:text-fg',
+                )}
+                title={
+                  dev
+                    ? 'dev mode on: selector, models and infra are shown — click for the game dashboard alone'
+                    : 'dev mode off: game dashboard alone — click to also show selector, models and infra'
+                }
+                aria-label="toggle dev mode"
+              >
+                <FlaskConical className="size-4" />
+              </button>
+            )}
+            <button
+              onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+              className="border-line text-dim hover:text-fg rounded-md border p-1.5"
+              title={`theme: ${theme} — click to switch`}
+              aria-label="switch theme"
+            >
+              {theme === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />}
+            </button>
+          </span>
         </div>
         <nav className="flex flex-wrap items-center gap-1">
           {nav.map((item) => (
             <span key={item.to} className="flex items-center">
-              {item.to === '/selector' && <span className="bg-line mx-1.5 h-4 w-px" aria-hidden />}
+              {item.to === '/selector' && (
+                <span className="flex items-center" aria-hidden>
+                  <span className="bg-line mx-1.5 h-4 w-px" />
+                  <span className="text-dim mr-1 text-2xs tracking-wide uppercase">experiment</span>
+                </span>
+              )}
               <NavLink
                 to={item.to}
                 title={item.asks}

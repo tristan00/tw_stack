@@ -840,17 +840,18 @@ class PositionKeyRow(BaseModel):
     key: str
     label: str | None = None
     n: int = 0
-    mean_score: float | None = None
-    delta: float | None = None
+    avg_reward: float | None = None
+    avg_future: float | None = None
+    delta_future: float | None = None
 
 
 class PositionTypeRow(BaseModel):
     action_type: Ident
     n: int = 0
     share: float | None = None
-    scored: int = 0
-    mean_score: float | None = None
-    delta: float | None = None
+    avg_reward: float | None = None
+    avg_future: float | None = None
+    delta_future: float | None = None
     keys: list[PositionKeyRow] = Field(default_factory=list)
 
 
@@ -872,8 +873,22 @@ class PositionsPage(BaseModel):
     decisions: int = 0
     campaigns: int = 0
     takes: int = 0
-    situation_mean: float | None = None
+    mean_reward: float | None = None
+    mean_future: float | None = None
     rows: list[PositionTypeRow] = Field(default_factory=list)
+
+
+class RewardComponent(BaseModel):
+    key: str
+    label: str
+    default: float = 1.0
+
+
+class RewardWeightsPage(BaseModel):
+    scope: Scope
+    components: list[RewardComponent] = Field(default_factory=list)
+    weights: dict[str, float] = Field(default_factory=dict)
+    is_default: bool = True
 
 
 class RewardPoint(BaseModel):

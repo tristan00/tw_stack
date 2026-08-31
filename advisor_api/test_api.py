@@ -744,6 +744,23 @@ def test_positions_conditions_narrow_and_shares_sum():
     assert 0 < rich["decisions"] < whole["decisions"]
 
 
+def test_reward_weights_contract():
+    j = _client.get("/api/reward-weights").json()
+    keys = [c["key"] for c in j["components"]]
+    assert keys == ["settlements", "lord_levels", "allies", "vassals"]
+    assert set(j["weights"]) == set(keys)
+    defaults = {c["key"]: c["default"] for c in j["components"]}
+    assert j["is_default"] == all(j["weights"][k] == defaults[k] for k in keys)
+    r = _client.get("/api/positions").json()
+    assert r["mean_reward"] is not None
+    assert r["mean_future"] is not None
+    assert any(row["avg_future"] is not None for row in r["rows"])
+    bad = _client.post("/api/reward-weights", json={"gold": 1.0})
+    assert bad.status_code == 400
+    bad = _client.post("/api/reward-weights", json={"settlements": -2})
+    assert bad.status_code == 400
+
+
 def test_start_skills_says_who_ranked_what():
     starts = _client.get("/api/campaigns/starts").json()
     played = [s for s in starts.get("rows") or [] if s.get("n_window")]
