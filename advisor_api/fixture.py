@@ -203,9 +203,17 @@ def _build_analytics(admin_con):
                      search_path=SCHEMA + ", public")
     an = astore.connect(schema=ANALYTICS_SCHEMA)
     try:
-        res = one_pass(src, an, TENANTS, log=lambda _m: None)
-        if res["failed"]:
-            raise RuntimeError("fixture analytics pass failed: %s" % res["failed"])
+        prev = None
+        for _ in range(500):
+            res = one_pass(src, an, TENANTS, log=lambda _m: None)
+            if res["failed"]:
+                raise RuntimeError("fixture analytics pass failed: %s"
+                                   % res["failed"])
+            marks = tuple(sorted((r["tenant"], r["watermark"])
+                                 for r in res["done"]))
+            if marks == prev:
+                break
+            prev = marks
     finally:
         src.close()
         an.close()
