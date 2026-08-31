@@ -31,7 +31,7 @@ MIN_FIT_S = 30
 
 
 def _shard(args):
-    db_path, lo, hi = args
+    db_path, out_dir, name, ranges, accept, rebuild = args
     import os as _os
     import sys as _sys
     for _v in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
@@ -46,41 +46,61 @@ def _shard(args):
         if p not in _sys.path:
             _sys.path.insert(0, p)
     from store import DecisionStore
+    from advisor import memory as M2
     from advisor.mapgraph import build as B2
+    from advisor.mapgraph import corpus as CO2
     from advisor.mapgraph import net as N2
     import torch as _t
     _t.set_num_threads(1)
 
+    fresh = {}
     st = DecisionStore(_os.path.dirname(db_path), readonly=True)
     try:
-        rows = st.labelled_decisions(after=lo, before=hi)
-        from advisor import memory as M2
-        stamps = (M2.replay_stamps(st, [r[0].get("decision_id") for r in rows])
-                  if rows else {})
+        for lo, hi in ranges:
+            rows = st.labelled_decisions(after=lo - 1, before=hi)
+            stamps = M2.replay_stamps(
+                st, [r[0].get("decision_id") for r in rows
+                     if r[0].get("decision_id") in rebuild])
+            for rec, taken, counted in rows:
+                did = rec.get("decision_id")
+                if did not in rebuild:
+                    continue
+                patch = stamps.get(did)
+                if patch:
+                    (rec.setdefault("campaign", {})).update(patch)
+                head = (did, rec.get("campaign_id"), rec.get("campaign"),
+                        rec.get("turn"))
+                th = CO2.taken_hash(taken)
+                g = B2.build_graph(rec)
+                if g is None:
+                    fresh[did] = head + ("no_graph", None, None, th)
+                    continue
+                if not g.action_nodes:
+                    fresh[did] = head + ("no_actions", None, None, th)
+                    continue
+                want = (str(taken[0]), str(taken[1]), str(taken[2]), str(taken[3]))
+                mask = [1.0 if k == want else 0.0 for k in g.action_keys]
+                if sum(mask) != 1.0:
+                    fresh[did] = head + ("taken_missing", None, None, th)
+                    continue
+                fresh[did] = head + (None, N2.to_data(g, taken=mask), g.counts, th)
+            rows = None
     finally:
         st.close()
 
-    out = []
-    for rec, taken, counted in rows:
-        patch = stamps.get(rec.get("decision_id"))
-        if patch:
-            (rec.setdefault("campaign", {})).update(patch)
-        head = (rec.get("decision_id"), rec.get("campaign_id"), rec.get("campaign"),
-                rec.get("turn"))
-        g = B2.build_graph(rec)
-        if g is None:
-            out.append(head + ("no_graph", None, None))
-            continue
-        if not g.action_nodes:
-            out.append(head + ("no_actions", None, None))
-            continue
-        want = (str(taken[0]), str(taken[1]), str(taken[2]), str(taken[3]))
-        mask = [1.0 if k == want else 0.0 for k in g.action_keys]
-        if sum(mask) != 1.0:
-            out.append(head + ("taken_missing", None, None))
-            continue
-        out.append(head + (None, N2.to_data(g, taken=mask), g.counts))
-    return out
+    if out_dir is None:
+        return name, fresh, []
+    recs = dict(fresh)
+    carried = []
+    path = _os.path.join(out_dir, name)
+    if _os.path.exists(path):
+        for rec in _t.load(path, weights_only=False):
+            if rec[0] in accept and rec[0] not in recs:
+                recs[rec[0]] = rec
+                carried.append(rec[0])
+    if recs:
+        CO2.write_shard(out_dir, name, recs)
+    return name, sorted(fresh), sorted(carried)
 
 
 def walk(runs_root=None, limit=None, log=print, workers=None, window=None):
@@ -113,7 +133,6 @@ def walk(runs_root=None, limit=None, log=print, workers=None, window=None):
         finally:
             st.close()
 
-    n_workers = 1 if workers is None else workers
     t_walk = time.time()
     slots, built, reused = [], 0, 0
     for db, hi, taken_all, floor in live:
@@ -125,45 +144,70 @@ def walk(runs_root=None, limit=None, log=print, workers=None, window=None):
             log("mapgraph.train: window %d campaigns -> %d of %d labelled decisions "
                 "(floor %d)" % (window, len(taken_now), len(taken_all), floor))
 
-        want = {}
+        want = set()
         for did, (tup, _counted) in taken_now.items():
-            th = CO.taken_hash(tup)
             hit = cached.get(did)
-            if hit is None or hit[7] != th:
-                want[did] = th
+            if hit is None or hit[7] != CO.taken_hash(tup):
+                want.add(did)
         if limit:
-            want = dict(sorted(want.items())[:max(limit * 8, 400)])
+            want = set(sorted(want)[:max(limit * 8, 400)])
 
-        jobs = []
-        if want:
-            if len(want) > 0.5 * max(1, len(taken_now)):
-                jobs = [(db, (floor - 1) if floor is not None else None, None)]
-            else:
-                jobs = [(db, lo - 1, hi2) for lo, hi2 in CO.ranges(want)]
-
-        fresh = {}
-        if jobs and (n_workers <= 1 or len(jobs) <= 1):
-            for j in jobs:
-                for rec in _shard(j):
-                    fresh[rec[0]] = rec
-        elif jobs:
-            with cf.ProcessPoolExecutor(max_workers=n_workers) as ex:
-                for part in ex.map(_shard, jobs, chunksize=1):
-                    for rec in part:
-                        fresh[rec[0]] = rec
-
-        merged = {}
+        by_shard = {}
         for did in taken_now:
-            rec = fresh.get(did)
-            if rec is not None:
-                merged[did] = rec + (want.get(did) or CO.taken_hash(taken_now[did][0]),)
-                built += 1
-            elif did in cached:
-                merged[did] = cached[did]
-                reused += 1
-        if cdir is not None and merged and fresh:
-            CO.save(cdir, merged, dirty=set(fresh), log=log)
-        slots.extend(merged[k] for k in sorted(merged))
+            by_shard.setdefault(CO.shard_name(did), []).append(did)
+        shard_want = {}
+        for did in sorted(want):
+            shard_want.setdefault(CO.shard_name(did), []).append(did)
+        jobs = [(db, cdir, name, CO.ranges(dids),
+                 frozenset(by_shard[name]), frozenset(dids))
+                for name, dids in sorted(shard_want.items())]
+
+        n_workers = workers or (min(16, THREADS, len(jobs))
+                                if len(want) > CO.SHARD else 1)
+        if jobs:
+            log("mapgraph.train: rebuilding %d graphs over %d shard(s), %d worker(s)"
+                % (len(want), len(jobs), n_workers))
+
+        def _results():
+            if n_workers <= 1 or len(jobs) <= 1:
+                for j in jobs:
+                    yield _shard(j)
+                return
+            with cf.ProcessPoolExecutor(max_workers=n_workers) as ex:
+                yield from ex.map(_shard, jobs, chunksize=1)
+
+        hold, done, from_fresh, from_cache = {}, {}, set(), set()
+        for name, fresh, carried in _results():
+            if cdir is None:
+                hold.update(fresh)
+                from_fresh.update(fresh)
+                continue
+            if fresh or carried:
+                done[name] = len(fresh) + len(carried)
+            from_fresh.update(fresh)
+            from_cache.update(carried)
+            log("mapgraph.train: %s written -- %d built, %d carried (%d of %d)"
+                % (name, len(fresh), len(carried), len(from_fresh), len(want)))
+
+        for did in taken_now:
+            if did in cached and did not in from_fresh and did not in from_cache:
+                from_cache.add(did)
+
+        if done:
+            covered = from_fresh | from_cache
+            CO.write_manifest(cdir, {CO.shard_name(d) for d in covered},
+                              len(covered), max(covered), log=log)
+            pool = {did: cached[did] for did in from_cache
+                    if CO.shard_name(did) not in done}
+            for name in sorted(done):
+                pool.update(CO.read_shard(cdir, name))
+            cached = None
+        else:
+            pool = {did: cached[did] for did in from_cache}
+            pool.update(hold)
+        built += len(from_fresh)
+        reused += len(from_cache)
+        slots.extend(pool[k] for k in sorted(pool))
 
     log("mapgraph.train: walk %.1fs -- %d graphs built, %d reused from cache"
         % (time.time() - t_walk, built, reused))

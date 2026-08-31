@@ -74,7 +74,7 @@ def root(run_key, fp=None):
     return os.path.join(CACHE_ROOT, fp or fingerprint(), run_key)
 
 
-def _shard_name(did):
+def shard_name(did):
     return "shard_%08d.pt" % (did // SHARD)
 
 
@@ -99,30 +99,32 @@ def load(run_key, log=print):
         return {}, d
 
 
-def save(d, slots, dirty, log=print):
+def write_shard(d, name, recs):
     import torch
     os.makedirs(d, exist_ok=True)
-    by_shard = {}
-    for did in slots:
-        by_shard.setdefault(_shard_name(did), []).append(did)
-    touched = {_shard_name(i) for i in dirty}
-    for name, ids in by_shard.items():
-        if name not in touched and os.path.exists(os.path.join(d, name)):
-            continue
-        tmp = os.path.join(d, name + ".tmp")
-        torch.save([slots[i] for i in sorted(ids)], tmp)
-        os.replace(tmp, os.path.join(d, name))
+    tmp = os.path.join(d, name + ".tmp")
+    torch.save([recs[i] for i in sorted(recs)], tmp)
+    os.replace(tmp, os.path.join(d, name))
+
+
+def read_shard(d, name):
+    import torch
+    return {rec[0]: rec for rec in
+            torch.load(os.path.join(d, name), weights_only=False, mmap=True)}
+
+
+def write_manifest(d, shards, n, watermark, log=print):
+    os.makedirs(d, exist_ok=True)
     json.dump({"fingerprint": os.path.basename(os.path.dirname(d)),
-               "shards": sorted(by_shard), "n": len(slots),
-               "watermark": max(slots) if slots else 0},
+               "shards": sorted(shards), "n": n, "watermark": watermark},
               open(os.path.join(d, "manifest.json"), "w"))
     fp = os.path.basename(os.path.dirname(d))
     for stale in os.listdir(CACHE_ROOT):
         if stale != fp:
             shutil.rmtree(os.path.join(CACHE_ROOT, stale), ignore_errors=True)
             log("mapgraph.corpus: pruned stale cache generation %s" % stale)
-    log("mapgraph.corpus: cache holds %d graphs; rewrote %d of %d shard(s)"
-        % (len(slots), len(touched & set(by_shard)), len(by_shard)))
+    log("mapgraph.corpus: cache holds %d graphs across %d shard(s)"
+        % (n, len(shards)))
 
 
 def ranges(ids, gap=64):
