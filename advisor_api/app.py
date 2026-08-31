@@ -335,31 +335,19 @@ def get_skill(key: str) -> CatalogKeyPage:
 
 @app.get("/api/positions", response_model=PositionsPage, tags=["positions"])
 def get_positions(faction: str | None = None, culture: str | None = None,
-                  map: str | None = None, holds: str | None = None,
-                  turn_min: int | None = None, turn_max: int | None = None,
-                  settlements_min: float | None = None,
-                  settlements_max: float | None = None,
-                  income_min: float | None = None, income_max: float | None = None,
-                  power_rank_min: float | None = None,
-                  power_rank_max: float | None = None,
-                  lord_level_min: float | None = None,
-                  lord_level_max: float | None = None) -> PositionsPage:
+                  map: str | None = None,
+                  c: list[str] = Query(default_factory=list)) -> PositionsPage:
     con = _con()
-    filters = {"faction": faction, "culture": culture, "map": map, "holds": holds,
-               "turn_min": turn_min, "turn_max": turn_max,
-               "settlements_min": settlements_min,
-               "settlements_max": settlements_max,
-               "income_min": income_min, "income_max": income_max,
-               "power_rank_min": power_rank_min, "power_rank_max": power_rank_max,
-               "lord_level_min": lord_level_min, "lord_level_max": lord_level_max}
-    got = q.positions_page(con, filters)
+    got = q.positions_page(con, {"faction": faction, "culture": culture,
+                                 "map": map}, c)
     return PositionsPage(
         scope=_scope("what gets taken in situations like this, by action type",
-                     "score = what the acting policy thought of each offer; "
-                     "Δ = the taken action's score minus the mean score of "
-                     "everything on offer at that decision, averaged over the "
-                     "matching decisions; holds = decisions at or after the "
-                     "campaign captured that settlement"), **got)
+                     "conditions AND together over the decision's recorded state "
+                     "and its history; a has/has-not condition means the campaign "
+                     "had done that thing at or before the decision; score = what "
+                     "the acting policy thought of each offer; Δ = the taken "
+                     "action's score minus the mean score of everything on offer "
+                     "at that decision"), **got)
 
 
 @app.get("/api/campaigns/picks", response_model=UcbPicksPage, tags=["campaigns"])

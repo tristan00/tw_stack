@@ -725,19 +725,23 @@ def test_item_effects_are_a_table_not_a_blob():
         assert e["scope"]
 
 
-def test_positions_filters_narrow_and_shares_sum():
+def test_positions_conditions_narrow_and_shares_sum():
     whole = _client.get("/api/positions").json()
     assert whole["decisions"] and whole["rows"]
     share = sum(r["share"] or 0 for r in whole["rows"])
     assert 99.0 <= share <= 101.0, share
     assert whole["takes"] == sum(r["n"] for r in whole["rows"])
     fac = whole["factions"][0]["key"]
-    part = _client.get("/api/positions?faction=%s&turn_max=4" % fac).json()
+    part = _client.get("/api/positions?faction=%s&c=turn::4" % fac).json()
     assert 0 < part["decisions"] < whole["decisions"]
     sett = whole["settlements"][0]["key"]
-    held = _client.get("/api/positions?holds=%s" % sett).json()
+    held = _client.get("/api/positions?c=has:settlement:%s" % sett).json()
     assert 0 < held["decisions"] < whole["decisions"]
     assert held["campaigns"] == whole["settlements"][0]["campaigns"]
+    inv = _client.get("/api/positions?c=not:settlement:%s" % sett).json()
+    assert inv["decisions"] + held["decisions"] == whole["decisions"]
+    rich = _client.get("/api/positions?c=treasury:20000:").json()
+    assert 0 < rich["decisions"] < whole["decisions"]
 
 
 def test_start_skills_says_who_ranked_what():

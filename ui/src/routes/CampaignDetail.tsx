@@ -414,7 +414,15 @@ function ResearchTab({ campaignKey }: { campaignKey: string }) {
                     {r.label ?? r.key}
                   </EntityLink>
                 </td>
-                <td className="text-dim px-3 py-1.5">{r.parent?.label ?? '—'}</td>
+                <td className="px-3 py-1.5">
+                  {r.parent ? (
+                    <EntityLink to={`/research/${encodeURIComponent(r.parent.raw)}`} title={r.parent.raw} className="text-dim">
+                      {r.parent.label}
+                    </EntityLink>
+                  ) : (
+                    <span className="text-dim">—</span>
+                  )}
+                </td>
                 <td className="num px-3 py-1.5 text-right">{r.tier ?? '—'}</td>
                 <td className="num px-3 py-1.5 text-right">{r.points == null ? '—' : n(r.points)}</td>
                 <td className="px-3 py-1.5 text-right">

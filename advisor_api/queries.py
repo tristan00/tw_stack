@@ -35,7 +35,7 @@ from advisor_api.models import (
     CampaignItemEvent, CampaignSkillRow, CampaignTechRow, CatalogCampaignRow,
     CatalogIndexRow, CatalogStartRow, ChainLevel, ItemCampaignRow, ItemRow,
     ItemStartRow, PositionFacetOption, PositionKeyRow, PositionTypeRow,
-    SkillCharacterRow, SkillRow, StartCharacterRow, TechRow,
+    RelatedKey, SkillCharacterRow, SkillRow, StartCharacterRow, TechRow,
 )
 from decisions import pg_schema as SS
 
@@ -947,6 +947,8 @@ def warm_caches(con) -> list:
             ("usage_skills", lambda: _usage_matrix(con, "skills", force=True)),
             ("char_subtypes", lambda: _char_subtypes(con, force=True)),
             ("positions", lambda: _positions_data(con, force=True)),
+            ("history", lambda: [_hist_map(con, fam, force=True)
+                                 for fam in POSITION_HISTORY]),
     ):
         t0 = time.perf_counter()
         try:
@@ -1660,8 +1662,9 @@ def start_skills(con, mkey: str, fkey: str, subtype: str | None = None) -> dict:
         ps = [p for p in all_parents.get(k) or [] if p in tree_keys]
         rows.append(SkillRow(
             key=k, label=labels.name_for("skills", k) or labels.pretty(k),
-            parent=" + ".join(
-                labels.name_for("skills", p) or labels.pretty(p) for p in ps) or None,
+            parents=[Ident(raw=p,
+                           label=labels.name_for("skills", p) or labels.pretty(p))
+                     for p in ps],
             line=labels.skill_line_of(lines, k),
             tier=st["tier"], max_ranks=st["max"],
             took=Rate(n=len(took), of=of_n, noun="campaigns",
@@ -1907,12 +1910,14 @@ def _catalog_ref(family, keys) -> dict:
         prefixes = {m2.group(1) for k in keys
                     for m2 in [_TECH_PREFIX_RE.match(k)] if m2}
         uni = {u["key"]: u for u in labels.tech_rows(prefixes)}
-        groups = labels.tech_groups()
         for key in keys:
             u = uni.get(key) or {}
-            out[key] = {"line": labels.tech_group_name(groups.get(key)),
-                        "tier": _i(u.get("tier")),
+            out[key] = {"tier": _i(u.get("tier")),
                         "points": _i(u.get("research_points_required"))}
+    elif family == "skills":
+        unlocks = labels.skill_unlock_ranks(keys)
+        for key in keys:
+            out[key] = {"unlock_rank": _i(unlocks.get(key)) or None}
     return out
 
 
@@ -1923,8 +1928,10 @@ def catalog_index(con, family: str) -> dict:
     subs = _char_subtypes(con) if family == "skills" else {}
     per: dict = {}
     for (cid, key), v in m["pairs"].items():
-        e = per.setdefault(key, {"cids": [], "turns": [], "starts": set(), "subs": {}})
+        e = per.setdefault(key, {"cids": [], "turns": [], "starts": set(),
+                                 "subs": {}, "ns": []})
         e["cids"].append(cid)
+        e["ns"].append(v["n"])
         if v["turn"] is not None:
             e["turns"].append(v["turn"])
         c = camp.get(cid)
@@ -1941,7 +1948,8 @@ def catalog_index(con, family: str) -> dict:
     noun = USAGE_FAMILIES[family]["noun"]
     rows = []
     for key in set(per) | set(offered):
-        e = per.get(key) or {"cids": [], "turns": [], "starts": set(), "subs": {}}
+        e = per.get(key) or {"cids": [], "turns": [], "starts": set(),
+                             "subs": {}, "ns": []}
         chars = None
         if family == "skills" and e["subs"]:
             best = sorted(e["subs"].items(), key=lambda kv: -kv[1])
@@ -1957,6 +1965,8 @@ def catalog_index(con, family: str) -> dict:
             key=key, label=_fam_label(family, key), category=r.get("category"),
             level=r.get("level"), cost=r.get("cost"), line=r.get("line"),
             tier=r.get("tier"), points=r.get("points"), characters=chars,
+            unlock_rank=r.get("unlock_rank"),
+            avg_ranks=_mean(e["ns"], 1) if family == "skills" else None,
             took=Rate(n=len(e["cids"]),
                       of=max(len(offered.get(key) or ()), len(e["cids"])),
                       noun="campaigns",
@@ -2028,6 +2038,19 @@ def catalog_key_page(con, family: str, key: str) -> dict | None:
     passed_r = [camp[cid]["reward"] for cid in offered_cids - set(hits)
                 if cid in camp]
     rt, rp = _mean(took_r), _mean(passed_r)
+    counts: dict = {}
+    for (_cid, k), _v in m["pairs"].items():
+        counts[k] = counts.get(k, 0) + 1
+    offered_counts: dict = {}
+    for (_cid, k) in m["offered"]:
+        offered_counts[k] = offered_counts.get(k, 0) + 1
+
+    def took_rate(k) -> Rate:
+        return Rate(n=counts.get(k, 0),
+                    of=max(offered_counts.get(k, 0), counts.get(k, 0)),
+                    noun="campaigns",
+                    population="it was on offer in that took it")
+
     out = {
         "family": family, "key": key, "label": _fam_label(family, key),
         "took_in": len(hits),
@@ -2041,6 +2064,19 @@ def catalog_key_page(con, family: str, key: str) -> dict | None:
         if rt is not None and rp is not None and len(took_r) >= 5
         and len(passed_r) >= 5 else None,
         "by_start": start_rows, "recent": recent}
+    def related_rows(parents, children, refs):
+        rel = []
+        for kind, keys2 in (("requires", parents), ("unlocks", children)):
+            got = sorted(set(keys2 or []), key=lambda k2: -counts.get(k2, 0))
+            for k2 in got:
+                r2 = refs.get(k2) or {}
+                rel.append(RelatedKey(
+                    key=k2, label=_fam_label(family, k2), kind=kind,
+                    tier=r2.get("tier"), points=r2.get("points"),
+                    unlock_rank=r2.get("unlock_rank"),
+                    took_in=counts.get(k2, 0), took=took_rate(k2)))
+        return rel
+
     if family == "building":
         info = labels.building_info([key]).get(key) or {}
         out.update(category=(info.get("chain_category") or "")
@@ -2049,24 +2085,33 @@ def catalog_key_page(con, family: str, key: str) -> dict | None:
                    upkeep=_i(info.get("upkeep_cost")) or None,
                    turns_to_build=_i(info.get("create_time")))
         chain = []
-        counts: dict = {}
-        for (cid, k), _v in m["pairs"].items():
-            counts[k] = counts.get(k, 0) + 1
         for lv in labels.building_chain_levels(str(info.get("building_chain") or "")):
             chain.append(ChainLevel(
                 key=lv["key"], label=_building_label(lv["key"]),
                 level=(_i(lv.get("level")) + 1
                        if lv.get("level") is not None else None),
                 cost=_i(lv.get("create_cost")),
-                constructed_in=counts.get(lv["key"], 0), this=lv["key"] == key))
+                constructed_in=counts.get(lv["key"], 0),
+                took=took_rate(lv["key"]), this=lv["key"] == key))
         out["chain"] = chain
     elif family == "research":
         ref = _catalog_ref("research", [key]).get(key) or {}
-        out.update(line=ref.get("line"), tier=ref.get("tier"),
-                   points=ref.get("points"),
-                   parent=_parent_ident(labels.tech_parents(), key))
+        prefixes = {m2.group(1) for m2 in [_TECH_PREFIX_RE.match(key)] if m2}
+        tkey = next((u.get("technology_key") for u in labels.tech_rows(prefixes)
+                     if u["key"] == key), None)
+        parents = labels.tech_parents().get(key) or []
+        children = labels.tech_children().get(key) or []
+        out.update(tier=ref.get("tier"), points=ref.get("points"),
+                   parent=_parent_ident(labels.tech_parents(), key),
+                   description=labels.tech_description(key, tkey),
+                   related=related_rows(
+                       parents, children,
+                       _catalog_ref("research", set(parents) | set(children))))
     else:
         subs = _char_subtypes(con)
+        sub_camps: dict = {}
+        for (cid, _cqi), (st, _kind) in subs.items():
+            sub_camps.setdefault(st, set()).add(cid)
         by_char: dict = {}
         for cid, v in hits.items():
             for cqi, cv in v["ctx"].items():
@@ -2082,17 +2127,32 @@ def catalog_key_page(con, family: str, key: str) -> dict | None:
         out["by_character"] = [
             SkillCharacterRow(
                 subtype=st, label=labels.subtype_name(st), kind=e["kind"],
-                campaigns=len(e["cids"]), avg_ranks=_mean(e["ns"], 1),
+                campaigns=len(e["cids"]),
+                ranked=Rate(n=len(e["cids"]),
+                            of=max(len(sub_camps.get(st) or ()), len(e["cids"])),
+                            noun="campaigns",
+                            population="that fielded this character and ranked it"),
+                avg_ranks=_mean(e["ns"], 1),
                 avg_turn=_mean(e["turns"], 1))
             for st, e in sorted(by_char.items(),
                                 key=lambda kv: -len(kv[1]["cids"]))]
         out["unlock_rank"] = _i(labels.skill_unlock_ranks([key]).get(key))
+        out["description"] = labels.skill_description(key)
+        parents = labels.skill_parents().get(key) or []
+        children = labels.skill_children().get(key) or []
+        out["related"] = related_rows(
+            parents, children,
+            _catalog_ref("skills", set(parents) | set(children)))
     return out
 
 
-POSITION_RANGES = ("turn", "settlements", "income", "power_rank", "lord_level")
+POSITION_SCALARS = {"turn": 2, "settlements": 3, "income": 4, "power_rank": 5,
+                    "lord_level": 6, "treasury": 7, "armies": 8, "heroes": 9,
+                    "allies": 10, "vassals": 11}
+POSITION_FLAGS = {"is_researching": 1, "ll_wounded": 2}
 POSITION_KEYS_SHOWN = 12
 _SETT_TYPES = ("attack_settlement", "colonize")
+POSITION_HISTORY = ("settlement", "building", "research", "skills", "items")
 
 
 def _positions_data(con, force=False) -> dict:
@@ -2134,12 +2194,47 @@ def _positions_data(con, force=False) -> dict:
             takes[_i(r["decision_id"], 0)] = (
                 sys.intern(str(r["action_type"])), r["action_key"], _f(r["score"]))
         decs = []
+        extras: dict = {}
+        res_camps: dict = {}
+        hero_camps: dict = {}
         for r in con.execute(
-                "SELECT decision_id, campaign_id, turn, settlements, income,"
-                " power_rank, lord_level FROM decisions"):
-            decs.append((_i(r["decision_id"], 0), _i(r["campaign_id"], 0),
-                         _f(r["turn"]), _f(r["settlements"]), _f(r["income"]),
-                         _f(r["power_rank"]), _f(r["lord_level"])))
+                "SELECT d.decision_id, d.campaign_id, d.turn, d.settlements,"
+                " d.income, d.power_rank, d.lord_level, d.allies, d.vassals, b.z"
+                " FROM decisions d"
+                " LEFT JOIN blobs b ON b.blob_id = d.campaign_blob"):
+            did = _i(r["decision_id"], 0)
+            cid = _i(r["campaign_id"], 0)
+            z = _jload(r["z"])
+            heroes = z.get("hero_type_counts") or {}
+            flags = ((1 if z.get("is_researching") else 0)
+                     | (2 if z.get("ll_wounded") else 0))
+            decs.append((did, cid, _f(r["turn"]), _f(r["settlements"]),
+                         _f(r["income"]), _f(r["power_rank"]), _f(r["lord_level"]),
+                         _f(z.get("treasury")), _f(z.get("armies")),
+                         _f(sum(_f(v, 0.0) or 0.0 for v in heroes.values())),
+                         _f(r["allies"]), _f(r["vassals"]), flags))
+            ex = {}
+            for k, v in (z.get("resources") or {}).items():
+                fv = _f(v)
+                if fv is not None:
+                    key = "res:" + str(k)
+                    ex[key] = fv
+                    res_camps.setdefault(str(k), set()).add(cid)
+            for k, v in heroes.items():
+                fv = _f(v)
+                if fv is not None:
+                    ex["hero:" + str(k)] = fv
+                    hero_camps.setdefault(str(k), set()).add(cid)
+            if ex:
+                extras[did] = ex
+        resources = [
+            PositionFacetOption(key=k, label=labels.pooled_resource_name(k),
+                                campaigns=len(cs))
+            for k, cs in sorted(res_camps.items(), key=lambda kv: -len(kv[1]))]
+        hero_types = [
+            PositionFacetOption(key=k, label=labels.pretty(k).title(),
+                                campaigns=len(cs))
+            for k, cs in sorted(hero_camps.items(), key=lambda kv: -len(kv[1]))]
         captures: dict = {}
         sett_camps: dict = {}
         for r in con.execute(
@@ -2165,30 +2260,70 @@ def _positions_data(con, force=False) -> dict:
             for k, n2 in sorted(sett_camps.items(), key=lambda kv: -kv[1])]
         return {"camps": camps, "factions": factions, "maps": maps,
                 "cultures": sorted({o.culture for o in factions if o.culture}),
-                "base": base, "takes": takes, "decs": decs,
+                "base": base, "takes": takes, "decs": decs, "extras": extras,
+                "resources": resources, "hero_types": hero_types,
                 "captures": captures, "settlements": settlements}
     return _stamped_slow("positions_data", build, force=force)
 
 
+def _hist_map(con, family: str, force=False) -> dict:
+    def build():
+        out: dict = {}
+        if family == "settlement":
+            out = _positions_data(con)["captures"]
+        elif family == "items":
+            for (cid, k), v in item_matrix(con)["pairs"].items():
+                if v["equipped"]:
+                    out.setdefault(cid, {})[k] = v["equip_turn"]
+        else:
+            for (cid, k), v in _usage_matrix(con, family)["pairs"].items():
+                out.setdefault(cid, {})[k] = v["turn"]
+        return out
+    return _stamped_slow(("hist", family), build, force=force)
+
+
+def _parse_conditions(raw) -> list:
+    out = []
+    for c in raw or []:
+        parts = str(c).split(":")
+        head = parts[0]
+        if head in ("has", "not") and len(parts) >= 3 \
+                and parts[1] in POSITION_HISTORY:
+            out.append(("hist", head == "has", parts[1], ":".join(parts[2:])))
+        elif head == "flag" and len(parts) == 3 and parts[1] in POSITION_FLAGS:
+            out.append(("flag", POSITION_FLAGS[parts[1]], parts[2] == "1"))
+        elif head in ("res", "hero") and len(parts) >= 2 and parts[1]:
+            lo = _f(parts[2]) if len(parts) > 2 and parts[2] != "" else None
+            hi = _f(parts[3]) if len(parts) > 3 and parts[3] != "" else None
+            if lo is not None or hi is not None:
+                out.append(("sparse", head + ":" + parts[1], lo, hi))
+        elif head in POSITION_SCALARS:
+            lo = _f(parts[1]) if len(parts) > 1 and parts[1] != "" else None
+            hi = _f(parts[2]) if len(parts) > 2 and parts[2] != "" else None
+            if lo is not None or hi is not None:
+                out.append(("range", POSITION_SCALARS[head], lo, hi))
+    return out
+
+
 @db.timed
-def positions_page(con, filters) -> dict:
+def positions_page(con, filters, conditions=None) -> dict:
     data = _positions_data(con)
     camps = data["camps"]
     fac = filters.get("faction")
     mp = filters.get("map")
-    holds = filters.get("holds")
     cul_fac = None
     if filters.get("culture"):
         cul_fac = {o.key for o in data["factions"]
                    if (o.culture or "") == filters["culture"]}
-    rng = []
-    for i, name in enumerate(POSITION_RANGES):
-        lo, hi = _f(filters.get(name + "_min")), _f(filters.get(name + "_max"))
-        if lo is not None or hi is not None:
-            rng.append((i + 2, lo, hi))
+    conds = _parse_conditions(conditions)
     base = data["base"]
     takes = data["takes"]
-    captures = data["captures"]
+    extras = data["extras"]
+    hist_cache: dict = {}
+    for cond in conds:
+        if cond[0] == "hist":
+            hist_cache[cond[2]] = _hist_map(con, cond[2])
+    empty: dict = {}
     n_dec = 0
     camp_ids: set = set()
     sit_sum, sit_n = 0.0, 0
@@ -2202,23 +2337,36 @@ def positions_page(con, filters) -> dict:
             continue
         if mp and (not c or c[1] != mp):
             continue
+        did = dec[0]
         ok = True
-        for idx, lo, hi in rng:
-            v = dec[idx]
-            if v is None or (lo is not None and v < lo) \
-                    or (hi is not None and v > hi):
-                ok = False
-                break
+        for cond in conds:
+            kind = cond[0]
+            if kind == "range":
+                v = dec[cond[1]]
+                if v is None or (cond[2] is not None and v < cond[2]) \
+                        or (cond[3] is not None and v > cond[3]):
+                    ok = False
+                    break
+            elif kind == "flag":
+                if bool(dec[12] & cond[1]) != cond[2]:
+                    ok = False
+                    break
+            elif kind == "sparse":
+                v = extras.get(did, empty).get(cond[1], 0.0)
+                if (cond[2] is not None and v < cond[2]) \
+                        or (cond[3] is not None and v > cond[3]):
+                    ok = False
+                    break
+            else:
+                got = hist_cache[cond[2]].get(cid, empty)
+                t_ev = got.get(cond[3], "no")
+                has = t_ev != "no" and (t_ev is None or dec[2] is None
+                                        or t_ev <= dec[2])
+                if has != cond[1]:
+                    ok = False
+                    break
         if not ok:
             continue
-        if holds:
-            got = captures.get(cid)
-            if not got or holds not in got:
-                continue
-            t_cap = got[holds]
-            if t_cap is not None and dec[2] is not None and dec[2] < t_cap:
-                continue
-        did = dec[0]
         n_dec += 1
         camp_ids.add(cid)
         b = base.get(did)
@@ -2278,6 +2426,7 @@ def positions_page(con, filters) -> dict:
     return {
         "factions": data["factions"], "cultures": data["cultures"],
         "maps": data["maps"], "settlements": data["settlements"],
+        "resources": data["resources"], "hero_types": data["hero_types"],
         "decisions": n_dec, "campaigns": len(camp_ids), "takes": takes_n,
         "situation_mean": round(sit_sum / sit_n, 3) if sit_n else None,
         "rows": rows}
