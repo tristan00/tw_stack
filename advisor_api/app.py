@@ -27,6 +27,8 @@ from advisor_api.models import (
     StartsPage, StartActions, StartCampaignsPage, StartDetail, StartOpenings,
     StartPerformance, TimelinePage, TrainingPage, CorrelationsPage, UcbPickPage,
     UcbPicksPage,
+    CampaignItemsPage, CampaignResearchPage, CampaignSkillsPage, ItemPage, ItemsPage,
+    StartItems, StartResearch, StartSkills,
 )
 
 UI_DIST = os.path.join(common.ROOT, "ui", "dist")
@@ -183,6 +185,58 @@ def get_start_actions(campaign_map: str, faction: str) -> StartActions:
         cells=q.start_actions(con, campaign_map, faction))
 
 
+@app.get("/api/campaigns/starts/{campaign_map}/{faction}/research",
+         response_model=StartResearch, tags=["campaigns"])
+def get_start_research(campaign_map: str, faction: str) -> StartResearch:
+    con = _con()
+    got = q.start_research(con, campaign_map, faction)
+    return StartResearch(
+        scope=_scope("every tech in this start's tree, one row each",
+                     "avg reward is over the campaigns that started it"), **got)
+
+
+@app.get("/api/campaigns/starts/{campaign_map}/{faction}/skills",
+         response_model=StartSkills, tags=["campaigns"])
+def get_start_skills(campaign_map: str, faction: str,
+                     subtype: str | None = None) -> StartSkills:
+    con = _con()
+    got = q.start_skills(con, campaign_map, faction, subtype)
+    return StartSkills(
+        scope=_scope("every node in this character's skill tree, one row each",
+                     "ranks read from live snapshots; avg reward is over the campaigns "
+                     "that ranked it"), **got)
+
+
+@app.get("/api/campaigns/starts/{campaign_map}/{faction}/items",
+         response_model=StartItems, tags=["campaigns"])
+def get_start_items(campaign_map: str, faction: str) -> StartItems:
+    con = _con()
+    got = q.start_items(con, campaign_map, faction)
+    return StartItems(
+        scope=_scope("every item this faction ever held, one row each",
+                     "equipped vs benched compares campaigns that held the same item: "
+                     "benched = in the pool, never worn"), **got)
+
+
+@app.get("/api/items", response_model=ItemsPage, tags=["items"])
+def get_items() -> ItemsPage:
+    con = _con()
+    got = q.items_page(con)
+    return ItemsPage(
+        scope=_scope("every item this run dir ever held, one row each",
+                     "equipped vs benched compares campaigns that held the same item"),
+        **got)
+
+
+@app.get("/api/items/{item_key}", response_model=ItemPage, tags=["items"])
+def get_item(item_key: str) -> ItemPage:
+    con = _con()
+    got = q.item_page(con, item_key)
+    if got is None:
+        raise HTTPException(404, "no item %r in this run dir" % item_key)
+    return ItemPage(scope=_scope("one item across every start that held it"), **got)
+
+
 @app.get("/api/campaigns/picks", response_model=UcbPicksPage, tags=["campaigns"])
 def get_picks(limit: int = 2000, before: int | None = None) -> UcbPicksPage:
     con = _con()
@@ -293,6 +347,41 @@ def get_campaign_decisions(campaign_key: str) -> CampaignDecisions:
     return CampaignDecisions(
         scope=_scope("every action taken inside this campaign, newest first"),
         rows=rows)
+
+
+@app.get("/api/campaigns/{campaign_key}/research", response_model=CampaignResearchPage,
+         tags=["campaigns"])
+def get_campaign_research(campaign_key: str) -> CampaignResearchPage:
+    con = _con()
+    got = q.campaign_research(con, campaign_key)
+    if got is None:
+        raise HTTPException(404, "no campaign %r in this run dir" % campaign_key)
+    return CampaignResearchPage(
+        scope=_scope("every research started, in order",
+                     "completion is inferred from the next turn's offer set"), **got)
+
+
+@app.get("/api/campaigns/{campaign_key}/skills", response_model=CampaignSkillsPage,
+         tags=["campaigns"])
+def get_campaign_skills(campaign_key: str) -> CampaignSkillsPage:
+    con = _con()
+    got = q.campaign_skills(con, campaign_key)
+    if got is None:
+        raise HTTPException(404, "no campaign %r in this run dir" % campaign_key)
+    return CampaignSkillsPage(
+        scope=_scope("every skill point spent, in order"), **got)
+
+
+@app.get("/api/campaigns/{campaign_key}/items", response_model=CampaignItemsPage,
+         tags=["campaigns"])
+def get_campaign_items(campaign_key: str) -> CampaignItemsPage:
+    con = _con()
+    got = q.campaign_items(con, campaign_key)
+    if got is None:
+        raise HTTPException(404, "no campaign %r in this run dir" % campaign_key)
+    return CampaignItemsPage(
+        scope=_scope("every equip and unequip, in order",
+                     "the pool is a lower bound read from the last item offers"), **got)
 
 
 @app.get("/api/decisions/actions", response_model=ActionsPage, tags=["decisions"])

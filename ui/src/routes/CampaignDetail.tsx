@@ -15,8 +15,12 @@ import { SubNav, useSubView } from '@/components/SubNav'
 import { Steps } from '@/components/startcharts'
 import {
   useApi,
+  type CampaignCharacter,
   type CampaignDecisions,
   type CampaignDetail as Detail,
+  type CampaignItemsPage,
+  type CampaignResearchPage,
+  type CampaignSkillsPage,
   type Schemas,
 } from '@/lib/api'
 import { clock, n } from '@/lib/format'
@@ -28,6 +32,9 @@ type DiploEvent = Schemas['DiploEvent']
 
 const TABS = [
   { key: 'overview', label: 'overview', asks: 'what happened and why it ended' },
+  { key: 'research', label: 'research', asks: 'what it researched and when it finished' },
+  { key: 'skills', label: 'skills', asks: 'every point its characters spent' },
+  { key: 'items', label: 'items', asks: 'who wore what' },
   { key: 'decisions', label: 'decisions', asks: 'every action taken inside it' },
 ]
 
@@ -307,6 +314,232 @@ function OverviewTab({ data, campaignKey }: { data: Detail; campaignKey: string 
   )
 }
 
+function ResearchTab({ campaignKey }: { campaignKey: string }) {
+  const { data, error, loading, reload } = useApi<CampaignResearchPage>(
+    `/api/campaigns/${encodeURIComponent(campaignKey)}/research`,
+    [campaignKey],
+    { live: false },
+  )
+  if (error) return <ErrorState error={error} onRetry={reload} />
+  if (loading || !data) return <Skeleton rows={5} />
+  return (
+    <Section
+      title="research timeline"
+      scope={{
+        text: `one start per turn (faction-wide cap) · ${n(data.completed)} completed of ${n((data.rows ?? []).length)} started, tree of ${n(data.universe)}`,
+        detail: 'completion is inferred from the next turn’s offer set',
+      }}
+    >
+      <Card className="overflow-hidden">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-line text-dim border-b text-left text-2xs">
+              <th className="px-3 py-1.5 text-right font-normal">started turn</th>
+              <th className="px-3 py-1.5 font-normal">tech</th>
+              <th className="px-3 py-1.5 font-normal">parent</th>
+              <th className="px-3 py-1.5 text-right font-normal">tier</th>
+              <th className="px-3 py-1.5 text-right font-normal">points</th>
+              <th className="px-3 py-1.5 text-right font-normal">completed turn</th>
+              <th className="px-3 py-1.5 text-right font-normal">turns to complete</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(data.rows ?? []).map((r, i) => (
+              <tr key={`${r.key}-${i}`} className="border-line border-b last:border-0">
+                <td className="num px-3 py-1.5 text-right">{r.turn ?? '—'}</td>
+                <td className="px-3 py-1.5"><span title={r.key}>{r.label ?? r.key}</span></td>
+                <td className="text-dim px-3 py-1.5">{r.parent?.label ?? '—'}</td>
+                <td className="num px-3 py-1.5 text-right">{r.tier ?? '—'}</td>
+                <td className="num px-3 py-1.5 text-right">{r.points == null ? '—' : n(r.points)}</td>
+                <td className="px-3 py-1.5 text-right">
+                  {r.completed_turn != null ? (
+                    <span className="num">{r.completed_turn}</span>
+                  ) : r.in_progress ? (
+                    <span className="text-dim">in progress at end</span>
+                  ) : (
+                    <span className="text-dim">—</span>
+                  )}
+                </td>
+                <td className="num text-dim px-3 py-1.5 text-right">
+                  {r.completed_turn != null && r.turn != null ? r.completed_turn - r.turn : '—'}
+                </td>
+              </tr>
+            ))}
+            {!(data.rows ?? []).length && (
+              <tr>
+                <td colSpan={7} className="text-dim px-3 py-4 text-center">no research was started</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </Card>
+    </Section>
+  )
+}
+
+function CharacterChips({ chars }: { chars: CampaignCharacter[] }) {
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-2xs">
+      {chars.map((c) => (
+        <span key={c.cqi} className="bg-surface border-line rounded-full border px-2 py-0.5">
+          {c.label ?? c.kind} · {c.kind}
+          {c.rank != null && <span className="num"> · rank {c.rank}</span>}
+          {c.points_unspent != null && c.points_unspent > 0 && (
+            <span className="text-dim num"> · {c.points_unspent} pts unspent</span>
+          )}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+function SkillsTab({ campaignKey }: { campaignKey: string }) {
+  const { data, error, loading, reload } = useApi<CampaignSkillsPage>(
+    `/api/campaigns/${encodeURIComponent(campaignKey)}/skills`,
+    [campaignKey],
+    { live: false },
+  )
+  if (error) return <ErrorState error={error} onRetry={reload} />
+  if (loading || !data) return <Skeleton rows={5} />
+  return (
+    <div className="space-y-4">
+      <CharacterChips chars={data.characters ?? []} />
+      <Section title="skill ledger" scope={{ text: 'every point spent, in order · ranks read from live snapshots' }}>
+        <Card className="overflow-hidden">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-line text-dim border-b text-left text-2xs">
+                <th className="px-3 py-1.5 text-right font-normal">turn</th>
+                <th className="px-3 py-1.5 font-normal">character</th>
+                <th className="px-3 py-1.5 font-normal">skill</th>
+                <th className="px-3 py-1.5 text-right font-normal">rank</th>
+                <th className="px-3 py-1.5 text-right font-normal">of max</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(data.rows ?? []).map((r, i) => (
+                <tr key={i} className="border-line border-b last:border-0">
+                  <td className="num px-3 py-1.5 text-right">{r.turn ?? '—'}</td>
+                  <td className="text-dim px-3 py-1.5">{r.character ?? '—'}</td>
+                  <td className="px-3 py-1.5"><span title={r.key}>{r.label ?? r.key}</span></td>
+                  <td className="num px-3 py-1.5 text-right">{r.rank ?? '—'}</td>
+                  <td className="num text-dim px-3 py-1.5 text-right">{r.max_ranks ?? '—'}</td>
+                </tr>
+              ))}
+              {!(data.rows ?? []).length && (
+                <tr>
+                  <td colSpan={5} className="text-dim px-3 py-4 text-center">no skill point was spent</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </Card>
+      </Section>
+    </div>
+  )
+}
+
+function ItemsTab({ campaignKey }: { campaignKey: string }) {
+  const { data, error, loading, reload } = useApi<CampaignItemsPage>(
+    `/api/campaigns/${encodeURIComponent(campaignKey)}/items`,
+    [campaignKey],
+    { live: false },
+  )
+  if (error) return <ErrorState error={error} onRetry={reload} />
+  if (loading || !data) return <Skeleton rows={5} />
+  const chars = data.characters ?? []
+  return (
+    <div className="space-y-7">
+      <Section title="item ledger" scope={{ text: 'every equip and unequip, in order' }}>
+        <Card className="overflow-hidden">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-line text-dim border-b text-left text-2xs">
+                <th className="px-3 py-1.5 text-right font-normal">turn</th>
+                <th className="px-3 py-1.5 font-normal">character</th>
+                <th className="px-3 py-1.5 font-normal">action</th>
+                <th className="px-3 py-1.5 font-normal">item</th>
+                <th className="px-3 py-1.5 font-normal">category</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(data.events ?? []).map((r, i) => (
+                <tr key={i} className="border-line border-b last:border-0">
+                  <td className="num px-3 py-1.5 text-right">{r.turn ?? '—'}</td>
+                  <td className="text-dim px-3 py-1.5">{r.character ?? '—'}</td>
+                  <td className="px-3 py-1.5">
+                    <Chip state={r.action === 'unequip' ? 'warn' : 'neutral'}>{r.action}</Chip>
+                  </td>
+                  <td className="px-3 py-1.5">
+                    <EntityLink to={`/items/${encodeURIComponent(r.key)}`} title={r.key}>
+                      {r.label ?? r.key}
+                    </EntityLink>
+                  </td>
+                  <td className="text-dim px-3 py-1.5">{r.category ?? '—'}</td>
+                </tr>
+              ))}
+              {!(data.events ?? []).length && (
+                <tr>
+                  <td colSpan={5} className="text-dim px-3 py-4 text-center">no item was equipped or unequipped</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </Card>
+      </Section>
+      <Section title="at campaign end" scope={{ text: 'who wore what, and what stayed benched · the pool is a lower bound' }}>
+        <div className="grid gap-4 lg:grid-cols-2">
+          <Card className="overflow-hidden">
+            <table className="w-full text-xs">
+              <tbody>
+                {chars.map((c) => (
+                  <tr key={c.cqi} className="border-line border-b last:border-0 align-top">
+                    <td className="px-3 py-1.5 whitespace-nowrap">
+                      {c.label ?? c.kind}
+                      <span className="num text-dim ml-1.5 text-2xs">{c.slots} slots</span>
+                    </td>
+                    <td className="px-3 py-1.5">
+                      {(c.wearing ?? []).length ? (
+                        (c.wearing ?? []).map((w, i) => (
+                          <span key={w.raw}>
+                            {i > 0 && <span className="text-dim"> · </span>}
+                            <EntityLink to={`/items/${encodeURIComponent(w.raw)}`} title={w.raw} className="text-2xs">
+                              {w.label}
+                            </EntityLink>
+                          </span>
+                        ))
+                      ) : (
+                        <span className="text-dim">nothing equipped</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Card>
+          <Card className="px-3 py-2">
+            <div className="text-dim text-2xs uppercase tracking-wide">benched in the pool · ≥ {(data.pool ?? []).length}</div>
+            <div className="mt-1.5 text-xs">
+              {(data.pool ?? []).length ? (
+                (data.pool ?? []).map((w, i) => (
+                  <span key={w.raw}>
+                    {i > 0 && <span className="text-dim"> · </span>}
+                    <EntityLink to={`/items/${encodeURIComponent(w.raw)}`} title={w.raw} className="text-2xs">
+                      {w.label}
+                    </EntityLink>
+                  </span>
+                ))
+              ) : (
+                <span className="text-dim">no free item in the pool</span>
+              )}
+            </div>
+          </Card>
+        </div>
+      </Section>
+    </div>
+  )
+}
+
 function DecisionsTab({ campaignKey }: { campaignKey: string }) {
   const [params, setParams] = useSearchParams()
   const navigate = useNavigate()
@@ -513,6 +746,15 @@ export function CampaignDetail() {
       <SubNav views={TABS} param="tab" />
       <div className={tab === 'overview' ? '' : 'hidden'}>
         {seen.overview && <OverviewTab data={data} campaignKey={campaignKey} />}
+      </div>
+      <div className={tab === 'research' ? '' : 'hidden'}>
+        {seen.research && <ResearchTab campaignKey={campaignKey} />}
+      </div>
+      <div className={tab === 'skills' ? '' : 'hidden'}>
+        {seen.skills && <SkillsTab campaignKey={campaignKey} />}
+      </div>
+      <div className={tab === 'items' ? '' : 'hidden'}>
+        {seen.items && <ItemsTab campaignKey={campaignKey} />}
       </div>
       <div className={tab === 'decisions' ? '' : 'hidden'}>
         {seen.decisions && <DecisionsTab campaignKey={campaignKey} />}
