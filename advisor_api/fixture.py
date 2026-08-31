@@ -9,7 +9,7 @@ from decisions import pg, pg_schema
 
 SCHEMA = "test_fixture"
 ANALYTICS_SCHEMA = "test_fixture_analytics"
-VERSION = "4"
+VERSION = "6"
 FACTIONS = 3
 CAMPAIGNS_PER_FACTION = 8
 

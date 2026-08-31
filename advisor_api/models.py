@@ -162,6 +162,11 @@ class CampaignsPage(BaseModel):
     suspicious: Count
     unjoined: Count
     growth_coverage: Rate
+    maps: list[Ident] = Field(default_factory=list)
+    races: list[str] = Field(default_factory=list)
+    total: int = 0
+    page: int = 0
+    page_size: int = 25
     rows: list[CampaignRow]
 
 
@@ -905,6 +910,9 @@ class CampaignLookupPage(BaseModel):
     decisions: int = 0
     mean_reward: float | None = None
     mean_turns: float | None = None
+    total: int = 0
+    page: int = 0
+    page_size: int = 25
     rows: list[LookupCampaignRow] = Field(default_factory=list)
 
 

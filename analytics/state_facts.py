@@ -42,7 +42,7 @@ CREATE INDEX IF NOT EXISTS ix_dh_key ON decision_heroes(key);
 ACQ_DDL = """
 CREATE TABLE IF NOT EXISTS acquisitions(
   campaign_id BIGINT NOT NULL, family TEXT NOT NULL, key TEXT NOT NULL,
-  ctx TEXT NOT NULL DEFAULT '', sub TEXT,
+  ctx TEXT NOT NULL DEFAULT '', sub TEXT, kind TEXT,
   first_seen_turn INTEGER, first_seen_decision BIGINT,
   acquired_turn INTEGER, acquired_decision BIGINT,
   ranks DOUBLE PRECISION,
@@ -54,9 +54,9 @@ CREATE INDEX IF NOT EXISTS ix_acq_camp ON acquisitions(campaign_id, family);
 
 END_DDL = """
 CREATE TABLE IF NOT EXISTS campaign_endings(
-  campaign_key TEXT PRIMARY KEY, ts DOUBLE PRECISION,
+  campaign_key TEXT PRIMARY KEY, ts DOUBLE PRECISION, faction TEXT,
   outcome TEXT, when_text TEXT, error TEXT, verdict TEXT,
-  suspicious SMALLINT NOT NULL DEFAULT 0);
+  suspicious SMALLINT NOT NULL DEFAULT 0, because TEXT);
 """
 
 
@@ -152,13 +152,13 @@ def _campaign_facts(z):
         acquired = _truthy(t.get("researched"))
         seen = acquired or _truthy(t.get("can_research"))
         if seen:
-            out.append(("research", str(t["key"]), "", None, acquired, None))
+            out.append(("research", str(t["key"]), "", None, None, acquired, None))
     for it in z.get("anc_pool") or []:
         if isinstance(it, dict) and it.get("key"):
-            out.append(("items", str(it["key"]), "", None, False, None))
+            out.append(("items", str(it["key"]), "", None, None, False, None))
     for it in z.get("equipped_all") or []:
         if isinstance(it, dict) and it.get("key"):
-            out.append(("items", str(it["key"]), "", None, True, None))
+            out.append(("items", str(it["key"]), "", None, None, True, None))
     return out
 
 
@@ -166,6 +166,7 @@ def _char_facts(z):
     out = []
     sub = z.get("subtype") or z.get("agent_type")
     sub = str(sub) if sub else None
+    kind = "hero" if (z.get("agent_type") or _truthy(z.get("is_agent"))) else "lord"
     for s in z.get("skills") or []:
         if not isinstance(s, dict) or not s.get("key"):
             continue
@@ -173,11 +174,11 @@ def _char_facts(z):
         acquired = lv > 0
         seen = acquired or s.get("status") == "active"
         if seen:
-            out.append(("skills", str(s["key"]), "@cqi", sub, acquired,
+            out.append(("skills", str(s["key"]), "@cqi", sub, kind, acquired,
                         lv if acquired else None))
     for it in z.get("equipped") or []:
         if isinstance(it, dict) and it.get("key"):
-            out.append(("items", str(it["key"]), "", None, True, None))
+            out.append(("items", str(it["key"]), "", None, kind, True, None))
     return out
 
 
@@ -186,14 +187,14 @@ def _province_facts(z):
     region = str(z.get("region") or "")
     for key in (z.get("built") or {}).values():
         if key:
-            out.append(("building", str(key), region, None, True, None))
+            out.append(("building", str(key), region, None, None, True, None))
     now = z.get("building_now") or {}
     for key in (now.values() if isinstance(now, dict) else []):
         if key:
-            out.append(("building", str(key), region, None, True, None))
+            out.append(("building", str(key), region, None, None, True, None))
     for b in z.get("buildable") or []:
         if isinstance(b, dict) and b.get("key") and _truthy(b.get("active")):
-            out.append(("building", str(b["key"]), region, None, False, None))
+            out.append(("building", str(b["key"]), region, None, None, False, None))
     return out
 
 
@@ -202,7 +203,7 @@ def _world_facts(z):
     for s in z.get("settlements") or []:
         key = s.get("region") if isinstance(s, dict) else s
         if key:
-            out.append(("settlement", str(key), "", None, True, None))
+            out.append(("settlement", str(key), "", None, None, True, None))
     return out
 
 
@@ -228,7 +229,7 @@ def _facts_for(blob_id, kind, z_text):
 class _Acquisitions:
     NAME = "acquisitions"
     TABLES = ("acquisitions",)
-    FORMULA_VERSION = 1
+    FORMULA_VERSION = 2
     SOURCE = "decisions"
     DEPENDS_ON = ()
     DDL = ACQ_DDL
@@ -255,15 +256,17 @@ class _Acquisitions:
 
         def fold(did, facts, cqi):
             cid, turn = decs[did]
-            for family, key, ctx, sub, acquired, ranks in facts:
+            for family, key, ctx, sub, kind, acquired, ranks in facts:
                 ctx2 = str(cqi) if ctx == "@cqi" else ctx
                 k = (cid, family, key, ctx2)
                 e = agg.get(k)
                 if e is None:
-                    e = agg[k] = {"sub": sub, "st": turn, "sd": did,
+                    e = agg[k] = {"sub": sub, "kind": kind, "st": turn, "sd": did,
                                   "at": None, "ad": None, "rk": None}
                 if e["sub"] is None and sub is not None:
                     e["sub"] = sub
+                if e["kind"] is None and kind is not None:
+                    e["kind"] = kind
                 if acquired:
                     if e["at"] is None or (did < (e["ad"] or did + 1)):
                         e["at"], e["ad"] = turn, did
@@ -294,15 +297,16 @@ class _Acquisitions:
             facts = _facts_for(int(r["world_blob"]), "world", r["z"])
             if facts:
                 fold(did, facts, "")
-        batch = [(cid, family, key, ctx, e["sub"], e["st"], e["sd"],
+        batch = [(cid, family, key, ctx, e["sub"], e["kind"], e["st"], e["sd"],
                   e["at"], e["ad"], e["rk"])
                  for (cid, family, key, ctx), e in agg.items()]
         if batch:
             _store.executemany(
                 an,
-                "INSERT INTO acquisitions VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+                "INSERT INTO acquisitions VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
                 " ON CONFLICT(campaign_id, family, key, ctx) DO UPDATE SET"
                 " sub = COALESCE(acquisitions.sub, excluded.sub),"
+                " kind = COALESCE(acquisitions.kind, excluded.kind),"
                 " acquired_turn = COALESCE(acquisitions.acquired_turn,"
                 "                          excluded.acquired_turn),"
                 " acquired_decision = COALESCE(acquisitions.acquired_decision,"
@@ -312,10 +316,33 @@ class _Acquisitions:
         return hi2, len(batch)
 
 
+def _because(got):
+    g = got.get("growth") or {}
+    outcome = str(got.get("outcome") or "")
+    if g.get("reason") == "legendary_lord_wounded":
+        return ("growth gate: legendary lord wounded at turn %s -- an automatic "
+                "stop that measures no growth at all" % g.get("turn"))
+    mets = g.get("metrics") or {}
+    if mets:
+        parts = "; ".join(
+            "%s %g -> %g over %s turns"
+            % (m.get("label"), _f(m.get("then")) or 0.0, _f(m.get("now")) or 0.0,
+               m.get("window"))
+            for m in mets.values() if m.get("then") is not None)
+        if parts:
+            return ("growth gate at turn %s: %s -- needed +%s on either"
+                    % (g.get("turn"), parts, g.get("min_gain")))
+    if outcome == "defeated":
+        return "the faction was destroyed"
+    if outcome in ("stuck", "error", "unhandled_screen"):
+        return str(got.get("error") or outcome)[:200]
+    return None
+
+
 class _CampaignEndings:
     NAME = "campaign_endings"
     TABLES = ("campaign_endings",)
-    FORMULA_VERSION = 1
+    FORMULA_VERSION = 2
     SOURCE = "decisions"
     DEPENDS_ON = ()
     DDL = END_DDL
@@ -343,16 +370,19 @@ class _CampaignEndings:
             suspicious = 1 if ("harness_failure_likely" in verdict
                                or "ambiguous" in verdict) else 0
             batch.append((str(ck), _f(got.get("ts")) or _f(r["ts"]),
+                          got.get("faction"),
                           got.get("outcome"), got.get("when"), got.get("error"),
-                          verdict or None, suspicious))
+                          verdict or None, suspicious, _because(got)))
         if batch:
             _store.executemany(
                 an,
-                "INSERT INTO campaign_endings VALUES(%s,%s,%s,%s,%s,%s,%s)"
+                "INSERT INTO campaign_endings VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)"
                 " ON CONFLICT(campaign_key) DO UPDATE SET"
-                " ts=excluded.ts, outcome=excluded.outcome,"
+                " ts=excluded.ts, faction=excluded.faction,"
+                " outcome=excluded.outcome,"
                 " when_text=excluded.when_text, error=excluded.error,"
-                " verdict=excluded.verdict, suspicious=excluded.suspicious",
+                " verdict=excluded.verdict, suspicious=excluded.suspicious,"
+                " because=excluded.because",
                 batch)
         return hi2, len(batch)
 

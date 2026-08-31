@@ -37,8 +37,10 @@ def analytics_path(run_dir: str) -> str:
 def connect(path: str | None = None, readonly: bool = False, schema: str | None = None):
     if schema is None:
         schema = os.environ.get("TW_ANALYTICS_SCHEMA") or SCHEMA
+    corpus = os.environ.get("TW_PG_SEARCH_PATH") or "public"
     con = pg.connect(autocommit=True, readonly=readonly,
-                     row_factory=pg.row_factory, search_path="%s, public" % schema)
+                     row_factory=pg.row_factory,
+                     search_path="%s, %s" % (schema, corpus))
     if not readonly:
         con.execute("CREATE SCHEMA IF NOT EXISTS %s" % schema)
         con.execute(SPINE_DDL)

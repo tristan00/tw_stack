@@ -57,6 +57,16 @@ export interface Col<T extends RowData> {
   render: (row: T) => ReactNode
 }
 
+export interface ServerTable {
+  total: number
+  page: number
+  pageSize: number
+  sort: { key: string; desc: boolean } | null
+  onPage: (page: number) => void
+  onSort: (sort: { key: string; desc: boolean } | null) => void
+  onSearch: (q: string) => void
+}
+
 export interface DataTableProps<T extends RowData> {
   rows: T[]
   cols: Col<T>[]
@@ -74,7 +84,42 @@ export interface DataTableProps<T extends RowData> {
   dense?: boolean
   pageSize?: number
 
+  server?: ServerTable
+
   pinnedTop?: ReactNode
+}
+
+export function useServerTable(pageSize = 25) {
+  const [page, setPage] = useState(0)
+  const [sort, setSort] = useState<{ key: string; desc: boolean } | null>(null)
+  const [q, setQ] = useState('')
+  const qs = (extra?: Record<string, string>) => {
+    const p = new URLSearchParams(extra)
+    p.set('page', String(page))
+    p.set('page_size', String(pageSize))
+    if (sort) {
+      p.set('sort', sort.key)
+      p.set('desc', sort.desc ? 'true' : 'false')
+    }
+    if (q) p.set('q', q)
+    return p.toString()
+  }
+  const bind = (total: number): ServerTable => ({
+    total,
+    page,
+    pageSize,
+    sort,
+    onPage: setPage,
+    onSort: (s) => {
+      setSort(s)
+      setPage(0)
+    },
+    onSearch: (v) => {
+      setQ(v)
+      setPage(0)
+    },
+  })
+  return { qs, bind, deps: [page, sort?.key ?? '', sort?.desc ?? false, q] }
 }
 
 export function DataTable<T extends RowData>({
@@ -90,6 +135,7 @@ export function DataTable<T extends RowData>({
   maxHeight = 620,
   dense = false,
   pageSize,
+  server,
   pinnedTop,
 }: DataTableProps<T>) {
   const [searchText, setSearchText] = useState('')
@@ -97,12 +143,28 @@ export function DataTable<T extends RowData>({
   const [page, setPage] = useState(0)
 
   useEffect(() => {
-    const id = setTimeout(() => setGlobalFilter(searchText), 200)
+    const id = setTimeout(() => {
+      if (server) server.onSearch(searchText)
+      else setGlobalFilter(searchText)
+    }, 250)
     return () => clearTimeout(id)
   }, [searchText])
-  const [sorting, setSorting] = useState(
+  const [clientSorting, setClientSorting] = useState(
     initialSort ? [{ id: initialSort.key, desc: initialSort.desc }] : [],
   )
+  const sorting = server
+    ? server.sort
+      ? [{ id: server.sort.key, desc: server.sort.desc }]
+      : []
+    : clientSorting
+  const setSorting = (next: unknown) => {
+    const resolved =
+      typeof next === 'function'
+        ? (next as (s: typeof clientSorting) => typeof clientSorting)(sorting)
+        : (next as { id: string; desc: boolean }[])
+    if (server) server.onSort(resolved.length ? { key: resolved[0].id, desc: resolved[0].desc } : null)
+    else setClientSorting(resolved)
+  }
   const [columnVisibility, setColumnVisibility] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(cols.filter((c) => c.optional).map((c) => [c.key, false])),
   )
@@ -130,7 +192,11 @@ export function DataTable<T extends RowData>({
     features,
     columns: columns as never,
     data: rows as never,
-    state: { sorting, globalFilter, columnVisibility },
+    state: {
+      sorting: server ? [] : sorting,
+      globalFilter: server ? '' : globalFilter,
+      columnVisibility,
+    },
     onSortingChange: setSorting,
     onGlobalFilterChange: setGlobalFilter,
     onColumnVisibilityChange: setColumnVisibility,
@@ -138,12 +204,14 @@ export function DataTable<T extends RowData>({
 
   const visible = cols.filter((c) => columnVisibility[c.key] !== false)
   const modelRows = table.getRowModel().rows as unknown as { original: T }[]
-  const pageCount = pageSize ? Math.max(1, Math.ceil(modelRows.length / pageSize)) : 1
-  const cur = Math.min(page, pageCount - 1)
-  const from = pageSize ? cur * pageSize : 0
-  const shownRows = pageSize ? modelRows.slice(from, from + pageSize) : modelRows
+  const effSize = server ? server.pageSize : pageSize
+  const totalRows = server ? server.total : modelRows.length
+  const pageCount = effSize ? Math.max(1, Math.ceil(totalRows / effSize)) : 1
+  const cur = server ? Math.min(server.page, pageCount - 1) : Math.min(page, pageCount - 1)
+  const from = effSize ? cur * effSize : 0
+  const shownRows = server || !pageSize ? modelRows : modelRows.slice(from, from + pageSize)
   const scrollRef = useRef<HTMLDivElement>(null)
-  const shouldVirtualize = !pageSize && modelRows.length > virtualizeOver
+  const shouldVirtualize = !server && !pageSize && modelRows.length > virtualizeOver
 
   const virtualizer = useVirtualizer({
     count: shownRows.length,
@@ -156,12 +224,14 @@ export function DataTable<T extends RowData>({
   const groups = useMemo(() => buildGroups(visible), [visible])
   const hasGroups = groups.some((g) => g.label)
 
-  if (!rows.length) return <EmptyState what={emptyWhat} why={emptyWhy} />
+  if (!rows.length && !server) return <EmptyState what={emptyWhat} why={emptyWhy} />
+  if (!rows.length && server && !searchText && cur === 0)
+    return <EmptyState what={emptyWhat} why={emptyWhy} />
 
   const pad = dense ? 'px-2.5 py-1' : 'px-3 py-1.5'
 
 
-  const searchable = rows.length >= SEARCH_FROM
+  const searchable = Boolean(server) || rows.length >= SEARCH_FROM
   const hasControls = searchable || cols.some((c) => c.optional)
 
   return (
@@ -185,7 +255,8 @@ export function DataTable<T extends RowData>({
                   className="text-dim text-2xs"
                   onClick={() => {
                     setSearchText('')
-                    setGlobalFilter('')
+                    if (server) server.onSearch('')
+                    else setGlobalFilter('')
                   }}
                 >
                   clear
@@ -195,9 +266,11 @@ export function DataTable<T extends RowData>({
           )}
           {searchable && (
             <span className="text-dim text-2xs whitespace-nowrap num">
-              {modelRows.length === rows.length
-                ? `${rows.length} rows`
-                : `${modelRows.length} of ${rows.length} rows`}
+              {server
+                ? `${totalRows} rows`
+                : modelRows.length === rows.length
+                  ? `${rows.length} rows`
+                  : `${modelRows.length} of ${rows.length} rows`}
             </span>
           )}
           {cols.some((c) => c.optional) && (
@@ -321,15 +394,15 @@ export function DataTable<T extends RowData>({
         </div>
       </Card>
 
-      {pageSize != null && pageCount > 1 && (
+      {effSize != null && pageCount > 1 && (
         <div className="text-dim text-2xs mt-2 flex items-center justify-between gap-2">
           <span className="num">
-            {from + 1}-{from + shownRows.length} of {modelRows.length}
+            {from + 1}-{from + shownRows.length} of {totalRows}
           </span>
           <span className="flex items-center gap-1.5">
             <button
               type="button"
-              onClick={() => setPage(cur - 1)}
+              onClick={() => (server ? server.onPage(cur - 1) : setPage(cur - 1))}
               disabled={cur === 0}
               className="border-line bg-surface hover:text-fg rounded-md border px-2 py-0.5 disabled:opacity-40"
             >
@@ -340,7 +413,7 @@ export function DataTable<T extends RowData>({
             </span>
             <button
               type="button"
-              onClick={() => setPage(cur + 1)}
+              onClick={() => (server ? server.onPage(cur + 1) : setPage(cur + 1))}
               disabled={cur >= pageCount - 1}
               className="border-line bg-surface hover:text-fg rounded-md border px-2 py-0.5 disabled:opacity-40"
             >

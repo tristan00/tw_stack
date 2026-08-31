@@ -32,6 +32,13 @@ GET_ENDPOINTS = [
     "/api/run",
     "/api/campaigns",
     "/api/campaigns/starts",
+    "/api/lookup",
+    "/api/lookup/facets",
+    "/api/items",
+    "/api/buildings",
+    "/api/research",
+    "/api/skills",
+    "/api/positions",
     "/api/campaigns/picks",
     "/api/campaigns/matrix?kind=action",
     "/api/campaigns/matrix?kind=interrupt",
@@ -237,6 +244,22 @@ def test_campaign_id_join_trap():
     right = con.execute("SELECT COUNT(*) FROM turn_open t"
                         " JOIN campaigns c ON t.campaign_id = c.campaign_key").fetchone()[0]
     assert right > 0, "the key join returned nothing; turn_open is not joinable"
+
+
+def test_paged_endpoints_stay_small():
+    for path in ("/api/campaigns", "/api/lookup"):
+        r = _client.get(path)
+        assert r.status_code == 200, path
+        assert len(r.content) < 200_000, (path, len(r.content))
+        j = r.json()
+        assert len(j["rows"]) <= j["page_size"], path
+        assert j["total"] >= len(j["rows"]), path
+    second = _client.get("/api/campaigns?page=1&page_size=5").json()
+    assert len(second["rows"]) <= 5
+    assert second["page"] in (0, 1)
+    srt = _client.get("/api/campaigns?sort=turns&desc=false&page_size=10").json()
+    turns = [r["turns"] for r in srt["rows"] if r["turns"] is not None]
+    assert turns == sorted(turns)
 
 
 def test_outcome_join_is_a_key():

@@ -24,6 +24,7 @@ from advisor_api.models import (
     DecisionDetail, DecisionsPage, DiplomacyPage, ForcingPage, InfraPage, LaunchDefaults,
     LogPage,
     MatrixCell,
+    Ident,
     MatrixPage, MatrixRow, MatrixTotal, MenusPage, ModelsPage, Rate, RunPage, Scope,
     StartsPage, StartActions, StartCampaignsPage, StartDetail, StartOpenings,
     StartPerformance, TimelinePage, TrainingPage, CorrelationsPage, UcbPickPage,
@@ -362,10 +363,14 @@ def get_positions(faction: str | None = None, culture: str | None = None,
          response_model_exclude_none=True, tags=["positions"])
 def get_lookup(faction: str | None = None, culture: str | None = None,
                map: str | None = None,
-               c: list[str] = Query(default_factory=list)) -> CampaignLookupPage:
+               c: list[str] = Query(default_factory=list),
+               sort: str | None = None, desc: bool = True,
+               q_text: str | None = Query(None, alias="q"),
+               page: int = 0, page_size: int = 25) -> CampaignLookupPage:
     con = _con()
     got = q.campaign_lookup(con, {"faction": faction, "culture": culture,
-                                  "map": map}, c)
+                                  "map": map}, c, sort=sort, desc=desc,
+                            search=q_text, page=page, page_size=page_size)
     return CampaignLookupPage(
         scope=_scope("every campaign that ever passed through a matching position, "
                      "newest first",
@@ -485,24 +490,39 @@ def get_matrix(kind: str = Query("action", pattern="^(action|interrupt)$")) -> M
 
 @app.get("/api/campaigns", response_model=CampaignsPage,
          response_model_exclude_none=True, tags=["campaigns"])
-def get_campaigns() -> CampaignsPage:
+def get_campaigns(sort: str | None = None, desc: bool = True,
+                  map: str | None = None, race: str | None = None,
+                  outcome: str | None = None, q_text: str | None = Query(None, alias="q"),
+                  page: int = 0, page_size: int = 25) -> CampaignsPage:
     con = _con()
-    outcomes, unjoined = q.outcome_join(con)
-    rows = q.campaign_rows(con, outcomes=outcomes)
+    unjoined = q.outcome_join(con)[1]
+    all_rows = q.campaign_rows_cached(con)
+    got = q.campaigns_slice(con, sort=sort, desc=desc, map_key=map,
+                            culture=race, outcome=outcome, search=q_text,
+                            page=page, page_size=page_size)
+    maps = [m for m in {(r.campaign_map.raw, r.campaign_map.label)
+                        for r in all_rows if r.campaign_map}]
     return CampaignsPage(
         scope=_scope("every campaign in this run dir, newest first",
                      "outcome is joined from the postmortem log"),
-        headline=q.outcome_headline(rows),
-        suspicious=Count(value=sum(1 for r in rows if r.suspicious), noun="campaigns",
+        headline=q.outcome_headline(all_rows),
+        suspicious=Count(value=sum(1 for r in all_rows if r.suspicious),
+                         noun="campaigns",
                          population="whose ending looks like a harness fault, not a defeat"),
         unjoined=Count(value=unjoined, noun="endings",
                        population="recorded in the log but belonging to earlier run dirs"),
         growth_coverage=Rate(
-            n=sum(1 for r in rows if r.growth_state == "measured"), of=len(rows),
+            n=sum(1 for r in all_rows if r.growth_state == "measured"),
+            of=len(all_rows),
             noun="campaigns",
-            population="on this page with two or more recorded turns, so a first -> last "
+            population="with two or more recorded turns, so a first -> last "
                        "growth span exists"),
-        rows=rows)
+        maps=[Ident(raw=raw, label=label)
+              for raw, label in sorted(maps, key=lambda m: m[1])],
+        races=sorted({r.campaign.culture for r in all_rows
+                      if r.campaign.culture}),
+        total=got["total"], page=got["page"], page_size=got["page_size"],
+        rows=got["rows"])
 
 
 @app.get("/api/campaigns/{campaign_key}", response_model=CampaignDetail, tags=["campaigns"])
