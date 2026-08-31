@@ -685,6 +685,23 @@ def build_extra():
                         (r["ancillary"], r["effect"], r["effect_scope"], r["value"]))
         cur.execute("CREATE INDEX idx_anc_effects ON ancillary_effects (ancillary)")
 
+    nodes, nmeta = src("character_skill_nodes_tables")
+    nlinks, klmeta = src("character_skill_node_links_tables")
+    if nmeta["ok"] and klmeta["ok"]:
+        skill_of = {r["key"]: r["character_skill_key"] for r in nodes}
+        cur.execute("DROP TABLE IF EXISTS skill_links")
+        cur.execute("CREATE TABLE skill_links (child TEXT, parent TEXT, link_type TEXT)")
+        seen = set()
+        for r in nlinks:
+            child = skill_of.get(r["child_key"])
+            parent = skill_of.get(r["parent_key"])
+            if child and parent and child != parent:
+                row = (child, parent, r["link_type"])
+                if row not in seen:
+                    seen.add(row)
+                    cur.execute("INSERT INTO skill_links VALUES (%s, %s, %s)", row)
+        cur.execute("CREATE INDEX idx_skill_links_child ON skill_links (child)")
+
     effs, emeta = src("effects_tables")
     if emeta["ok"]:
         cur.execute("DROP TABLE IF EXISTS effects_meta")
@@ -702,7 +719,8 @@ def build_extra():
     for t, m in report.items():
         tag = "OK" if m["ok"] else "SKIP"
         print(f"  [{tag}] {t:38s} ver={m['version']} rows={m['rows']} :: {m['reason']}")
-    for t in ("tech_links", "ancillaries", "ancillary_effects", "effects_meta"):
+    for t in ("tech_links", "ancillaries", "ancillary_effects", "effects_meta",
+              "skill_links"):
         n = cur.execute("SELECT COUNT(*) FROM " + t).fetchone()[0]
         print(f"  {t:16s} {n} rows")
     con.close()

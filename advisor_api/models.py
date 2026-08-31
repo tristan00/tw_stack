@@ -497,7 +497,7 @@ class StartResearch(BaseModel):
 class SkillRow(BaseModel):
     key: str
     label: str | None = None
-    line: str | None = None
+    parent: str | None = None
     tier: int | None = None
     max_ranks: int | None = None
     took: Rate | None = None
@@ -619,7 +619,6 @@ class CampaignSkillRow(BaseModel):
     character: str | None = None
     key: str
     label: str | None = None
-    line: str | None = None
     rank: int | None = None
     max_ranks: int | None = None
 

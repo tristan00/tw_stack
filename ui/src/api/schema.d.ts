@@ -1269,8 +1269,6 @@ export interface components {
             key: string;
             /** Label */
             label?: string | null;
-            /** Line */
-            line?: string | null;
             /** Rank */
             rank?: number | null;
             /** Max Ranks */
@@ -2458,8 +2456,8 @@ export interface components {
             key: string;
             /** Label */
             label?: string | null;
-            /** Line */
-            line?: string | null;
+            /** Parent */
+            parent?: string | null;
             /** Tier */
             tier?: number | null;
             /** Max Ranks */
