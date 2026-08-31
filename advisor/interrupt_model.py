@@ -141,27 +141,33 @@ def train(runs_root=RUNS_ROOT, window=TRAIN_WINDOW_CAMPAIGNS):
         return {"trained": False, "rows": len(rows), "need": MIN_ROWS, "runs": data["runs"]}
     num, cat = F.split_columns(rows)
     X = F.matrix(rows, num, cat)
+    n_rows = len(rows)
+    screen_rows = {}
+    for r in rows:
+        k = r["isc_screen"]
+        screen_rows[k] = screen_rows.get(k, 0) + 1
+    rows = data["rows"] = None
     cat_idx = list(range(len(num), len(num) + len(cat)))
     fit_report = {}
     groups = data["groups"]
     m = fit_es(X, y, cat_idx, groups, "model", fit_report,
                base=CB_INTERRUPT_PARAMS, iterations=CB_INTERRUPT_ITERATIONS)
-    val, _trn = grouped_split(len(X), groups)
+    preds = list(m.predict(Pool(X, cat_features=cat_idx)))
+    X = None
+    val, _trn = grouped_split(len(preds), groups)
     if val:
-        pv = list(m.predict(Pool([X[i] for i in val], cat_features=cat_idx)))
+        pv = [preds[i] for i in val]
         yv = [y[i] for i in val]
         ybar = sum(yv) / len(yv)
         sst = sum((v - ybar) ** 2 for v in yv)
         if sst > 0:
             sse = sum((a - b) ** 2 for a, b in zip(yv, pv))
             fit_report["model"]["val_r2"] = round(1.0 - sse / sst, 5)
-    preds = list(m.predict(Pool(X, cat_features=cat_idx)))
     mae = sum(abs(a - b) for a, b in zip(preds, y)) / len(y)
-    meta = {"num": num, "cat": cat, "rows": len(rows),
+    meta = {"num": num, "cat": cat, "rows": n_rows,
             "mae_in_sample": round(mae, 5), "fit": fit_report,
-            "screens": sorted({r["isc_screen"] for r in rows}),
-            "screen_rows": {s: sum(1 for r in rows if r["isc_screen"] == s)
-                            for s in {r["isc_screen"] for r in rows}},
+            "screens": sorted(screen_rows),
+            "screen_rows": screen_rows,
             "campaigns": sorted(set(data["groups"])),
             "target": ("gain(future_max - decision_snapshot) over %s"
                        % ",".join(TARGET_PARTS))}
@@ -178,7 +184,7 @@ def train(runs_root=RUNS_ROOT, window=TRAIN_WINDOW_CAMPAIGNS):
         p = os.path.join(MODEL_DIR, stale)
         if os.path.exists(p):
             os.remove(p)
-    return {"trained": True, "rows": len(rows), "mae_in_sample": round(mae, 5),
+    return {"trained": True, "rows": n_rows, "mae_in_sample": round(mae, 5),
             "fit": fit_report,
             "params": params(iterations=CB_INTERRUPT_ITERATIONS, base=CB_INTERRUPT_PARAMS,
                              tuned_from=CB_INTERRUPT_TUNED_FROM),

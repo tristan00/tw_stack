@@ -313,6 +313,31 @@ def _postmortem(runs_root, entry, ex, log):
         log("   !! post-mortem NOT written: %s" % repr(e)[:160])
 
 
+def _train_child(args, log):
+    import subprocess
+    proc = subprocess.Popen([common.VENV_PY, "-u"] + list(args), cwd=common.ROOT,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, encoding="utf-8", errors="replace", bufsize=1)
+    lines = []
+    for raw in proc.stdout:
+        line = raw.rstrip("\r\n")
+        lines.append(line)
+        log(line)
+    rc = proc.wait()
+    tail = " | ".join(lines[-5:])[-400:]
+    if rc != 0:
+        raise P.ModelUnavailable("trainer %s exited %d -- tail: %s"
+                                 % (" ".join(args), rc, tail))
+    for k in range(len(lines) - 1, -1, -1):
+        if lines[k].startswith("{"):
+            try:
+                return json.loads("\n".join(lines[k:]))
+            except ValueError:
+                continue
+    raise P.ModelUnavailable("trainer %s printed no report json -- tail: %s"
+                             % (" ".join(args), tail))
+
+
 def _require_models(mix, imix, cold, log, bootstrap=False):
     if cold:
         return
@@ -491,7 +516,8 @@ def run_campaigns(n=3, turns=20, plan="all",
                 rep = None
                 if "greedy_catboost" in mix:
                     t0 = time.time()
-                    rep = M.train()
+                    rep = _train_child([os.path.join(common.ADVISOR, "model.py"),
+                                        "train"], log)
                     entry["retrain"] = dict(rep, seconds=round(time.time() - t0, 1))
                     trained = entry["retrain"]
                     report["_corpus"] = {"rows": rep.get("rows"), "runs": rep.get("runs"),
@@ -499,15 +525,14 @@ def run_campaigns(n=3, turns=20, plan="all",
                                          "n_decisions": rep.get("n_decisions")}
                     log("retrained before run %d: %s" % (i + 1, json.dumps(rep)[:220]))
                 if "greedy_catboost" in imix:
-                    irep = IM.train()
+                    irep = _train_child(
+                        [os.path.join(common.ADVISOR, "interrupt_model.py")], log)
                     entry["retrain_interrupt"] = irep
                     log("   interrupt model: %s" % json.dumps(irep)[:200])
                 if "greedy_gnn" in mix:
-                    if common.ROOT not in sys.path:
-                        sys.path.insert(0, common.ROOT)
-                    from advisor.mapgraph import greedy_train as GGT
                     t1 = time.time()
-                    ggrep = GGT.train(log=log)
+                    ggrep = _train_child(["-m", "advisor.mapgraph.greedy_train",
+                                          "train"], log)
                     ggrep["seconds"] = round(time.time() - t1, 1)
                     entry["retrain_greedy_gnn"] = ggrep
                     log("   greedy gnn model: %s" % json.dumps(ggrep, default=str)[:220])

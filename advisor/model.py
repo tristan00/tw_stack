@@ -119,23 +119,26 @@ def train(runs_root=RUNS_ROOT, window=TRAIN_WINDOW_CAMPAIGNS):
     fit_report = {}
     num, cat = F.split_columns(rows)
     X = F.matrix(rows, num, cat)
+    n_rows = len(rows)
+    rows = data["full"] = None
     cat_idx = list(range(len(num), len(num) + len(cat)))
     m = fit_es(X, y, cat_idx, groups, "model", fit_report,
                iterations=CB_MAIN_ITERATIONS)
-    val, _trn = grouped_split(len(X), groups)
+    preds = list(m.predict(Pool(X, cat_features=cat_idx)))
+    X = None
+    val, _trn = grouped_split(len(preds), groups)
     if val:
-        pv = list(m.predict(Pool([X[i] for i in val], cat_features=cat_idx)))
+        pv = [preds[i] for i in val]
         yv = [y[i] for i in val]
         ybar = sum(yv) / len(yv)
         sst = sum((v - ybar) ** 2 for v in yv)
         if sst > 0:
             sse = sum((a - b) ** 2 for a, b in zip(yv, pv))
             fit_report["model"]["val_r2"] = round(1.0 - sse / sst, 5)
-    preds = list(m.predict(Pool(X, cat_features=cat_idx)))
     mae = sum(abs(a - b) for a, b in zip(preds, y)) / len(y)
     meta = {"num": num, "cat": cat,
             "pred_lo": min(preds), "pred_hi": max(preds),
-            "mae_in_sample": round(mae, 5), "fit": fit_report, "rows": len(rows),
+            "mae_in_sample": round(mae, 5), "fit": fit_report, "rows": n_rows,
             "campaigns": sorted(set(data["groups"])),
             "short_horizon": SHORT_HORIZON, "short_weight": SHORT_WEIGHT,
             "target": ("gain(future_max - decision_snapshot) over %s"
@@ -152,7 +155,7 @@ def train(runs_root=RUNS_ROOT, window=TRAIN_WINDOW_CAMPAIGNS):
         p = os.path.join(MODEL_DIR, stale)
         if os.path.exists(p):
             os.remove(p)
-    return {"trained": True, "rows": len(rows), "mae_in_sample": round(mae, 5),
+    return {"trained": True, "rows": n_rows, "mae_in_sample": round(mae, 5),
             "fit": fit_report, "params": params(iterations=CB_MAIN_ITERATIONS),
             **_counts(data)}
 
