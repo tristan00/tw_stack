@@ -927,6 +927,66 @@ WARM_TTL_S = 300.0
 WARM_EVERY_S = 120.0
 _WARM_ALIVE = threading.Event()
 
+REWARD_COMPONENTS = (
+    ("settlements", "settlements gained", 1.0),
+    ("lord_levels", "legendary lord levels gained", 1.0),
+    ("allies", "allies gained", 0.0),
+    ("vassals", "vassals gained", 0.0),
+)
+REWARD_WEIGHTS_PATH = os.path.join(common.TWDATA, "rules", "reward_weights.json")
+_weights_cache: dict = {"mtime": "?", "weights": None}
+
+
+def reward_weights() -> dict:
+    try:
+        mt = os.path.getmtime(REWARD_WEIGHTS_PATH)
+    except OSError:
+        mt = None
+    if _weights_cache["weights"] is not None and _weights_cache["mtime"] == mt:
+        return _weights_cache["weights"]
+    w = {k: dflt for k, _l, dflt in REWARD_COMPONENTS}
+    if mt is not None:
+        try:
+            with open(REWARD_WEIGHTS_PATH, encoding="utf-8") as f:
+                got = json.load(f)
+            for k, _l, _d in REWARD_COMPONENTS:
+                v = _f((got.get("weights") or {}).get(k))
+                if v is not None:
+                    w[k] = v
+        except (OSError, ValueError):
+            pass
+    _weights_cache.update(mtime=mt, weights=w)
+    return w
+
+
+def set_reward_weights(weights: dict) -> dict:
+    allowed = {k for k, _l, _d in REWARD_COMPONENTS}
+    clean = {}
+    for k, v in (weights or {}).items():
+        if k not in allowed:
+            raise ValueError("unknown reward component %r" % k)
+        fv = _f(v)
+        if fv is None or fv < 0 or fv > 1000:
+            raise ValueError("the %r weight must be a number in [0, 1000]" % k)
+        clean[k] = round(fv, 3)
+    w = {k: dflt for k, _l, dflt in REWARD_COMPONENTS}
+    w.update(clean)
+    os.makedirs(os.path.dirname(REWARD_WEIGHTS_PATH), exist_ok=True)
+    with open(REWARD_WEIGHTS_PATH, "w", encoding="utf-8") as f:
+        json.dump({"weights": w}, f, indent=1)
+    _weights_cache.update(mtime="?", weights=None)
+    _STAMPED.clear()
+    return reward_weights()
+
+
+def _weighted_reward(settlements_gained, levels_gained, allies_gained,
+                     vassals_gained) -> float:
+    w = reward_weights()
+    return round(w["settlements"] * (_f(settlements_gained, 0.0) or 0.0)
+                 + w["lord_levels"] * (_f(levels_gained, 0.0) or 0.0)
+                 + w["allies"] * (_f(allies_gained, 0.0) or 0.0)
+                 + w["vassals"] * (_f(vassals_gained, 0.0) or 0.0), 3)
+
 
 def _stamped_slow(name, build, ttl=WARM_TTL_S, force=False):
     hit = _STAMPED.get(name)
@@ -998,13 +1058,14 @@ def _start_gains(con, mkey: str, fkey: str) -> list:
     out = []
     for r in con.execute(
             "SELECT c.campaign_id, c.campaign_key, c.outcome,"
-            "       g.settlements_gained, g.levels_gained, g.turns_reached, g.first_ts"
+            "       g.settlements_gained, g.levels_gained, g.allies_gained,"
+            "       g.vassals_gained, g.turns_reached, g.first_ts"
             " FROM campaigns c JOIN campaign_gains g ON g.campaign_key = c.campaign_key"
             " WHERE c.campaign_map = %s AND c.faction = %s"
             " ORDER BY g.first_ts", (mkey, fkey)):
         d = dict(r)
-        d["reward"] = ((_f(d["settlements_gained"], 0.0) or 0.0)
-                       + (_f(d["levels_gained"], 0.0) or 0.0))
+        d["reward"] = _weighted_reward(d["settlements_gained"], d["levels_gained"],
+                                       d["allies_gained"], d["vassals_gained"])
         out.append(d)
     return out
 
@@ -1287,13 +1348,15 @@ def _camp_meta(con, force=False) -> dict:
         camp = {}
         for r in con.execute(
                 "SELECT c.campaign_id, c.campaign_key, c.faction, c.campaign_map,"
-                " c.leader, g.settlements_gained, g.levels_gained, g.turns_reached,"
-                " g.first_ts"
+                " c.leader, g.settlements_gained, g.levels_gained,"
+                " g.allies_gained, g.vassals_gained, g.turns_reached, g.first_ts"
                 " FROM campaigns c"
                 " JOIN campaign_gains g ON g.campaign_key = c.campaign_key"):
             d = dict(r)
-            d["reward"] = ((_f(d["settlements_gained"], 0.0) or 0.0)
-                           + (_f(d["levels_gained"], 0.0) or 0.0))
+            d["reward"] = _weighted_reward(d["settlements_gained"],
+                                           d["levels_gained"],
+                                           d["allies_gained"],
+                                           d["vassals_gained"])
             camp[_i(r["campaign_id"], 0)] = d
         return camp
     return _stamped_slow("camp_meta", build, force=force)
@@ -2267,24 +2330,17 @@ def _positions_data(con, force=False) -> dict:
         factions.sort(key=lambda o: o.label)
         maps = [_id(ident.campaign_map(mk))
                 for mk in sorted({mk for _f2, mk, _l in camps.values() if mk})]
-        base = {}
-        for r in con.execute(
-                "SELECT decision_id, AVG(score) m FROM offer_scores"
-                " WHERE score IS NOT NULL GROUP BY 1"):
-            m = _f(r["m"])
-            if m is not None:
-                base[_i(r["decision_id"], 0)] = m
+        rewards = {cid2: c2["reward"] for cid2, c2 in _camp_meta(con).items()}
         takes = {}
         for r in con.execute(
-                "SELECT t.decision_id, a.action_type, a.action_key, s.score"
+                "SELECT t.decision_id, a.action_type, a.action_key"
                 " FROM taken t"
                 " JOIN actions a ON a.action_id = t.action_id"
-                " LEFT JOIN offer_scores s ON s.decision_id = t.decision_id"
-                " AND s.offer_seq = t.offer_seq"
                 " WHERE t.counted = 1"):
             takes[_i(r["decision_id"], 0)] = (
-                sys.intern(str(r["action_type"])), r["action_key"], _f(r["score"]))
+                sys.intern(str(r["action_type"])), r["action_key"])
         decs = []
+        peaks: dict = {}
         extras: dict = {}
         res_camps: dict = {}
         hero_camps: dict = {}
@@ -2299,11 +2355,18 @@ def _positions_data(con, force=False) -> dict:
             heroes = z.get("hero_type_counts") or {}
             flags = ((1 if z.get("is_researching") else 0)
                      | (2 if z.get("ll_wounded") else 0))
-            decs.append((did, cid, _f(r["turn"]), _f(r["settlements"]),
-                         _f(r["income"]), _f(r["power_rank"]), _f(r["lord_level"]),
+            state = (_f(r["settlements"]), _f(r["lord_level"]),
+                     _f(r["allies"]), _f(r["vassals"]))
+            decs.append((did, cid, _f(r["turn"]), state[0],
+                         _f(r["income"]), _f(r["power_rank"]), state[1],
                          _f(z.get("treasury")), _f(z.get("armies")),
                          _f(sum(_f(v, 0.0) or 0.0 for v in heroes.values())),
-                         _f(r["allies"]), _f(r["vassals"]), flags))
+                         state[2], state[3], flags))
+            pk = peaks.setdefault(cid, [None, None, None, None])
+            for i2 in range(4):
+                v2 = state[i2]
+                if v2 is not None and (pk[i2] is None or v2 > pk[i2]):
+                    pk[i2] = v2
             ex = {}
             for k, v in (z.get("resources") or {}).items():
                 fv = _f(v)
@@ -2351,7 +2414,8 @@ def _positions_data(con, force=False) -> dict:
             for k, n2 in sorted(sett_camps.items(), key=lambda kv: -kv[1])]
         return {"camps": camps, "factions": factions, "maps": maps,
                 "cultures": sorted({o.culture for o in factions if o.culture}),
-                "base": base, "takes": takes, "decs": decs, "extras": extras,
+                "rewards": rewards, "peaks": peaks, "takes": takes, "decs": decs,
+                "extras": extras,
                 "resources": resources, "hero_types": hero_types,
                 "captures": captures, "settlements": settlements}
     return _stamped_slow("positions_data", build, force=force)
@@ -2407,9 +2471,12 @@ def positions_page(con, filters, conditions=None) -> dict:
         cul_fac = {o.key for o in data["factions"]
                    if (o.culture or "") == filters["culture"]}
     conds = _parse_conditions(conditions)
-    base = data["base"]
+    rewards = data["rewards"]
+    peaks = data["peaks"]
     takes = data["takes"]
     extras = data["extras"]
+    w = reward_weights()
+    w_vec = (w["settlements"], w["lord_levels"], w["allies"], w["vassals"])
     hist_cache: dict = {}
     for cond in conds:
         if cond[0] == "hist":
@@ -2417,7 +2484,7 @@ def positions_page(con, filters, conditions=None) -> dict:
     empty: dict = {}
     n_dec = 0
     camp_ids: set = set()
-    sit_sum, sit_n = 0.0, 0
+    fut_sum, fut_n = 0.0, 0
     agg: dict = {}
     for dec in data["decs"]:
         cid = dec[1]
@@ -2460,66 +2527,85 @@ def positions_page(con, filters, conditions=None) -> dict:
             continue
         n_dec += 1
         camp_ids.add(cid)
-        b = base.get(did)
-        if b is not None:
-            sit_sum += b
-            sit_n += 1
+        fut = None
+        pk = peaks.get(cid)
+        if pk and pk[0] is not None and dec[3] is not None \
+                and pk[1] is not None and dec[6] is not None:
+            fut = (w_vec[0] * (pk[0] - dec[3]) + w_vec[1] * (pk[1] - dec[6]))
+            if pk[2] is not None and dec[10] is not None:
+                fut += w_vec[2] * (pk[2] - dec[10])
+            if pk[3] is not None and dec[11] is not None:
+                fut += w_vec[3] * (pk[3] - dec[11])
+            fut_sum += fut
+            fut_n += 1
         tk = takes.get(did)
         if tk is None:
             continue
-        atype, akey, score = tk
+        atype, akey = tk
+        rew = rewards.get(cid)
         e = agg.setdefault((atype, akey), [0, 0.0, 0, 0.0, 0])
         e[0] += 1
-        if score is not None:
-            e[1] += score
+        if rew is not None:
+            e[1] += rew
             e[2] += 1
-            if b is not None:
-                e[3] += score - b
-                e[4] += 1
+        if fut is not None:
+            e[3] += fut
+            e[4] += 1
     by_type: dict = {}
     for (atype, akey), e in agg.items():
         by_type.setdefault(atype, []).append((akey, e))
     takes_n = sum(e[0] for e in agg.values())
 
+    sit_fut = fut_sum / fut_n if fut_n else None
+
     def pooled(items):
         n2 = sum(e[0] for _k, e in items)
-        sc = sum(e[2] for _k, e in items)
-        dn = sum(e[4] for _k, e in items)
-        mean = sum(e[1] for _k, e in items) / sc if sc else None
-        delta = sum(e[3] for _k, e in items) / dn if dn else None
-        return n2, sc, mean, delta
+        rn = sum(e[2] for _k, e in items)
+        fn = sum(e[4] for _k, e in items)
+        rew = sum(e[1] for _k, e in items) / rn if rn else None
+        fut = sum(e[3] for _k, e in items) / fn if fn else None
+        return n2, rew, fut
 
     rows = []
+
+    def key_row(akey, e, label):
+        return PositionKeyRow(
+            key=akey, label=label, n=e[0],
+            avg_reward=round(e[1] / e[2], 2) if e[2] else None,
+            avg_future=round(e[3] / e[4], 2) if e[4] else None,
+            delta_future=round(e[3] / e[4] - sit_fut, 2)
+            if e[4] and sit_fut is not None else None)
+
     for atype, items in by_type.items():
         items.sort(key=lambda ke: -ke[1][0])
         keys = []
         for akey, e in items[:POSITION_KEYS_SHOWN]:
-            keys.append(PositionKeyRow(
-                key=akey,
-                label=labels.target_for(atype, akey) or labels.pretty(akey),
-                n=e[0],
-                mean_score=round(e[1] / e[2], 3) if e[2] else None,
-                delta=round(e[3] / e[4], 3) if e[4] else None))
+            keys.append(key_row(
+                akey, e, labels.target_for(atype, akey) or labels.pretty(akey)))
         rest = items[POSITION_KEYS_SHOWN:]
         if rest:
-            n2, _sc, mean, delta = pooled(rest)
-            keys.append(PositionKeyRow(
-                key="", label="… %d more keys" % len(rest), n=n2,
-                mean_score=round(mean, 3) if mean is not None else None,
-                delta=round(delta, 3) if delta is not None else None))
-        n2, sc, mean, delta = pooled(items)
+            pooled_rest = [0, 0.0, 0, 0.0, 0]
+            for _k, e in rest:
+                for i2 in range(5):
+                    pooled_rest[i2] += e[i2]
+            keys.append(key_row("", pooled_rest, "… %d more keys" % len(rest)))
+        n2, rew, fut = pooled(items)
         rows.append(PositionTypeRow(
             action_type=_phrase(atype), n=n2,
-            share=round(100.0 * n2 / takes_n, 1) if takes_n else None, scored=sc,
-            mean_score=round(mean, 3) if mean is not None else None,
-            delta=round(delta, 3) if delta is not None else None, keys=keys))
+            share=round(100.0 * n2 / takes_n, 1) if takes_n else None,
+            avg_reward=round(rew, 2) if rew is not None else None,
+            avg_future=round(fut, 2) if fut is not None else None,
+            delta_future=round(fut - sit_fut, 2)
+            if fut is not None and sit_fut is not None else None, keys=keys))
     rows.sort(key=lambda r2: -r2.n)
+    camp_rewards = [rewards[c2] for c2 in camp_ids if rewards.get(c2) is not None]
     return {
         "factions": data["factions"], "cultures": data["cultures"],
         "maps": data["maps"], "settlements": data["settlements"],
         "resources": data["resources"], "hero_types": data["hero_types"],
         "decisions": n_dec, "campaigns": len(camp_ids), "takes": takes_n,
-        "situation_mean": round(sit_sum / sit_n, 3) if sit_n else None,
+        "mean_reward": _mean(camp_rewards),
+        "mean_future": round(sit_fut, 2) if sit_fut is not None else None,
         "rows": rows}
 
 

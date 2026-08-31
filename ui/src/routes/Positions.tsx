@@ -2,9 +2,10 @@ import { useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { ChevronDown, ChevronRight, Plus, X } from 'lucide-react'
 import { signedNum } from '@/components/catalog'
-import { useUiMode } from '@/components/Layout'
 import { Card, EntityLink, ErrorState, Help, MetricTile, Section, Skeleton } from '@/components/primitives'
+import { SubNav, useSubView } from '@/components/SubNav'
 import {
+  post,
   useApi,
   type CatalogIndexPage,
   type ItemsPage,
@@ -12,9 +13,15 @@ import {
   type PositionKeyRow,
   type PositionsPage,
   type PositionTypeRow,
+  type RewardWeightsPage,
 } from '@/lib/api'
 import { n } from '@/lib/format'
 import { cn } from '@/lib/utils'
+
+const TABS = [
+  { key: 'lookup', label: 'lookup', asks: 'what gets taken in situations like this' },
+  { key: 'weights', label: 'reward weights', asks: 'what one unit of each gain is worth in the analytics reward' },
+]
 
 const RANGE_DIMS = [
   { key: 'turn', label: 'turn' },
@@ -62,11 +69,10 @@ function condFamilies(conds: string[]): Set<string> {
   return out
 }
 
-function score(v: number | null | undefined) {
-  return v == null ? <span className="text-dim">—</span> : <span className="num">{n(v, 3)}</span>
-}
+const num = (v: number | null | undefined, digits = 2) =>
+  v == null ? <span className="text-dim">—</span> : <span className="num">{n(v, digits)}</span>
 
-function KeyRows({ row, scores }: { row: PositionTypeRow; scores: boolean }) {
+function KeyRows({ row }: { row: PositionTypeRow }) {
   const to = LINKED[row.action_type.raw]
   return (
     <>
@@ -85,8 +91,9 @@ function KeyRows({ row, scores }: { row: PositionTypeRow; scores: boolean }) {
           </td>
           <td className="num px-3 py-1 text-right">{n(k.n)}</td>
           <td className="px-3 py-1 text-right" />
-          {scores && <td className="px-3 py-1 text-right">{score(k.mean_score)}</td>}
-          {scores && <td className="px-3 py-1 text-right">{signedNum(k.delta, 3)}</td>}
+          <td className="px-3 py-1 text-right">{num(k.avg_reward)}</td>
+          <td className="px-3 py-1 text-right">{num(k.avg_future)}</td>
+          <td className="px-3 py-1 text-right">{signedNum(k.delta_future)}</td>
         </tr>
       ))}
     </>
@@ -245,11 +252,93 @@ function Composer({
   )
 }
 
-export function Positions() {
+function WeightsTab() {
+  const { data, error, loading, reload } = useApi<RewardWeightsPage>('/api/reward-weights', [], { live: false })
+  const [draft, setDraft] = useState<Record<string, string> | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [note, setNote] = useState('')
+  if (error) return <ErrorState error={error} onRetry={reload} />
+  if (loading || !data) return <Skeleton rows={4} />
+  const weights = data.weights ?? {}
+  const current = draft ?? Object.fromEntries((data.components ?? []).map((c) => [c.key, String(weights[c.key] ?? c.default)]))
+  const dirty = (data.components ?? []).some((c) => Number(current[c.key]) !== (weights[c.key] ?? c.default))
+  const save = async () => {
+    setSaving(true)
+    setNote('')
+    try {
+      const body = Object.fromEntries(Object.entries(current).map(([k, v]) => [k, Number(v) || 0]))
+      await post('/api/reward-weights', body)
+      setDraft(null)
+      setNote('saved — caches are rebuilding in the background; reward numbers refresh over the next minute or two')
+      reload()
+    } catch (e) {
+      setNote(`could not save: ${(e as Error).message}`)
+    } finally {
+      setSaving(false)
+    }
+  }
+  return (
+    <Section title="reward weights" scope={data.scope}>
+      <Card className="max-w-xl space-y-3 px-4 py-3">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-line text-dim border-b text-left text-2xs">
+              <th className="py-1.5 font-normal">counted gain</th>
+              <th className="py-1.5 text-right font-normal">weight</th>
+              <th className="py-1.5 text-right font-normal">default</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(data.components ?? []).map((c) => (
+              <tr key={c.key} className="border-line border-b last:border-0">
+                <td className="py-1.5">{c.label}</td>
+                <td className="py-1.5 text-right">
+                  <input
+                    value={current[c.key]}
+                    onChange={(e) => setDraft({ ...current, [c.key]: e.target.value.replace(/[^\d.]/g, '') })}
+                    className="border-line bg-surface num w-20 rounded-md border px-2 py-1 text-right"
+                  />
+                </td>
+                <td className="num text-dim py-1.5 text-right">{n(c.default, 1)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => void save()}
+            disabled={!dirty || saving}
+            className="border-line bg-surface hover:text-fg rounded-md border px-3 py-1 text-xs disabled:opacity-40"
+          >
+            {saving ? 'saving…' : 'save weights'}
+          </button>
+          {!data.is_default && (
+            <button
+              onClick={() => setDraft(Object.fromEntries((data.components ?? []).map((c) => [c.key, String(c.default)])))}
+              className="text-dim hover:text-fg text-2xs"
+            >
+              reset to defaults
+            </button>
+          )}
+          {note && <span className="text-dim text-2xs">{note}</span>}
+        </div>
+        <p className="text-dim text-2xs">
+          analytics reward = Σ weight × gain, per campaign (first → peak). This is not the UCB selector’s reward — the
+          selector, the starts pool and the campaigns page keep the official settlements + lord levels reward.
+        </p>
+      </Card>
+    </Section>
+  )
+}
+
+function LookupTab() {
   const [params, setParams] = useSearchParams()
   const [open, setOpen] = useState<Record<string, boolean>>({})
-  const scores = useUiMode() === 'full'
-  const qs = params.toString()
+  const qs = useMemo(() => {
+    const next = new URLSearchParams(params)
+    next.delete('tab')
+    return next.toString()
+  }, [params])
   const conds = params.getAll('c')
   const { data, error, loading, reload } = useApi<PositionsPage>(
     `/api/positions${qs ? `?${qs}` : ''}`,
@@ -312,71 +401,61 @@ export function Positions() {
   const tiles = [
     { label: 'positions', value: n(data.decisions), sub: 'decisions matching every condition' },
     { label: 'campaigns', value: n(data.campaigns), sub: 'they belong to' },
-    { label: 'actions taken', value: n(data.takes), sub: 'confirmed takes at those decisions' },
-    ...(scores
-      ? [
-          {
-            label: 'situation mean score',
-            value: data.situation_mean == null ? '—' : n(data.situation_mean, 3),
-            sub: 'the acting policy over everything on offer',
-          },
-        ]
-      : []),
+    {
+      label: 'mean campaign reward',
+      value: data.mean_reward == null ? '—' : n(data.mean_reward, 2),
+      sub: 'over the matching campaigns, analytics weights',
+    },
+    {
+      label: 'mean future reward',
+      value: data.mean_future == null ? '—' : n(data.mean_future, 2),
+      sub: 'still to come after a matching decision',
+    },
   ]
   return (
     <div className="space-y-5">
-      <Section
-        title="positions"
-        scope={{
-          text: scores
-            ? 'compose conditions over the decision state, see what gets taken there and how it scored'
-            : 'compose conditions over the decision state, see what gets taken there',
-          detail: scores ? (data.scope.detail ?? undefined) : 'conditions AND together; a has/has-not condition means the campaign had done that thing at or before the decision',
-        }}
-      >
-        <Card className="space-y-2 px-3 py-2.5">
-          <div className="flex flex-wrap items-center gap-2 text-xs">
-            <select value={sel('faction')} onChange={(e) => set('faction', e.target.value)} className="border-line bg-surface rounded-md border px-2 py-1">
-              <option value="">every start</option>
-              {(data.factions ?? []).map((f) => (
-                <option key={f.key} value={f.key}>
-                  {f.label} · {f.campaigns}
-                </option>
-              ))}
-            </select>
-            <select value={sel('culture')} onChange={(e) => set('culture', e.target.value)} className="border-line bg-surface rounded-md border px-2 py-1">
-              <option value="">every race</option>
-              {(data.cultures ?? []).map((c) => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-            </select>
-            {(data.maps ?? []).length > 1 && (
-              <select value={sel('map')} onChange={(e) => set('map', e.target.value)} className="border-line bg-surface rounded-md border px-2 py-1">
-                <option value="">every map</option>
-                {(data.maps ?? []).map((m) => (
-                  <option key={m.raw} value={m.raw}>{m.label}</option>
-                ))}
-              </select>
-            )}
-            {conds.map((c, i) => (
-              <span key={`${c}-${i}`} className="bg-accent-soft text-accent inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-2xs">
-                {condChip(c)}
-                <button onClick={() => delCond(i)} title="remove this condition" className="hover:opacity-70">
-                  <X className="size-3" />
-                </button>
-              </span>
+      <Card className="space-y-2 px-3 py-2.5">
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <select value={sel('faction')} onChange={(e) => set('faction', e.target.value)} className="border-line bg-surface rounded-md border px-2 py-1">
+            <option value="">every start</option>
+            {(data.factions ?? []).map((f) => (
+              <option key={f.key} value={f.key}>
+                {f.label} · {f.campaigns}
+              </option>
             ))}
-            {(qs.length > 0) && (
-              <button onClick={() => setParams(new URLSearchParams(), { replace: true })} className="text-accent text-2xs hover:underline">
-                clear all
+          </select>
+          <select value={sel('culture')} onChange={(e) => set('culture', e.target.value)} className="border-line bg-surface rounded-md border px-2 py-1">
+            <option value="">every race</option>
+            {(data.cultures ?? []).map((c) => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+          </select>
+          {(data.maps ?? []).length > 1 && (
+            <select value={sel('map')} onChange={(e) => set('map', e.target.value)} className="border-line bg-surface rounded-md border px-2 py-1">
+              <option value="">every map</option>
+              {(data.maps ?? []).map((m) => (
+                <option key={m.raw} value={m.raw}>{m.label}</option>
+              ))}
+            </select>
+          )}
+          {conds.map((c, i) => (
+            <span key={`${c}-${i}`} className="bg-accent-soft text-accent inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-2xs">
+              {condChip(c)}
+              <button onClick={() => delCond(i)} title="remove this condition" className="hover:opacity-70">
+                <X className="size-3" />
               </button>
-            )}
-          </div>
-          <Composer data={data} keyOptions={keyOptions} onAdd={addCond} onFamily={setComposerFamily} />
-        </Card>
-      </Section>
+            </span>
+          ))}
+          {qs.length > 0 && (
+            <button onClick={() => setParams(new URLSearchParams(), { replace: true })} className="text-accent text-2xs hover:underline">
+              clear all
+            </button>
+          )}
+        </div>
+        <Composer data={data} keyOptions={keyOptions} onAdd={addCond} onFamily={setComposerFamily} />
+      </Card>
 
-      <div className={cn('grid gap-3 sm:grid-cols-2', scores ? 'lg:grid-cols-4' : 'lg:grid-cols-3')}>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {tiles.map((t) => (
           <MetricTile key={t.label} metric={{ label: t.label, value: t.value, unit: null, sub: t.sub, state: 'neutral', spark: [] }} />
         ))}
@@ -385,8 +464,8 @@ export function Positions() {
       <Section
         title="what gets taken"
         scope={{
-          text: 'one row per action type, biggest share first · expand a row for its keys',
-          detail: scores ? 'Δ = score of the taken action minus the mean score of everything on offer at that decision' : undefined,
+          text: `one row per action type, biggest share first · ${n(data.takes)} confirmed takes · expand a row for its keys`,
+          detail: 'rewards use the analytics weights from the reward weights tab',
         }}
       >
         <Card className="overflow-hidden">
@@ -396,27 +475,27 @@ export function Positions() {
                 <th className="px-3 py-1.5 font-normal">action type</th>
                 <th className="px-3 py-1.5 text-right font-normal">taken</th>
                 <th className="px-3 py-1.5 text-right font-normal">share</th>
-                {scores && (
-                  <th className="px-3 py-1.5 text-right font-normal">
-                    mean score
-                    <Help>
-                      Every offer at a decision gets a score from the arm that was acting: its estimate of how good that
-                      action is right there. This column averages those scores over the taken actions of this type. The
-                      scale is the policy’s own, so read it against the situation mean (everything on offer) and the
-                      Δ column.
-                    </Help>
-                  </th>
-                )}
-                {scores && (
-                  <th className="px-3 py-1.5 text-right font-normal">
-                    Δ vs situation
-                    <Help>
-                      The taken action’s score minus the mean score of everything on offer at that same decision,
-                      averaged over the matching decisions: how much better than its alternatives the chosen action looked
-                      to the acting policy.
-                    </Help>
-                  </th>
-                )}
+                <th className="px-3 py-1.5 text-right font-normal">
+                  avg campaign reward
+                  <Help>
+                    The final analytics reward of the campaigns these takes belong to, averaged over the takes of this
+                    type. Whole-campaign hindsight — the past is baked in, so compare types with the future column.
+                  </Help>
+                </th>
+                <th className="px-3 py-1.5 text-right font-normal">
+                  avg future reward
+                  <Help>
+                    What the campaign still gained after the decision: weighted (peak − current) settlements, lord
+                    levels, allies and vassals at that moment, averaged over the takes of this type.
+                  </Help>
+                </th>
+                <th className="px-3 py-1.5 text-right font-normal">
+                  Δ future vs situation
+                  <Help>
+                    Avg future reward after takes of this type, minus the mean future reward over every matching
+                    decision: did campaigns choosing this here go on to gain more than the average position?
+                  </Help>
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -436,21 +515,33 @@ export function Positions() {
                     </td>
                     <td className="num px-3 py-1.5 text-right">{n(row.n)}</td>
                     <td className="num text-dim px-3 py-1.5 text-right">{row.share == null ? '—' : `${n(row.share, 1)}%`}</td>
-                    {scores && <td className="px-3 py-1.5 text-right">{score(row.mean_score)}</td>}
-                    {scores && <td className="px-3 py-1.5 text-right">{signedNum(row.delta, 3)}</td>}
+                    <td className="px-3 py-1.5 text-right">{num(row.avg_reward)}</td>
+                    <td className="px-3 py-1.5 text-right">{num(row.avg_future)}</td>
+                    <td className="px-3 py-1.5 text-right">{signedNum(row.delta_future)}</td>
                   </tr>,
-                  isOpen ? <KeyRows key={`${row.action_type.raw}-keys`} row={row} scores={scores} /> : null,
+                  isOpen ? <KeyRows key={`${row.action_type.raw}-keys`} row={row} /> : null,
                 ]
               })}
               {!(data.rows ?? []).length && (
                 <tr>
-                  <td colSpan={scores ? 5 : 3} className="text-dim px-3 py-5 text-center">no decision matches these conditions</td>
+                  <td colSpan={6} className="text-dim px-3 py-5 text-center">no decision matches these conditions</td>
                 </tr>
               )}
             </tbody>
           </table>
         </Card>
       </Section>
+    </div>
+  )
+}
+
+export function Positions() {
+  const tab = useSubView(TABS, 'tab')
+  return (
+    <div>
+      <SubNav views={TABS} param="tab" />
+      {tab === 'lookup' && <LookupTab />}
+      {tab === 'weights' && <WeightsTab />}
     </div>
   )
 }

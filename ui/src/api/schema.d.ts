@@ -361,6 +361,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/reward-weights": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Reward Weights */
+        get: operations["get_reward_weights_api_reward_weights_get"];
+        put?: never;
+        /** Post Reward Weights */
+        post: operations["post_reward_weights_api_reward_weights_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/campaigns/picks": {
         parameters: {
             query?: never;
@@ -2816,10 +2834,12 @@ export interface components {
              * @default 0
              */
             n: number;
-            /** Mean Score */
-            mean_score?: number | null;
-            /** Delta */
-            delta?: number | null;
+            /** Avg Reward */
+            avg_reward?: number | null;
+            /** Avg Future */
+            avg_future?: number | null;
+            /** Delta Future */
+            delta_future?: number | null;
         };
         /** PositionTypeRow */
         PositionTypeRow: {
@@ -2831,15 +2851,12 @@ export interface components {
             n: number;
             /** Share */
             share?: number | null;
-            /**
-             * Scored
-             * @default 0
-             */
-            scored: number;
-            /** Mean Score */
-            mean_score?: number | null;
-            /** Delta */
-            delta?: number | null;
+            /** Avg Reward */
+            avg_reward?: number | null;
+            /** Avg Future */
+            avg_future?: number | null;
+            /** Delta Future */
+            delta_future?: number | null;
             /** Keys */
             keys?: components["schemas"]["PositionKeyRow"][];
         };
@@ -2873,8 +2890,10 @@ export interface components {
              * @default 0
              */
             takes: number;
-            /** Situation Mean */
-            situation_mean?: number | null;
+            /** Mean Reward */
+            mean_reward?: number | null;
+            /** Mean Future */
+            mean_future?: number | null;
             /** Rows */
             rows?: components["schemas"]["PositionTypeRow"][];
         };
@@ -2934,6 +2953,18 @@ export interface components {
             /** Delta */
             delta?: number | null;
         };
+        /** RewardComponent */
+        RewardComponent: {
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /**
+             * Default
+             * @default 1
+             */
+            default: number;
+        };
         /** RewardPoint */
         RewardPoint: {
             /** Turn */
@@ -2948,6 +2979,21 @@ export interface components {
             vassals?: number | null;
             /** Power Rank */
             power_rank?: number | null;
+        };
+        /** RewardWeightsPage */
+        RewardWeightsPage: {
+            scope: components["schemas"]["Scope"];
+            /** Components */
+            components?: components["schemas"]["RewardComponent"][];
+            /** Weights */
+            weights?: {
+                [key: string]: number;
+            };
+            /**
+             * Is Default
+             * @default true
+             */
+            is_default: boolean;
         };
         /** RhoBin */
         RhoBin: {
@@ -4424,6 +4470,61 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PositionsPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_reward_weights_api_reward_weights_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RewardWeightsPage"];
+                };
+            };
+        };
+    };
+    post_reward_weights_api_reward_weights_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RewardWeightsPage"];
                 };
             };
             /** @description Validation Error */
