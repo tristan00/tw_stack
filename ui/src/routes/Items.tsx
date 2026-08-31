@@ -15,7 +15,7 @@ export const itemDelta = (v: number | null | undefined) =>
     </span>
   )
 
-export const itemCols = (withEffects: boolean): Col<ItemRow>[] => [
+export const itemCols = (withEffects: boolean, resources: string[] = []): Col<ItemRow>[] => [
   {
     key: 'item',
     label: 'item',
@@ -64,6 +64,27 @@ export const itemCols = (withEffects: boolean): Col<ItemRow>[] => [
     sortUndefined: 'last',
     render: (r) => itemDelta(r.delta),
   },
+  ...resources.map(
+    (name): Col<ItemRow> => ({
+      key: `res:${name}`,
+      label: name,
+      align: 'right',
+      optional: true,
+      value: (r) => r.resources?.[name] ?? undefined,
+      sortUndefined: 'last',
+      render: (r) => {
+        const v = r.resources?.[name]
+        return v == null ? (
+          <span className="text-dim">—</span>
+        ) : (
+          <span className="num">
+            {v > 0 ? '+' : ''}
+            {n(v, Number.isInteger(v) ? 0 : 1)}
+          </span>
+        )
+      },
+    }),
+  ),
 ]
 
 export function Items() {
@@ -95,7 +116,7 @@ export function Items() {
         ))}
         <span className="text-dim num ml-auto">{rows.length} of {n(data.total)}</span>
       </div>
-      <DataTable rows={rows} cols={itemCols(true)} rowId={(r) => r.key} searchPlaceholder="search item…" pageSize={25} emptyWhat="no item matches" />
+      <DataTable rows={rows} cols={itemCols(true, data.resources ?? [])} rowId={(r) => r.key} searchPlaceholder="search item…" pageSize={25} emptyWhat="no item matches" />
     </Section>
   )
 }

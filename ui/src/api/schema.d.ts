@@ -1858,6 +1858,10 @@ export interface components {
             category?: string | null;
             /** Effects */
             effects?: string | null;
+            /** Resources */
+            resources?: {
+                [key: string]: number;
+            };
             /**
              * Held In
              * @default 0
@@ -1908,6 +1912,8 @@ export interface components {
             total: number;
             /** Categories */
             categories?: string[];
+            /** Resources */
+            resources?: string[];
             /** Rows */
             rows?: components["schemas"]["ItemRow"][];
         };
@@ -2529,6 +2535,8 @@ export interface components {
         /** StartItems */
         StartItems: {
             scope: components["schemas"]["Scope"];
+            /** Resources */
+            resources?: string[];
             /** Rows */
             rows?: components["schemas"]["ItemRow"][];
             /** Behaviour */

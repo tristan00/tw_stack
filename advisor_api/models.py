@@ -532,6 +532,7 @@ class ItemRow(BaseModel):
     label: str | None = None
     category: str | None = None
     effects: str | None = None
+    resources: dict[str, float] = Field(default_factory=dict)
     held_in: int = 0
     equipped_in: int = 0
     avg_reward_equipped: float | None = None
@@ -549,6 +550,7 @@ class BehaviourRow(BaseModel):
 
 class StartItems(BaseModel):
     scope: Scope
+    resources: list[str] = Field(default_factory=list)
     rows: list[ItemRow] = Field(default_factory=list)
     behaviour: list[BehaviourRow] = Field(default_factory=list)
 
@@ -557,6 +559,7 @@ class ItemsPage(BaseModel):
     scope: Scope
     total: int = 0
     categories: list[str] = Field(default_factory=list)
+    resources: list[str] = Field(default_factory=list)
     rows: list[ItemRow] = Field(default_factory=list)
 
 
