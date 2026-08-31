@@ -1539,6 +1539,8 @@ def start_skills(con, mkey: str, fkey: str, subtype: str | None = None) -> dict:
             if k and k not in struct:
                 struct[k] = {"tier": _i(node.get("tier")),
                              "max": _i(node.get("total_levels"))}
+    tree_keys = set(struct)
+    all_parents = labels.skill_parents()
     first_turn: dict = {}
     cqis_by_camp = {cid: pc["cqis"] for cid, pc in per_camp.items()}
     for r in con.execute(
@@ -1562,9 +1564,12 @@ def start_skills(con, mkey: str, fkey: str, subtype: str | None = None) -> dict:
         took = [cid for cid, pc in per_camp.items() if pc["levels"].get(k)]
         rs = [rewards[cid] for cid in took if cid in rewards]
         avg_r = _mean(rs)
+        ps = [p for p in all_parents.get(k) or [] if p in tree_keys]
         rows.append(SkillRow(
             key=k, label=labels.name_for("skills", k) or labels.pretty(k),
-            line=labels.skill_line(k), tier=st["tier"], max_ranks=st["max"],
+            parent=" + ".join(
+                labels.name_for("skills", p) or labels.pretty(p) for p in ps) or None,
+            tier=st["tier"], max_ranks=st["max"],
             took=Rate(n=len(took), of=of_n, noun="campaigns",
                       population="with this character that ranked it"),
             avg_ranks=_mean([per_camp[cid]["levels"][k] for cid in took], 1),
@@ -1691,7 +1696,6 @@ def campaign_skills(con, campaign_key: str) -> dict | None:
             turn=_i(r["turn"]), character=label_of.get(str(r["cqi"])),
             key=r["key"],
             label=labels.name_for("skills", r["key"]) or labels.pretty(r["key"]),
-            line=labels.skill_line(r["key"]),
             rank=(_i(p.get("level"), 0) or 0) + 1,
             max_ranks=_i(p.get("total_levels"))))
     return {"characters": chars, "rows": rows}

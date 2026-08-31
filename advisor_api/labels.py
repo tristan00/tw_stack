@@ -216,11 +216,13 @@ def tech_name(key: str, technology_key: str | None = None) -> str | None:
             or _loc("technologies_onscreen_name_" + key))
 
 
-def skill_line(key: str) -> str | None:
-    if not _have("skill_nodes"):
-        return None
-    row = _one("SELECT line FROM skill_nodes WHERE skill = %s LIMIT 1", (key,))
-    return str(row["line"]).replace("_", " ") if row and row["line"] else None
+def skill_parents() -> dict:
+    if not _have("skill_links"):
+        return {}
+    out: dict = {}
+    for r in _rows("SELECT DISTINCT child, parent FROM skill_links ORDER BY 1, 2"):
+        out.setdefault(r["child"], []).append(r["parent"])
+    return out
 
 
 def subtype_name(subtype: str) -> str | None:

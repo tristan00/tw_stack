@@ -496,6 +496,7 @@ function SkillsTab({ base }: { base: string }) {
       render: (r) => <span title={r.key} className={cn(!r.took?.n && 'opacity-50')}>{r.label ?? r.key}</span>,
     },
     { key: 'key', label: 'key', optional: true, value: (r) => r.key, render: (r) => <span className="num text-dim text-2xs">{r.key}</span> },
+    { key: 'parent', label: 'parent', value: (r) => r.parent ?? '', render: (r) => <span className="text-dim">{r.parent ?? '—'}</span> },
     { key: 'tier', label: 'tier', align: 'right', value: (r) => r.tier ?? 0, render: (r) => dash(r.tier) },
     { key: 'max', label: 'max ranks', align: 'right', value: (r) => r.max_ranks ?? 0, render: (r) => dash(r.max_ranks) },
     { key: 'took', label: 'ranked it', align: 'right', value: (r) => r.took?.n ?? 0, render: tookPct },
