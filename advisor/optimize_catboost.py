@@ -23,7 +23,7 @@ OUT_DIR = os.path.join(common.native(common.LOGS_SERVICES), "optuna_catboost")
 FIT_CAP_S = {"main": 120.0, "interrupt": 60.0}
 CV_FOLDS = 3
 CV_TOP = 5
-PATIENCE = 12
+PATIENCE = 24
 SAMPLER_SEED = int(time.time()) % 100000
 
 
@@ -202,9 +202,11 @@ def run(kind, trials, timeout_s):
                 row["seconds"], min(vals + [score])))
         return score
 
-    _log("%s study: %s trials, %.0fs study timeout, %.0fs fit cap, serial trials, "
-         "patience %d, sampler seed %d" % (kind, trials if trials else "unbounded",
-                                           timeout_s, cap_s, PATIENCE, SAMPLER_SEED))
+    _log("%s study: %s trials, %s study timeout, %.0fs fit cap, serial trials, "
+         "patience %d, sampler seed %d"
+         % (kind, trials if trials else "unbounded",
+            ("%.0fs" % timeout_s) if timeout_s else "none",
+            cap_s, PATIENCE, SAMPLER_SEED))
     study.optimize(objective, n_trials=trials, timeout=timeout_s, gc_after_trial=True,
                    catch=(RuntimeError,), callbacks=[_patience_cb()])
     done = [t for t in study.trials if t.value is not None]
@@ -247,5 +249,5 @@ if __name__ == "__main__":
         raise SystemExit("usage: optimize_catboost.py main|interrupt "
                          "[--trials N] [--timeout S]")
     n = int(a[a.index("--trials") + 1]) if "--trials" in a else None
-    t = float(a[a.index("--timeout") + 1]) if "--timeout" in a else 3600.0
+    t = float(a[a.index("--timeout") + 1]) if "--timeout" in a else None
     raise SystemExit(run(kind, n, t))

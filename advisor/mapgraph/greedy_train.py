@@ -83,6 +83,7 @@ def fit_net(datas, ys, groups, cfg, log=print, on_epoch=None, free_datas=False):
     epoch = -1
     for epoch in range(cfg["epochs"]):
         net.train()
+        t_ep = time.time()
         for i in torch.randperm(len(loader), generator=gen).tolist():
             opt.zero_grad(set_to_none=True)
             loss = step(loader[i]).mean()
@@ -93,6 +94,9 @@ def fit_net(datas, ys, groups, cfg, log=print, on_epoch=None, free_datas=False):
                 stopped = "time_budget"
                 out_of_time = True
                 break
+            if cfg.get("epoch_cap_s") and time.time() - t_ep > cfg["epoch_cap_s"]:
+                raise RuntimeError("epoch %d exceeded the %.0fs epoch cap"
+                                   % (epoch + 1, cfg["epoch_cap_s"]))
         if vloader:
             net.eval()
             t_val = time.time()
