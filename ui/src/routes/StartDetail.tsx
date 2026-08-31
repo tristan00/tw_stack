@@ -504,7 +504,7 @@ function SkillsTab({ base }: { base: string }) {
     { key: 'line', label: 'line', value: (r) => r.line ?? '', render: (r) => <span className="text-dim">{r.line ?? '—'}</span> },
     { key: 'tier', label: 'tier', align: 'right', value: (r) => r.tier ?? 0, render: (r) => dash(r.tier) },
     { key: 'max', label: 'max ranks', align: 'right', value: (r) => r.max_ranks ?? 0, render: (r) => dash(r.max_ranks) },
-    { key: 'took', label: 'ranked it', align: 'right', value: (r) => r.took?.n ?? 0, render: tookPct },
+    { key: 'took', label: 'ranked at end', align: 'right', value: (r) => r.took?.n ?? 0, render: tookPct },
     { key: 'ranks', label: 'avg ranks', align: 'right', value: (r) => r.avg_ranks ?? undefined, sortUndefined: 'last', render: (r) => dash(r.avg_ranks, 1) },
     { key: 'turn', label: 'avg turn', align: 'right', value: (r) => r.avg_turn ?? undefined, sortUndefined: 'last', render: (r) => dash(r.avg_turn, 1) },
     { key: 'reward', label: 'avg reward', align: 'right', value: (r) => r.avg_reward ?? undefined, sortUndefined: 'last', render: (r) => dash(r.avg_reward, 2) },
@@ -540,7 +540,7 @@ function SkillsTab({ base }: { base: string }) {
         title="skills"
         scope={{
           text: `all ${n((data.rows ?? []).length)} nodes of this character's tree, one row each · ${n(data.taken_ever)} ever ranked`,
-          detail: `ranks read from live snapshots · start mean ${n(data.mean_reward, 2)}`,
+          detail: `ranked at end = campaigns ending with a point in it, from live snapshots · start mean ${n(data.mean_reward, 2)}`,
         }}
       >
         <DataTable rows={data.rows ?? []} cols={cols} rowId={(r) => r.key} searchPlaceholder="search skill…" pageSize={25} emptyWhat="no snapshot recorded for this character" />
