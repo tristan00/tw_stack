@@ -142,7 +142,26 @@ its use and outcome with ISO timestamps. `CLAUDE.md` states these rules precisel
 `check.py` marks which gates need a live game or a populated corpus. The rest run on a
 fresh clone.
 
-## The dashboard
+## The dashboard on its own — a manual run tracker
+
+The game dashboard is useful without the rest of the stack: no advisor session, no
+models, no selector — just the mod feeding the recorder, the recorder feeding postgres,
+and the dashboard reading it. That combination tracks a game you play yourself.
+
+    python runctl.py dashboard             # view an existing corpus, model-free
+    python runctl.py dashboard --record    # also start the recorder, then boot the game
+                                           # yourself with the mod pack installed
+
+Dashboard-only mode (`--dashboard` on `advisor_api.app`, or `TW_DASHBOARD_ONLY=1`) keeps
+the game pages — run, campaigns, starts, campaign detail with its buildings / research /
+skills / items tabs, the positions lookup, the item / building / research / skill
+catalog, decisions and the log — and hides the stack-only surfaces: the selector, the
+model pages and the launch controls. Pages that grade decisions with model scores simply
+show counts when no model ever scored the corpus.
+
+What it needs: postgres reachable (`TW_PG_*`, see `decisions/pg.py`), the reference
+schema loaded for localized names, and — for `--record` — the compiled mod pack
+installed so the game feeds the bus. `python doctor.py` checks all of it.
 
 `python ui_docshots.py` regenerates these from the live UI (API must be up).
 

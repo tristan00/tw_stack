@@ -1,9 +1,38 @@
 import { useNavigate, useParams } from 'react-router-dom'
 import { DataTable, type Col } from '@/components/DataTable'
-import { Chip, EntityLink, ErrorState, MetricTile, Section, Skeleton } from '@/components/primitives'
+import { Card, Chip, EntityLink, ErrorState, MetricTile, Section, Skeleton } from '@/components/primitives'
 import { itemDelta } from '@/routes/Items'
-import { useApi, type ItemCampaignRow, type ItemPage, type ItemStartRow } from '@/lib/api'
-import { clock, n } from '@/lib/format'
+import { useApi, type ItemCampaignRow, type ItemEffect, type ItemPage, type ItemStartRow } from '@/lib/api'
+import { clock, n, stateText } from '@/lib/format'
+import { cn } from '@/lib/utils'
+
+function EffectsTable({ effects }: { effects: ItemEffect[] }) {
+  if (!effects.length) {
+    return <Card className="text-dim px-4 py-4 text-center text-xs">no effect in the reference schema</Card>
+  }
+  return (
+    <Card className="overflow-hidden">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="border-line text-dim border-b text-left text-2xs">
+            <th className="px-3 py-1.5 font-normal">effect</th>
+            <th className="px-3 py-1.5 text-right font-normal">value</th>
+            <th className="px-3 py-1.5 font-normal">applies to</th>
+          </tr>
+        </thead>
+        <tbody>
+          {effects.map((e, i) => (
+            <tr key={i} className="border-line border-b last:border-0">
+              <td className="px-3 py-1.5">{e.name}</td>
+              <td className={cn('num px-3 py-1.5 text-right', stateText[e.state ?? 'neutral'])}>{e.value ?? '\u2014'}</td>
+              <td className="text-dim px-3 py-1.5">{e.scope}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Card>
+  )
+}
 
 export function ItemDetail() {
   const { itemKey = '' } = useParams()
@@ -30,10 +59,11 @@ export function ItemDetail() {
       ),
     },
     { key: 'held', label: 'held in', align: 'right', value: (r) => r.held_in, render: (r) => <span className="num">{n(r.held_in)}</span> },
-    { key: 'eq', label: 'equipped in', align: 'right', value: (r) => r.equipped_in, render: (r) => <span className="num">{n(r.equipped_in)}</span> },
+    { key: 'eq', label: 'worn in', align: 'right', value: (r) => r.equipped_in, render: (r) => <span className="num">{n(r.equipped_in)}</span> },
     {
       key: 'req',
-      label: 'avg reward equipped',
+      label: 'avg reward',
+      unit: 'worn',
       align: 'right',
       value: (r) => r.avg_reward_equipped ?? undefined,
       sortUndefined: 'last',
@@ -41,13 +71,14 @@ export function ItemDetail() {
     },
     {
       key: 'rb',
-      label: 'avg reward benched',
+      label: 'avg reward',
+      unit: 'benched',
       align: 'right',
       value: (r) => r.avg_reward_benched ?? undefined,
       sortUndefined: 'last',
       render: (r) => (r.avg_reward_benched == null ? <span className="text-dim">—</span> : <span className="num">{n(r.avg_reward_benched, 2)}</span>),
     },
-    { key: 'delta', label: 'Δ equipped − benched', align: 'right', value: (r) => r.delta ?? undefined, sortUndefined: 'last', render: (r) => itemDelta(r.delta) },
+    { key: 'delta', label: 'Δ reward', unit: 'worn − benched', align: 'right', value: (r) => r.delta ?? undefined, sortUndefined: 'last', render: (r) => itemDelta(r.delta) },
   ]
   const recentCols: Col<ItemCampaignRow>[] = [
     { key: 'when', label: 'when', value: (r) => r.ts ?? 0, render: (r) => <span className="num">{clock(r.ts)}</span> },
@@ -67,17 +98,17 @@ export function ItemDetail() {
     { key: 'reward', label: 'reward', align: 'right', value: (r) => r.reward ?? undefined, sortUndefined: 'last', render: (r) => <strong className="num">{n(r.reward)}</strong> },
   ]
   const tiles = [
-    { label: 'held in', value: n(data.held_in), sub: `campaigns · ${n(data.starts)} starts`, state: 'neutral' as const },
+    { label: 'held in', value: n(data.held_in), sub: `campaigns · ${n(data.starts)} start${data.starts === 1 ? '' : 's'}`, state: 'neutral' as const },
     {
-      label: 'equipped in',
+      label: 'worn in',
       value: data.equip_rate ? n(data.equip_rate.n) : '—',
       sub: data.equip_rate?.of ? `${((100 * data.equip_rate.n) / data.equip_rate.of).toFixed(0)}% of campaigns that held it` : undefined,
       state: 'neutral' as const,
     },
     {
-      label: 'Δ equipped − benched',
+      label: 'Δ reward, worn − benched',
       value: data.delta == null ? '—' : `${data.delta > 0 ? '+' : ''}${n(data.delta, 2)}`,
-      sub: 'reward, all starts',
+      sub: data.delta == null ? 'needs 5+ campaigns worn and benched' : 'avg campaign reward, all starts',
       state: data.delta == null ? ('neutral' as const) : data.delta > 0 ? ('ok' as const) : ('bad' as const),
     },
     { label: 'avg equip turn', value: data.avg_equip_turn == null ? '—' : n(data.avg_equip_turn, 1), sub: 'first equip', state: 'neutral' as const },
@@ -102,8 +133,7 @@ export function ItemDetail() {
             </span>
           )}
         </h1>
-        {data.effects && <div className="mt-1 text-xs">{data.effects}</div>}
-        {data.acquisition && <div className="text-dim mt-0.5 text-2xs">acquired: {data.acquisition.toLowerCase()}</div>}
+        {data.acquisition && <div className="text-dim mt-1 text-2xs">acquired: {data.acquisition.toLowerCase()}</div>}
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
@@ -112,7 +142,11 @@ export function ItemDetail() {
         ))}
       </div>
 
-      <Section title="by start" scope={{ text: 'the same equipped-vs-benched comparison, per start that held it' }}>
+      <Section title="what it does" scope={{ text: 'from the reference schema · green helps, red hurts' }}>
+        <EffectsTable effects={data.effects ?? []} />
+      </Section>
+
+      <Section title="by start" scope={{ text: 'the same worn-vs-benched comparison, per start that held it' }}>
         <DataTable
           rows={data.by_start ?? []}
           cols={startCols}

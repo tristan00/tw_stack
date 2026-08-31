@@ -1,5 +1,6 @@
 import { Card, Dot, EntityLink, ErrorState, MetricTile, Section, Skeleton } from '@/components/primitives'
 import { CountText } from '@/components/primitives'
+import { useUiMode } from '@/components/Layout'
 import { DataTable, type Col } from '@/components/DataTable'
 import { useApi, type RunPage, type Schemas } from '@/lib/api'
 import { ago, clock, ms, n, stateText } from '@/lib/format'
@@ -30,6 +31,7 @@ const timingCols: Col<TimingRow>[] = [
 
 export function Run() {
   const { data, error, loading, reload } = useApi<RunPage>('/api/run')
+  const mode = useUiMode()
 
   if (error) return <ErrorState error={error} onRetry={reload} />
   if (loading || !data) return <Skeleton rows={8} />
@@ -61,9 +63,9 @@ export function Run() {
             {cur.turn !== null && cur.turn !== undefined && (
               <span className="text-dim num text-xs">turn {cur.turn}</span>
             )}
-            {cur.pick_id !== null && cur.pick_id !== undefined && (
+            {cur.pick_id !== null && cur.pick_id !== undefined && mode === 'full' && (
               <EntityLink
-                to={`/campaigns?view=selector&pick=${cur.pick_id}`}
+                to={`/selector?pick=${cur.pick_id}`}
                 className="text-dim num text-xs"
               >
                 pick #{cur.pick_id}

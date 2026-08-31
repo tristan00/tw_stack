@@ -1,6 +1,6 @@
 import { Moon, Sun } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { NavLink, Outlet } from 'react-router-dom'
+import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { EntityLink, Dot } from '@/components/primitives'
 import { QuickJump } from '@/components/QuickJump'
 import { mapShort } from '@/components/startcharts'
@@ -9,14 +9,27 @@ import { ago } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 
-const NAV = [
+const CATALOG_PATHS = ['/items', '/buildings', '/research', '/skills']
+
+const GAME_NAV = [
   { to: '/run', label: 'run', asks: 'is it healthy right now' },
   { to: '/campaigns', label: 'campaigns', asks: 'how are campaigns going' },
   { to: '/decisions', label: 'decisions', asks: 'what did it choose and why' },
-  { to: '/models', label: 'models', asks: 'are the models learning' },
+  { to: '/positions', label: 'positions', asks: 'what gets taken in situations like this' },
+  { to: '/items', label: 'catalog', asks: 'items, buildings, research and skills across the run' },
   { to: '/log', label: 'log', asks: 'what exactly happened, second by second' },
+]
+
+const STACK_NAV = [
+  { to: '/selector', label: 'selector', asks: 'why the selector played this start' },
+  { to: '/models', label: 'models', asks: 'are the models learning' },
   { to: '/infra', label: 'infra', asks: 'services and controls' },
 ]
+
+export function useUiMode(): 'full' | 'dashboard' {
+  const { data } = useApi<{ mode?: string }>('/api/health', [], { live: false })
+  return data?.mode === 'dashboard' ? 'dashboard' : 'full'
+}
 
 type Theme = 'system' | 'light' | 'dark'
 
@@ -101,6 +114,9 @@ function StatusLine() {
 
 export function Layout() {
   const { theme, setTheme } = useTheme()
+  const mode = useUiMode()
+  const { pathname } = useLocation()
+  const nav = mode === 'dashboard' ? GAME_NAV : [...GAME_NAV, ...STACK_NAV]
   return (
     <div className="mx-auto flex min-h-full max-w-[1800px] flex-col px-4 py-3">
       <header className="border-line mb-4 border-b pb-3">
@@ -116,22 +132,26 @@ export function Layout() {
           </button>
         </div>
         <nav className="flex flex-wrap items-center gap-1">
-          {NAV.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              title={item.asks}
-              className={({ isActive }) =>
-                cn(
-                  'rounded-md px-3 py-1.5 text-sm',
-                  isActive
-                    ? 'bg-raised text-fg font-semibold'
-                    : 'text-dim hover:text-fg hover:bg-raised/60',
-                )
-              }
-            >
-              {item.label}
-            </NavLink>
+          {nav.map((item) => (
+            <span key={item.to} className="flex items-center">
+              {item.to === '/selector' && <span className="bg-line mx-1.5 h-4 w-px" aria-hidden />}
+              <NavLink
+                to={item.to}
+                title={item.asks}
+                className={({ isActive }) =>
+                  cn(
+                    'rounded-md px-3 py-1.5 text-sm',
+                    (item.label === 'catalog'
+                      ? CATALOG_PATHS.some((c) => pathname.startsWith(c))
+                      : isActive)
+                      ? 'bg-raised text-fg font-semibold'
+                      : 'text-dim hover:text-fg hover:bg-raised/60',
+                  )
+                }
+              >
+                {item.label}
+              </NavLink>
+            </span>
           ))}
           <span className="text-dim num ml-auto text-2xs">ctrl+k jump</span>
         </nav>

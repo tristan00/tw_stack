@@ -12,6 +12,7 @@ import {
   Section,
   Skeleton,
 } from '@/components/primitives'
+import { useUiMode } from '@/components/Layout'
 import { SubNav, useSubView } from '@/components/SubNav'
 import { ChartFrame } from '@/components/charts'
 import {
@@ -21,9 +22,11 @@ import {
   StackShares,
   mapColor,
 } from '@/components/startcharts'
+import { TookCell } from '@/components/catalog'
 import { itemCols } from '@/routes/Items'
 import {
   useApi,
+  type BuildingRow,
   type ConquestStep,
   type MatrixCell,
   type OpeningBranch,
@@ -31,8 +34,10 @@ import {
   type OpeningOffer,
   type SkillRow,
   type StartActions,
+  type StartBuildings,
   type StartCampaign,
   type StartCampaignsPage,
+  type StartCharacterRow,
   type StartDetail as Detail,
   type StartItems,
   type StartOpenings,
@@ -47,6 +52,7 @@ import { cn } from '@/lib/utils'
 const TABS = [
   { key: 'performance', label: 'performance', asks: 'is this start earning when played' },
   { key: 'openings', label: 'openings', asks: 'what do the strategies do with it, and does it matter' },
+  { key: 'buildings', label: 'buildings', asks: 'what it builds, against everything on offer' },
   { key: 'research', label: 'research', asks: 'which techs it researches, against the whole tree' },
   { key: 'skills', label: 'skills', asks: 'how its characters spend their points' },
   { key: 'items', label: 'items', asks: 'does wearing an item pay' },
@@ -438,13 +444,6 @@ function CampaignsTab({ base }: { base: string }) {
   )
 }
 
-const tookPct = (r: { took?: { n: number; of: number } | null }) =>
-  r.took?.of ? (
-    <span className={cn('num', !r.took.n && 'text-dim')}>{((100 * r.took.n) / r.took.of).toFixed(0)}%</span>
-  ) : (
-    <span className="text-dim">—</span>
-  )
-
 function ResearchTab({ base }: { base: string }) {
   const { data, error, loading, reload } = useApi<StartResearch>(`${base}/research`, [], { live: false })
   if (error) return <ErrorState error={error} onRetry={reload} />
@@ -455,7 +454,11 @@ function ResearchTab({ base }: { base: string }) {
       key: 'tech',
       label: 'tech',
       value: (r) => r.label ?? r.key,
-      render: (r) => <span title={r.key} className={cn(!r.took?.n && 'opacity-50')}>{r.label ?? r.key}</span>,
+      render: (r) => (
+        <EntityLink to={`/research/${encodeURIComponent(r.key)}`} title={r.key} className={cn(!r.took?.n && 'opacity-60')}>
+          {r.label ?? r.key}
+        </EntityLink>
+      ),
     },
     { key: 'key', label: 'key', optional: true, value: (r) => r.key, render: (r) => <span className="num text-dim text-2xs">{r.key}</span> },
     { key: 'parent', label: 'parent', value: (r) => r.parent?.label ?? '', render: (r) => <span className="text-dim">{r.parent?.label ?? '—'}</span> },
@@ -464,7 +467,7 @@ function ResearchTab({ base }: { base: string }) {
       : []),
     { key: 'tier', label: 'tier', align: 'right', value: (r) => r.tier ?? 0, render: (r) => dash(r.tier) },
     { key: 'points', label: 'points', align: 'right', optional: true, value: (r) => r.points ?? 0, render: (r) => dash(r.points) },
-    { key: 'took', label: 'took it', align: 'right', value: (r) => r.took?.n ?? 0, render: tookPct },
+    { key: 'took', label: 'took it', align: 'right', value: (r) => r.took?.n ?? 0, render: (r) => <TookCell rate={r.took} /> },
     { key: 'turn', label: 'avg turn', align: 'right', value: (r) => r.avg_turn ?? undefined, sortUndefined: 'last', render: (r) => dash(r.avg_turn, 1) },
     { key: 'reward', label: 'avg reward', align: 'right', value: (r) => r.avg_reward ?? undefined, sortUndefined: 'last', render: (r) => dash(r.avg_reward, 2) },
     { key: 'delta', label: 'Δ mean', align: 'right', value: (r) => r.delta_mean ?? undefined, sortUndefined: 'last', render: (r) => signedDelta(r.delta_mean) },
@@ -476,6 +479,7 @@ function ResearchTab({ base }: { base: string }) {
         text: `all ${n(data.universe)} techs in this start's tree, one row each · ${n(data.started_ever)} ever started`,
         detail: `avg reward is over the campaigns that started it · start mean ${n(data.mean_reward, 2)}`,
       }}
+      right={<EntityLink to="/research" className="text-dim text-xs">all research →</EntityLink>}
     >
       <DataTable rows={data.rows ?? []} cols={cols} rowId={(r) => r.key} searchPlaceholder="search tech…" pageSize={25} emptyWhat="no tech recorded for this start" />
     </Section>
@@ -492,52 +496,91 @@ function SkillsTab({ base }: { base: string }) {
   )
   if (error) return <ErrorState error={error} onRetry={reload} />
   if (loading || !data) return <Skeleton rows={8} />
-  const cols: Col<SkillRow>[] = [
-    {
-      key: 'skill',
-      label: 'skill',
-      value: (r) => r.label ?? r.key,
-      render: (r) => <span title={r.key} className={cn(!r.took?.n && 'opacity-50')}>{r.label ?? r.key}</span>,
-    },
-    { key: 'key', label: 'key', optional: true, value: (r) => r.key, render: (r) => <span className="num text-dim text-2xs">{r.key}</span> },
-    { key: 'parent', label: 'parent', value: (r) => r.parent ?? '', render: (r) => <span className="text-dim">{r.parent ?? '—'}</span> },
-    { key: 'line', label: 'line', value: (r) => r.line ?? '', render: (r) => <span className="text-dim">{r.line ?? '—'}</span> },
-    { key: 'tier', label: 'tier', align: 'right', value: (r) => r.tier ?? 0, render: (r) => dash(r.tier) },
-    { key: 'max', label: 'max ranks', align: 'right', value: (r) => r.max_ranks ?? 0, render: (r) => dash(r.max_ranks) },
-    { key: 'took', label: 'ranked at end', align: 'right', value: (r) => r.took?.n ?? 0, render: tookPct },
-    { key: 'ranks', label: 'avg ranks', align: 'right', value: (r) => r.avg_ranks ?? undefined, sortUndefined: 'last', render: (r) => dash(r.avg_ranks, 1) },
-    { key: 'turn', label: 'avg turn', align: 'right', value: (r) => r.avg_turn ?? undefined, sortUndefined: 'last', render: (r) => dash(r.avg_turn, 1) },
-    { key: 'reward', label: 'avg reward', align: 'right', value: (r) => r.avg_reward ?? undefined, sortUndefined: 'last', render: (r) => dash(r.avg_reward, 2) },
-    { key: 'delta', label: 'Δ mean', align: 'right', value: (r) => r.delta_mean ?? undefined, sortUndefined: 'last', render: (r) => signedDelta(r.delta_mean) },
-  ]
   const pick = (s: string) => {
     const next = new URLSearchParams(params)
     if (s === data.subtype || !s) next.delete('subtype')
     else next.set('subtype', s)
     setParams(next, { replace: true })
   }
-  return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-2 text-2xs">
-        <span className="text-dim">character:</span>
-        {(data.subtypes ?? []).map((o) => (
-          <button
-            key={o.subtype}
-            onClick={() => pick(o.subtype)}
-            className={cn(
-              'rounded-full px-2 py-0.5',
-              o.subtype === data.subtype ? 'bg-raised text-fg font-semibold' : 'bg-surface border-line border hover:text-fg',
-            )}
-          >
-            {o.label ?? o.subtype} · {o.kind} · {n(o.campaigns)}
-          </button>
-        ))}
-        <span className="text-dim ml-auto">
-          avg rank reached {n(data.avg_rank, 1)} · avg {n(data.avg_unspent, 1)} points unspent
+  const charCols: Col<StartCharacterRow>[] = [
+    {
+      key: 'char',
+      label: 'character',
+      value: (r) => r.label ?? r.subtype,
+      render: (r) => (
+        <span title={r.subtype} className={cn(r.subtype === data.subtype && 'text-accent font-semibold')}>
+          {r.label ?? r.subtype}
         </span>
-      </div>
+      ),
+    },
+    { key: 'kind', label: 'kind', value: (r) => r.kind, render: (r) => <span className="text-dim">{r.kind}</span> },
+    { key: 'n', label: 'campaigns', align: 'right', value: (r) => r.campaigns, render: (r) => <span className="num">{n(r.campaigns)}</span> },
+    { key: 'rank', label: 'avg rank', unit: 'at end', align: 'right', value: (r) => r.avg_rank ?? undefined, sortUndefined: 'last', render: (r) => dash(r.avg_rank, 1) },
+    { key: 'ranked', label: 'avg skills', unit: 'ranked', align: 'right', value: (r) => r.avg_ranked ?? undefined, sortUndefined: 'last', render: (r) => dash(r.avg_ranked, 1) },
+    { key: 'unspent', label: 'avg points', unit: 'unspent', align: 'right', value: (r) => r.avg_unspent ?? undefined, sortUndefined: 'last', render: (r) => dash(r.avg_unspent, 1) },
+    {
+      key: 'top',
+      label: 'top skills ranked',
+      value: (r) => (r.top ?? []).map((t) => t.label).join(' '),
+      render: (r) =>
+        (r.top ?? []).length ? (
+          <span className="text-2xs">
+            {(r.top ?? []).map((t, i) => (
+              <span key={t.raw}>
+                {i > 0 && <span className="text-dim"> · </span>}
+                <EntityLink to={`/skills/${encodeURIComponent(t.raw)}`} title={t.raw}>
+                  {t.label}
+                </EntityLink>
+              </span>
+            ))}
+          </span>
+        ) : (
+          <span className="text-dim">never ranked a skill</span>
+        ),
+    },
+  ]
+  const cols: Col<SkillRow>[] = [
+    {
+      key: 'skill',
+      label: 'skill',
+      value: (r) => r.label ?? r.key,
+      render: (r) => (
+        <EntityLink to={`/skills/${encodeURIComponent(r.key)}`} title={r.key} className={cn(!r.took?.n && 'opacity-60')}>
+          {r.label ?? r.key}
+        </EntityLink>
+      ),
+    },
+    { key: 'key', label: 'key', optional: true, value: (r) => r.key, render: (r) => <span className="num text-dim text-2xs">{r.key}</span> },
+    { key: 'parent', label: 'parent', value: (r) => r.parent ?? '', render: (r) => <span className="text-dim">{r.parent ?? '—'}</span> },
+    { key: 'line', label: 'line', value: (r) => r.line ?? '', render: (r) => <span className="text-dim">{r.line ?? '—'}</span> },
+    { key: 'tier', label: 'tier', align: 'right', value: (r) => r.tier ?? 0, render: (r) => dash(r.tier) },
+    { key: 'max', label: 'max ranks', align: 'right', value: (r) => r.max_ranks ?? 0, render: (r) => dash(r.max_ranks) },
+    { key: 'took', label: 'ranked at end', align: 'right', value: (r) => r.took?.n ?? 0, render: (r) => <TookCell rate={r.took} /> },
+    { key: 'ranks', label: 'avg ranks', align: 'right', value: (r) => r.avg_ranks ?? undefined, sortUndefined: 'last', render: (r) => dash(r.avg_ranks, 1) },
+    { key: 'turn', label: 'avg turn', align: 'right', value: (r) => r.avg_turn ?? undefined, sortUndefined: 'last', render: (r) => dash(r.avg_turn, 1) },
+    { key: 'reward', label: 'avg reward', align: 'right', value: (r) => r.avg_reward ?? undefined, sortUndefined: 'last', render: (r) => dash(r.avg_reward, 2) },
+    { key: 'delta', label: 'Δ mean', align: 'right', value: (r) => r.delta_mean ?? undefined, sortUndefined: 'last', render: (r) => signedDelta(r.delta_mean) },
+  ]
+  const chosen = (data.characters ?? []).find((c) => c.subtype === data.subtype)
+  return (
+    <div className="space-y-7">
       <Section
-        title="skills"
+        title="who ranks what"
+        scope={{ text: 'one row per character this start ever fielded, from live snapshots · click a row for its full tree below' }}
+        right={<EntityLink to="/skills" className="text-dim text-xs">all skills →</EntityLink>}
+      >
+        <DataTable
+          rows={data.characters ?? []}
+          cols={charCols}
+          rowId={(r) => r.subtype}
+          onRowClick={(r) => pick(r.subtype)}
+          dense
+          pageSize={10}
+          emptyWhat="no character snapshot recorded for this start"
+        />
+      </Section>
+      <Section
+        title={`${chosen?.label ?? data.subtype ?? 'character'} · skill tree`}
         scope={{
           text: `all ${n((data.rows ?? []).length)} nodes of this character's tree, one row each · ${n(data.taken_ever)} ever ranked`,
           detail: `ranked at end = campaigns ending with a point in it, from live snapshots · start mean ${n(data.mean_reward, 2)}`,
@@ -549,6 +592,44 @@ function SkillsTab({ base }: { base: string }) {
   )
 }
 
+function BuildingsTab({ base }: { base: string }) {
+  const { data, error, loading, reload } = useApi<StartBuildings>(`${base}/buildings`, [], { live: false })
+  if (error) return <ErrorState error={error} onRetry={reload} />
+  if (loading || !data) return <Skeleton rows={8} />
+  const cols: Col<BuildingRow>[] = [
+    {
+      key: 'building',
+      label: 'building',
+      value: (r) => r.label ?? r.key,
+      render: (r) => (
+        <EntityLink to={`/buildings/${encodeURIComponent(r.key)}`} title={r.key} className={cn(!r.took?.n && 'opacity-60')}>
+          {r.label ?? r.key}
+        </EntityLink>
+      ),
+    },
+    { key: 'key', label: 'key', optional: true, value: (r) => r.key, render: (r) => <span className="num text-dim text-2xs">{r.key}</span> },
+    { key: 'cat', label: 'category', value: (r) => r.category ?? '', render: (r) => <span className="text-dim">{r.category ?? '—'}</span> },
+    { key: 'level', label: 'level', align: 'right', value: (r) => r.level ?? 0, render: (r) => dash(r.level) },
+    { key: 'cost', label: 'cost', align: 'right', value: (r) => r.cost ?? undefined, sortUndefined: 'last', render: (r) => dash(r.cost) },
+    { key: 'took', label: 'constructed', align: 'right', value: (r) => r.took?.n ?? 0, render: (r) => <TookCell rate={r.took} /> },
+    { key: 'turn', label: 'avg turn', align: 'right', value: (r) => r.avg_turn ?? undefined, sortUndefined: 'last', render: (r) => dash(r.avg_turn, 1) },
+    { key: 'reward', label: 'avg reward', align: 'right', value: (r) => r.avg_reward ?? undefined, sortUndefined: 'last', render: (r) => dash(r.avg_reward, 2) },
+    { key: 'delta', label: 'Δ mean', align: 'right', value: (r) => r.delta_mean ?? undefined, sortUndefined: 'last', render: (r) => signedDelta(r.delta_mean) },
+  ]
+  return (
+    <Section
+      title="buildings"
+      scope={{
+        text: `all ${n(data.universe)} buildings its campaigns were ever offered, one row each · ${n(data.constructed_ever)} ever constructed`,
+        detail: `constructed = campaigns that built it, of campaigns it was on offer in · avg reward is over the campaigns that built it · start mean ${n(data.mean_reward, 2)}`,
+      }}
+      right={<EntityLink to="/buildings" className="text-dim text-xs">all buildings →</EntityLink>}
+    >
+      <DataTable rows={data.rows ?? []} cols={cols} rowId={(r) => r.key} searchPlaceholder="search building…" pageSize={25} emptyWhat="no building was ever offered" />
+    </Section>
+  )
+}
+
 function ItemsTab({ base }: { base: string }) {
   const { data, error, loading, reload } = useApi<StartItems>(`${base}/items`, [], { live: false })
   if (error) return <ErrorState error={error} onRetry={reload} />
@@ -557,10 +638,10 @@ function ItemsTab({ base }: { base: string }) {
     <div className="space-y-7">
       <Section
         title="does wearing it pay"
-        scope={{ text: 'one row per item this faction ever held · benched = held in the pool, never worn' }}
+        scope={{ text: 'one row per item this faction ever held · Δ = avg campaign reward when worn minus when benched' }}
         right={<EntityLink to="/items" className="text-dim text-xs">all items →</EntityLink>}
       >
-        <DataTable rows={data.rows ?? []} cols={itemCols(false, data.resources ?? [])} rowId={(r) => r.key} searchPlaceholder="search item…" pageSize={25} emptyWhat="no item was ever held" />
+        <DataTable rows={data.rows ?? []} cols={itemCols(data.resources ?? [])} rowId={(r) => r.key} searchPlaceholder="search item…" pageSize={25} emptyWhat="no item was ever held" />
       </Section>
       <Section title="equip behaviour vs outcomes" scope={{ text: 'does how the strategies handle the inventory track how campaigns go' }}>
         <Card className="overflow-hidden">
@@ -622,6 +703,7 @@ function ActionsTab({ base, faction }: { base: string; faction: string }) {
 
 export function StartDetail() {
   const { campaignMap = '', faction = '' } = useParams()
+  const mode = useUiMode()
   const base = `/api/campaigns/starts/${encodeURIComponent(campaignMap)}/${encodeURIComponent(faction)}`
   const tab = useSubView(TABS, 'tab')
   const [seen, setSeen] = useState<Record<string, boolean>>({})
@@ -655,7 +737,7 @@ export function StartDetail() {
             <EntityLink to="/campaigns?view=starts" className="text-dim">starts</EntityLink>
             <span className="text-dim"> / {lord}</span>
           </span>
-          <EntityLink to="/campaigns?view=selector" className="text-dim">selector view →</EntityLink>
+          {mode === 'full' && <EntityLink to="/selector" className="text-dim">selector view →</EntityLink>}
         </div>
         <h1 className="mt-1 flex flex-wrap items-baseline gap-3">
           <span className="text-lg font-semibold">{lord}</span>
@@ -686,6 +768,7 @@ export function StartDetail() {
       <SubNav views={TABS} param="tab" />
       <div className={tab === 'performance' ? '' : 'hidden'}>{seen.performance && <PerformanceTab base={base} lord={lord} />}</div>
       <div className={tab === 'openings' ? '' : 'hidden'}>{seen.openings && <OpeningsTab base={base} />}</div>
+      <div className={tab === 'buildings' ? '' : 'hidden'}>{seen.buildings && <BuildingsTab base={base} />}</div>
       <div className={tab === 'research' ? '' : 'hidden'}>{seen.research && <ResearchTab base={base} />}</div>
       <div className={tab === 'skills' ? '' : 'hidden'}>{seen.skills && <SkillsTab base={base} />}</div>
       <div className={tab === 'items' ? '' : 'hidden'}>{seen.items && <ItemsTab base={base} />}</div>

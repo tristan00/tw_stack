@@ -99,6 +99,22 @@ def _all_responses():
     if decs.get("rows"):
         did = decs["rows"][0]["decision_id"]
         out["/api/decisions/<id>"] = _client.get("/api/decisions/%d" % did)
+    for fam in ("items", "buildings", "research", "skills"):
+        idx = _client.get("/api/%s" % fam)
+        out["/api/%s" % fam] = idx
+        rows = (idx.json() or {}).get("rows") or []
+        if rows:
+            out["/api/%s/<key>" % fam] = _client.get(
+                "/api/%s/%s" % (fam, rows[0]["key"]))
+    out["/api/positions"] = _client.get("/api/positions")
+    if played:
+        s = played[0]
+        base = "/api/campaigns/starts/%s/%s" % (
+            (s.get("campaign_map") or {}).get("raw", ""), s["faction"]["raw"])
+        out["/api/campaigns/starts/<map>/<faction>/buildings"] = _client.get(
+            base + "/buildings")
+        out["/api/campaigns/starts/<map>/<faction>/skills"] = _client.get(
+            base + "/skills")
     return out
 
 
@@ -401,6 +417,10 @@ def test_no_column_is_empty_in_every_row():
         ("/api/models/agreement", "$.rows"),
         ("/api/models/agreement", "$.secondary"),
         ("/api/models/agreement/breakdown?dim=action_type", "$.rows"),
+        ("/api/items", "$.rows"),
+        ("/api/buildings", "$.rows"),
+        ("/api/research", "$.rows"),
+        ("/api/skills", "$.rows"),
         ("/api/analytics", "$.tenants"),
         ("/api/models/training", "$.trials"),
         ("/api/models/training", "$.history"),
@@ -663,6 +683,76 @@ def test_diplomacy_counts_match_the_database():
            {k: v for k, v in want_att.items() if v}
     assert {k: v for k, v in got_ok.items() if v} == \
            {k: v for k, v in want_ok.items() if v}
+
+
+def test_catalog_indexes_are_keyed_and_resolve_details():
+    for fam in ("items", "buildings", "research", "skills"):
+        j = _client.get("/api/%s" % fam).json()
+        rows = j["rows"]
+        assert rows, "no %s row at all" % fam
+        keys = [r["key"] for r in rows]
+        assert len(keys) == len(set(keys)), "%s rows repeat a key" % fam
+        labeled = sum(1 for r in rows if r.get("label"))
+        assert labeled >= 0.8 * len(rows), \
+            "%s: only %d of %d rows carry a localized label" % (fam, labeled, len(rows))
+        r = _client.get("/api/%s/%s" % (fam, keys[0]))
+        assert r.status_code == 200
+        assert r.json()["key"] == keys[0]
+        assert _client.get("/api/%s/no_such_key_at_all" % fam).status_code == 404
+
+
+def test_item_means_show_whenever_a_side_has_campaigns():
+    j = _client.get("/api/items").json()
+    for r in j["rows"]:
+        if r["equipped_in"]:
+            assert r["avg_reward_equipped"] is not None, \
+                "%s worn in %d campaigns but shows no worn mean" \
+                % (r["key"], r["equipped_in"])
+        if r["benched_in"]:
+            assert r["avg_reward_benched"] is not None, \
+                "%s benched in %d campaigns but shows no benched mean" \
+                % (r["key"], r["benched_in"])
+
+
+def test_item_effects_are_a_table_not_a_blob():
+    j = _client.get("/api/items").json()
+    key = j["rows"][0]["key"]
+    d = _client.get("/api/items/%s" % key).json()
+    assert isinstance(d["effects"], list)
+    for e in d["effects"]:
+        assert e["name"]
+        assert e["state"] in ("ok", "warn", "bad", "neutral")
+        assert e["scope"]
+
+
+def test_positions_filters_narrow_and_shares_sum():
+    whole = _client.get("/api/positions").json()
+    assert whole["decisions"] and whole["rows"]
+    share = sum(r["share"] or 0 for r in whole["rows"])
+    assert 99.0 <= share <= 101.0, share
+    assert whole["takes"] == sum(r["n"] for r in whole["rows"])
+    fac = whole["factions"][0]["key"]
+    part = _client.get("/api/positions?faction=%s&turn_max=4" % fac).json()
+    assert 0 < part["decisions"] < whole["decisions"]
+    sett = whole["settlements"][0]["key"]
+    held = _client.get("/api/positions?holds=%s" % sett).json()
+    assert 0 < held["decisions"] < whole["decisions"]
+    assert held["campaigns"] == whole["settlements"][0]["campaigns"]
+
+
+def test_start_skills_says_who_ranked_what():
+    starts = _client.get("/api/campaigns/starts").json()
+    played = [s for s in starts.get("rows") or [] if s.get("n_window")]
+    if not played:
+        return
+    s = played[0]
+    j = _client.get("/api/campaigns/starts/%s/%s/skills" % (
+        (s.get("campaign_map") or {}).get("raw", ""), s["faction"]["raw"])).json()
+    chars = j["characters"]
+    assert chars, "no character summary for a played start"
+    assert any(c["top"] for c in chars), \
+        "no character carries its top ranked skills"
+    assert j["subtype"] in {c["subtype"] for c in chars}
 
 
 if __name__ == "__main__":

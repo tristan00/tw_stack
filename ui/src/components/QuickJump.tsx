@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Search } from 'lucide-react'
+import { useUiMode } from '@/components/Layout'
 import { mapShort } from '@/components/startcharts'
 import { useApi, type CampaignsPage, type StartsPage } from '@/lib/api'
 import { cn } from '@/lib/utils'
@@ -9,10 +10,18 @@ const PAGES = [
   { label: 'run', to: '/run' },
   { label: 'campaigns', to: '/campaigns' },
   { label: 'starts', to: '/campaigns?view=starts' },
-  { label: 'selector', to: '/campaigns?view=selector' },
   { label: 'decisions', to: '/decisions' },
-  { label: 'models', to: '/models' },
+  { label: 'positions', to: '/positions' },
+  { label: 'items', to: '/items' },
+  { label: 'buildings', to: '/buildings' },
+  { label: 'research', to: '/research' },
+  { label: 'skills', to: '/skills' },
   { label: 'log', to: '/log' },
+]
+
+const STACK_PAGES = [
+  { label: 'selector', to: '/selector' },
+  { label: 'models', to: '/models' },
   { label: 'infra', to: '/infra' },
 ]
 
@@ -31,6 +40,7 @@ export function QuickJump() {
   const [at, setAt] = useState(0)
   const navigate = useNavigate()
   const inputRef = useRef<HTMLInputElement>(null)
+  const mode = useUiMode()
   const starts = useApi<StartsPage>(open ? '/api/campaigns/starts' : null, [open], { live: false })
   const camps = useApi<CampaignsPage>(open ? '/api/campaigns' : null, [open], { live: false })
 
@@ -54,7 +64,8 @@ export function QuickJump() {
   }, [open])
 
   const hits = useMemo(() => {
-    const all: Hit[] = PAGES.map((p) => ({
+    const pages = mode === 'dashboard' ? PAGES : [...PAGES, ...STACK_PAGES]
+    const all: Hit[] = pages.map((p) => ({
       key: `p:${p.to}`,
       to: p.to,
       label: p.label,
@@ -88,7 +99,7 @@ export function QuickJump() {
     const needle = q.trim().toLowerCase()
     if (!needle) return all.slice(0, 12)
     return all.filter((h) => h.hay.toLowerCase().includes(needle)).slice(0, 12)
-  }, [q, starts.data, camps.data])
+  }, [q, mode, starts.data, camps.data])
 
   useEffect(() => {
     setAt((a) => Math.min(a, Math.max(0, hits.length - 1)))

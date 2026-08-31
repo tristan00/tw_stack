@@ -6,6 +6,7 @@ import contextlib
 import json
 import os
 import sys
+import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -29,17 +30,40 @@ from advisor_api.models import (
     UcbPicksPage,
     CampaignItemsPage, CampaignResearchPage, CampaignSkillsPage, ItemPage, ItemsPage,
     StartItems, StartResearch, StartSkills,
+    CampaignBuildingsPage, CatalogIndexPage, CatalogKeyPage, PositionsPage,
+    StartBuildings,
 )
 
 UI_DIST = os.path.join(common.ROOT, "ui", "dist")
+
+MODE = ("dashboard"
+        if os.environ.get("TW_DASHBOARD_ONLY", "").strip().lower()
+        in ("1", "true", "yes") or "--dashboard" in sys.argv[1:] else "full")
+
+
+_warm_stop = threading.Event()
+
+
+def _warm_loop():
+    q._WARM_ALIVE.set()
+    while not _warm_stop.is_set():
+        t0 = time.perf_counter()
+        steps = q.warm_caches(db.connect())
+        print("API warm %.0fms %s" % ((time.perf_counter() - t0) * 1000,
+                                      " ".join(steps)))
+        _warm_stop.wait(q.WARM_EVERY_S)
+    q._WARM_ALIVE.clear()
 
 
 @contextlib.asynccontextmanager
 async def _lifespan(_app):
     proc.start()
+    _warm_stop.clear()
+    threading.Thread(target=_warm_loop, name="cache-warm", daemon=True).start()
     try:
         yield
     finally:
+        _warm_stop.set()
         proc.stop()
 
 
@@ -218,7 +242,17 @@ def get_start_items(campaign_map: str, faction: str) -> StartItems:
                      "benched = in the pool, never worn"), **got)
 
 
-@app.get("/api/items", response_model=ItemsPage, tags=["items"])
+@app.get("/api/campaigns/starts/{campaign_map}/{faction}/buildings",
+         response_model=StartBuildings, tags=["campaigns"])
+def get_start_buildings(campaign_map: str, faction: str) -> StartBuildings:
+    con = _con()
+    got = q.start_buildings(con, campaign_map, faction)
+    return StartBuildings(
+        scope=_scope("every building its campaigns were ever offered, one row each",
+                     "avg reward is over the campaigns that constructed it"), **got)
+
+
+@app.get("/api/items", response_model=ItemsPage, tags=["catalog"])
 def get_items() -> ItemsPage:
     con = _con()
     got = q.items_page(con)
@@ -228,13 +262,104 @@ def get_items() -> ItemsPage:
         **got)
 
 
-@app.get("/api/items/{item_key}", response_model=ItemPage, tags=["items"])
+@app.get("/api/items/{item_key}", response_model=ItemPage, tags=["catalog"])
 def get_item(item_key: str) -> ItemPage:
     con = _con()
     got = q.item_page(con, item_key)
     if got is None:
         raise HTTPException(404, "no item %r in this run dir" % item_key)
     return ItemPage(scope=_scope("one item across every start that held it"), **got)
+
+
+_CATALOG_SCOPES = {
+    "building": ("every building this run dir was ever offered, one row each",
+                 "took = campaigns that constructed it at least once"),
+    "research": ("every tech this run dir was ever offered, one row each",
+                 "took = campaigns that started it"),
+    "skills": ("every skill a campaign ever put a point in, one row each",
+               "took = campaigns that ranked it at least once"),
+}
+
+
+def _catalog_index(family: str):
+    con = _con()
+    got = q.catalog_index(con, family)
+    text, detail = _CATALOG_SCOPES[family]
+    return CatalogIndexPage(scope=_scope(text, detail), **got)
+
+
+def _catalog_key(family: str, key: str):
+    con = _con()
+    got = q.catalog_key_page(con, family, key)
+    if got is None:
+        raise HTTPException(404, "no %s %r in this run dir" % (family, key))
+    return CatalogKeyPage(
+        scope=_scope("one %s across every start" % family), **got)
+
+
+@app.get("/api/buildings", response_model=CatalogIndexPage,
+         response_model_exclude_none=True, tags=["catalog"])
+def get_buildings() -> CatalogIndexPage:
+    return _catalog_index("building")
+
+
+@app.get("/api/buildings/{key}", response_model=CatalogKeyPage,
+         response_model_exclude_none=True, tags=["catalog"])
+def get_building(key: str) -> CatalogKeyPage:
+    return _catalog_key("building", key)
+
+
+@app.get("/api/research", response_model=CatalogIndexPage,
+         response_model_exclude_none=True, tags=["catalog"])
+def get_research() -> CatalogIndexPage:
+    return _catalog_index("research")
+
+
+@app.get("/api/research/{key}", response_model=CatalogKeyPage,
+         response_model_exclude_none=True, tags=["catalog"])
+def get_tech(key: str) -> CatalogKeyPage:
+    return _catalog_key("research", key)
+
+
+@app.get("/api/skills", response_model=CatalogIndexPage,
+         response_model_exclude_none=True, tags=["catalog"])
+def get_skills() -> CatalogIndexPage:
+    return _catalog_index("skills")
+
+
+@app.get("/api/skills/{key}", response_model=CatalogKeyPage,
+         response_model_exclude_none=True, tags=["catalog"])
+def get_skill(key: str) -> CatalogKeyPage:
+    return _catalog_key("skills", key)
+
+
+@app.get("/api/positions", response_model=PositionsPage, tags=["positions"])
+def get_positions(faction: str | None = None, culture: str | None = None,
+                  map: str | None = None, holds: str | None = None,
+                  turn_min: int | None = None, turn_max: int | None = None,
+                  settlements_min: float | None = None,
+                  settlements_max: float | None = None,
+                  income_min: float | None = None, income_max: float | None = None,
+                  power_rank_min: float | None = None,
+                  power_rank_max: float | None = None,
+                  lord_level_min: float | None = None,
+                  lord_level_max: float | None = None) -> PositionsPage:
+    con = _con()
+    filters = {"faction": faction, "culture": culture, "map": map, "holds": holds,
+               "turn_min": turn_min, "turn_max": turn_max,
+               "settlements_min": settlements_min,
+               "settlements_max": settlements_max,
+               "income_min": income_min, "income_max": income_max,
+               "power_rank_min": power_rank_min, "power_rank_max": power_rank_max,
+               "lord_level_min": lord_level_min, "lord_level_max": lord_level_max}
+    got = q.positions_page(con, filters)
+    return PositionsPage(
+        scope=_scope("what gets taken in situations like this, by action type",
+                     "score = what the acting policy thought of each offer; "
+                     "Δ = the taken action's score minus the mean score of "
+                     "everything on offer at that decision, averaged over the "
+                     "matching decisions; holds = decisions at or after the "
+                     "campaign captured that settlement"), **got)
 
 
 @app.get("/api/campaigns/picks", response_model=UcbPicksPage, tags=["campaigns"])
@@ -347,6 +472,18 @@ def get_campaign_decisions(campaign_key: str) -> CampaignDecisions:
     return CampaignDecisions(
         scope=_scope("every action taken inside this campaign, newest first"),
         rows=rows)
+
+
+@app.get("/api/campaigns/{campaign_key}/buildings",
+         response_model=CampaignBuildingsPage, tags=["campaigns"])
+def get_campaign_buildings(campaign_key: str) -> CampaignBuildingsPage:
+    con = _con()
+    got = q.campaign_buildings(con, campaign_key)
+    if got is None:
+        raise HTTPException(404, "no campaign %r in this run dir" % campaign_key)
+    return CampaignBuildingsPage(
+        scope=_scope("every construction, upgrade, repair and dismantle, in order",
+                     "a dismantle's cost is its refund, negative"), **got)
 
 
 @app.get("/api/campaigns/{campaign_key}/research", response_model=CampaignResearchPage,
@@ -630,7 +767,8 @@ async def events():
 
 @app.get("/api/health", tags=["run"])
 def health():
-    return {"ok": True, "run_dir": common.RUN_DIR, "stamp": list(db.stamp())}
+    return {"ok": True, "mode": MODE, "run_dir": common.RUN_DIR,
+            "stamp": list(db.stamp())}
 
 
 @app.get("/{full_path:path}", include_in_schema=False)
@@ -651,7 +789,8 @@ def spa(full_path: str):
 def main():
     import uvicorn
     common.install_stamped_logs()
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8777
+    plain = [a for a in sys.argv[1:] if not a.startswith("--")]
+    port = int(plain[0]) if plain else 8777
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
 
 

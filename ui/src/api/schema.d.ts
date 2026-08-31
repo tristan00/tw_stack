@@ -191,6 +191,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/campaigns/starts/{campaign_map}/{faction}/buildings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Start Buildings */
+        get: operations["get_start_buildings_api_campaigns_starts__campaign_map___faction__buildings_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/items": {
         parameters: {
             query?: never;
@@ -217,6 +234,125 @@ export interface paths {
         };
         /** Get Item */
         get: operations["get_item_api_items__item_key__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/buildings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Buildings */
+        get: operations["get_buildings_api_buildings_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/buildings/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Building */
+        get: operations["get_building_api_buildings__key__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/research": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Research */
+        get: operations["get_research_api_research_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/research/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Tech */
+        get: operations["get_tech_api_research__key__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/skills": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Skills */
+        get: operations["get_skills_api_skills_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/skills/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Skill */
+        get: operations["get_skill_api_skills__key__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/positions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Positions */
+        get: operations["get_positions_api_positions_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -319,6 +455,23 @@ export interface paths {
         };
         /** Get Campaign Decisions */
         get: operations["get_campaign_decisions_api_campaigns__campaign_key__decisions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_key}/buildings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Campaign Buildings */
+        get: operations["get_campaign_buildings_api_campaigns__campaign_key__buildings_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1044,6 +1197,66 @@ export interface components {
             /** Avg Unequips */
             avg_unequips?: number | null;
         };
+        /** BuildingRow */
+        BuildingRow: {
+            /** Key */
+            key: string;
+            /** Label */
+            label?: string | null;
+            /** Category */
+            category?: string | null;
+            /** Level */
+            level?: number | null;
+            /** Cost */
+            cost?: number | null;
+            /**
+             * Offered In
+             * @default 0
+             */
+            offered_in: number;
+            took?: components["schemas"]["Rate"] | null;
+            /** Avg Turn */
+            avg_turn?: number | null;
+            /** Avg Reward */
+            avg_reward?: number | null;
+            /** Delta Mean */
+            delta_mean?: number | null;
+        };
+        /** CampaignBuildingRow */
+        CampaignBuildingRow: {
+            /** Turn */
+            turn?: number | null;
+            /**
+             * Kind
+             * @default construct
+             */
+            kind: string;
+            /** Key */
+            key: string;
+            /** Label */
+            label?: string | null;
+            /** Category */
+            category?: string | null;
+            /** Level */
+            level?: number | null;
+            /** Region */
+            region?: string | null;
+            /** Cost */
+            cost?: number | null;
+        };
+        /** CampaignBuildingsPage */
+        CampaignBuildingsPage: {
+            scope: components["schemas"]["Scope"];
+            /**
+             * Constructed
+             * @default 0
+             */
+            constructed: number;
+            /** Total Cost */
+            total_cost?: number | null;
+            /** Rows */
+            rows?: components["schemas"]["CampaignBuildingRow"][];
+        };
         /** CampaignCharacter */
         CampaignCharacter: {
             /** Cqi */
@@ -1313,6 +1526,169 @@ export interface components {
             growth_coverage: components["schemas"]["Rate"];
             /** Rows */
             rows: components["schemas"]["CampaignRow"][];
+        };
+        /** CatalogCampaignRow */
+        CatalogCampaignRow: {
+            campaign: components["schemas"]["Ident"];
+            /** Ts */
+            ts?: number | null;
+            /** Leader */
+            leader?: string | null;
+            /** Turn */
+            turn?: number | null;
+            /** Reward */
+            reward?: number | null;
+        };
+        /** CatalogIndexPage */
+        CatalogIndexPage: {
+            scope: components["schemas"]["Scope"];
+            /** Family */
+            family: string;
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
+            /**
+             * Campaigns
+             * @default 0
+             */
+            campaigns: number;
+            /** Categories */
+            categories?: string[];
+            /** Rows */
+            rows?: components["schemas"]["CatalogIndexRow"][];
+        };
+        /** CatalogIndexRow */
+        CatalogIndexRow: {
+            /** Key */
+            key: string;
+            /** Label */
+            label?: string | null;
+            /** Category */
+            category?: string | null;
+            /** Level */
+            level?: number | null;
+            /** Cost */
+            cost?: number | null;
+            /** Line */
+            line?: string | null;
+            /** Tier */
+            tier?: number | null;
+            /** Points */
+            points?: number | null;
+            /** Characters */
+            characters?: string | null;
+            took?: components["schemas"]["Rate"] | null;
+            /**
+             * Starts
+             * @default 0
+             */
+            starts: number;
+            /** Avg Turn */
+            avg_turn?: number | null;
+            /** Avg Reward Took */
+            avg_reward_took?: number | null;
+            /** Avg Reward Passed */
+            avg_reward_passed?: number | null;
+            /** Delta */
+            delta?: number | null;
+        };
+        /** CatalogKeyPage */
+        CatalogKeyPage: {
+            scope: components["schemas"]["Scope"];
+            /** Family */
+            family: string;
+            /** Key */
+            key: string;
+            /** Label */
+            label?: string | null;
+            /** Category */
+            category?: string | null;
+            /** Level */
+            level?: number | null;
+            /** Cost */
+            cost?: number | null;
+            /** Upkeep */
+            upkeep?: number | null;
+            /** Turns To Build */
+            turns_to_build?: number | null;
+            parent?: components["schemas"]["Ident"] | null;
+            /** Line */
+            line?: string | null;
+            /** Tier */
+            tier?: number | null;
+            /** Points */
+            points?: number | null;
+            /** Unlock Rank */
+            unlock_rank?: number | null;
+            /**
+             * Took In
+             * @default 0
+             */
+            took_in: number;
+            took?: components["schemas"]["Rate"] | null;
+            /**
+             * Starts
+             * @default 0
+             */
+            starts: number;
+            /** Avg Turn */
+            avg_turn?: number | null;
+            /** Avg Reward Took */
+            avg_reward_took?: number | null;
+            /** Avg Reward Passed */
+            avg_reward_passed?: number | null;
+            /** Delta */
+            delta?: number | null;
+            /** Chain */
+            chain?: components["schemas"]["ChainLevel"][];
+            /** By Character */
+            by_character?: components["schemas"]["SkillCharacterRow"][];
+            /** By Start */
+            by_start?: components["schemas"]["CatalogStartRow"][];
+            /** Recent */
+            recent?: components["schemas"]["CatalogCampaignRow"][];
+        };
+        /** CatalogStartRow */
+        CatalogStartRow: {
+            campaign_map?: components["schemas"]["Ident"] | null;
+            faction: components["schemas"]["Ident"];
+            /** Leader */
+            leader?: string | null;
+            took?: components["schemas"]["Rate"] | null;
+            /**
+             * Offered In
+             * @default 0
+             */
+            offered_in: number;
+            /** Avg Turn */
+            avg_turn?: number | null;
+            /** Avg Reward */
+            avg_reward?: number | null;
+            /** Delta Mean */
+            delta_mean?: number | null;
+        };
+        /** ChainLevel */
+        ChainLevel: {
+            /** Key */
+            key: string;
+            /** Label */
+            label?: string | null;
+            /** Level */
+            level?: number | null;
+            /** Cost */
+            cost?: number | null;
+            /**
+             * Constructed In
+             * @default 0
+             */
+            constructed_in: number;
+            /**
+             * This
+             * @default false
+             */
+            this: boolean;
         };
         /** ConquestStep */
         ConquestStep: {
@@ -1808,6 +2184,24 @@ export interface components {
             /** Reward */
             reward?: number | null;
         };
+        /** ItemEffect */
+        ItemEffect: {
+            /** Name */
+            name: string;
+            /** Value */
+            value?: string | null;
+            /**
+             * State
+             * @default neutral
+             * @enum {string}
+             */
+            state: "ok" | "warn" | "bad" | "neutral";
+            /**
+             * Scope
+             * @default self
+             */
+            scope: string;
+        };
         /** ItemPage */
         ItemPage: {
             scope: components["schemas"]["Scope"];
@@ -1818,7 +2212,7 @@ export interface components {
             /** Category */
             category?: string | null;
             /** Effects */
-            effects?: string | null;
+            effects?: components["schemas"]["ItemEffect"][];
             /** Acquisition */
             acquisition?: string | null;
             /** Lord Share */
@@ -1856,8 +2250,6 @@ export interface components {
             label?: string | null;
             /** Category */
             category?: string | null;
-            /** Effects */
-            effects?: string | null;
             /** Resources */
             resources?: {
                 [key: string]: number;
@@ -1872,6 +2264,11 @@ export interface components {
              * @default 0
              */
             equipped_in: number;
+            /**
+             * Benched In
+             * @default 0
+             */
+            benched_in: number;
             /** Avg Reward Equipped */
             avg_reward_equipped?: number | null;
             /** Avg Reward Benched */
@@ -2356,6 +2753,89 @@ export interface components {
             /** Note */
             note?: string | null;
         };
+        /** PositionFacetOption */
+        PositionFacetOption: {
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /** Culture */
+            culture?: string | null;
+            /**
+             * Campaigns
+             * @default 0
+             */
+            campaigns: number;
+        };
+        /** PositionKeyRow */
+        PositionKeyRow: {
+            /** Key */
+            key: string;
+            /** Label */
+            label?: string | null;
+            /**
+             * N
+             * @default 0
+             */
+            n: number;
+            /** Mean Score */
+            mean_score?: number | null;
+            /** Delta */
+            delta?: number | null;
+        };
+        /** PositionTypeRow */
+        PositionTypeRow: {
+            action_type: components["schemas"]["Ident"];
+            /**
+             * N
+             * @default 0
+             */
+            n: number;
+            /** Share */
+            share?: number | null;
+            /**
+             * Scored
+             * @default 0
+             */
+            scored: number;
+            /** Mean Score */
+            mean_score?: number | null;
+            /** Delta */
+            delta?: number | null;
+            /** Keys */
+            keys?: components["schemas"]["PositionKeyRow"][];
+        };
+        /** PositionsPage */
+        PositionsPage: {
+            scope: components["schemas"]["Scope"];
+            /** Factions */
+            factions?: components["schemas"]["PositionFacetOption"][];
+            /** Cultures */
+            cultures?: string[];
+            /** Maps */
+            maps?: components["schemas"]["Ident"][];
+            /** Settlements */
+            settlements?: components["schemas"]["PositionFacetOption"][];
+            /**
+             * Decisions
+             * @default 0
+             */
+            decisions: number;
+            /**
+             * Campaigns
+             * @default 0
+             */
+            campaigns: number;
+            /**
+             * Takes
+             * @default 0
+             */
+            takes: number;
+            /** Situation Mean */
+            situation_mean?: number | null;
+            /** Rows */
+            rows?: components["schemas"]["PositionTypeRow"][];
+        };
         /** ProducedCampaign */
         ProducedCampaign: {
             campaign: components["schemas"]["Ident"];
@@ -2456,6 +2936,27 @@ export interface components {
             /** Detail */
             detail?: string | null;
         };
+        /** SkillCharacterRow */
+        SkillCharacterRow: {
+            /** Subtype */
+            subtype: string;
+            /** Label */
+            label?: string | null;
+            /**
+             * Kind
+             * @default lord
+             */
+            kind: string;
+            /**
+             * Campaigns
+             * @default 0
+             */
+            campaigns: number;
+            /** Avg Ranks */
+            avg_ranks?: number | null;
+            /** Avg Turn */
+            avg_turn?: number | null;
+        };
         /** SkillRow */
         SkillRow: {
             /** Key */
@@ -2485,6 +2986,24 @@ export interface components {
             scope: components["schemas"]["Scope"];
             /** Cells */
             cells?: components["schemas"]["MatrixCell"][];
+        };
+        /** StartBuildings */
+        StartBuildings: {
+            scope: components["schemas"]["Scope"];
+            /** Mean Reward */
+            mean_reward?: number | null;
+            /**
+             * Constructed Ever
+             * @default 0
+             */
+            constructed_ever: number;
+            /**
+             * Universe
+             * @default 0
+             */
+            universe: number;
+            /** Rows */
+            rows?: components["schemas"]["BuildingRow"][];
         };
         /** StartCampaign */
         StartCampaign: {
@@ -2523,6 +3042,31 @@ export interface components {
             scope: components["schemas"]["Scope"];
             /** Rows */
             rows?: components["schemas"]["StartCampaign"][];
+        };
+        /** StartCharacterRow */
+        StartCharacterRow: {
+            /** Subtype */
+            subtype: string;
+            /** Label */
+            label?: string | null;
+            /**
+             * Kind
+             * @default lord
+             */
+            kind: string;
+            /**
+             * Campaigns
+             * @default 0
+             */
+            campaigns: number;
+            /** Avg Rank */
+            avg_rank?: number | null;
+            /** Avg Unspent */
+            avg_unspent?: number | null;
+            /** Avg Ranked */
+            avg_ranked?: number | null;
+            /** Top */
+            top?: components["schemas"]["Ident"][];
         };
         /** StartDetail */
         StartDetail: {
@@ -2720,8 +3264,8 @@ export interface components {
             scope: components["schemas"]["Scope"];
             /** Mean Reward */
             mean_reward?: number | null;
-            /** Subtypes */
-            subtypes?: components["schemas"]["SubtypeOpt"][];
+            /** Characters */
+            characters?: components["schemas"]["StartCharacterRow"][];
             /** Subtype */
             subtype?: string | null;
             /** Avg Rank */
@@ -2766,23 +3310,6 @@ export interface components {
             turns_bins?: components["schemas"]["HistBin"][];
             /** Rows */
             rows: components["schemas"]["StartRow"][];
-        };
-        /** SubtypeOpt */
-        SubtypeOpt: {
-            /** Subtype */
-            subtype: string;
-            /** Label */
-            label?: string | null;
-            /**
-             * Kind
-             * @default lord
-             */
-            kind: string;
-            /**
-             * Campaigns
-             * @default 0
-             */
-            campaigns: number;
         };
         /** TechRow */
         TechRow: {
@@ -3567,6 +4094,38 @@ export interface operations {
             };
         };
     };
+    get_start_buildings_api_campaigns_starts__campaign_map___faction__buildings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_map: string;
+                faction: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StartBuildings"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_items_api_items_get: {
         parameters: {
             query?: never;
@@ -3605,6 +4164,203 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ItemPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_buildings_api_buildings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogIndexPage"];
+                };
+            };
+        };
+    };
+    get_building_api_buildings__key__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogKeyPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_research_api_research_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogIndexPage"];
+                };
+            };
+        };
+    };
+    get_tech_api_research__key__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogKeyPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_skills_api_skills_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogIndexPage"];
+                };
+            };
+        };
+    };
+    get_skill_api_skills__key__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogKeyPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_positions_api_positions_get: {
+        parameters: {
+            query?: {
+                faction?: string | null;
+                culture?: string | null;
+                map?: string | null;
+                holds?: string | null;
+                turn_min?: number | null;
+                turn_max?: number | null;
+                settlements_min?: number | null;
+                settlements_max?: number | null;
+                income_min?: number | null;
+                income_max?: number | null;
+                power_rank_min?: number | null;
+                power_rank_max?: number | null;
+                lord_level_min?: number | null;
+                lord_level_max?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PositionsPage"];
                 };
             };
             /** @description Validation Error */
@@ -3781,6 +4537,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CampaignDecisions"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_campaign_buildings_api_campaigns__campaign_key__buildings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CampaignBuildingsPage"];
                 };
             };
             /** @description Validation Error */
