@@ -37,6 +37,8 @@ def to_data(g, y=None, taken=None):
     ntype = np.fromiter(g.node_type, dtype=np.int64, count=nn_)
 
     val = np.fromiter(g.val, dtype=np.float32, count=ne)
+    dirs = np.stack((np.fromiter(g.ux, dtype=np.float32, count=ne),
+                     np.fromiter(g.uy, dtype=np.float32, count=ne)), axis=1)
 
     is_act = ntype == act
     s_act, d_act = is_act[src], is_act[dst]
@@ -46,16 +48,17 @@ def to_data(g, y=None, taken=None):
         if s2.size == 0:
             chan.append((torch.zeros((2, 1), dtype=torch.long),
                          torch.zeros(1, dtype=torch.long),
-                         torch.zeros(1, dtype=torch.float32)))
+                         torch.zeros(1, dtype=torch.float32),
+                         torch.zeros((1, 2), dtype=torch.float32)))
         else:
             chan.append((torch.from_numpy(np.stack((s2, d2))), torch.from_numpy(r2),
-                         torch.from_numpy(v2)))
+                         torch.from_numpy(v2), torch.from_numpy(dirs[mk])))
 
     d = DecisionGraph(x=torch.from_numpy(np.asarray(g.x, dtype=np.float32)),
                       edge_index=chan[0][0])
-    d.edge_rel, d.edge_val = chan[0][1], chan[0][2]
-    d.a2e_index, d.a2e_rel, d.a2e_val = chan[1]
-    d.e2a_index, d.e2a_rel, d.e2a_val = chan[2]
+    d.edge_rel, d.edge_val, d.edge_dir = chan[0][1], chan[0][2], chan[0][3]
+    d.a2e_index, d.a2e_rel, d.a2e_val, d.a2e_dir = chan[1]
+    d.e2a_index, d.e2a_rel, d.e2a_val, d.e2a_dir = chan[2]
     d.node_type = torch.from_numpy(ntype)
     for name in _IDX_FIELDS[1:]:
         d[name] = torch.from_numpy(
@@ -213,16 +216,16 @@ class Encoder(nn.Module):
         self.in_norm = TypeNorm(hidden)
 
         n_map = entity_layers + action_rounds
-        self.map_conv = nn.ModuleList([RelConv(hidden, S.REL_DIM + 1, map_aggr, map_attn,
+        self.map_conv = nn.ModuleList([RelConv(hidden, S.REL_DIM + 3, map_aggr, map_attn,
                                                c_map, dst_dim)
                                        for _ in range(n_map)])
         self.map_norm = nn.ModuleList([TypeNorm(hidden) for _ in range(n_map)])
-        self.a2e_conv = nn.ModuleList([RelConv(hidden, S.REL_DIM + 1, act_aggr, act_attn,
+        self.a2e_conv = nn.ModuleList([RelConv(hidden, S.REL_DIM + 3, act_aggr, act_attn,
                                                c_a2e, dst_dim)
                                        for _ in range(action_rounds)])
         self.a2e_norm = nn.ModuleList([TypeNorm(hidden) for _ in range(action_rounds)])
         self.a2e_gate = nn.Parameter(torch.zeros(action_rounds))
-        self.e2a_conv = nn.ModuleList([RelConv(hidden, S.REL_DIM + 1, act_aggr, act_attn,
+        self.e2a_conv = nn.ModuleList([RelConv(hidden, S.REL_DIM + 3, act_aggr, act_attn,
                                                c_e2a, dst_dim)
                                        for _ in range(action_rounds)])
         self.e2a_norm = nn.ModuleList([TypeNorm(hidden) for _ in range(action_rounds)])
@@ -257,11 +260,14 @@ class Encoder(nn.Module):
         h = self.in_norm(h, nt)
         states = [h]
         map_rel = torch.cat([self.rel_emb(data.edge_rel),
-                             torch.tanh(data.edge_val / 50.0).unsqueeze(-1)], dim=-1)
+                             torch.tanh(data.edge_val / 50.0).unsqueeze(-1),
+                             data.edge_dir], dim=-1)
         a2e_rel = torch.cat([self.rel_emb(data.a2e_rel),
-                             torch.tanh(data.a2e_val / 50.0).unsqueeze(-1)], dim=-1)
+                             torch.tanh(data.a2e_val / 50.0).unsqueeze(-1),
+                             data.a2e_dir], dim=-1)
         e2a_rel = torch.cat([self.rel_emb(data.e2a_rel),
-                             torch.tanh(data.e2a_val / 50.0).unsqueeze(-1)], dim=-1)
+                             torch.tanh(data.e2a_val / 50.0).unsqueeze(-1),
+                             data.e2a_dir], dim=-1)
 
         n_map = self.entity_layers + self.action_rounds
         li = 0

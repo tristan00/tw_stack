@@ -22,6 +22,7 @@ class Graph:
     __slots__ = ("_nodes", "_edges",
                  "x", "node_type", "race_idx", "agent_idx", "stance_idx", "subtype_idx",
                  "atype_idx", "term_idx", "cat_idx", "src", "dst", "rel", "val",
+                 "ux", "uy",
                  "id2idx", "node_ids", "action_nodes", "action_keys", "own_mask", "g_ctx",
                  "player_faction", "counts", "provenance")
 
@@ -38,6 +39,7 @@ class Graph:
         self.term_idx = []
         self.cat_idx = []
         self.src, self.dst, self.rel, self.val = [], [], [], []
+        self.ux, self.uy = [], []
         self.id2idx = {}
         self.node_ids = []
         self.action_nodes = []
@@ -74,12 +76,12 @@ class Graph:
             self.action_nodes.append(idx)
         return idx
 
-    def edge(self, i, j, rel, val=0.0):
+    def edge(self, i, j, rel, val=0.0, ux=0.0, uy=0.0):
         if i is None or j is None:
             return
         r = S.REL_INDEX[rel]
-        v = float(val)
-        self._edges.extend((i, j, r, v, j, i, r + _NREL, v))
+        v, x, y = float(val), float(ux), float(uy)
+        self._edges.extend((i, j, r, v, x, y, j, i, r + _NREL, v, -x, -y))
 
     def finalize(self):
         if self._nodes:
@@ -88,7 +90,8 @@ class Graph:
              self.stance_idx, self.subtype_idx, self.atype_idx, self.term_idx,
              self.cat_idx, self.own_mask) = [list(c) for c in cols]
         e = self._edges
-        self.src, self.dst, self.rel, self.val = e[0::4], e[1::4], e[2::4], e[3::4]
+        self.src, self.dst, self.rel, self.val = e[0::6], e[1::6], e[2::6], e[3::6]
+        self.ux, self.uy = e[4::6], e[5::6]
         return self
 
     def cat_node(self, kind, key):
@@ -559,11 +562,14 @@ def _wire_knn(g):
             pts.append((i, g.x[i][xi], g.x[i][yi]))
     if len(pts) < 2:
         return
+    xy = {i: (x, y) for i, x, y in pts}
     for i, x0, y0 in pts:
         d = sorted(((math.hypot(x0 - x1, y0 - y1), j) for j, x1, y1 in pts if j != i))
-        for _, j in d[:S.KNN_K]:
+        for dd, j in d[:S.KNN_K]:
             if j > i:
-                g.edge(i, j, "near")
+                x1, y1 = xy[j]
+                ux, uy = ((x1 - x0) / dd, (y1 - y0) / dd) if dd > 0 else (0.0, 0.0)
+                g.edge(i, j, "near", val=dd, ux=ux, uy=uy)
 
 
 def _lord_memory_row(campaign, cqi, row=None):
@@ -735,10 +741,11 @@ def _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me,
             if j == tgt or j == ego:
                 continue
             d = math.hypot(jx - tx, jy - ty)
-            if d <= 10:
-                g.edge(ai, j, "near_target")
-            elif d <= 25:
-                g.edge(ai, j, "near_target_wide")
+            if d > 25:
+                continue
+            ux, uy = ((jx - tx) / d, (jy - ty) / d) if d > 0 else (0.0, 0.0)
+            g.edge(ai, j, "near_target" if d <= 10 else "near_target_wide",
+                   val=d, ux=ux, uy=uy)
 
     subject = params.get("faction") or params.get("target_faction")
     if subject:
