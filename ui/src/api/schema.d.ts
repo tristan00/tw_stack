@@ -361,6 +361,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/lookup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Lookup */
+        get: operations["get_lookup_api_lookup_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/reward-weights": {
         parameters: {
             query?: never;
@@ -1349,6 +1366,38 @@ export interface components {
             /** Pool */
             pool?: components["schemas"]["Ident"][];
         };
+        /** CampaignLookupPage */
+        CampaignLookupPage: {
+            scope: components["schemas"]["Scope"];
+            /** Factions */
+            factions?: components["schemas"]["PositionFacetOption"][];
+            /** Cultures */
+            cultures?: string[];
+            /** Maps */
+            maps?: components["schemas"]["Ident"][];
+            /** Settlements */
+            settlements?: components["schemas"]["PositionFacetOption"][];
+            /** Resources */
+            resources?: components["schemas"]["PositionFacetOption"][];
+            /** Hero Types */
+            hero_types?: components["schemas"]["PositionFacetOption"][];
+            /**
+             * Campaigns
+             * @default 0
+             */
+            campaigns: number;
+            /**
+             * Decisions
+             * @default 0
+             */
+            decisions: number;
+            /** Mean Reward */
+            mean_reward?: number | null;
+            /** Mean Turns */
+            mean_turns?: number | null;
+            /** Rows */
+            rows?: components["schemas"]["LookupCampaignRow"][];
+        };
         /** CampaignResearchPage */
         CampaignResearchPage: {
             scope: components["schemas"]["Scope"];
@@ -2336,6 +2385,8 @@ export interface components {
         ItemSwapRow: {
             removed: components["schemas"]["Ident"];
             equipped: components["schemas"]["Ident"];
+            /** Category */
+            category?: string | null;
             /**
              * Campaigns
              * @default 0
@@ -2476,6 +2527,38 @@ export interface components {
              * @default 0
              */
             scanned: number;
+        };
+        /** LookupCampaignRow */
+        LookupCampaignRow: {
+            campaign: components["schemas"]["Ident"];
+            /** Ts */
+            ts?: number | null;
+            /** Leader */
+            leader?: string | null;
+            campaign_map?: components["schemas"]["Ident"] | null;
+            faction: components["schemas"]["Ident"];
+            /** First Turn */
+            first_turn?: number | null;
+            /**
+             * Matched
+             * @default 0
+             */
+            matched: number;
+            /** Turns */
+            turns?: number | null;
+            /** Reward */
+            reward?: number | null;
+            /** Settlements Gained */
+            settlements_gained?: number | null;
+            /** Levels Gained */
+            levels_gained?: number | null;
+            outcome?: components["schemas"]["Ident"] | null;
+            /**
+             * Outcome State
+             * @default neutral
+             * @enum {string}
+             */
+            outcome_state: "ok" | "warn" | "bad" | "neutral";
         };
         /** MatrixCell */
         MatrixCell: {
@@ -4470,6 +4553,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PositionsPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_lookup_api_lookup_get: {
+        parameters: {
+            query?: {
+                faction?: string | null;
+                culture?: string | null;
+                map?: string | null;
+                c?: string[];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CampaignLookupPage"];
                 };
             };
             /** @description Validation Error */

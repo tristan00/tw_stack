@@ -30,8 +30,8 @@ from advisor_api.models import (
     UcbPicksPage,
     CampaignItemsPage, CampaignResearchPage, CampaignSkillsPage, ItemPage, ItemsPage,
     StartItems, StartResearch, StartSkills,
-    CampaignBuildingsPage, CatalogIndexPage, CatalogKeyPage, PositionsPage,
-    RewardWeightsPage, StartBuildings,
+    CampaignBuildingsPage, CampaignLookupPage, CatalogIndexPage, CatalogKeyPage,
+    PositionsPage, RewardWeightsPage, StartBuildings,
 )
 
 UI_DIST = os.path.join(common.ROOT, "ui", "dist")
@@ -348,6 +348,22 @@ def get_positions(faction: str | None = None, culture: str | None = None,
                      "the analytics weights from the reward weights tab; future "
                      "reward = what the campaign still gained after the decision"),
         **got)
+
+
+@app.get("/api/lookup", response_model=CampaignLookupPage, tags=["positions"])
+def get_lookup(faction: str | None = None, culture: str | None = None,
+               map: str | None = None,
+               c: list[str] = Query(default_factory=list)) -> CampaignLookupPage:
+    con = _con()
+    got = q.campaign_lookup(con, {"faction": faction, "culture": culture,
+                                  "map": map}, c)
+    return CampaignLookupPage(
+        scope=_scope("every campaign that ever passed through a matching position, "
+                     "newest first",
+                     "conditions AND together over the recorded state at a single "
+                     "moment of the campaign; a has/has-not condition means the "
+                     "campaign had done that thing by then; rewards use the "
+                     "analytics weights"), **got)
 
 
 def _weights_page() -> RewardWeightsPage:

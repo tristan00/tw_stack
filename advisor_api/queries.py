@@ -34,9 +34,9 @@ from advisor_api.models import (
     BehaviourRow, BuildingRow, CampaignBuildingRow, CampaignCharacter,
     CampaignItemEvent, CampaignSkillRow, CampaignTechRow, CatalogCampaignRow,
     CatalogIndexRow, CatalogStartRow, ChainLevel, ItemCampaignRow, ItemRow,
-    ItemStartRow, ItemSwapRow, PositionFacetOption, PositionKeyRow,
-    PositionTypeRow, RelatedKey, SkillCharacterRow, SkillRow, StartCharacterRow,
-    TechRow,
+    ItemStartRow, ItemSwapRow, LookupCampaignRow, PositionFacetOption,
+    PositionKeyRow, PositionTypeRow, RelatedKey, SkillCharacterRow, SkillRow,
+    StartCharacterRow, TechRow,
 )
 from decisions import pg_schema as SS
 
@@ -1515,12 +1515,16 @@ def _item_swaps_build(con) -> dict:
                 for bk, bdid in e:
                     if ak == bk:
                         continue
+                    cat = labels.item_category(ak)
+                    if not cat or labels.item_category(bk) != cat:
+                        continue
                     if any(d2 > bdid for d2 in uneq_dids.get(bk, ())):
                         continue
                     if any(d2 > adid for d2 in eq_dids.get(ak, ())):
                         continue
                     events += 1
-                    p = pairs.setdefault((ak, bk), {"cids": set(), "turns": []})
+                    p = pairs.setdefault((ak, bk), {"cids": set(), "turns": [],
+                                                    "cat": cat})
                     p["cids"].add(cid)
                     p["turns"].append(turn)
     rows = []
@@ -1532,9 +1536,10 @@ def _item_swaps_build(con) -> dict:
         rows.append(ItemSwapRow(
             removed=Ident(raw=ak, label=_item_ident(ak) or ak),
             equipped=Ident(raw=bk, label=_item_ident(bk) or bk),
+            category=p["cat"],
             campaigns=len(p["cids"]), avg_turn=_mean(p["turns"], 1),
             avg_reward=_mean(rewards),
-            delta_mean=_mean(deltas) if len(deltas) >= 3 else None))
+            delta_mean=_mean(deltas)))
     rows.sort(key=lambda r2: (-r2.campaigns, r2.removed.raw))
     return {"events": events, "rows": rows}
 
@@ -2313,11 +2318,12 @@ def _positions_data(con, force=False) -> dict:
     def build():
         camps = {}
         for r in con.execute(
-                "SELECT campaign_id, faction, campaign_map, leader FROM campaigns"):
+                "SELECT campaign_id, faction, campaign_map, leader, outcome"
+                " FROM campaigns"):
             camps[_i(r["campaign_id"], 0)] = (r["faction"], r["campaign_map"] or "",
-                                              r["leader"])
+                                              r["leader"], r["outcome"])
         per_fac: dict = {}
-        for fk, _mk, leader in camps.values():
+        for fk, _mk, leader, _oc in camps.values():
             e = per_fac.setdefault(fk, {"n": 0, "leader": None})
             e["n"] += 1
             e["leader"] = e["leader"] or leader
@@ -2329,7 +2335,7 @@ def _positions_data(con, force=False) -> dict:
                 campaigns=e["n"]))
         factions.sort(key=lambda o: o.label)
         maps = [_id(ident.campaign_map(mk))
-                for mk in sorted({mk for _f2, mk, _l in camps.values() if mk})]
+                for mk in sorted({mk for _f2, mk, _l, _oc in camps.values() if mk})]
         rewards = {cid2: c2["reward"] for cid2, c2 in _camp_meta(con).items()}
         takes = {}
         for r in con.execute(
@@ -2460,9 +2466,7 @@ def _parse_conditions(raw) -> list:
     return out
 
 
-@db.timed
-def positions_page(con, filters, conditions=None) -> dict:
-    data = _positions_data(con)
+def _matching_decisions(con, data, filters, conditions):
     camps = data["camps"]
     fac = filters.get("faction")
     mp = filters.get("map")
@@ -2471,21 +2475,12 @@ def positions_page(con, filters, conditions=None) -> dict:
         cul_fac = {o.key for o in data["factions"]
                    if (o.culture or "") == filters["culture"]}
     conds = _parse_conditions(conditions)
-    rewards = data["rewards"]
-    peaks = data["peaks"]
-    takes = data["takes"]
     extras = data["extras"]
-    w = reward_weights()
-    w_vec = (w["settlements"], w["lord_levels"], w["allies"], w["vassals"])
     hist_cache: dict = {}
     for cond in conds:
         if cond[0] == "hist":
             hist_cache[cond[2]] = _hist_map(con, cond[2])
     empty: dict = {}
-    n_dec = 0
-    camp_ids: set = set()
-    fut_sum, fut_n = 0.0, 0
-    agg: dict = {}
     for dec in data["decs"]:
         cid = dec[1]
         c = camps.get(cid)
@@ -2523,8 +2518,31 @@ def positions_page(con, filters, conditions=None) -> dict:
                 if has != cond[1]:
                     ok = False
                     break
-        if not ok:
-            continue
+        if ok:
+            yield dec
+
+
+def _position_facets(data) -> dict:
+    return {"factions": data["factions"], "cultures": data["cultures"],
+            "maps": data["maps"], "settlements": data["settlements"],
+            "resources": data["resources"], "hero_types": data["hero_types"]}
+
+
+@db.timed
+def positions_page(con, filters, conditions=None) -> dict:
+    data = _positions_data(con)
+    rewards = data["rewards"]
+    peaks = data["peaks"]
+    takes = data["takes"]
+    w = reward_weights()
+    w_vec = (w["settlements"], w["lord_levels"], w["allies"], w["vassals"])
+    n_dec = 0
+    camp_ids: set = set()
+    fut_sum, fut_n = 0.0, 0
+    agg: dict = {}
+    for dec in _matching_decisions(con, data, filters, conditions):
+        cid = dec[1]
+        did = dec[0]
         n_dec += 1
         camp_ids.add(cid)
         fut = None
@@ -2599,14 +2617,61 @@ def positions_page(con, filters, conditions=None) -> dict:
             if fut is not None and sit_fut is not None else None, keys=keys))
     rows.sort(key=lambda r2: -r2.n)
     camp_rewards = [rewards[c2] for c2 in camp_ids if rewards.get(c2) is not None]
-    return {
-        "factions": data["factions"], "cultures": data["cultures"],
-        "maps": data["maps"], "settlements": data["settlements"],
-        "resources": data["resources"], "hero_types": data["hero_types"],
-        "decisions": n_dec, "campaigns": len(camp_ids), "takes": takes_n,
-        "mean_reward": _mean(camp_rewards),
-        "mean_future": round(sit_fut, 2) if sit_fut is not None else None,
-        "rows": rows}
+    out = dict(_position_facets(data))
+    out.update(
+        decisions=n_dec, campaigns=len(camp_ids), takes=takes_n,
+        mean_reward=_mean(camp_rewards),
+        mean_future=round(sit_fut, 2) if sit_fut is not None else None,
+        rows=rows)
+    return out
+
+
+@db.timed
+def campaign_lookup(con, filters, conditions=None) -> dict:
+    data = _positions_data(con)
+    camp = _camp_meta(con)
+    camps = data["camps"]
+    per: dict = {}
+    n_dec = 0
+    for dec in _matching_decisions(con, data, filters, conditions):
+        n_dec += 1
+        cid = dec[1]
+        e = per.setdefault(cid, {"n": 0, "turn": None})
+        e["n"] += 1
+        t = dec[2]
+        if t is not None and (e["turn"] is None or t < e["turn"]):
+            e["turn"] = t
+    rows = []
+    rewards = []
+    turns_all = []
+    for cid, e in per.items():
+        m = camp.get(cid)
+        info = camps.get(cid)
+        if not m:
+            continue
+        oc = info[3] if info else None
+        rows.append(LookupCampaignRow(
+            campaign=_camp(m["campaign_key"]), ts=_f(m["first_ts"]),
+            leader=m["leader"],
+            campaign_map=_id(ident.campaign_map(m["campaign_map"]))
+            if m["campaign_map"] else None,
+            faction=_fac(m["faction"]),
+            first_turn=_i(e["turn"]), matched=e["n"],
+            turns=_i(m["turns_reached"]), reward=_f(m["reward"]),
+            settlements_gained=_f(m["settlements_gained"]),
+            levels_gained=_f(m["levels_gained"]),
+            outcome=_phrase(oc) if oc else None,
+            outcome_state=_OUTCOME_STATE.get(str(oc or ""), "neutral")))
+        rewards.append(m["reward"])
+        if m["turns_reached"] is not None:
+            turns_all.append(_i(m["turns_reached"], 0) or 0)
+    rows.sort(key=lambda r2: -(r2.ts or 0.0))
+    out = dict(_position_facets(data))
+    out.update(
+        campaigns=len(rows), decisions=n_dec,
+        mean_reward=_mean(rewards), mean_turns=_mean(turns_all, 1),
+        rows=rows)
+    return out
 
 
 def _campaign_id_of(con, campaign_key: str):

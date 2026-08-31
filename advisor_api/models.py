@@ -562,6 +562,7 @@ class StartItems(BaseModel):
 class ItemSwapRow(BaseModel):
     removed: Ident
     equipped: Ident
+    category: str | None = None
     campaigns: int = 0
     avg_turn: float | None = None
     avg_reward: float | None = None
@@ -876,6 +877,37 @@ class PositionsPage(BaseModel):
     mean_reward: float | None = None
     mean_future: float | None = None
     rows: list[PositionTypeRow] = Field(default_factory=list)
+
+
+class LookupCampaignRow(BaseModel):
+    campaign: Ident
+    ts: float | None = None
+    leader: str | None = None
+    campaign_map: Ident | None = None
+    faction: Ident
+    first_turn: int | None = None
+    matched: int = 0
+    turns: int | None = None
+    reward: float | None = None
+    settlements_gained: float | None = None
+    levels_gained: float | None = None
+    outcome: Ident | None = None
+    outcome_state: State = "neutral"
+
+
+class CampaignLookupPage(BaseModel):
+    scope: Scope
+    factions: list[PositionFacetOption] = Field(default_factory=list)
+    cultures: list[str] = Field(default_factory=list)
+    maps: list[Ident] = Field(default_factory=list)
+    settlements: list[PositionFacetOption] = Field(default_factory=list)
+    resources: list[PositionFacetOption] = Field(default_factory=list)
+    hero_types: list[PositionFacetOption] = Field(default_factory=list)
+    campaigns: int = 0
+    decisions: int = 0
+    mean_reward: float | None = None
+    mean_turns: float | None = None
+    rows: list[LookupCampaignRow] = Field(default_factory=list)
 
 
 class RewardComponent(BaseModel):

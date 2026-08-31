@@ -7,19 +7,21 @@ import { useApi, type CampaignsPage, type StartsPage } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
 const PAGES = [
-  { label: 'run', to: '/run' },
   { label: 'campaigns', to: '/campaigns' },
   { label: 'starts', to: '/campaigns?view=starts' },
-  { label: 'decisions', to: '/decisions' },
-  { label: 'positions', to: '/positions' },
+  { label: 'lookup', to: '/lookup' },
   { label: 'items', to: '/items' },
   { label: 'buildings', to: '/buildings' },
   { label: 'research', to: '/research' },
   { label: 'skills', to: '/skills' },
-  { label: 'log', to: '/log' },
+  { label: 'status', to: '/status' },
 ]
 
 const STACK_PAGES = [
+  { label: 'run', to: '/run' },
+  { label: 'decisions', to: '/decisions' },
+  { label: 'positions', to: '/positions' },
+  { label: 'log', to: '/log' },
   { label: 'selector', to: '/selector' },
   { label: 'models', to: '/models' },
   { label: 'infra', to: '/infra' },

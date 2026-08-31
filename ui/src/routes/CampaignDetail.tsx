@@ -761,7 +761,8 @@ function DecisionsTab({ campaignKey }: { campaignKey: string }) {
 export function CampaignDetail() {
   const { campaignKey = '' } = useParams()
   const mode = useUiMode()
-  const tab = useSubView(TABS, 'tab')
+  const tabs = mode === 'full' ? TABS : TABS.filter((t) => t.key !== 'decisions')
+  const tab = useSubView(tabs, 'tab')
   const [seen, setSeen] = useState<Record<string, boolean>>({})
   useEffect(() => {
     setSeen((s) => (s[tab] ? s : { ...s, [tab]: true }))
@@ -800,15 +801,17 @@ export function CampaignDetail() {
           <span>
             turn <b className="num text-fg">{n(row.turns)}</b>
           </span>
-          <span>
-            <b className="num text-fg">{n(row.decisions)}</b> decisions
-          </span>
+          {mode === 'full' && (
+            <span>
+              <b className="num text-fg">{n(row.decisions)}</b> decisions
+            </span>
+          )}
           {row.reward != null && (
             <span>
               reward <b className="num text-fg">{n(row.reward)}</b>
             </span>
           )}
-          {row.confirm_rate?.of ? (
+          {mode === 'full' && row.confirm_rate?.of ? (
             <span>
               confirmed <b className="num text-fg">{((100 * row.confirm_rate.n) / row.confirm_rate.of).toFixed(0)}%</b>{' '}
               ({n(row.confirm_rate.n)}/{n(row.confirm_rate.of)})
@@ -822,7 +825,7 @@ export function CampaignDetail() {
         </div>
       </div>
 
-      <SubNav views={TABS} param="tab" />
+      <SubNav views={tabs} param="tab" />
       <div className={tab === 'overview' ? '' : 'hidden'}>
         {seen.overview && <OverviewTab data={data} campaignKey={campaignKey} />}
       </div>
@@ -839,7 +842,7 @@ export function CampaignDetail() {
         {seen.items && <ItemsTab campaignKey={campaignKey} />}
       </div>
       <div className={tab === 'decisions' ? '' : 'hidden'}>
-        {seen.decisions && <DecisionsTab campaignKey={campaignKey} />}
+        {mode === 'full' && seen.decisions && <DecisionsTab campaignKey={campaignKey} />}
       </div>
     </div>
   )

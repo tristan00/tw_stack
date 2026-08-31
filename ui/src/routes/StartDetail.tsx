@@ -372,6 +372,7 @@ function PerformanceTab({ base, lord }: { base: string; lord: string }) {
 function CampaignsTab({ base }: { base: string }) {
   const [params, setParams] = useSearchParams()
   const navigate = useNavigate()
+  const mode = useUiMode()
   const { data, error, loading, reload } = useApi<StartCampaignsPage>(`${base}/campaigns`, [], { live: false })
   if (error) return <ErrorState error={error} onRetry={reload} />
   if (loading || !data) return <Skeleton rows={8} />
@@ -433,7 +434,7 @@ function CampaignsTab({ base }: { base: string }) {
       )}
       <DataTable
         rows={rows}
-        cols={cols}
+        cols={mode === 'full' ? cols : cols.filter((c) => c.key !== 'decisions' && c.key !== 'confirm')}
         rowId={(r) => r.campaign.raw}
         onRowClick={(r) => navigate(`/campaigns/${encodeURIComponent(r.campaign.raw)}`)}
         searchPlaceholder="search campaign…"
@@ -736,7 +737,8 @@ export function StartDetail() {
   const { campaignMap = '', faction = '' } = useParams()
   const mode = useUiMode()
   const base = `/api/campaigns/starts/${encodeURIComponent(campaignMap)}/${encodeURIComponent(faction)}`
-  const tab = useSubView(TABS, 'tab')
+  const tabs = mode === 'full' ? TABS : TABS.filter((t) => t.key !== 'actions')
+  const tab = useSubView(tabs, 'tab')
   const [seen, setSeen] = useState<Record<string, boolean>>({})
   useEffect(() => {
     setSeen((s) => (s[tab] ? s : { ...s, [tab]: true }))
@@ -752,11 +754,15 @@ export function StartDetail() {
     { label: 'mean reward', value: s.mean == null ? null : n(s.mean, 2), sub: s.std == null ? undefined : `± ${n(s.std, 2)} std` },
     { label: 'best reward', value: s.best, sub: s.zero_rate?.of ? `${((100 * s.zero_rate.n) / s.zero_rate.of).toFixed(0)}% zero` : undefined },
     { label: 'avg turns', value: s.avg_turns == null ? null : n(s.avg_turns, 1), sub: s.sec_per_turn == null ? undefined : `${n(s.sec_per_turn, 1)} s/turn` },
-    {
-      label: 'confirmed',
-      value: s.confirm_rate?.of ? `${((100 * s.confirm_rate.n) / s.confirm_rate.of).toFixed(0)}%` : null,
-      sub: s.confirm_rate ? `${n(s.confirm_rate.n)}/${n(s.confirm_rate.of)} actions` : undefined,
-    },
+    ...(mode === 'full'
+      ? [
+          {
+            label: 'confirmed',
+            value: s.confirm_rate?.of ? `${((100 * s.confirm_rate.n) / s.confirm_rate.of).toFixed(0)}%` : null,
+            sub: s.confirm_rate ? `${n(s.confirm_rate.n)}/${n(s.confirm_rate.of)} actions` : undefined,
+          },
+        ]
+      : []),
   ]
   return (
     <div className="space-y-5">
@@ -790,13 +796,13 @@ export function StartDetail() {
         </h1>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+      <div className={cn('grid gap-3 sm:grid-cols-2', mode === 'full' ? 'lg:grid-cols-5' : 'lg:grid-cols-4')}>
         {tiles.map((t) => (
           <MetricTile key={t.label} metric={{ label: t.label, value: t.value ?? null, unit: null, sub: t.sub ?? null, state: 'neutral', spark: [] }} />
         ))}
       </div>
 
-      <SubNav views={TABS} param="tab" />
+      <SubNav views={tabs} param="tab" />
       <div className={tab === 'performance' ? '' : 'hidden'}>{seen.performance && <PerformanceTab base={base} lord={lord} />}</div>
       <div className={tab === 'openings' ? '' : 'hidden'}>{seen.openings && <OpeningsTab base={base} />}</div>
       <div className={tab === 'buildings' ? '' : 'hidden'}>{seen.buildings && <BuildingsTab base={base} />}</div>
@@ -804,7 +810,7 @@ export function StartDetail() {
       <div className={tab === 'skills' ? '' : 'hidden'}>{seen.skills && <SkillsTab base={base} />}</div>
       <div className={tab === 'items' ? '' : 'hidden'}>{seen.items && <ItemsTab base={base} />}</div>
       <div className={tab === 'campaigns' ? '' : 'hidden'}>{seen.campaigns && <CampaignsTab base={base} />}</div>
-      <div className={tab === 'actions' ? '' : 'hidden'}>{seen.actions && <ActionsTab base={base} faction={s.faction.label} />}</div>
+      <div className={tab === 'actions' ? '' : 'hidden'}>{mode === 'full' && seen.actions && <ActionsTab base={base} faction={s.faction.label} />}</div>
     </div>
   )
 }

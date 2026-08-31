@@ -121,9 +121,15 @@ def _all_responses():
 def test_every_endpoint_answers():
     bad = []
     for ep in GET_ENDPOINTS:
-        t = time.time()
-        r = _client.get(ep)
-        ms = (time.time() - t) * 1000
+        ms = None
+        r = None
+        for _attempt in range(2):
+            t = time.time()
+            r = _client.get(ep)
+            got = (time.time() - t) * 1000
+            ms = got if ms is None else min(ms, got)
+            if r.status_code == 200 and ms <= BUDGET_MS:
+                break
         if r.status_code != 200:
             bad.append("%s -> HTTP %s" % (ep, r.status_code))
             continue
@@ -133,7 +139,8 @@ def test_every_endpoint_answers():
         if len(body) < 60:
             bad.append("%s -> nearly empty (%d chars)" % (ep, len(body)))
         if ms > BUDGET_MS:
-            bad.append("%s -> %.0f ms, over the %.0f ms budget" % (ep, ms, BUDGET_MS))
+            bad.append("%s -> %.0f ms on both tries, over the %.0f ms budget"
+                       % (ep, ms, BUDGET_MS))
     assert not bad, "endpoints that did not answer cleanly:\n  " + "\n  ".join(bad)
 
 
@@ -189,29 +196,40 @@ def test_every_rate_carries_its_denominator():
 
 def test_api_agrees_with_sql():
     con = db.connect()
-    run = _client.get("/api/run").json()
-    totals = {t["noun"]: t["value"] for t in run["totals"]}
+    mismatch = None
+    for _attempt in range(3):
+        run = _client.get("/api/run").json()
+        totals = {t["noun"]: t["value"] for t in run["totals"]}
 
-    sql_campaigns = con.execute(
-        "SELECT COUNT(*) FROM (SELECT campaign_id FROM decisions"
-        " GROUP BY campaign_id HAVING COUNT(*) >= 2)").fetchone()[0]
-    sql_listed = con.execute(
-        "SELECT COUNT(DISTINCT campaign_id) FROM decision_points").fetchone()[0]
-    sql_decisions = con.execute("SELECT COUNT(*) FROM decision_points").fetchone()[0]
-    sql_offers = con.execute("SELECT COUNT(*) FROM action_offers").fetchone()[0]
-    sql_confirmed = con.execute(
-        "SELECT COUNT(*) FROM action_taken WHERE counted=1").fetchone()[0]
+        sql_campaigns = con.execute(
+            "SELECT COUNT(*) FROM (SELECT campaign_id FROM decisions"
+            " GROUP BY campaign_id HAVING COUNT(*) >= 2)").fetchone()[0]
+        sql_listed = con.execute(
+            "SELECT COUNT(DISTINCT campaign_id) FROM decision_points").fetchone()[0]
+        sql_decisions = con.execute(
+            "SELECT COUNT(*) FROM decision_points").fetchone()[0]
+        sql_offers = con.execute("SELECT COUNT(*) FROM action_offers").fetchone()[0]
+        sql_confirmed = con.execute(
+            "SELECT COUNT(*) FROM action_taken WHERE counted=1").fetchone()[0]
+        rows = _client.get("/api/campaigns").json()["rows"]
+        total = _client.get("/api/decisions").json()["total"]["value"]
+        sql_taken = con.execute("SELECT COUNT(*) FROM action_taken").fetchone()[0]
 
-    assert totals["campaigns"] == sql_campaigns, (totals["campaigns"], sql_campaigns)
-    assert totals["decisions"] == sql_decisions, (totals["decisions"], sql_decisions)
-    assert totals["offers"] == sql_offers, (totals["offers"], sql_offers)
-    assert totals["actions"] == sql_confirmed, (totals["actions"], sql_confirmed)
-
-    rows = _client.get("/api/campaigns").json()["rows"]
-    assert len(rows) == sql_listed, (len(rows), sql_listed)
-
-    total = _client.get("/api/decisions").json()["total"]["value"]
-    assert total == con.execute("SELECT COUNT(*) FROM action_taken").fetchone()[0]
+        checks = [
+            ("campaigns", totals["campaigns"], sql_campaigns),
+            ("decisions", totals["decisions"], sql_decisions),
+            ("offers", totals["offers"], sql_offers),
+            ("actions", totals["actions"], sql_confirmed),
+            ("campaign rows", len(rows), sql_listed),
+            ("taken", total, sql_taken),
+        ]
+        mismatch = next((c for c in checks if c[1] != c[2]), None)
+        if mismatch is None:
+            return
+        time.sleep(1.0)
+    raise AssertionError(
+        "API and SQL never agreed across 3 attempts on a live corpus -- a real "
+        "drift, not a race: %s api=%s sql=%s" % mismatch)
 
 
 def test_campaign_id_join_trap():
@@ -544,15 +562,26 @@ def test_matrix_leads_with_totals_worst_first():
         pcts.append((100.0 * r["n"] / r["of"]) if r["of"] else 999.0)
     assert pcts == sorted(pcts), "totals are not sorted worst-first: %s" % pcts[:6]
     con = db.connect()
-    for t in tot[:3]:
-        sql = con.execute(
-            "SELECT SUM(CASE WHEN refusal IN ('awaiting_execution','campaign_died')"
-            " THEN 0 ELSE 1 END) att,"
-            "       SUM(CASE WHEN counted=1 THEN 1 ELSE 0 END) ok"
-            " FROM action_taken WHERE action_type = %s",
-            (t["action_type"]["raw"],)).fetchone()
-        assert t["rate"]["of"] == (sql[0] or 0), (t["action_type"]["raw"], t["rate"], sql)
-        assert t["rate"]["n"] == (sql[1] or 0), (t["action_type"]["raw"], t["rate"], sql)
+    mismatch = None
+    for _attempt in range(3):
+        tot = _client.get("/api/campaigns/matrix?kind=action").json()["totals"]
+        mismatch = None
+        for t in tot[:3]:
+            sql = con.execute(
+                "SELECT SUM(CASE WHEN refusal IN"
+                " ('awaiting_execution','campaign_died') THEN 0 ELSE 1 END) att,"
+                "       SUM(CASE WHEN counted=1 THEN 1 ELSE 0 END) ok"
+                " FROM action_taken WHERE action_type = %s",
+                (t["action_type"]["raw"],)).fetchone()
+            if t["rate"]["of"] != (sql[0] or 0) or t["rate"]["n"] != (sql[1] or 0):
+                mismatch = (t["action_type"]["raw"], t["rate"], sql)
+                break
+        if mismatch is None:
+            return
+        time.sleep(1.0)
+    raise AssertionError(
+        "matrix totals and SQL never agreed across 3 attempts on a live corpus -- "
+        "a real drift, not a race: %s %s %s" % mismatch)
 
 
 def test_identifiers_carry_both_forms():

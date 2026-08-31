@@ -2,9 +2,15 @@ import { useSearchParams } from 'react-router-dom'
 import { DataTable, type Col } from '@/components/DataTable'
 import { CatalogNav, TookCell } from '@/components/catalog'
 import { EntityLink, ErrorState, Section, Skeleton } from '@/components/primitives'
+import { SubNav, useSubView } from '@/components/SubNav'
 import { useApi, type ItemRow, type ItemsPage, type ItemSwapRow } from '@/lib/api'
 import { n } from '@/lib/format'
 import { cn } from '@/lib/utils'
+
+const TABS = [
+  { key: 'items', label: 'items', asks: 'does wearing an item pay' },
+  { key: 'swaps', label: 'kept swaps', asks: 'which permanent same-turn item swaps happen, and how those campaigns go' },
+]
 
 export const itemDelta = (v: number | null | undefined) =>
   v == null ? (
@@ -61,7 +67,7 @@ export const itemCols = (resources: string[] = []): Col<ItemRow>[] => [
     label: 'Δ reward',
     unit: 'worn − benched',
     align: 'right',
-    help: 'average campaign reward when a campaign wore it, minus when a campaign held it but left it benched. Shown once both sides have 5+ campaigns.',
+    help: 'avg campaign reward, worn − benched · needs 5+5 campaigns',
     value: (r) => r.delta ?? undefined,
     sortUndefined: 'last',
     render: (r) => itemDelta(r.delta),
@@ -110,6 +116,7 @@ const swapCols: Col<ItemSwapRow>[] = [
       </EntityLink>
     ),
   },
+  { key: 'cat', label: 'category', value: (r) => r.category ?? '', render: (r) => <span className="text-dim">{r.category ?? '—'}</span> },
   { key: 'n', label: 'campaigns', align: 'right', value: (r) => r.campaigns, render: (r) => <span className="num">{n(r.campaigns)}</span> },
   { key: 'turn', label: 'avg swap turn', align: 'right', value: (r) => r.avg_turn ?? undefined, sortUndefined: 'last', render: (r) => (r.avg_turn == null ? <span className="text-dim">—</span> : <span className="num">{n(r.avg_turn, 1)}</span>) },
   { key: 'reward', label: 'avg reward', align: 'right', value: (r) => r.avg_reward ?? undefined, sortUndefined: 'last', render: (r) => (r.avg_reward == null ? <span className="text-dim">—</span> : <span className="num">{n(r.avg_reward, 2)}</span>) },
@@ -118,15 +125,14 @@ const swapCols: Col<ItemSwapRow>[] = [
     label: 'Δ reward',
     unit: 'vs start mean',
     align: 'right',
-    help: 'average of (campaign reward minus its start’s mean reward) over the campaigns that made this exact swap. Shown from 3 campaigns.',
+    help: 'mean of (campaign reward − its start’s mean) over the swapping campaigns',
     value: (r) => r.delta_mean ?? undefined,
     sortUndefined: 'last',
     render: (r) => itemDelta(r.delta_mean),
   },
 ]
 
-export function Items() {
-  const { data, error, loading, reload } = useApi<ItemsPage>('/api/items', [], { live: false })
+function ItemsIndex({ data }: { data: ItemsPage }) {
   const [params, setParams] = useSearchParams()
   const cat = params.get('cat') ?? ''
   const setCat = (v: string) => {
@@ -135,12 +141,8 @@ export function Items() {
     else next.delete('cat')
     setParams(next, { replace: true })
   }
-  if (error) return <ErrorState error={error} onRetry={reload} />
-  if (loading || !data) return <Skeleton rows={10} />
   const rows = (data.rows ?? []).filter((r) => !cat || r.category === cat)
   return (
-    <div>
-      <CatalogNav active="/items" />
       <Section
         title="items"
         scope={{
@@ -168,22 +170,41 @@ export function Items() {
       </div>
       <DataTable rows={rows} cols={itemCols(data.resources ?? [])} rowId={(r) => r.key} searchPlaceholder="search item…" pageSize={25} emptyWhat="no item matches" />
       </Section>
-      <Section
-        title="kept swaps"
-        scope={{
-          text: `a character took one item off and put another on the same turn, then kept the new one for the rest of the campaign · ${n(data.swap_events)} swap${data.swap_events === 1 ? '' : 's'} across ${n((data.swaps ?? []).length)} pairs`,
-          detail: 'the old item stays off too · Δ compares each swapping campaign to its own start’s mean reward',
-        }}
-      >
-        <DataTable
-          rows={data.swaps ?? []}
-          cols={swapCols}
-          rowId={(r) => `${r.removed.raw}>${r.equipped.raw}`}
-          searchPlaceholder="search swap…"
-          pageSize={15}
-          emptyWhat="no campaign ever made a permanent same-turn swap"
-        />
-      </Section>
+  )
+}
+
+function SwapsView({ data }: { data: ItemsPage }) {
+  return (
+    <Section
+      title="kept swaps"
+      scope={{
+        text: `a character took one item off and put another of the same category on the same turn, then kept the new one for the rest of the campaign · ${n(data.swap_events)} swap${data.swap_events === 1 ? '' : 's'} across ${n((data.swaps ?? []).length)} pairs`,
+        detail: 'same category = competing for the same slot · the old item stays off too · Δ compares each swapping campaign to its own start’s mean reward',
+      }}
+    >
+      <DataTable
+        rows={data.swaps ?? []}
+        cols={swapCols}
+        rowId={(r) => `${r.removed.raw}>${r.equipped.raw}`}
+        searchPlaceholder="search swap…"
+        pageSize={25}
+        emptyWhat="no campaign ever made a permanent same-turn swap"
+      />
+    </Section>
+  )
+}
+
+export function Items() {
+  const { data, error, loading, reload } = useApi<ItemsPage>('/api/items', [], { live: false })
+  const tab = useSubView(TABS, 'tab')
+  if (error) return <ErrorState error={error} onRetry={reload} />
+  if (loading || !data) return <Skeleton rows={10} />
+  return (
+    <div>
+      <CatalogNav active="/items" />
+      <SubNav views={TABS} param="tab" />
+      {tab === 'items' && <ItemsIndex data={data} />}
+      {tab === 'swaps' && <SwapsView data={data} />}
     </div>
   )
 }
