@@ -128,7 +128,6 @@ def check(verbose=True):
         import schema as S
 
     src_net = open(os.path.join(_HERE, "net.py"), encoding="utf-8").read()
-    code_trn = _code_only(os.path.join(_HERE, "train.py"))
     results = []
 
     def ok(name, cond, detail=""):
@@ -142,15 +141,6 @@ def check(verbose=True):
     nll = inspect.getsource(N.listwise_nll)
     ok("listwise NLL over each decision's candidate set",
        "softmax(q, a_graph" in nll and "-torch.log" in nll)
-
-    mse = [ast.unparse(n) for n in ast.walk(ast.parse(code_trn))
-           if isinstance(n, ast.Call) and "mse" in ast.unparse(n.func).lower()]
-    ok("no mse(q, ...); only mse(v, y_z)",
-       all(not c.replace(" ", "").split("(", 1)[1].startswith("q,") for c in mse),
-       "; ".join(mse) or "none")
-
-    ok("advantage weight exp((y_z - v)/tau), clipped",
-       "b.y_z - v.detach()" in code_trn and "adv_clip" in code_trn)
 
     banned_calls, importers = [], []
     for fn in sorted(os.listdir(_HERE)):
@@ -214,15 +204,14 @@ def check(verbose=True):
 
     src_gnet = open(os.path.join(_HERE, "greedy_net.py"), encoding="utf-8").read()
     code_greedy = _code_only(os.path.join(_HERE, "greedy_train.py"))
-    ok("greedy: the MARWIL encoder, reused unchanged",
+    ok("greedy: the shared net.py encoder, reused unchanged",
        "N.Encoder(" in src_gnet and "class Encoder" not in src_gnet)
     ok("greedy: one reward head per action node, no value head, no listwise loss",
        "class RewardHead" in src_gnet and "self.v " not in src_gnet
        and "listwise" not in src_gnet and "listwise" not in code_greedy)
     ok("greedy: fit by mse on the taken action's z-scored return only",
        "taken_q(" in code_greedy and "mse_loss(q, b.y_z" in code_greedy
-       and "torch.exp(" not in code_greedy and "adv_tau" not in code_greedy.split(
-           "_MARWIL_ONLY", 1)[-1].split("\n", 1)[-1])
+       and "torch.exp(" not in code_greedy and "adv_tau" not in code_greedy)
     ok("greedy: the interrupt family has no graph model",
        not any(os.path.exists(os.path.join(_HERE, f)) for f in
                ("interrupt_rank.py", "interrupt_train.py", "interrupt_build.py")),

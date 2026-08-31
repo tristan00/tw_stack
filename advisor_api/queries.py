@@ -1312,12 +1312,8 @@ _MODEL_DIRS = (
      "One reward regression over the screen, game-state and option features for blocking "
      "screens -- battles, dilemmas, occupation choices. The only interrupt model: the "
      "interrupt mix draws from greedy_catboost, random and ruleset."),
-    ("marwil_gnn", common.MODEL_MAPGRAPH, "mapgraph",
-     "MARWIL/AWR over the graph encoder: the map and its entities as a graph, the action a "
-     "node in it, trained by exponentially advantage-weighted imitation of the logged "
-     "action rather than by maximising the advantage."),
     ("greedy_gnn", common.MODEL_MAPGRAPH_GREEDY, "mapgraph",
-     "The same graph encoder with a reward head: one regression of the return per action "
+     "The graph encoder with a reward head: one regression of the return per action "
      "node, fit by MSE on the action that was taken. No state-only model, no advantage, "
      "no value head -- the arm takes the action with the highest predicted return."),
 )
@@ -1431,10 +1427,8 @@ def _fit_config() -> list:
     from advisor_api.models import FitConfigRow
     out = []
     for arm, path, role in (
-            ("marwil_gnn", common.MODEL_MAPGRAPH,
-             "advantage-weighted imitation over the graph encoder"),
             ("greedy_gnn", common.MODEL_MAPGRAPH_GREEDY,
-             "one reward regression per action node over the same graph encoder")):
+             "one reward regression per action node over the graph encoder"),):
         g = _meta_json(path)
         cfg = g.get("cfg") or {}
         out.append(FitConfigRow(

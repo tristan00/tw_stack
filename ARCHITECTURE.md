@@ -12,9 +12,8 @@
    run dir  <TWDATA>/runs/human/run/  + CURRENT_RUN             │ execute picked action
                  │                                              │
    advisor (BACKEND: session → loop → policy/model)  ───────────┘
-   action mix: greedy_catboost (argmax of the E1-E2 advantage) · marwil_gnn (MARWIL/AWR
-   on the graph encoder) · greedy_gnn (argmax of one reward regression on the same
-   encoder) · ruleset · random
+   action mix: greedy_catboost (argmax of the E1-E2 advantage) · greedy_gnn (argmax of
+   one reward regression on the graph encoder) · ruleset · random
    interrupt mix: greedy_catboost (the catboost interrupt model) · ruleset · random
    watchdog
    features ← reference/features_db ← Postgres eference schema
@@ -33,9 +32,9 @@
   decision loop, `policy.py` selection, `model.py` E1/E2 global+local ranking,
   `interrupt_model.py` for blocking screens, `watchdog.py`.
   `reference/` is the offline game-data lookup layer (`features_db.py`, rebuilt by
-  `build_reference.py` from the WH3 packs). `mapgraph/` holds the graph models: `net.py`/`train.py`/`rank.py` are
-  `marwil_gnn`, `greedy_net.py`/`greedy_train.py`/`greedy_rank.py` are `greedy_gnn` on the
-  same encoder and corpus cache; no version suffix. They live here because they are advisor
+  `build_reference.py` from the WH3 packs). `mapgraph/` holds the graph model: `net.py` is the shared
+  encoder, `train.py` the shared corpus walk, `greedy_net.py`/`greedy_train.py`/`greedy_rank.py`
+  are `greedy_gnn`; no version suffix. They live here because they are advisor
   models, not peers of the recorder.
 - **advisor_api** — the frontend's server half. `python -m advisor_api.app [port]` (:8777):
   a typed JSON API over the corpus, an SSE channel that emits when the corpus grows, and
@@ -78,8 +77,8 @@
   (presave restore → `load_save`, or `start_game`) and never references, recovers, or
   cleans up after the previous one — not even a game sitting at the main menu.
 - **Trainable arms are hard dependencies.** A model gate at session start refuses to run if
-  any trainable arm in either mix (`greedy_catboost`, `marwil_gnn`, `greedy_gnn` on
-  actions; `greedy_catboost` on blocking screens -- the graph arms have no interrupt model)
+  any trainable arm in either mix (`greedy_catboost`, `greedy_gnn` on
+  actions; `greedy_catboost` on blocking screens -- the graph arm has no interrupt model)
   cannot load a usable model; a retrain that raises or reports `trained: false` kills the session;
   a predict failure raises `ModelUnavailable` and ends the run. Only `--cold` runs
   modelless. Retraining is opt-in (`--retrain-every N`); a launch never refits by default.
