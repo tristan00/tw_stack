@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { ChevronDown, ChevronRight, Plus, X } from 'lucide-react'
 import { signedNum } from '@/components/catalog'
 import { useUiMode } from '@/components/Layout'
-import { Card, EntityLink, ErrorState, MetricTile, Section, Skeleton } from '@/components/primitives'
+import { Card, EntityLink, ErrorState, Help, MetricTile, Section, Skeleton } from '@/components/primitives'
 import {
   useApi,
   type CatalogIndexPage,
@@ -396,8 +396,27 @@ export function Positions() {
                 <th className="px-3 py-1.5 font-normal">action type</th>
                 <th className="px-3 py-1.5 text-right font-normal">taken</th>
                 <th className="px-3 py-1.5 text-right font-normal">share</th>
-                {scores && <th className="px-3 py-1.5 text-right font-normal">mean score</th>}
-                {scores && <th className="px-3 py-1.5 text-right font-normal">Δ vs situation</th>}
+                {scores && (
+                  <th className="px-3 py-1.5 text-right font-normal">
+                    mean score
+                    <Help>
+                      Every offer at a decision gets a score from the arm that was acting: its estimate of how good that
+                      action is right there. This column averages those scores over the taken actions of this type. The
+                      scale is the policy’s own, so read it against the situation mean (everything on offer) and the
+                      Δ column.
+                    </Help>
+                  </th>
+                )}
+                {scores && (
+                  <th className="px-3 py-1.5 text-right font-normal">
+                    Δ vs situation
+                    <Help>
+                      The taken action’s score minus the mean score of everything on offer at that same decision,
+                      averaged over the matching decisions: how much better than its alternatives the chosen action looked
+                      to the acting policy.
+                    </Help>
+                  </th>
+                )}
               </tr>
             </thead>
             <tbody>

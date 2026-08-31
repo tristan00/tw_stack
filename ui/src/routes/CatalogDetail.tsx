@@ -1,6 +1,6 @@
 import { useParams } from 'react-router-dom'
 import { DataTable, type Col } from '@/components/DataTable'
-import { ByStartTable, RecentTable, TookCell, dashNum } from '@/components/catalog'
+import { ByStartTable, RecentTable, TookCell, dashNum, signedNum } from '@/components/catalog'
 import { Chip, EntityLink, ErrorState, MetricTile, Section, Skeleton } from '@/components/primitives'
 import { useApi, type CatalogKeyPage, type ChainLevel, type RelatedKey, type SkillCharacterRow } from '@/lib/api'
 import { n, pct } from '@/lib/format'
@@ -64,6 +64,18 @@ function RelatedTable({ rows, family, verb }: { rows: RelatedKey[]; family: stri
           { key: 'rank', label: 'unlocks at rank', align: 'right', value: (r) => r.unlock_rank ?? 0, render: (r) => dashNum(r.unlock_rank) },
         ] as Col<RelatedKey>[])),
     { key: 'rate', label: verb, align: 'right', value: (r) => r.took_in, render: (r) => <TookCell rate={r.took} /> },
+    { key: 'rt', label: 'avg reward', unit: 'took', align: 'right', optional: true, value: (r) => r.avg_reward_took ?? undefined, sortUndefined: 'last', render: (r) => dashNum(r.avg_reward_took, 2) },
+    { key: 'rp', label: 'avg reward', unit: 'passed', align: 'right', optional: true, value: (r) => r.avg_reward_passed ?? undefined, sortUndefined: 'last', render: (r) => dashNum(r.avg_reward_passed, 2) },
+    {
+      key: 'delta',
+      label: 'Δ reward',
+      unit: 'took − passed',
+      align: 'right',
+      help: `average campaign reward of campaigns that ${verb} this neighbour, minus campaigns that saw it on offer and never did. Naive and pooled across starts; shown once both sides have 5+ campaigns.`,
+      value: (r) => r.delta ?? undefined,
+      sortUndefined: 'last',
+      render: (r) => signedNum(r.delta),
+    },
   ]
   return <DataTable rows={rows} cols={cols} rowId={(r) => `${r.kind}:${r.key}`} dense pageSize={10} emptyWhat="no link in the reference tree" />
 }
@@ -90,6 +102,18 @@ function ChainTable({ chain }: { chain: ChainLevel[] }) {
     },
     { key: 'cost', label: 'cost', align: 'right', value: (r) => r.cost ?? undefined, sortUndefined: 'last', render: (r) => dashNum(r.cost) },
     { key: 'rate', label: 'constructed', align: 'right', value: (r) => r.took?.n ?? 0, render: (r) => <TookCell rate={r.took} /> },
+    { key: 'rt', label: 'avg reward', unit: 'took', align: 'right', optional: true, value: (r) => r.avg_reward_took ?? undefined, sortUndefined: 'last', render: (r) => dashNum(r.avg_reward_took, 2) },
+    { key: 'rp', label: 'avg reward', unit: 'passed', align: 'right', optional: true, value: (r) => r.avg_reward_passed ?? undefined, sortUndefined: 'last', render: (r) => dashNum(r.avg_reward_passed, 2) },
+    {
+      key: 'delta',
+      label: 'Δ reward',
+      unit: 'took − passed',
+      align: 'right',
+      help: 'average campaign reward of campaigns that constructed this level, minus campaigns that saw it on offer and never did. Naive and pooled across starts; shown once both sides have 5+ campaigns.',
+      value: (r) => r.delta ?? undefined,
+      sortUndefined: 'last',
+      render: (r) => signedNum(r.delta),
+    },
   ]
   return <DataTable rows={chain} cols={cols} rowId={(r) => r.key} dense emptyWhat="no chain in the reference schema" />
 }

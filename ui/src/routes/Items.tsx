@@ -2,7 +2,7 @@ import { useSearchParams } from 'react-router-dom'
 import { DataTable, type Col } from '@/components/DataTable'
 import { CatalogNav, TookCell } from '@/components/catalog'
 import { EntityLink, ErrorState, Section, Skeleton } from '@/components/primitives'
-import { useApi, type ItemRow, type ItemsPage } from '@/lib/api'
+import { useApi, type ItemRow, type ItemsPage, type ItemSwapRow } from '@/lib/api'
 import { n } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
@@ -89,6 +89,42 @@ export const itemCols = (resources: string[] = []): Col<ItemRow>[] => [
   ),
 ]
 
+const swapCols: Col<ItemSwapRow>[] = [
+  {
+    key: 'removed',
+    label: 'took off',
+    value: (r) => r.removed.label,
+    render: (r) => (
+      <EntityLink to={`/items/${encodeURIComponent(r.removed.raw)}`} title={r.removed.raw}>
+        {r.removed.label}
+      </EntityLink>
+    ),
+  },
+  {
+    key: 'equipped',
+    label: 'put on instead',
+    value: (r) => r.equipped.label,
+    render: (r) => (
+      <EntityLink to={`/items/${encodeURIComponent(r.equipped.raw)}`} title={r.equipped.raw}>
+        {r.equipped.label}
+      </EntityLink>
+    ),
+  },
+  { key: 'n', label: 'campaigns', align: 'right', value: (r) => r.campaigns, render: (r) => <span className="num">{n(r.campaigns)}</span> },
+  { key: 'turn', label: 'avg swap turn', align: 'right', value: (r) => r.avg_turn ?? undefined, sortUndefined: 'last', render: (r) => (r.avg_turn == null ? <span className="text-dim">—</span> : <span className="num">{n(r.avg_turn, 1)}</span>) },
+  { key: 'reward', label: 'avg reward', align: 'right', value: (r) => r.avg_reward ?? undefined, sortUndefined: 'last', render: (r) => (r.avg_reward == null ? <span className="text-dim">—</span> : <span className="num">{n(r.avg_reward, 2)}</span>) },
+  {
+    key: 'delta',
+    label: 'Δ reward',
+    unit: 'vs start mean',
+    align: 'right',
+    help: 'average of (campaign reward minus its start’s mean reward) over the campaigns that made this exact swap. Shown from 3 campaigns.',
+    value: (r) => r.delta_mean ?? undefined,
+    sortUndefined: 'last',
+    render: (r) => itemDelta(r.delta_mean),
+  },
+]
+
 export function Items() {
   const { data, error, loading, reload } = useApi<ItemsPage>('/api/items', [], { live: false })
   const [params, setParams] = useSearchParams()
@@ -131,6 +167,22 @@ export function Items() {
         <span className="text-dim num ml-auto">{rows.length} of {n(data.total)}</span>
       </div>
       <DataTable rows={rows} cols={itemCols(data.resources ?? [])} rowId={(r) => r.key} searchPlaceholder="search item…" pageSize={25} emptyWhat="no item matches" />
+      </Section>
+      <Section
+        title="kept swaps"
+        scope={{
+          text: `a character took one item off and put another on the same turn, then kept the new one for the rest of the campaign · ${n(data.swap_events)} swap${data.swap_events === 1 ? '' : 's'} across ${n((data.swaps ?? []).length)} pairs`,
+          detail: 'the old item stays off too · Δ compares each swapping campaign to its own start’s mean reward',
+        }}
+      >
+        <DataTable
+          rows={data.swaps ?? []}
+          cols={swapCols}
+          rowId={(r) => `${r.removed.raw}>${r.equipped.raw}`}
+          searchPlaceholder="search swap…"
+          pageSize={15}
+          emptyWhat="no campaign ever made a permanent same-turn swap"
+        />
       </Section>
     </div>
   )

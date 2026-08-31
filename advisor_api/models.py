@@ -559,12 +559,23 @@ class StartItems(BaseModel):
     behaviour: list[BehaviourRow] = Field(default_factory=list)
 
 
+class ItemSwapRow(BaseModel):
+    removed: Ident
+    equipped: Ident
+    campaigns: int = 0
+    avg_turn: float | None = None
+    avg_reward: float | None = None
+    delta_mean: float | None = None
+
+
 class ItemsPage(BaseModel):
     scope: Scope
     total: int = 0
     categories: list[str] = Field(default_factory=list)
     resources: list[str] = Field(default_factory=list)
     rows: list[ItemRow] = Field(default_factory=list)
+    swap_events: int = 0
+    swaps: list[ItemSwapRow] = Field(default_factory=list)
 
 
 class ItemStartRow(BaseModel):
@@ -765,6 +776,9 @@ class ChainLevel(BaseModel):
     cost: int | None = None
     constructed_in: int = 0
     took: Rate | None = None
+    avg_reward_took: float | None = None
+    avg_reward_passed: float | None = None
+    delta: float | None = None
     this: bool = False
 
 
@@ -777,6 +791,9 @@ class RelatedKey(BaseModel):
     unlock_rank: int | None = None
     took_in: int = 0
     took: Rate | None = None
+    avg_reward_took: float | None = None
+    avg_reward_passed: float | None = None
+    delta: float | None = None
 
 
 class SkillCharacterRow(BaseModel):

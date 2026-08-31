@@ -1693,6 +1693,12 @@ export interface components {
              */
             constructed_in: number;
             took?: components["schemas"]["Rate"] | null;
+            /** Avg Reward Took */
+            avg_reward_took?: number | null;
+            /** Avg Reward Passed */
+            avg_reward_passed?: number | null;
+            /** Delta */
+            delta?: number | null;
             /**
              * This
              * @default false
@@ -2308,6 +2314,22 @@ export interface components {
             /** Delta */
             delta?: number | null;
         };
+        /** ItemSwapRow */
+        ItemSwapRow: {
+            removed: components["schemas"]["Ident"];
+            equipped: components["schemas"]["Ident"];
+            /**
+             * Campaigns
+             * @default 0
+             */
+            campaigns: number;
+            /** Avg Turn */
+            avg_turn?: number | null;
+            /** Avg Reward */
+            avg_reward?: number | null;
+            /** Delta Mean */
+            delta_mean?: number | null;
+        };
         /** ItemsPage */
         ItemsPage: {
             scope: components["schemas"]["Scope"];
@@ -2322,6 +2344,13 @@ export interface components {
             resources?: string[];
             /** Rows */
             rows?: components["schemas"]["ItemRow"][];
+            /**
+             * Swap Events
+             * @default 0
+             */
+            swap_events: number;
+            /** Swaps */
+            swaps?: components["schemas"]["ItemSwapRow"][];
         };
         /** LaunchDefaults */
         LaunchDefaults: {
@@ -2898,6 +2927,12 @@ export interface components {
              */
             took_in: number;
             took?: components["schemas"]["Rate"] | null;
+            /** Avg Reward Took */
+            avg_reward_took?: number | null;
+            /** Avg Reward Passed */
+            avg_reward_passed?: number | null;
+            /** Delta */
+            delta?: number | null;
         };
         /** RewardPoint */
         RewardPoint: {
