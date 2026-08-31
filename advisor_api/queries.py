@@ -34,8 +34,9 @@ from advisor_api.models import (
     BehaviourRow, BuildingRow, CampaignBuildingRow, CampaignCharacter,
     CampaignItemEvent, CampaignSkillRow, CampaignTechRow, CatalogCampaignRow,
     CatalogIndexRow, CatalogStartRow, ChainLevel, ItemCampaignRow, ItemRow,
-    ItemStartRow, PositionFacetOption, PositionKeyRow, PositionTypeRow,
-    RelatedKey, SkillCharacterRow, SkillRow, StartCharacterRow, TechRow,
+    ItemStartRow, ItemSwapRow, PositionFacetOption, PositionKeyRow,
+    PositionTypeRow, RelatedKey, SkillCharacterRow, SkillRow, StartCharacterRow,
+    TechRow,
 )
 from decisions import pg_schema as SS
 
@@ -1419,12 +1420,70 @@ def start_items(con, mkey: str, fkey: str) -> dict:
             "behaviour": behaviour}
 
 
+@db.timed
+def _item_swaps_build(con) -> dict:
+    camp = _camp_meta(con)
+    means = _start_means(camp)
+    per: dict = {}
+    for r in con.execute(
+            "SELECT t.campaign_id cid, a.context_id cqi, a.action_type kind,"
+            " a.action_key key, d.turn, t.decision_id did"
+            " FROM taken t"
+            " JOIN actions a ON a.action_id = t.action_id"
+            " JOIN decisions d ON d.decision_id = t.decision_id"
+            " WHERE t.counted = 1 AND a.action_type = ANY(%s)"
+            " ORDER BY t.decision_id", (list(ITEM_ACTIONS),)):
+        per.setdefault((_i(r["cid"], 0), str(r["cqi"])), []).append(
+            (r["kind"], r["key"], _i(r["turn"]), _i(r["did"], 0)))
+    events = 0
+    pairs: dict = {}
+    for (cid, _cqi), evs in per.items():
+        uneq_dids: dict = {}
+        eq_dids: dict = {}
+        by_turn: dict = {}
+        for kind, key, turn, did in evs:
+            (uneq_dids if kind == "item_unequip" else eq_dids) \
+                .setdefault(key, []).append(did)
+            if turn is not None:
+                u, e = by_turn.setdefault(turn, ([], []))
+                (u if kind == "item_unequip" else e).append((key, did))
+        for turn, (u, e) in by_turn.items():
+            for ak, adid in u:
+                for bk, bdid in e:
+                    if ak == bk:
+                        continue
+                    if any(d2 > bdid for d2 in uneq_dids.get(bk, ())):
+                        continue
+                    if any(d2 > adid for d2 in eq_dids.get(ak, ())):
+                        continue
+                    events += 1
+                    p = pairs.setdefault((ak, bk), {"cids": set(), "turns": []})
+                    p["cids"].add(cid)
+                    p["turns"].append(turn)
+    rows = []
+    for (ak, bk), p in pairs.items():
+        rewards = [camp[cid]["reward"] for cid in p["cids"] if cid in camp]
+        deltas = [camp[cid]["reward"] - means[_start_of(camp[cid])]
+                  for cid in p["cids"]
+                  if cid in camp and means.get(_start_of(camp[cid])) is not None]
+        rows.append(ItemSwapRow(
+            removed=Ident(raw=ak, label=_item_ident(ak) or ak),
+            equipped=Ident(raw=bk, label=_item_ident(bk) or bk),
+            campaigns=len(p["cids"]), avg_turn=_mean(p["turns"], 1),
+            avg_reward=_mean(rewards),
+            delta_mean=_mean(deltas) if len(deltas) >= 3 else None))
+    rows.sort(key=lambda r2: (-r2.campaigns, r2.removed.raw))
+    return {"events": events, "rows": rows}
+
+
 def items_page(con) -> dict:
     m = item_matrix(con)
     rows = _item_rows(m)
     cats = sorted({r.category for r in rows if r.category})
+    swaps = _stamped("item_swaps", lambda: _item_swaps_build(con))
     return {"total": len(rows), "categories": cats,
-            "resources": _resource_columns(rows), "rows": rows}
+            "resources": _resource_columns(rows), "rows": rows,
+            "swap_events": swaps["events"], "swaps": swaps["rows"]}
 
 
 def item_page(con, key: str) -> dict | None:
@@ -2064,17 +2123,43 @@ def catalog_key_page(con, family: str, key: str) -> dict | None:
         if rt is not None and rp is not None and len(took_r) >= 5
         and len(passed_r) >= 5 else None,
         "by_start": start_rows, "recent": recent}
+    def _key_stats(keys2) -> dict:
+        want = set(keys2)
+        took_cids: dict = {k: [] for k in want}
+        off_cids: dict = {k: set() for k in want}
+        for (cid2, k), _v2 in m["pairs"].items():
+            if k in want:
+                took_cids[k].append(cid2)
+        for (cid2, k) in m["offered"]:
+            if k in want:
+                off_cids[k].add(cid2)
+        stats = {}
+        for k in want:
+            tr = [camp[c2]["reward"] for c2 in took_cids[k] if c2 in camp]
+            pr = [camp[c2]["reward"] for c2 in off_cids[k] - set(took_cids[k])
+                  if c2 in camp]
+            rt2, rp2 = _mean(tr), _mean(pr)
+            stats[k] = {"rt": rt2, "rp": rp2,
+                        "delta": round(rt2 - rp2, 2)
+                        if rt2 is not None and rp2 is not None and len(tr) >= 5
+                        and len(pr) >= 5 else None}
+        return stats
+
     def related_rows(parents, children, refs):
         rel = []
+        stats = _key_stats((parents or []) + (children or []))
         for kind, keys2 in (("requires", parents), ("unlocks", children)):
             got = sorted(set(keys2 or []), key=lambda k2: -counts.get(k2, 0))
             for k2 in got:
                 r2 = refs.get(k2) or {}
+                st2 = stats.get(k2) or {}
                 rel.append(RelatedKey(
                     key=k2, label=_fam_label(family, k2), kind=kind,
                     tier=r2.get("tier"), points=r2.get("points"),
                     unlock_rank=r2.get("unlock_rank"),
-                    took_in=counts.get(k2, 0), took=took_rate(k2)))
+                    took_in=counts.get(k2, 0), took=took_rate(k2),
+                    avg_reward_took=st2.get("rt"),
+                    avg_reward_passed=st2.get("rp"), delta=st2.get("delta")))
         return rel
 
     if family == "building":
@@ -2084,15 +2169,21 @@ def catalog_key_page(con, family: str, key: str) -> dict | None:
                    level=_building_level(info), cost=_i(info.get("create_cost")),
                    upkeep=_i(info.get("upkeep_cost")) or None,
                    turns_to_build=_i(info.get("create_time")))
+        levels = labels.building_chain_levels(
+            str(info.get("building_chain") or ""))
+        chain_stats = _key_stats([lv["key"] for lv in levels])
         chain = []
-        for lv in labels.building_chain_levels(str(info.get("building_chain") or "")):
+        for lv in levels:
+            st2 = chain_stats.get(lv["key"]) or {}
             chain.append(ChainLevel(
                 key=lv["key"], label=_building_label(lv["key"]),
                 level=(_i(lv.get("level")) + 1
                        if lv.get("level") is not None else None),
                 cost=_i(lv.get("create_cost")),
                 constructed_in=counts.get(lv["key"], 0),
-                took=took_rate(lv["key"]), this=lv["key"] == key))
+                took=took_rate(lv["key"]),
+                avg_reward_took=st2.get("rt"), avg_reward_passed=st2.get("rp"),
+                delta=st2.get("delta"), this=lv["key"] == key))
         out["chain"] = chain
     elif family == "research":
         ref = _catalog_ref("research", [key]).get(key) or {}
