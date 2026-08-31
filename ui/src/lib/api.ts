@@ -12,7 +12,17 @@ export type StartsPage = Schemas['StartsPage']
 export type StartRow = Schemas['StartRow']
 export type StartDetail = Schemas['StartDetail']
 export type StartCampaign = Schemas['StartCampaign']
-export type StartPickPoint = Schemas['StartPickPoint']
+export type StartCampaignsPage = Schemas['StartCampaignsPage']
+export type StartPerformance = Schemas['StartPerformance']
+export type StartOpenings = Schemas['StartOpenings']
+export type StartActions = Schemas['StartActions']
+export type OpeningFamily = Schemas['OpeningFamily']
+export type OpeningBranch = Schemas['OpeningBranch']
+export type OpeningOffer = Schemas['OpeningOffer']
+export type ConquestStep = Schemas['ConquestStep']
+export type CampaignDecisions = Schemas['CampaignDecisions']
+export type Verdict = Schemas['Verdict']
+export type TurnRollup = Schemas['TurnRollup']
 export type HistBin = Schemas['HistBin']
 export type UcbPick = Schemas['UcbPick']
 export type UcbRow = Schemas['UcbRow']
@@ -76,12 +86,17 @@ export interface Loaded<T> {
 }
 
 
-export function useApi<T>(url: string | null, deps: unknown[] = []): Loaded<T> {
+export function useApi<T>(
+  url: string | null,
+  deps: unknown[] = [],
+  opts: { live?: boolean } = {},
+): Loaded<T> {
   const [data, setData] = useState<T | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [nonce, setNonce] = useState(0)
-  const stamp = useCorpusStamp()
+  const stampLive = useCorpusStamp()
+  const stamp = opts.live === false ? '' : stampLive
   const alive = useRef(true)
 
   useEffect(() => {

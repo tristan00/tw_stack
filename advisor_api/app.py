@@ -19,12 +19,13 @@ import common
 from advisor_api import db, ident, proc, queries as q
 from advisor_api.models import (
     ActionsPage, AgreementBreakdownPage, AgreementPage, AgreementSeriesPage, AnalyticsPage,
-    CampaignDetail, CampaignsPage, ControlResult, Count,
+    CampaignDecisions, CampaignDetail, CampaignsPage, ControlResult, Count,
     DecisionDetail, DecisionsPage, DiplomacyPage, ForcingPage, InfraPage, LaunchDefaults,
     LogPage,
     MatrixCell,
     MatrixPage, MatrixRow, MatrixTotal, MenusPage, ModelsPage, Rate, RunPage, Scope,
-    StartsPage, StartDetail, TimelinePage, TrainingPage, CorrelationsPage, UcbPickPage,
+    StartsPage, StartActions, StartCampaignsPage, StartDetail, StartOpenings,
+    StartPerformance, TimelinePage, TrainingPage, CorrelationsPage, UcbPickPage,
     UcbPicksPage,
 )
 
@@ -124,16 +125,62 @@ def get_starts() -> StartsPage:
          tags=["campaigns"])
 def get_start(campaign_map: str, faction: str) -> StartDetail:
     con = _con()
-    got = q.start_detail(con, campaign_map, faction)
-    if got is None:
+    row, _gains, _cx = q.start_head(con, campaign_map, faction)
+    if row is None:
         raise HTTPException(404, "no start %s on %s" % (faction, campaign_map))
-    row, camps, traj, pop, cells = got
     return StartDetail(
         scope=_scope("one start", "%s on %s" % (row.leader or row.faction.label,
                                                  row.campaign_map.label
                                                  if row.campaign_map else campaign_map)),
-        start=row, window=q.UCB.WINDOW, campaigns=camps, trajectory=traj,
-        population_bins=pop, actions=cells)
+        start=row, window=q.UCB.WINDOW,
+        last_played=q.start_last_played(con, campaign_map, faction))
+
+
+@app.get("/api/campaigns/starts/{campaign_map}/{faction}/performance",
+         response_model=StartPerformance, tags=["campaigns"])
+def get_start_performance(campaign_map: str, faction: str) -> StartPerformance:
+    con = _con()
+    got = q.start_performance(con, campaign_map, faction)
+    return StartPerformance(
+        scope=_scope("how this start earns when played",
+                     "reward history in play order, distribution vs the pool, and how "
+                     "its campaigns end"),
+        window=q.UCB.WINDOW, **got)
+
+
+@app.get("/api/campaigns/starts/{campaign_map}/{faction}/openings",
+         response_model=StartOpenings, tags=["campaigns"])
+def get_start_openings(campaign_map: str, faction: str,
+                       band: str = Query("all", pattern=r"^(all|1-3|4-6|7\+)$")
+                       ) -> StartOpenings:
+    con = _con()
+    got = q.start_openings(con, campaign_map, faction, band=band)
+    return StartOpenings(
+        scope=_scope("the first choice its campaigns made in each exclusive family, "
+                     "and how each opening scored",
+                     "campaigns are short truncated rollouts; these are openings, not "
+                     "builds -- compare within a length band"),
+        **got)
+
+
+@app.get("/api/campaigns/starts/{campaign_map}/{faction}/campaigns",
+         response_model=StartCampaignsPage, tags=["campaigns"])
+def get_start_campaigns(campaign_map: str, faction: str) -> StartCampaignsPage:
+    con = _con()
+    return StartCampaignsPage(
+        scope=_scope("every campaign of this start, newest first"),
+        rows=q.start_campaigns_slice(con, campaign_map, faction))
+
+
+@app.get("/api/campaigns/starts/{campaign_map}/{faction}/actions",
+         response_model=StartActions, tags=["campaigns"])
+def get_start_actions(campaign_map: str, faction: str) -> StartActions:
+    con = _con()
+    return StartActions(
+        scope=_scope("every action attempt by this faction, worst confirmed first",
+                     "a family whose attempts cannot count is excluded from confirm "
+                     "aggregates and marked"),
+        cells=q.start_actions(con, campaign_map, faction))
 
 
 @app.get("/api/campaigns/picks", response_model=UcbPicksPage, tags=["campaigns"])
@@ -226,15 +273,26 @@ def get_campaigns() -> CampaignsPage:
 @app.get("/api/campaigns/{campaign_key}", response_model=CampaignDetail, tags=["campaigns"])
 def get_campaign(campaign_key: str) -> CampaignDetail:
     con = _con()
-    row = next((r for r in q.campaign_rows(con) if r.campaign.raw == campaign_key), None)
+    row = q.campaign_row(con, campaign_key)
     if row is None:
         raise HTTPException(404, "no campaign %r in this run dir" % campaign_key)
     reward, constant = q.reward_series(con, campaign_key)
-    decisions, _ = q.decisions_page(con, 0, 100, campaign=campaign_key)
     return CampaignDetail(
         scope=_scope("one campaign", ident.campaign(campaign_key)["label"]),
         row=row, reward=reward, constant_columns=constant,
-        diplomacy=q.diplomacy_tail(con, campaign_key), decisions=decisions)
+        diplomacy=q.diplomacy_tail(con, campaign_key),
+        verdict=q.campaign_verdict(row.ended_because),
+        turns=q.campaign_turn_rollup(con, campaign_key))
+
+
+@app.get("/api/campaigns/{campaign_key}/decisions", response_model=CampaignDecisions,
+         tags=["campaigns"])
+def get_campaign_decisions(campaign_key: str) -> CampaignDecisions:
+    con = _con()
+    rows, _total = q.decisions_page(con, 0, 500, campaign=campaign_key)
+    return CampaignDecisions(
+        scope=_scope("every action taken inside this campaign, newest first"),
+        rows=rows)
 
 
 @app.get("/api/decisions/actions", response_model=ActionsPage, tags=["decisions"])

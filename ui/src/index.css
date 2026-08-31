@@ -143,6 +143,19 @@ pre {
 }
 
 
+.linka {
+  color: var(--fg);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklab, var(--accent) 32%, transparent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.linka:hover {
+  color: var(--accent);
+  text-decoration-color: var(--accent);
+}
+
 .tablewrap {
   overflow: auto;
   max-width: 100%;

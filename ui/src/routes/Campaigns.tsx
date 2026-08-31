@@ -4,8 +4,8 @@ import {
   Bar,
   Card,
   Chip,
+  EntityLink,
   ErrorState,
-  IdentLabel,
   Section,
   Skeleton,
 } from '@/components/primitives'
@@ -82,7 +82,11 @@ const startCols: Col<StartRow>[] = [
     key: 'lord',
     label: 'lord',
     value: (r) => lordOf(r),
-    render: (r) => <IdentLabel ident={{ ...r.faction, label: lordOf(r), culture: null }} />,
+    render: (r) => (
+      <EntityLink to={startUrl(startId(r))} title={r.faction.raw}>
+        {lordOf(r)}
+      </EntityLink>
+    ),
   },
   { key: 'race', label: 'race', value: (r) => r.faction.culture ?? '', render: (r) => <span className="text-dim">{r.faction.culture ?? '—'}</span> },
   { key: 'map', label: 'map', value: (r) => r.campaign_map?.label ?? '', render: (r) => <MapCell ident={r.campaign_map} /> },
@@ -129,7 +133,7 @@ function Starts() {
 const pickCols: Col<UcbPick>[] = [
   { key: 'pick', label: 'pick', align: 'right', value: (r) => r.pick_id, render: (r) => <span className="num">{r.pick_id}</span> },
   { key: 'when', label: 'when', value: (r) => r.ts ?? 0, render: (r) => <span className="num">{clock(r.ts)}</span> },
-  { key: 'lord', label: 'lord', value: (r) => lordOf(r), render: (r) => <IdentLabel ident={{ ...r.faction, label: lordOf(r), culture: null }} /> },
+  { key: 'lord', label: 'lord', value: (r) => lordOf(r), render: (r) => <EntityLink to={startUrl(startId(r))} title={r.faction.raw}>{lordOf(r)}</EntityLink> },
   { key: 'race', label: 'race', value: (r) => r.faction.culture ?? '', render: (r) => <span className="text-dim">{r.faction.culture ?? '—'}</span> },
   { key: 'map', label: 'map', value: (r) => r.campaign_map?.label ?? '', render: (r) => <MapCell ident={r.campaign_map} /> },
   { key: 'c', label: 'C', align: 'right', value: (r) => r.c ?? 0, render: (r) => n(r.c, 2) },
@@ -152,7 +156,7 @@ const pickCols: Col<UcbPick>[] = [
 
 const rankCols: Col<UcbRow>[] = [
   { key: 'rank', label: '#', align: 'right', value: (r) => r.rank, render: (r) => (r.chosen ? <strong className="num">{r.rank}</strong> : <span className="num">{r.rank}</span>) },
-  { key: 'lord', label: 'lord', value: (r) => lordOf(r), render: (r) => <IdentLabel ident={{ ...r.faction, label: lordOf(r), culture: null }} /> },
+  { key: 'lord', label: 'lord', value: (r) => lordOf(r), render: (r) => <EntityLink to={startUrl(startId(r))} title={r.faction.raw}>{lordOf(r)}</EntityLink> },
   { key: 'race', label: 'race', value: (r) => r.faction.culture ?? '', render: (r) => <span className="text-dim">{r.faction.culture ?? '—'}</span> },
   { key: 'map', label: 'map', value: (r) => r.campaign_map?.label ?? '', render: (r) => <MapCell ident={r.campaign_map} /> },
   { key: 'n', label: 'n', align: 'right', value: (r) => r.n, render: (r) => <span className="num">{r.n}</span> },
@@ -183,7 +187,7 @@ const edgeCols: Col<EdgeRow>[] = [
     value: (r) => (r.kind === 'dropped' ? -r.campaigns_away : r.campaigns_away),
     render: (r) => <span className="num">{r.kind === 'dropped' ? `−${r.campaigns_away}` : `+${r.campaigns_away}`}</span>,
   },
-  { key: 'lord', label: 'lord', value: (r) => lordOf(r), render: (r) => <IdentLabel ident={{ ...r.faction, label: lordOf(r), culture: null }} /> },
+  { key: 'lord', label: 'lord', value: (r) => lordOf(r), render: (r) => <EntityLink to={`/campaigns/${encodeURIComponent(r.campaign.raw)}`} title={r.campaign.raw}>{lordOf(r)}</EntityLink> },
   { key: 'race', label: 'race', value: (r) => r.faction.culture ?? '', render: (r) => <span className="text-dim">{r.faction.culture ?? '—'}</span> },
   { key: 'map', label: 'map', value: (r) => r.campaign_map?.label ?? '', render: (r) => <MapCell ident={r.campaign_map} /> },
   { key: 'played', label: 'played', value: (r) => r.played_ts ?? 0, render: (r) => <span className="num">{clock(r.played_ts)}</span> },
@@ -261,7 +265,11 @@ const campaignCols: Col<CampaignRow>[] = [
     label: 'lord',
     group: 'campaign',
     value: (r) => r.leader ?? r.campaign.label,
-    render: (r) => <IdentLabel ident={{ ...r.campaign, label: r.leader ?? r.campaign.label, culture: null }} />,
+    render: (r) => (
+      <EntityLink to={`/campaigns/${encodeURIComponent(r.campaign.raw)}`} title={r.campaign.raw}>
+        {r.leader ?? r.campaign.label}
+      </EntityLink>
+    ),
   },
   { key: 'race', label: 'race', group: 'campaign', value: (r) => r.campaign.culture ?? '', render: (r) => <span className="text-dim">{r.campaign.culture ?? '—'}</span> },
   { key: 'map', label: 'map', group: 'campaign', value: (r) => r.campaign_map?.label ?? '', render: (r) => <MapCell ident={r.campaign_map} /> },

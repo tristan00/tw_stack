@@ -1,7 +1,9 @@
 import { Moon, Sun } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
-import { Dot, IdentLabel } from '@/components/primitives'
+import { EntityLink, Dot } from '@/components/primitives'
+import { QuickJump } from '@/components/QuickJump'
+import { mapShort } from '@/components/startcharts'
 import { useApi, type RunPage } from '@/lib/api'
 import { ago } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -40,10 +42,27 @@ function StatusLine() {
     <div className="flex min-w-0 flex-wrap items-baseline gap-x-4 gap-y-1">
       <div className="min-w-0">
         {cur?.campaign ? (
-          <IdentLabel
-            ident={{ ...cur.campaign, label: cur.leader ?? cur.campaign.label }}
-            className="text-lg font-semibold tracking-tight"
-          />
+          <span className="flex items-baseline gap-2">
+            <EntityLink
+              to={`/campaigns/${encodeURIComponent(cur.campaign.raw)}`}
+              title={`open this campaign\n${cur.campaign.raw}`}
+              className="text-lg font-semibold tracking-tight"
+            >
+              {cur.leader ?? cur.campaign.label}
+            </EntityLink>
+            {cur.campaign.culture && (
+              <span className="text-dim text-2xs">{cur.campaign.culture}</span>
+            )}
+            {cur.faction_key && (
+              <EntityLink
+                to={`/starts/${encodeURIComponent(cur.campaign_map?.raw ?? '')}/${encodeURIComponent(cur.faction_key)}`}
+                title="open this start"
+                className="text-dim text-2xs"
+              >
+                {mapShort(cur.campaign_map?.raw, cur.campaign_map?.label)}
+              </EntityLink>
+            )}
+          </span>
         ) : (
           <span className="text-dim text-lg">no campaign running</span>
         )}
@@ -96,7 +115,7 @@ export function Layout() {
             {theme === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />}
           </button>
         </div>
-        <nav className="flex flex-wrap gap-1">
+        <nav className="flex flex-wrap items-center gap-1">
           {NAV.map((item) => (
             <NavLink
               key={item.to}
@@ -114,11 +133,13 @@ export function Layout() {
               {item.label}
             </NavLink>
           ))}
+          <span className="text-dim num ml-auto text-2xs">ctrl+k jump</span>
         </nav>
       </header>
       <main className="min-w-0 flex-1 pb-10">
         <Outlet />
       </main>
+      <QuickJump />
     </div>
   )
 }
