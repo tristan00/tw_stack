@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ConditionBar, useConditionQuery } from '@/components/conditions'
 import { useUiMode } from '@/components/Layout'
-import { DataTable, type Col } from '@/components/DataTable'
+import { DataTable, useServerTable, type Col } from '@/components/DataTable'
 import { Card, Chip, EntityLink, ErrorState, MetricTile, Section, Skeleton } from '@/components/primitives'
 import { SubNav, useSubView } from '@/components/SubNav'
 import { post, useApi, type CampaignLookupPage, type LookupCampaignRow, type RewardWeightsPage } from '@/lib/api'
@@ -62,9 +62,10 @@ function LookupView() {
   const navigate = useNavigate()
   const dev = useUiMode() === 'full'
   const qs = useConditionQuery()
+  const st = useServerTable(25)
   const { data, error, loading, reload } = useApi<CampaignLookupPage>(
-    `/api/lookup${qs ? `?${qs}` : ''}`,
-    [qs],
+    `/api/lookup?${qs ? `${qs}&` : ''}${st.qs()}`,
+    [qs, ...st.deps],
     { live: false },
   )
   if (error) return <ErrorState error={error} onRetry={reload} />
@@ -91,7 +92,7 @@ function LookupView() {
           rowId={(r) => r.campaign.raw}
           onRowClick={(r) => navigate(`/campaigns/${encodeURIComponent(r.campaign.raw)}`)}
           searchPlaceholder="search campaign, start, outcome…"
-          pageSize={25}
+          server={st.bind(data.total ?? 0)}
           emptyWhat="no campaign ever passed through a matching situation"
         />
       </Section>

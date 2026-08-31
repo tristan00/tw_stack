@@ -1400,6 +1400,21 @@ export interface components {
             mean_reward?: number | null;
             /** Mean Turns */
             mean_turns?: number | null;
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
+            /**
+             * Page
+             * @default 0
+             */
+            page: number;
+            /**
+             * Page Size
+             * @default 25
+             */
+            page_size: number;
             /** Rows */
             rows?: components["schemas"]["LookupCampaignRow"][];
         };
@@ -1596,6 +1611,25 @@ export interface components {
             suspicious: components["schemas"]["Count"];
             unjoined: components["schemas"]["Count"];
             growth_coverage: components["schemas"]["Rate"];
+            /** Maps */
+            maps?: components["schemas"]["Ident"][];
+            /** Races */
+            races?: string[];
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
+            /**
+             * Page
+             * @default 0
+             */
+            page: number;
+            /**
+             * Page Size
+             * @default 25
+             */
+            page_size: number;
             /** Rows */
             rows: components["schemas"]["CampaignRow"][];
         };
@@ -4582,6 +4616,11 @@ export interface operations {
                 culture?: string | null;
                 map?: string | null;
                 c?: string[];
+                sort?: string | null;
+                desc?: boolean;
+                q?: string | null;
+                page?: number;
+                page_size?: number;
             };
             header?: never;
             path?: never;
@@ -4780,7 +4819,16 @@ export interface operations {
     };
     get_campaigns_api_campaigns_get: {
         parameters: {
-            query?: never;
+            query?: {
+                sort?: string | null;
+                desc?: boolean;
+                map?: string | null;
+                race?: string | null;
+                outcome?: string | null;
+                q?: string | null;
+                page?: number;
+                page_size?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -4794,6 +4842,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CampaignsPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

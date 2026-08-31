@@ -1,5 +1,5 @@
 import { Navigate, useNavigate, useSearchParams } from 'react-router-dom'
-import { DataTable, type Col } from '@/components/DataTable'
+import { DataTable, useServerTable, type Col } from '@/components/DataTable'
 import {
   Bar,
   Card,
@@ -180,30 +180,33 @@ const DEV_CAMPAIGN_COLS = new Set(['decisions', 'confirm', 'no_action', 'pick', 
 const defaultCampaignCols = campaignCols.filter((c) => !DEV_CAMPAIGN_COLS.has(c.key))
 
 function AllCampaigns() {
-  const { data, error, loading, reload } = useApi<CampaignsPage>('/api/campaigns')
+  const st = useServerTable(25)
   const f = useFilters()
+  const extra: Record<string, string> = {}
+  if (f.map) extra.map = f.map
+  if (f.race) extra.race = f.race
+  if (f.outcome) extra.outcome = f.outcome
+  const { data, error, loading, reload } = useApi<CampaignsPage>(
+    `/api/campaigns?${st.qs(extra)}`,
+    [...st.deps, f.map, f.race, f.outcome],
+  )
   const navigate = useNavigate()
   const mode = useUiMode()
   if (error) return <ErrorState error={error} onRetry={reload} />
   if (loading || !data) return <Skeleton rows={10} />
   const cols = mode === 'full' ? campaignCols : defaultCampaignCols
-  const maps = [...new Map(data.rows.filter((r) => r.campaign_map).map((r) => [r.campaign_map!.raw, r.campaign_map!])).values()]
-  const races = [...new Set(data.rows.map((r) => r.campaign.culture ?? ''))].filter(Boolean).sort()
-  const rows = data.rows.filter(
-    (r) => (!f.map || r.campaign_map?.raw === f.map) && (!f.race || (r.campaign.culture ?? '') === f.race) && (!f.outcome || r.outcome?.raw === f.outcome),
-  )
   return (
     <Section title="campaigns" scope={data.scope}>
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <Select value={f.map} onChange={(v) => f.set('map', v)}>
           <option value="">every map</option>
-          {maps.map((m) => (
+          {(data.maps ?? []).map((m) => (
             <option key={m.raw} value={m.raw}>{m.label}</option>
           ))}
         </Select>
         <Select value={f.race} onChange={(v) => f.set('race', v)}>
           <option value="">every race</option>
-          {races.map((r) => (
+          {(data.races ?? []).map((r) => (
             <option key={r} value={r}>{r}</option>
           ))}
         </Select>
@@ -217,10 +220,18 @@ function AllCampaigns() {
             </button>
           ))}
         <Card className="text-dim ml-auto px-2 py-1 text-2xs">
-          <b className="num text-fg">{rows.length}</b> of {data.rows.length}
+          <b className="num text-fg">{n(data.total)}</b> campaigns
         </Card>
       </div>
-      <DataTable rows={rows} cols={cols} rowId={(r) => r.campaign.raw} onRowClick={(r) => navigate(`/campaigns/${encodeURIComponent(r.campaign.raw)}`)} searchPlaceholder="search lord, race, outcome…" pageSize={10} emptyWhat="no campaign matches" />
+      <DataTable
+        rows={data.rows}
+        cols={cols}
+        rowId={(r) => r.campaign.raw}
+        onRowClick={(r) => navigate(`/campaigns/${encodeURIComponent(r.campaign.raw)}`)}
+        searchPlaceholder="search lord, race, outcome…"
+        server={st.bind(data.total ?? data.rows.length)}
+        emptyWhat="no campaign matches"
+      />
     </Section>
   )
 }
