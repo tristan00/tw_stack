@@ -130,8 +130,9 @@ function DiploDigest({ events }: { events: DiploEvent[] }) {
   )
 }
 
-function OverviewTab({ data, campaignKey }: { data: Detail; campaignKey: string }) {
+function OverviewTab({ data, campaignKey, mode }: { data: Detail; campaignKey: string; mode: 'full' | 'dashboard' }) {
   const navigate = useNavigate()
+  const dev = mode === 'full'
   const row = data.row
   const verdict = data.verdict
   const turns = data.turns ?? []
@@ -146,27 +147,35 @@ function OverviewTab({ data, campaignKey }: { data: Detail; campaignKey: string 
       label: 'turn',
       align: 'right',
       value: (r) => r.turn,
-      render: (r) => (
-        <EntityLink to={`?tab=decisions&turn=${r.turn}`} className="num">
-          {r.turn}
-        </EntityLink>
-      ),
+      render: (r) =>
+        dev ? (
+          <EntityLink to={`?tab=decisions&turn=${r.turn}`} className="num">
+            {r.turn}
+          </EntityLink>
+        ) : (
+          <span className="num">{r.turn}</span>
+        ),
     },
-    { key: 'decisions', label: 'decisions', align: 'right', value: (r) => r.decisions, render: (r) => <span className="num">{r.decisions}</span> },
-    {
-      key: 'refused',
-      label: 'refused',
-      align: 'right',
-      value: (r) => r.refused,
-      render: (r) => (r.refused ? <span className="num">{r.refused}</span> : <span className="text-dim">—</span>),
-    },
+    ...(dev
+      ? ([
+          { key: 'decisions', label: 'decisions', align: 'right', value: (r) => r.decisions, render: (r) => <span className="num">{r.decisions}</span> },
+          {
+            key: 'refused',
+            label: 'refused',
+            align: 'right',
+            value: (r) => r.refused,
+            render: (r) => (r.refused ? <span className="num">{r.refused}</span> : <span className="text-dim">—</span>),
+          },
+        ] as Col<(typeof turns)[number]>[])
+      : []),
     { key: 'income', label: 'income', align: 'right', value: (r) => byTurn.get(r.turn)?.income ?? 0, render: (r) => <span className="num">{n(byTurn.get(r.turn)?.income)}</span> },
     { key: 'setts', label: 'setts', align: 'right', value: (r) => byTurn.get(r.turn)?.settlements ?? 0, render: (r) => <span className="num">{n(byTurn.get(r.turn)?.settlements)}</span> },
     { key: 'rank', label: 'rank', align: 'right', value: (r) => byTurn.get(r.turn)?.power_rank ?? 0, render: (r) => <span className="num">{n(byTurn.get(r.turn)?.power_rank)}</span> },
   ]
   return (
     <div className="space-y-7">
-      <div className="grid gap-3 lg:grid-cols-[1.7fr_1fr_1fr_1.2fr]">
+      <div className={cn('grid gap-3', dev ? 'lg:grid-cols-[1.7fr_1fr_1fr_1.2fr]' : 'lg:grid-cols-2')}>
+        {dev && (
         <Card className="px-3.5 py-3">
           <div className="text-dim text-2xs uppercase tracking-wide">why it ended</div>
           {verdict ? (
@@ -212,6 +221,7 @@ function OverviewTab({ data, campaignKey }: { data: Detail; campaignKey: string 
             <div className="text-dim mt-1.5 text-xs">no ending recorded for this campaign</div>
           )}
         </Card>
+        )}
         <Card className="px-3.5 py-3">
           <div className="text-dim text-2xs uppercase tracking-wide">reward</div>
           <div className="num mt-0.5 text-xl">{row.reward == null ? '—' : n(row.reward)}</div>
@@ -219,15 +229,17 @@ function OverviewTab({ data, campaignKey }: { data: Detail; campaignKey: string 
             {row.reward == null ? 'not measured' : `${n(row.settlements_gained)} settlements + ${n(row.levels_gained)} levels`}
           </div>
         </Card>
-        <Card className="px-3.5 py-3">
-          <div className="text-dim text-2xs uppercase tracking-wide">confirmed</div>
-          <div className="num mt-0.5 text-xl">
-            {row.confirm_rate?.of ? `${((100 * row.confirm_rate.n) / row.confirm_rate.of).toFixed(0)}%` : '—'}
-          </div>
-          <div className="mt-1.5">
-            <Bar rate={row.confirm_rate ?? null} width={120} />
-          </div>
-        </Card>
+        {dev && (
+          <Card className="px-3.5 py-3">
+            <div className="text-dim text-2xs uppercase tracking-wide">confirmed</div>
+            <div className="num mt-0.5 text-xl">
+              {row.confirm_rate?.of ? `${((100 * row.confirm_rate.n) / row.confirm_rate.of).toFixed(0)}%` : '—'}
+            </div>
+            <div className="mt-1.5">
+              <Bar rate={row.confirm_rate ?? null} width={120} />
+            </div>
+          </Card>
+        )}
         <Card className="px-3.5 py-3">
           <div className="text-dim text-2xs uppercase tracking-wide">growth</div>
           {row.growth_state === 'measured' ? (
@@ -299,12 +311,15 @@ function OverviewTab({ data, campaignKey }: { data: Detail; campaignKey: string 
       </Section>
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <Section title="turn ledger" scope={{ text: 'one row per turn, newest first · a turn links to its decisions' }}>
+        <Section
+          title="turn ledger"
+          scope={{ text: dev ? 'one row per turn, newest first · a turn links to its decisions' : 'one row per turn, newest first' }}
+        >
           <DataTable
             rows={turns}
             cols={turnCols}
             rowId={(r) => String(r.turn)}
-            onRowClick={(r) => navigate(`/campaigns/${encodeURIComponent(campaignKey)}?tab=decisions&turn=${r.turn}`)}
+            onRowClick={dev ? (r) => navigate(`/campaigns/${encodeURIComponent(campaignKey)}?tab=decisions&turn=${r.turn}`) : undefined}
             dense
             emptyWhat="no turn was recorded"
           />
@@ -793,9 +808,9 @@ export function CampaignDetail() {
         </div>
         <h1 className="mt-1 flex flex-wrap items-baseline gap-3">
           <IdentLabel ident={row.campaign} className="text-lg font-semibold" />
-          {row.outcome && <Chip state={row.outcome_state ?? 'neutral'}>{row.outcome.label}</Chip>}
-          {row.suspicious && <Chip state="bad">suspicious</Chip>}
-          {data.verdict?.kind && <span className="text-dim text-xs">{data.verdict.text.replace(/\.$/, '').toLowerCase()}</span>}
+          {mode === 'full' && row.outcome && <Chip state={row.outcome_state ?? 'neutral'}>{row.outcome.label}</Chip>}
+          {mode === 'full' && row.suspicious && <Chip state="bad">suspicious</Chip>}
+          {mode === 'full' && data.verdict?.kind && <span className="text-dim text-xs">{data.verdict.text.replace(/\.$/, '').toLowerCase()}</span>}
         </h1>
         <div className="text-dim mt-1 flex flex-wrap gap-4 text-2xs">
           <span>
@@ -827,7 +842,7 @@ export function CampaignDetail() {
 
       <SubNav views={tabs} param="tab" />
       <div className={tab === 'overview' ? '' : 'hidden'}>
-        {seen.overview && <OverviewTab data={data} campaignKey={campaignKey} />}
+        {seen.overview && <OverviewTab data={data} campaignKey={campaignKey} mode={mode} />}
       </div>
       <div className={tab === 'buildings' ? '' : 'hidden'}>
         {seen.buildings && <BuildingsTab campaignKey={campaignKey} />}

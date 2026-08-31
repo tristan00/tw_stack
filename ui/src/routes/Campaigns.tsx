@@ -107,7 +107,7 @@ function Starts() {
   const mode = useUiMode()
   if (error) return <ErrorState error={error} onRetry={reload} />
   if (loading || !data) return <Skeleton rows={10} />
-  const cols = mode === 'full' ? startCols : startCols.filter((c) => c.key !== 'confirm')
+  const cols = mode === 'full' ? startCols : startCols.filter((c) => c.key !== 'confirm' && c.key !== 'sec_per_turn')
   return (
     <Section title="starts" scope={data.scope}>
       <DataTable
@@ -148,7 +148,7 @@ const campaignCols: Col<CampaignRow>[] = [
       r.outcome ? (
         <span className="flex items-center gap-1.5">
           <Chip state={r.outcome_state ?? 'neutral'}>{r.outcome.label}</Chip>
-          {r.suspicious && <Chip state="bad">suspicious</Chip>}
+          {r.suspicious && <Chip state="bad" className="dev-only">suspicious</Chip>}
         </span>
       ) : (
         <span className="text-dim">running</span>
@@ -174,7 +174,7 @@ const campaignCols: Col<CampaignRow>[] = [
   { key: 'span', label: 'span', unit: 'min', group: 'growth', align: 'right', optional: true, value: (r) => r.span_min ?? 0, render: (r) => dash(r.span_min, 1) },
 ]
 
-const DEV_CAMPAIGN_COLS = new Set(['decisions', 'confirm', 'no_action', 'pick'])
+const DEV_CAMPAIGN_COLS = new Set(['decisions', 'confirm', 'no_action', 'pick', 'ended_because', 'span', 'outcome'])
 
 function AllCampaigns() {
   const { data, error, loading, reload } = useApi<CampaignsPage>('/api/campaigns')
@@ -204,14 +204,15 @@ function AllCampaigns() {
             <option key={r} value={r}>{r}</option>
           ))}
         </Select>
-        {data.headline.map((h) => (
-          <button key={h.outcome.raw} onClick={() => f.set('outcome', f.outcome === h.outcome.raw ? '' : h.outcome.raw)} className={cn('rounded-full', f.outcome === h.outcome.raw && 'ring-accent ring-2')}>
-            <Chip state={h.state ?? 'neutral'}>
-              <span className="num mr-1 font-semibold">{h.count}</span>
-              {h.outcome.label}
-            </Chip>
-          </button>
-        ))}
+        {mode === 'full' &&
+          data.headline.map((h) => (
+            <button key={h.outcome.raw} onClick={() => f.set('outcome', f.outcome === h.outcome.raw ? '' : h.outcome.raw)} className={cn('rounded-full', f.outcome === h.outcome.raw && 'ring-accent ring-2')}>
+              <Chip state={h.state ?? 'neutral'}>
+                <span className="num mr-1 font-semibold">{h.count}</span>
+                {h.outcome.label}
+              </Chip>
+            </button>
+          ))}
         <Card className="text-dim ml-auto px-2 py-1 text-2xs">
           <b className="num text-fg">{rows.length}</b> of {data.rows.length}
         </Card>

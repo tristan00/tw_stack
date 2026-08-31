@@ -70,6 +70,12 @@ export function useUiMode(): 'full' | 'dashboard' {
   return server === 'dashboard' ? 'dashboard' : dev ? 'full' : 'dashboard'
 }
 
+function useModeAttribute(mode: 'full' | 'dashboard') {
+  useEffect(() => {
+    document.documentElement.setAttribute('data-ui-mode', mode)
+  }, [mode])
+}
+
 type Theme = 'system' | 'light' | 'dark'
 
 function useTheme() {
@@ -156,6 +162,7 @@ export function Layout() {
   const server = useServerMode()
   const dev = useDevMode()
   const mode = server === 'dashboard' ? 'dashboard' : dev ? 'full' : 'dashboard'
+  useModeAttribute(mode)
   const { pathname } = useLocation()
   const nav = mode === 'dashboard' ? GAME_NAV : [...GAME_NAV, ...STACK_NAV]
   return (
