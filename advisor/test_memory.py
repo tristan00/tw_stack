@@ -35,12 +35,10 @@ NEW_COLUMNS = (
     "prov_pending_recruits_others", "prov_recruits_this_turn_others",
     "lrec_inprogress", "camp_taken_recruit_unit",
     "camp_taken_attack_army", "camp_taken_attack_settlement",
-    "opt_enemy_reinf_nearest_dist", "opt_enemy_reinf_armies_r10",
-    "opt_enemy_reinf_armies_r25", "opt_enemy_reinf_units_r10",
-    "opt_enemy_reinf_units_r25", "opt_enemy_reinf_hp_r10",
-    "opt_enemy_reinf_units_samefac_r10", "opt_target_garrison_nearby_units",
-    "opt_own_reinf_nearest_dist", "opt_own_reinf_units_r10", "opt_own_reinf_units_r25",
-)
+) + F.TGT_COLS + tuple(
+    "near_%s_%d_%s" % (g, k + 1, f) for g in sorted(F.NEAR_MODEL_FIELDS)
+    for k in range(F.NEAR_K.get(g, F.NEAR_K_DEFAULT))
+    for f in F.NEAR_MODEL_FIELDS[g])
 
 
 def _world():
@@ -149,17 +147,20 @@ def _run():
     rec, lord = _record(mem)
     rows = {o["action_type"]: r for o, r in F.offer_rows(rec, lord)}
     atk = rows["attack_army"]
-    check(atk["opt_enemy_reinf_units_r10"] == 8.0
-          and atk["opt_enemy_reinf_armies_r10"] == 1.0,
-          "enemy reinforcements near the target, target excluded",
-          repr(atk["opt_enemy_reinf_units_r10"]))
-    check(atk["opt_enemy_reinf_units_samefac_r10"] == 8.0,
-          "same-faction reinforcement subtotal")
-    check(atk["opt_target_garrison_nearby_units"] == 3.0,
-          "nearby settlement garrison visible",
-          repr(atk["opt_target_garrison_nearby_units"]))
-    check(atk["opt_own_reinf_units_r10"] == 9.0,
-          "own reinforcements near the target, self excluded")
+    check(atk["opt_tgt_enemy_1_dist"] == 4.0
+          and atk["opt_tgt_enemy_1_strength"] == 8.0,
+          "nearest enemy at the target, target itself excluded",
+          repr(atk["opt_tgt_enemy_1_dist"]))
+    check(atk["opt_tgt_enemy_2_dist"] is None,
+          "armed citizenry never counts as a reinforcing army")
+    check(atk["opt_tgt_friend_1_dist"] == 2.0
+          and atk["opt_tgt_friend_1_strength"] == 9.0,
+          "nearest friend at the target, self excluded",
+          repr(atk["opt_tgt_friend_1_dist"]))
+    check(atk["opt_tgt_enemysett_1_dist"] == 1.41
+          and atk["opt_tgt_enemysett_1_strength"] == 3.0,
+          "nearest enemy settlement to the target with its garrison",
+          repr(atk["opt_tgt_enemysett_1_dist"]))
     check(atk["opt_last_prebattle_choice_at_loc"] == "retreat",
           "attack row carries the pre-battle memory")
     check(atk["lord_recruits_this_turn"] == 0.0, "per-lord recruit counter in the row")

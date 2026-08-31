@@ -12,8 +12,14 @@ import features_db as DB
 import memory as MEM
 
 RINGS = (10, 25, 50)
-NEAR_K = {"enemy": 3, "enemysett": 3, "friend": 2, "neutral": 1, "ownsett": 2}
+NEAR_K = {"enemy": 6, "enemysett": 4, "friend": 4, "neutral": 2, "ownsett": 4}
 NEAR_K_DEFAULT = 2
+NEAR_MODEL_FIELDS = {
+    "enemy": ("dist", "strength", "faction", "dir_sin", "dir_cos"),
+    "friend": ("dist", "strength", "dir_sin", "dir_cos"),
+    "enemysett": ("dist", "strength", "faction", "dir_sin", "dir_cos"),
+    "ownsett": ("dist", "strength", "dir_sin", "dir_cos"),
+    "neutral": ("dist", "strength", "faction", "dir_sin", "dir_cos")}
 
 ACTION_TYPES = ("stance", "building", "research", "skills", "items", "item_unequip", "rites",
                 "recruit_unit", "recruit_lord", "edict", "attack_army", "attack_settlement",
@@ -777,13 +783,13 @@ def _nearest_dist(items, x, y):
     return round(best, 2) if best is not None else None
 
 
-_EMPTY_REINF = {"opt_enemy_reinf_nearest_dist": None, "opt_enemy_reinf_armies_r10": None,
-                "opt_enemy_reinf_armies_r25": None, "opt_enemy_reinf_units_r10": None,
-                "opt_enemy_reinf_units_r25": None, "opt_enemy_reinf_hp_r10": None,
-                "opt_enemy_reinf_units_samefac_r10": None,
-                "opt_target_garrison_nearby_units": None,
-                "opt_own_reinf_nearest_dist": None, "opt_own_reinf_units_r10": None,
-                "opt_own_reinf_units_r25": None}
+TGT_COLS = (tuple("opt_tgt_enemy_%d_%s" % (k, f) for k in (1, 2, 3)
+                  for f in ("dist", "strength"))
+            + tuple("opt_tgt_friend_%d_%s" % (k, f) for k in (1, 2)
+                    for f in ("dist", "strength"))
+            + ("opt_tgt_enemysett_1_dist", "opt_tgt_enemysett_1_strength"))
+
+_EMPTY_REINF = dict.fromkeys(TGT_COLS)
 
 
 def _reinf_feats(atype, key, params, world, self_cqi):
@@ -797,9 +803,8 @@ def _reinf_feats(atype, key, params, world, self_cqi):
     tx, ty = float(tx), float(ty)
     w = world or {}
     tgt_cqi = str(p.get("target_cqi")) if p.get("target_cqi") is not None else None
-    tgt_fac = p.get("target_faction")
-    nearest = None
-    n10 = n25 = u10 = u25 = hp10 = sf10 = 0.0
+
+    enemies = []
     for h in w.get("hostiles") or []:
         if h.get("kind") != "army" or h.get("is_armed_citizenry") \
                 or h.get("visible") is False:
@@ -809,26 +814,28 @@ def _reinf_feats(atype, key, params, world, self_cqi):
         hx, hy = h.get("x"), h.get("y")
         if hx is None or hy is None:
             continue
-        d = math.hypot(float(hx) - tx, float(hy) - ty)
-        if nearest is None or d < nearest:
-            nearest = d
-        if d <= 25:
-            n25 += 1
-            u25 += float(h.get("units") or 0)
-            if d <= 10:
-                n10 += 1
-                u10 += float(h.get("units") or 0)
-                hp10 += float(h.get("hp") or 0)
-                if tgt_fac and h.get("faction") == tgt_fac:
-                    sf10 += float(h.get("units") or 0)
-    out["opt_enemy_reinf_nearest_dist"] = round(nearest, 2) if nearest is not None else None
-    out["opt_enemy_reinf_armies_r10"] = n10
-    out["opt_enemy_reinf_armies_r25"] = n25
-    out["opt_enemy_reinf_units_r10"] = u10
-    out["opt_enemy_reinf_units_r25"] = u25
-    out["opt_enemy_reinf_hp_r10"] = round(hp10, 2)
-    out["opt_enemy_reinf_units_samefac_r10"] = sf10
-    gar = 0.0
+        enemies.append((math.hypot(float(hx) - tx, float(hy) - ty), h))
+    enemies.sort(key=lambda e: e[0])
+    for k, (d, h) in enumerate(enemies[:3]):
+        pre = "opt_tgt_enemy_%d" % (k + 1)
+        out[pre + "_dist"] = round(d, 2)
+        out[pre + "_strength"] = _units_of(h)
+
+    friends = []
+    for a in w.get("armies") or []:
+        if not a.get("has_army") or str(a.get("cqi")) == str(self_cqi or ""):
+            continue
+        ax, ay = a.get("x"), a.get("y")
+        if ax is None or ay is None:
+            continue
+        friends.append((math.hypot(float(ax) - tx, float(ay) - ty), a))
+    friends.sort(key=lambda e: e[0])
+    for k, (d, a) in enumerate(friends[:2]):
+        pre = "opt_tgt_friend_%d" % (k + 1)
+        out[pre + "_dist"] = round(d, 2)
+        out[pre + "_strength"] = _units_of(a)
+
+    setts = []
     for h in w.get("hostiles") or []:
         if h.get("kind") != "settlement":
             continue
@@ -837,29 +844,11 @@ def _reinf_feats(atype, key, params, world, self_cqi):
         hx, hy = h.get("x"), h.get("y")
         if hx is None or hy is None:
             continue
-        if math.hypot(float(hx) - tx, float(hy) - ty) <= 10:
-            gu, _gh = _enemy_garrison(w, h.get("region"))
-            gar += gu or 0.0
-    out["opt_target_garrison_nearby_units"] = gar
-    own_nearest = None
-    o10 = o25 = 0.0
-    for a in w.get("armies") or []:
-        if not a.get("has_army") or str(a.get("cqi")) == str(self_cqi or ""):
-            continue
-        ax, ay = a.get("x"), a.get("y")
-        if ax is None or ay is None:
-            continue
-        d = math.hypot(float(ax) - tx, float(ay) - ty)
-        if own_nearest is None or d < own_nearest:
-            own_nearest = d
-        if d <= 25:
-            o25 += float(a.get("units") or 0)
-            if d <= 10:
-                o10 += float(a.get("units") or 0)
-    out["opt_own_reinf_nearest_dist"] = (round(own_nearest, 2)
-                                         if own_nearest is not None else None)
-    out["opt_own_reinf_units_r10"] = o10
-    out["opt_own_reinf_units_r25"] = o25
+        setts.append((math.hypot(float(hx) - tx, float(hy) - ty), h))
+    if setts:
+        d, h = min(setts, key=lambda e: e[0])
+        out["opt_tgt_enemysett_1_dist"] = round(d, 2)
+        out["opt_tgt_enemysett_1_strength"] = _units_of(h)
     return out
 
 
@@ -1117,13 +1106,6 @@ MODEL_COLUMNS = frozenset(tuple("optk_" + _t for _t in OPTION_KEY_TYPES) + (
     "lord_ap_pct", "lord_acted", "lord_has_army", "lord_reach_max",
     "lord_pending_recruits", "lord_garrisoned", "lord_besieging", "lord_is_leader",
     "lord_in_own_territory",
-    "near_friend_1_dist",
-    "near_enemy_1_dist", "near_enemy_1_stance", "near_enemy_1_faction",
-    "near_enemy_1_strength",
-    "near_enemysett_1_dist", "near_enemysett_1_faction",
-    "near_ownsett_1_dist",
-    "near_neutral_1_faction", "near_neutral_1_race",
-    "near_enemy_total", "near_enemysett_total",
     "prov_province", "prov_active_edict", "prov_is_capital", "prov_buildings", "prov_free_slots",
     "prov_public_order", "prov_settlement_level",
     "camp_faction", "camp_race", "camp_turn", "camp_lord_level", "camp_power_rank",
@@ -1138,7 +1120,7 @@ MODEL_COLUMNS = frozenset(tuple("optk_" + _t for _t in OPTION_KEY_TYPES) + (
     "dip_target", "dip_target_race", "dip_at_war", "dip_allied", "dip_has_any_tie",
     "dip_gift_tier", "dip_gift_rank", "dip_standing", "dip_trade", "dip_target_army_dist",
     "dip_term",
-    "pos_exposed", "pos_support_ratio", "agg_enemy_n", "agg_enemy_mean_dist",
+    "pos_exposed",
     "isc_screen", "isc_n_options", "isc_option", "isc_fc_result", "isc_fc_casualties",
     "isc_dilemma_id", "isc_option_id", "isc_option_label", "isc_payload", "isc_n_payload",
     "isc_dip_attitude", "isc_dip_attitude_label", "isc_dip_race", "isc_dip_reliability",
@@ -1164,11 +1146,6 @@ MODEL_COLUMNS = frozenset(tuple("optk_" + _t for _t in OPTION_KEY_TYPES) + (
     "prov_pending_recruits_others", "prov_recruits_this_turn_others",
     "lrec_inprogress", "camp_taken_recruit_unit",
     "camp_taken_attack_army", "camp_taken_attack_settlement",
-    "opt_enemy_reinf_nearest_dist", "opt_enemy_reinf_armies_r10",
-    "opt_enemy_reinf_armies_r25", "opt_enemy_reinf_units_r10",
-    "opt_enemy_reinf_units_r25", "opt_enemy_reinf_hp_r10",
-    "opt_enemy_reinf_units_samefac_r10", "opt_target_garrison_nearby_units",
-    "opt_own_reinf_nearest_dist", "opt_own_reinf_units_r10", "opt_own_reinf_units_r25",
     "opt_cancel_turns_left", "opt_cancel_stalled", "camp_taken_cancel_recruit",
     "lord_queue_on_hold", "lord_queue_stalled_units",
     "opt_db_category", "opt_db_legendary", "opt_db_transferrable",
@@ -1176,7 +1153,11 @@ MODEL_COLUMNS = frozenset(tuple("optk_" + _t for _t in OPTION_KEY_TYPES) + (
     "opt_item_pool_free", "opt_item_pool_same_type",
     "opt_skill_level", "opt_skill_total_levels", "opt_skill_tier",
     "opt_db_tier", "opt_db_required_parents", "opt_db_level", "opt_db_building_chain",
-) + tuple("opt_db_res_" + _r for _r in DB.ITEM_RESOURCES))
+) + tuple("opt_db_res_" + _r for _r in DB.ITEM_RESOURCES)
+    + tuple("near_%s_%d_%s" % (_g, _k + 1, _f) for _g in sorted(NEAR_MODEL_FIELDS)
+            for _k in range(NEAR_K.get(_g, NEAR_K_DEFAULT))
+            for _f in NEAR_MODEL_FIELDS[_g])
+    + TGT_COLS)
 
 MODEL_COLUMNS_ENABLED = True
 
