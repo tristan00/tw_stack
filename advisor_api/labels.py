@@ -162,7 +162,7 @@ _SCOPES = (("character_to_character", "self"), ("character_to_force", "army"),
 
 
 def _fmt_effect(desc, value, scope):
-    txt = str(desc or "")
+    txt = re.sub(r"\[\[.*?\]\]", "", str(desc or ""))
     if _NUM_RE.search(txt):
         txt = _NUM_RE.sub(("%+g" % value) if value is not None else "", txt, count=1)
     elif value is not None and value not in (0.0, 1.0):
@@ -189,6 +189,40 @@ def item_effects(key: str) -> str | None:
         parts.append(_fmt_effect(desc or pretty(r["effect"]), r["value"],
                                  r["effect_scope"]))
     return " · ".join(p for p in parts if p) or None
+
+
+_RES_PREFIX = re.compile(r"^wh\d?_(main|dlc\d+|pro\d+|twa\d+|cp\d+)_effect_")
+_RES_LEAD = ("character_stat_", "character_", "agent_", "force_all_", "force_",
+             "faction_", "attribute_enable_", "enable_", "economy_")
+_RES_TAIL = ("_mod_all", "_mod", "_add", "_characters", "_enemy", "_all")
+
+_item_res_cache: dict | None = None
+
+
+def _resource_name(effect: str) -> str:
+    k = _RES_PREFIX.sub("", str(effect))
+    for lead in _RES_LEAD:
+        if k.startswith(lead):
+            k = k[len(lead):]
+            break
+    for tail in _RES_TAIL:
+        if k.endswith(tail):
+            k = k[:-len(tail)]
+            break
+    return k.replace("_", " ").strip() or str(effect)
+
+
+def item_resources() -> dict:
+    global _item_res_cache
+    if _item_res_cache is None:
+        out: dict = {}
+        if _have("ancillary_effects"):
+            for r in _rows("SELECT ancillary, effect, value FROM ancillary_effects"):
+                name = _resource_name(r["effect"])
+                e = out.setdefault(r["ancillary"], {})
+                e[name] = round(e.get(name, 0.0) + (r["value"] or 0.0), 2)
+        _item_res_cache = out
+    return _item_res_cache
 
 
 def tech_parents() -> dict:

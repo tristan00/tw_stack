@@ -560,7 +560,7 @@ function ItemsTab({ base }: { base: string }) {
         scope={{ text: 'one row per item this faction ever held · benched = held in the pool, never worn' }}
         right={<EntityLink to="/items" className="text-dim text-xs">all items →</EntityLink>}
       >
-        <DataTable rows={data.rows ?? []} cols={itemCols(false)} rowId={(r) => r.key} searchPlaceholder="search item…" pageSize={25} emptyWhat="no item was ever held" />
+        <DataTable rows={data.rows ?? []} cols={itemCols(false, data.resources ?? [])} rowId={(r) => r.key} searchPlaceholder="search item…" pageSize={25} emptyWhat="no item was ever held" />
       </Section>
       <Section title="equip behaviour vs outcomes" scope={{ text: 'does how the strategies handle the inventory track how campaigns go' }}>
         <Card className="overflow-hidden">

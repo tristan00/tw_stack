@@ -1297,19 +1297,31 @@ def _item_rows(m, cids=None, min_side=5) -> list:
             e["req"].append(c["reward"])
         else:
             e["rb"].append(c["reward"])
+    res = labels.item_resources()
     out = []
     for key, e in per.items():
         req, rb = _mean(e["req"]), _mean(e["rb"])
         both = len(e["req"]) >= min_side and len(e["rb"]) >= min_side
         out.append(ItemRow(
             key=key, label=_item_ident(key), category=labels.item_category(key),
-            effects=labels.item_effects(key), held_in=e["held"], equipped_in=e["eq"],
+            effects=labels.item_effects(key), resources=res.get(key) or {},
+            held_in=e["held"], equipped_in=e["eq"],
             avg_reward_equipped=req if both else None,
             avg_reward_benched=rb if both else None,
             delta=round(req - rb, 2) if both and req is not None and rb is not None
             else None))
     out.sort(key=lambda r: (-r.equipped_in, -r.held_in, r.key))
     return out
+
+
+def _resource_columns(rows, floor=3, cap=24) -> list:
+    counts: dict = {}
+    for r in rows:
+        for name in r.resources:
+            counts[name] = counts.get(name, 0) + 1
+    got = sorted((n2 for n2 in counts.items() if n2[1] >= floor),
+                 key=lambda kv: -kv[1])
+    return [name for name, _c in got[:cap]]
 
 
 def start_items(con, mkey: str, fkey: str) -> dict:
@@ -1340,14 +1352,17 @@ def start_items(con, mkey: str, fkey: str) -> dict:
             avg_reward=_mean([m["camp"][cid]["reward"] for cid, _p in sel]),
             avg_equips=_mean([p["equips"] for _c, p in sel], 1),
             avg_unequips=_mean([p["uneq"] for _c, p in sel], 1)))
-    return {"rows": _item_rows(m, cids), "behaviour": behaviour}
+    rows = _item_rows(m, cids)
+    return {"rows": rows, "resources": _resource_columns(rows),
+            "behaviour": behaviour}
 
 
 def items_page(con) -> dict:
     m = item_matrix(con)
     rows = _item_rows(m)
     cats = sorted({r.category for r in rows if r.category})
-    return {"total": len(rows), "categories": cats, "rows": rows}
+    return {"total": len(rows), "categories": cats,
+            "resources": _resource_columns(rows), "rows": rows}
 
 
 def item_page(con, key: str) -> dict | None:
