@@ -638,6 +638,13 @@ def _verify(cur):
               f"release={got['release']!r}")
 
 
+def _i0(v):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 0
+
+
 def build_extra():
     con = pg.connect(search_path="reference")
     cur = con.cursor()
@@ -685,8 +692,37 @@ def build_extra():
                         (r["ancillary"], r["effect"], r["effect_scope"], r["value"]))
         cur.execute("CREATE INDEX idx_anc_effects ON ancillary_effects (ancillary)")
 
+    tnodes, tnmeta = src("technology_nodes_tables")
+    if tnmeta["ok"]:
+        cur.execute("DROP TABLE IF EXISTS tech_groups")
+        cur.execute("CREATE TABLE tech_groups (node_key TEXT, ui_group TEXT)")
+        for r in tnodes:
+            g = r.get("optional_ui_group") or ""
+            if g:
+                cur.execute("INSERT INTO tech_groups VALUES (%s, %s)", (r["key"], g))
+
+    scats, scmeta = src("character_skill_categories_tables")
+    if scmeta["ok"]:
+        cur.execute("DROP TABLE IF EXISTS skill_categories")
+        cur.execute("CREATE TABLE skill_categories (key TEXT, min_indent INT,"
+                    " max_indent INT, ord INT, subtype_override TEXT)")
+        for r in scats:
+            cur.execute("INSERT INTO skill_categories VALUES (%s, %s, %s, %s, %s)",
+                        (r["key"], r["min_indent"], r["max_indent"], r["order"],
+                         r.get("agent_subtype_override") or ""))
+
     nodes, nmeta = src("character_skill_nodes_tables")
     nlinks, klmeta = src("character_skill_node_links_tables")
+    if nmeta["ok"]:
+        counts: dict = {}
+        for r in nodes:
+            k = (r["character_skill_key"], _i0(r.get("indent")))
+            counts[k] = counts.get(k, 0) + 1
+        cur.execute("DROP TABLE IF EXISTS skill_indents")
+        cur.execute("CREATE TABLE skill_indents (skill TEXT, indent INT, n INT)")
+        for (sk, ind), n in counts.items():
+            cur.execute("INSERT INTO skill_indents VALUES (%s, %s, %s)", (sk, ind, n))
+        cur.execute("CREATE INDEX idx_skill_indents ON skill_indents (skill)")
     if nmeta["ok"] and klmeta["ok"]:
         skill_of = {r["key"]: r["character_skill_key"] for r in nodes}
         cur.execute("DROP TABLE IF EXISTS skill_links")
@@ -720,7 +756,7 @@ def build_extra():
         tag = "OK" if m["ok"] else "SKIP"
         print(f"  [{tag}] {t:38s} ver={m['version']} rows={m['rows']} :: {m['reason']}")
     for t in ("tech_links", "ancillaries", "ancillary_effects", "effects_meta",
-              "skill_links"):
+              "skill_links", "skill_categories", "skill_indents", "tech_groups"):
         n = cur.execute("SELECT COUNT(*) FROM " + t).fetchone()[0]
         print(f"  {t:16s} {n} rows")
     con.close()

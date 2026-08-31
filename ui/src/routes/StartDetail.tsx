@@ -449,6 +449,7 @@ function ResearchTab({ base }: { base: string }) {
   const { data, error, loading, reload } = useApi<StartResearch>(`${base}/research`, [], { live: false })
   if (error) return <ErrorState error={error} onRetry={reload} />
   if (loading || !data) return <Skeleton rows={8} />
+  const hasLine = (data.rows ?? []).some((r) => r.line)
   const cols: Col<TechRow>[] = [
     {
       key: 'tech',
@@ -458,6 +459,9 @@ function ResearchTab({ base }: { base: string }) {
     },
     { key: 'key', label: 'key', optional: true, value: (r) => r.key, render: (r) => <span className="num text-dim text-2xs">{r.key}</span> },
     { key: 'parent', label: 'parent', value: (r) => r.parent?.label ?? '', render: (r) => <span className="text-dim">{r.parent?.label ?? '—'}</span> },
+    ...(hasLine
+      ? [{ key: 'line', label: 'line', value: (r: TechRow) => r.line ?? '', render: (r: TechRow) => <span className="text-dim">{r.line ?? '—'}</span> } as Col<TechRow>]
+      : []),
     { key: 'tier', label: 'tier', align: 'right', value: (r) => r.tier ?? 0, render: (r) => dash(r.tier) },
     { key: 'points', label: 'points', align: 'right', optional: true, value: (r) => r.points ?? 0, render: (r) => dash(r.points) },
     { key: 'took', label: 'took it', align: 'right', value: (r) => r.took?.n ?? 0, render: tookPct },
@@ -497,6 +501,7 @@ function SkillsTab({ base }: { base: string }) {
     },
     { key: 'key', label: 'key', optional: true, value: (r) => r.key, render: (r) => <span className="num text-dim text-2xs">{r.key}</span> },
     { key: 'parent', label: 'parent', value: (r) => r.parent ?? '', render: (r) => <span className="text-dim">{r.parent ?? '—'}</span> },
+    { key: 'line', label: 'line', value: (r) => r.line ?? '', render: (r) => <span className="text-dim">{r.line ?? '—'}</span> },
     { key: 'tier', label: 'tier', align: 'right', value: (r) => r.tier ?? 0, render: (r) => dash(r.tier) },
     { key: 'max', label: 'max ranks', align: 'right', value: (r) => r.max_ranks ?? 0, render: (r) => dash(r.max_ranks) },
     { key: 'took', label: 'ranked it', align: 'right', value: (r) => r.took?.n ?? 0, render: tookPct },

@@ -216,6 +216,63 @@ def tech_name(key: str, technology_key: str | None = None) -> str | None:
             or _loc("technologies_onscreen_name_" + key))
 
 
+_skill_line_cache: dict = {}
+
+
+def skill_lines(subtype: str | None) -> dict:
+    key = str(subtype or "")
+    if key in _skill_line_cache:
+        return _skill_line_cache[key]
+    if not (_have("skill_categories") and _have("skill_indents")):
+        _skill_line_cache[key] = {}
+        return {}
+    cats = [dict(r) for r in _rows(
+        "SELECT key, min_indent, max_indent, ord, subtype_override"
+        " FROM skill_categories")]
+    base = {c["ord"]: c["key"] for c in cats if not c["subtype_override"]}
+    mine = ([c for c in cats if c["subtype_override"] == key]
+            or [c for c in cats if not c["subtype_override"]])
+    modal: dict = {}
+    for r in _rows("SELECT DISTINCT ON (skill) skill, indent FROM skill_indents"
+                   " ORDER BY skill, n DESC"):
+        modal[r["skill"]] = r["indent"]
+    out = {}
+    for skill, ind in modal.items():
+        row = next((c for c in sorted(mine, key=lambda c2: c2["ord"])
+                    if c["min_indent"] <= ind and ind <= c["max_indent"]), None)
+        if row:
+            out[skill] = base.get(row["ord"], row["key"])
+    _skill_line_cache[key] = out
+    return out
+
+
+def skill_line_of(lines: dict, key: str) -> str | None:
+    got = lines.get(key)
+    if got:
+        return got
+    return "unique" if "_unique_" in str(key) else None
+
+
+_tech_groups_cache: dict | None = None
+
+
+def tech_groups() -> dict:
+    global _tech_groups_cache
+    if _tech_groups_cache is None:
+        _tech_groups_cache = {r["node_key"]: r["ui_group"] for r in _rows(
+            "SELECT node_key, ui_group FROM tech_groups")} \
+            if _have("tech_groups") else {}
+    return _tech_groups_cache
+
+
+def tech_group_name(group: str | None) -> str | None:
+    if not group:
+        return None
+    return (_loc("technology_ui_groups_onscreen_name_" + group)
+            or _loc("uied_component_texts_localised_string_" + group)
+            or pretty(group))
+
+
 def skill_parents() -> dict:
     if not _have("skill_links"):
         return {}
