@@ -10,13 +10,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 import common
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 INSTANCE_TYPES = ("faction", "region", "settlement", "province", "slot",
                   "lord", "hero", "action", "cgroup", "screen")
 CATALOGUE_TYPES = ("building", "chain", "unit", "tech", "skill", "ritual",
                    "agent_action", "edict", "item", "race", "agent_subtype",
-                   "screen_option", "dilemma", "screen_fact", "treaty_term")
+                   "screen_option", "dilemma", "screen_fact", "treaty_term",
+                   "effect")
 NODE_TYPES = INSTANCE_TYPES + CATALOGUE_TYPES
 ACTION_TYPE_INDEX = NODE_TYPES.index("action")
 
@@ -50,9 +51,12 @@ TYPE_FIELDS = {
     "skill": ("unlocked_at_rank", "is_background_skill"),
     "tech": ("tech_tier", "research_points_required"),
     "ritual": (),
-    "chain": (), "agent_action": (), "edict": (), "item": (), "race": (),
+    "chain": (), "agent_action": (), "edict": (),
+    "item": ("uniqueness_score", "legendary", "transferrable"),
+    "race": (),
     "agent_subtype": (),
     "screen_option": (), "dilemma": (), "screen_fact": (), "treaty_term": (),
+    "effect": ("positive_good", "priority"),
 }
 N_SCALARS = sum(len(v) for v in TYPE_FIELDS.values())
 MAX_FIELDS = max(max(len(v) for v in TYPE_FIELDS.values()), 1)
@@ -98,6 +102,11 @@ CATALOGUE_RELATIONS = (
     "tech_researched",
     "tech_available",
     "tech_locked",
+    "skill_child_of",
+    "chain_next_level",
+    "wears",
+    "holds_free",
+    "grants",
 )
 
 ABILITY_RELATIONS = ("hinder_settlement", "hinder_army", "hinder_agent",
@@ -212,7 +221,8 @@ CAT_BUCKETS = {"building": 8192, "chain": 4096, "unit": 4096, "tech": 4096,
                "screen_option": 4096,
                "dilemma": 4096,
                "screen_fact": 2048,
-               "treaty_term": 64}
+               "treaty_term": 64,
+               "effect": 16384}
 CAT_DIM = 32
 
 G_CTX_FIELDS = ("turn", "treasury", "income", "settlements", "armies",
