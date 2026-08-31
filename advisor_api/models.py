@@ -509,17 +509,21 @@ class SkillRow(BaseModel):
     delta_mean: float | None = None
 
 
-class SubtypeOpt(BaseModel):
+class StartCharacterRow(BaseModel):
     subtype: str
     label: str | None = None
     kind: str = "lord"
     campaigns: int = 0
+    avg_rank: float | None = None
+    avg_unspent: float | None = None
+    avg_ranked: float | None = None
+    top: list[Ident] = Field(default_factory=list)
 
 
 class StartSkills(BaseModel):
     scope: Scope
     mean_reward: float | None = None
-    subtypes: list[SubtypeOpt] = Field(default_factory=list)
+    characters: list[StartCharacterRow] = Field(default_factory=list)
     subtype: str | None = None
     avg_rank: float | None = None
     avg_unspent: float | None = None
@@ -531,10 +535,10 @@ class ItemRow(BaseModel):
     key: str
     label: str | None = None
     category: str | None = None
-    effects: str | None = None
     resources: dict[str, float] = Field(default_factory=dict)
     held_in: int = 0
     equipped_in: int = 0
+    benched_in: int = 0
     avg_reward_equipped: float | None = None
     avg_reward_benched: float | None = None
     delta: float | None = None
@@ -583,12 +587,19 @@ class ItemCampaignRow(BaseModel):
     reward: float | None = None
 
 
+class ItemEffect(BaseModel):
+    name: str
+    value: str | None = None
+    state: State = "neutral"
+    scope: str = "self"
+
+
 class ItemPage(BaseModel):
     scope: Scope
     key: str
     label: str | None = None
     category: str | None = None
-    effects: str | None = None
+    effects: list[ItemEffect] = Field(default_factory=list)
     acquisition: str | None = None
     lord_share: float | None = None
     held_in: int = 0
@@ -658,6 +669,175 @@ class CampaignItemsPage(BaseModel):
     events: list[CampaignItemEvent] = Field(default_factory=list)
     characters: list[CampaignCharacter] = Field(default_factory=list)
     pool: list[Ident] = Field(default_factory=list)
+
+
+class BuildingRow(BaseModel):
+    key: str
+    label: str | None = None
+    category: str | None = None
+    level: int | None = None
+    cost: int | None = None
+    offered_in: int = 0
+    took: Rate | None = None
+    avg_turn: float | None = None
+    avg_reward: float | None = None
+    delta_mean: float | None = None
+
+
+class StartBuildings(BaseModel):
+    scope: Scope
+    mean_reward: float | None = None
+    constructed_ever: int = 0
+    universe: int = 0
+    rows: list[BuildingRow] = Field(default_factory=list)
+
+
+class CampaignBuildingRow(BaseModel):
+    turn: int | None = None
+    kind: str = "construct"
+    key: str
+    label: str | None = None
+    category: str | None = None
+    level: int | None = None
+    region: str | None = None
+    cost: float | None = None
+
+
+class CampaignBuildingsPage(BaseModel):
+    scope: Scope
+    constructed: int = 0
+    total_cost: float | None = None
+    rows: list[CampaignBuildingRow] = Field(default_factory=list)
+
+
+class CatalogIndexRow(BaseModel):
+    key: str
+    label: str | None = None
+    category: str | None = None
+    level: int | None = None
+    cost: int | None = None
+    line: str | None = None
+    tier: int | None = None
+    points: int | None = None
+    characters: str | None = None
+    took: Rate | None = None
+    starts: int = 0
+    avg_turn: float | None = None
+    avg_reward_took: float | None = None
+    avg_reward_passed: float | None = None
+    delta: float | None = None
+
+
+class CatalogIndexPage(BaseModel):
+    scope: Scope
+    family: str
+    total: int = 0
+    campaigns: int = 0
+    categories: list[str] = Field(default_factory=list)
+    rows: list[CatalogIndexRow] = Field(default_factory=list)
+
+
+class CatalogStartRow(BaseModel):
+    campaign_map: Ident | None = None
+    faction: Ident
+    leader: str | None = None
+    took: Rate | None = None
+    offered_in: int = 0
+    avg_turn: float | None = None
+    avg_reward: float | None = None
+    delta_mean: float | None = None
+
+
+class CatalogCampaignRow(BaseModel):
+    campaign: Ident
+    ts: float | None = None
+    leader: str | None = None
+    turn: int | None = None
+    reward: float | None = None
+
+
+class ChainLevel(BaseModel):
+    key: str
+    label: str | None = None
+    level: int | None = None
+    cost: int | None = None
+    constructed_in: int = 0
+    this: bool = False
+
+
+class SkillCharacterRow(BaseModel):
+    subtype: str
+    label: str | None = None
+    kind: str = "lord"
+    campaigns: int = 0
+    avg_ranks: float | None = None
+    avg_turn: float | None = None
+
+
+class CatalogKeyPage(BaseModel):
+    scope: Scope
+    family: str
+    key: str
+    label: str | None = None
+    category: str | None = None
+    level: int | None = None
+    cost: int | None = None
+    upkeep: int | None = None
+    turns_to_build: int | None = None
+    parent: Ident | None = None
+    line: str | None = None
+    tier: int | None = None
+    points: int | None = None
+    unlock_rank: int | None = None
+    took_in: int = 0
+    took: Rate | None = None
+    starts: int = 0
+    avg_turn: float | None = None
+    avg_reward_took: float | None = None
+    avg_reward_passed: float | None = None
+    delta: float | None = None
+    chain: list[ChainLevel] = Field(default_factory=list)
+    by_character: list[SkillCharacterRow] = Field(default_factory=list)
+    by_start: list[CatalogStartRow] = Field(default_factory=list)
+    recent: list[CatalogCampaignRow] = Field(default_factory=list)
+
+
+class PositionKeyRow(BaseModel):
+    key: str
+    label: str | None = None
+    n: int = 0
+    mean_score: float | None = None
+    delta: float | None = None
+
+
+class PositionTypeRow(BaseModel):
+    action_type: Ident
+    n: int = 0
+    share: float | None = None
+    scored: int = 0
+    mean_score: float | None = None
+    delta: float | None = None
+    keys: list[PositionKeyRow] = Field(default_factory=list)
+
+
+class PositionFacetOption(BaseModel):
+    key: str
+    label: str
+    culture: str | None = None
+    campaigns: int = 0
+
+
+class PositionsPage(BaseModel):
+    scope: Scope
+    factions: list[PositionFacetOption] = Field(default_factory=list)
+    cultures: list[str] = Field(default_factory=list)
+    maps: list[Ident] = Field(default_factory=list)
+    settlements: list[PositionFacetOption] = Field(default_factory=list)
+    decisions: int = 0
+    campaigns: int = 0
+    takes: int = 0
+    situation_mean: float | None = None
+    rows: list[PositionTypeRow] = Field(default_factory=list)
 
 
 class RewardPoint(BaseModel):

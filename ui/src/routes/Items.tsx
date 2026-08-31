@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { DataTable, type Col } from '@/components/DataTable'
+import { CatalogNav } from '@/components/catalog'
 import { EntityLink, ErrorState, Section, Skeleton } from '@/components/primitives'
 import { useApi, type ItemRow, type ItemsPage } from '@/lib/api'
 import { n } from '@/lib/format'
@@ -15,7 +16,7 @@ export const itemDelta = (v: number | null | undefined) =>
     </span>
   )
 
-export const itemCols = (withEffects: boolean, resources: string[] = []): Col<ItemRow>[] => [
+export const itemCols = (resources: string[] = []): Col<ItemRow>[] => [
   {
     key: 'item',
     label: 'item',
@@ -28,21 +29,13 @@ export const itemCols = (withEffects: boolean, resources: string[] = []): Col<It
   },
   { key: 'key', label: 'key', optional: true, value: (r) => r.key, render: (r) => <span className="num text-dim text-2xs">{r.key}</span> },
   { key: 'cat', label: 'category', value: (r) => r.category ?? '', render: (r) => <span className="text-dim">{r.category ?? '—'}</span> },
-  ...(withEffects
-    ? [
-        {
-          key: 'fx',
-          label: 'effects',
-          value: (r: ItemRow) => r.effects ?? '',
-          render: (r: ItemRow) => <span className="text-dim text-2xs">{r.effects ?? '—'}</span>,
-        } as Col<ItemRow>,
-      ]
-    : []),
   { key: 'held', label: 'held in', align: 'right', value: (r) => r.held_in, render: (r) => <span className="num">{n(r.held_in)}</span> },
-  { key: 'eq', label: 'equipped in', align: 'right', value: (r) => r.equipped_in, render: (r) => <span className="num">{n(r.equipped_in)}</span> },
+  { key: 'eq', label: 'worn in', align: 'right', value: (r) => r.equipped_in, render: (r) => <span className="num">{n(r.equipped_in)}</span> },
+  { key: 'bench', label: 'benched in', align: 'right', value: (r) => r.benched_in, render: (r) => (r.benched_in ? <span className="num">{n(r.benched_in)}</span> : <span className="text-dim">—</span>) },
   {
     key: 'req',
-    label: 'avg reward equipped',
+    label: 'avg reward',
+    unit: 'worn',
     align: 'right',
     value: (r) => r.avg_reward_equipped ?? undefined,
     sortUndefined: 'last',
@@ -50,7 +43,8 @@ export const itemCols = (withEffects: boolean, resources: string[] = []): Col<It
   },
   {
     key: 'rb',
-    label: 'avg reward benched',
+    label: 'avg reward',
+    unit: 'benched',
     align: 'right',
     value: (r) => r.avg_reward_benched ?? undefined,
     sortUndefined: 'last',
@@ -58,8 +52,10 @@ export const itemCols = (withEffects: boolean, resources: string[] = []): Col<It
   },
   {
     key: 'delta',
-    label: 'Δ equipped − benched',
+    label: 'Δ reward',
+    unit: 'worn − benched',
     align: 'right',
+    help: 'average campaign reward when a campaign wore it, minus when a campaign held it but left it benched. Shown once both sides have 5+ campaigns.',
     value: (r) => r.delta ?? undefined,
     sortUndefined: 'last',
     render: (r) => itemDelta(r.delta),
@@ -94,10 +90,15 @@ export function Items() {
   if (loading || !data) return <Skeleton rows={10} />
   const rows = (data.rows ?? []).filter((r) => !cat || r.category === cat)
   return (
-    <Section
-      title="items"
-      scope={{ text: 'every item this run dir ever held, one row each · equipped vs benched compares campaigns that held the same item' }}
-    >
+    <div>
+      <CatalogNav active="/items" />
+      <Section
+        title="items"
+        scope={{
+          text: 'every item this run dir ever held, one row each',
+          detail: 'worn vs benched compares campaigns that held the same item: worn = equipped at least once, benched = held in the pool and never worn',
+        }}
+      >
       <div className="mb-2 flex flex-wrap items-center gap-1.5 text-2xs">
         <button
           onClick={() => setCat('')}
@@ -116,7 +117,8 @@ export function Items() {
         ))}
         <span className="text-dim num ml-auto">{rows.length} of {n(data.total)}</span>
       </div>
-      <DataTable rows={rows} cols={itemCols(true, data.resources ?? [])} rowId={(r) => r.key} searchPlaceholder="search item…" pageSize={25} emptyWhat="no item matches" />
-    </Section>
+      <DataTable rows={rows} cols={itemCols(data.resources ?? [])} rowId={(r) => r.key} searchPlaceholder="search item…" pageSize={25} emptyWhat="no item matches" />
+      </Section>
+    </div>
   )
 }

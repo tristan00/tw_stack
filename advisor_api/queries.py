@@ -8,6 +8,7 @@ import os
 import re
 import statistics
 import sys
+import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -30,9 +31,11 @@ from advisor_api.models import (
     Service, StartRow, TimelineAction, TimelineLane, TimingRow, TrainingEvent, TrialCorr,
     TrialRow, TurnRollup, UcbPick, UcbRow, HistBin, MatrixCell, ProducedCampaign,
     StartCampaign, Verdict, WindowEdgeRow,
-    BehaviourRow, CampaignCharacter, CampaignItemEvent, CampaignSkillRow,
-    CampaignTechRow, ItemCampaignRow, ItemRow, ItemStartRow, SkillRow, SubtypeOpt,
-    TechRow,
+    BehaviourRow, BuildingRow, CampaignBuildingRow, CampaignCharacter,
+    CampaignItemEvent, CampaignSkillRow, CampaignTechRow, CatalogCampaignRow,
+    CatalogIndexRow, CatalogStartRow, ChainLevel, ItemCampaignRow, ItemRow,
+    ItemStartRow, PositionFacetOption, PositionKeyRow, PositionTypeRow,
+    SkillCharacterRow, SkillRow, StartCharacterRow, TechRow,
 )
 from decisions import pg_schema as SS
 
@@ -912,8 +915,46 @@ def _stamped(name, build):
     if hit and hit[0] == key:
         return hit[1]
     v = build()
+    if len(_STAMPED) > 256:
+        for stale in [n for n, (k, _v) in _STAMPED.items() if k != key]:
+            del _STAMPED[stale]
     _STAMPED[name] = (key, v)
     return v
+
+
+WARM_TTL_S = 300.0
+WARM_EVERY_S = 120.0
+_WARM_ALIVE = threading.Event()
+
+
+def _stamped_slow(name, build, ttl=WARM_TTL_S, force=False):
+    hit = _STAMPED.get(name)
+    if not force and hit and isinstance(hit[0], tuple) and hit[0][0] == "slow":
+        if time.time() - hit[0][1] < ttl or _WARM_ALIVE.is_set():
+            return hit[1]
+    v = build()
+    _STAMPED[name] = (("slow", time.time()), v)
+    return v
+
+
+def warm_caches(con) -> list:
+    out = []
+    for label, fn in (
+            ("camp_meta", lambda: _camp_meta(con, force=True)),
+            ("item_matrix", lambda: item_matrix(con, force=True)),
+            ("usage_building", lambda: _usage_matrix(con, "building", force=True)),
+            ("usage_research", lambda: _usage_matrix(con, "research", force=True)),
+            ("usage_skills", lambda: _usage_matrix(con, "skills", force=True)),
+            ("char_subtypes", lambda: _char_subtypes(con, force=True)),
+            ("positions", lambda: _positions_data(con, force=True)),
+    ):
+        t0 = time.perf_counter()
+        try:
+            fn()
+            out.append("%s=%.0fms" % (label, (time.perf_counter() - t0) * 1000))
+        except Exception as e:
+            out.append("%s=FAILED:%s" % (label, str(e)[:120]))
+    return out
 
 
 def campaign_row(con, campaign_key: str):
@@ -1238,17 +1279,37 @@ def _mean(vals, digits=2):
     return round(sum(vals) / len(vals), digits) if vals else None
 
 
+def _camp_meta(con, force=False) -> dict:
+    def build():
+        camp = {}
+        for r in con.execute(
+                "SELECT c.campaign_id, c.campaign_key, c.faction, c.campaign_map,"
+                " c.leader, g.settlements_gained, g.levels_gained, g.turns_reached,"
+                " g.first_ts"
+                " FROM campaigns c"
+                " JOIN campaign_gains g ON g.campaign_key = c.campaign_key"):
+            d = dict(r)
+            d["reward"] = ((_f(d["settlements_gained"], 0.0) or 0.0)
+                           + (_f(d["levels_gained"], 0.0) or 0.0))
+            camp[_i(r["campaign_id"], 0)] = d
+        return camp
+    return _stamped_slow("camp_meta", build, force=force)
+
+
+def _start_of(c) -> tuple:
+    return ((c["campaign_map"] or ""), c["faction"])
+
+
+def _start_means(camp) -> dict:
+    per: dict = {}
+    for c in camp.values():
+        per.setdefault(_start_of(c), []).append(c["reward"])
+    return {sk: _mean(vs) for sk, vs in per.items()}
+
+
 @db.timed
 def _item_matrix_build(con) -> dict:
-    camp = {}
-    for r in con.execute(
-            "SELECT c.campaign_id, c.campaign_key, c.faction, c.campaign_map, c.leader,"
-            " g.settlements_gained, g.levels_gained, g.turns_reached, g.first_ts"
-            " FROM campaigns c JOIN campaign_gains g ON g.campaign_key = c.campaign_key"):
-        d = dict(r)
-        d["reward"] = ((_f(d["settlements_gained"], 0.0) or 0.0)
-                       + (_f(d["levels_gained"], 0.0) or 0.0))
-        camp[_i(r["campaign_id"], 0)] = d
+    camp = _camp_meta(con)
     pairs = {}
     for r in con.execute(
             "SELECT t.campaign_id cid, a.action_key key,"
@@ -1274,8 +1335,8 @@ def _item_matrix_build(con) -> dict:
     return {"camp": camp, "pairs": pairs}
 
 
-def item_matrix(con) -> dict:
-    return _stamped("item_matrix", lambda: _item_matrix_build(con))
+def item_matrix(con, force=False) -> dict:
+    return _stamped_slow("item_matrix", lambda: _item_matrix_build(con), force=force)
 
 
 def _item_ident(key):
@@ -1304,10 +1365,9 @@ def _item_rows(m, cids=None, min_side=5) -> list:
         both = len(e["req"]) >= min_side and len(e["rb"]) >= min_side
         out.append(ItemRow(
             key=key, label=_item_ident(key), category=labels.item_category(key),
-            effects=labels.item_effects(key), resources=res.get(key) or {},
-            held_in=e["held"], equipped_in=e["eq"],
-            avg_reward_equipped=req if both else None,
-            avg_reward_benched=rb if both else None,
+            resources=res.get(key) or {},
+            held_in=e["held"], equipped_in=e["eq"], benched_in=len(e["rb"]),
+            avg_reward_equipped=req, avg_reward_benched=rb,
             delta=round(req - rb, 2) if both and req is not None and rb is not None
             else None))
     out.sort(key=lambda r: (-r.equipped_in, -r.held_in, r.key))
@@ -1403,8 +1463,7 @@ def item_page(con, key: str) -> dict | None:
             campaign_map=_id(ident.campaign_map(mk)) if mk else None,
             faction=_fac(fk), leader=e["leader"], held_in=e["held"],
             equipped_in=e["eq"],
-            avg_reward_equipped=req if both else None,
-            avg_reward_benched=rb if both else None,
+            avg_reward_equipped=req, avg_reward_benched=rb,
             delta=round(req - rb, 2) if both and req is not None and rb is not None
             else None))
     lords = con.execute(
@@ -1426,7 +1485,7 @@ def item_page(con, key: str) -> dict | None:
     req_m, rb_m = _mean(req_all), _mean(rb_all)
     return {
         "key": key, "label": _item_ident(key), "category": labels.item_category(key),
-        "effects": labels.item_effects(key),
+        "effects": labels.item_effect_rows(key),
         "acquisition": labels._loc("ancillaries_explanation_text_" + key),
         "lord_share": round(100.0 * _i(lords["l"], 0) / _i(lords["n"], 1), 0)
         if lords and _i(lords["n"], 0) else None,
@@ -1521,25 +1580,14 @@ def start_skills(con, mkey: str, fkey: str, subtype: str | None = None) -> dict:
     mine = _start_gains(con, mkey, fkey)
     rewards = {_i(g["campaign_id"], 0): g["reward"] for g in mine}
     mean_r = _mean(list(rewards.values()))
-    by_sub: dict = {}
+    per_sub: dict = {}
     for s in snaps:
         st = str(s["z"].get("subtype") or "")
-        if st:
-            e = by_sub.setdefault(st, {"kind": s["kind"], "cids": set()})
-            e["cids"].add(s["cid"])
-    opts = [SubtypeOpt(subtype=st, label=labels.subtype_name(st), kind=e["kind"],
-                       campaigns=len(e["cids"]))
-            for st, e in by_sub.items()]
-    opts.sort(key=lambda o: (o.kind != "lord", -o.campaigns))
-    chosen = subtype if subtype in by_sub else (opts[0].subtype if opts else None)
-    if not chosen:
-        return {"mean_reward": mean_r, "subtypes": [], "subtype": None,
-                "avg_rank": None, "avg_unspent": None, "taken_ever": 0, "rows": []}
-    sel = [s for s in snaps if str(s["z"].get("subtype") or "") == chosen]
-    per_camp: dict = {}
-    for s in sel:
-        pc = per_camp.setdefault(s["cid"], {"levels": {}, "rank": 0, "pts": None,
-                                            "cqis": set()})
+        if not st:
+            continue
+        e = per_sub.setdefault(st, {"kind": s["kind"], "camps": {}})
+        pc = e["camps"].setdefault(s["cid"], {"levels": {}, "rank": 0, "pts": None,
+                                              "cqis": set()})
         pc["cqis"].add(s["cqi"])
         pc["rank"] = max(pc["rank"], _i(s["z"].get("rank"), 0) or 0)
         pts = _i(s["z"].get("skill_points"))
@@ -1549,6 +1597,33 @@ def start_skills(con, mkey: str, fkey: str, subtype: str | None = None) -> dict:
             lv = _i(node.get("level"), 0) or 0
             if k:
                 pc["levels"][k] = max(pc["levels"].get(k, 0), lv)
+    characters = []
+    for st, e in per_sub.items():
+        camps = e["camps"]
+        counts: dict = {}
+        for pc in camps.values():
+            for k, lv in pc["levels"].items():
+                if lv:
+                    counts[k] = counts.get(k, 0) + 1
+        top = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:3]
+        characters.append(StartCharacterRow(
+            subtype=st, label=labels.subtype_name(st), kind=e["kind"],
+            campaigns=len(camps),
+            avg_rank=_mean([pc["rank"] for pc in camps.values()], 1),
+            avg_unspent=_mean([pc["pts"] for pc in camps.values()
+                               if pc["pts"] is not None], 1),
+            avg_ranked=_mean([sum(1 for lv in pc["levels"].values() if lv)
+                              for pc in camps.values()], 1),
+            top=[Ident(raw=k, label=labels.name_for("skills", k) or labels.pretty(k))
+                 for k, _n in top]))
+    characters.sort(key=lambda c: (c.kind != "lord", -c.campaigns))
+    chosen = subtype if subtype in per_sub else (characters[0].subtype
+                                                 if characters else None)
+    if not chosen:
+        return {"mean_reward": mean_r, "characters": [], "subtype": None,
+                "avg_rank": None, "avg_unspent": None, "taken_ever": 0, "rows": []}
+    per_camp = per_sub[chosen]["camps"]
+    sel = [s for s in snaps if str(s["z"].get("subtype") or "") == chosen]
     struct: dict = {}
     for s in sorted(sel, key=lambda s2: -s2["cid"]):
         for node in s["z"].get("skills") or []:
@@ -1597,12 +1672,615 @@ def start_skills(con, mkey: str, fkey: str, subtype: str | None = None) -> dict:
             delta_mean=round(avg_r - mean_r, 2)
             if avg_r is not None and mean_r is not None else None))
     rows.sort(key=lambda r2: (-(r2.took.n if r2.took else 0), r2.tier or 99, r2.key))
-    return {"mean_reward": mean_r, "subtypes": opts, "subtype": chosen,
+    return {"mean_reward": mean_r, "characters": characters, "subtype": chosen,
             "avg_rank": _mean([pc["rank"] for pc in per_camp.values()], 1),
             "avg_unspent": _mean([pc["pts"] for pc in per_camp.values()
                                   if pc["pts"] is not None], 1),
             "taken_ever": sum(1 for r2 in rows if r2.took and r2.took.n),
             "rows": rows}
+
+
+USAGE_FAMILIES = {
+    "building": {"taken": ("building",), "params_taken": ("horde_building",),
+                 "offers": ("building",), "params_offers": ("horde_building",),
+                 "noun": "constructed"},
+    "research": {"taken": ("research",), "params_taken": (), "offers": ("research",),
+                 "params_offers": (), "noun": "started"},
+    "skills": {"taken": ("skills",), "params_taken": (), "offers": ("skills",),
+               "params_offers": (), "noun": "ranked"},
+}
+
+
+def _usage_matrix(con, family: str, force=False) -> dict:
+    spec = USAGE_FAMILIES[family]
+
+    def build():
+        pairs: dict = {}
+
+        def note(cid, key, ctx, n, turn):
+            if not key:
+                return
+            e = pairs.setdefault((cid, key), {"n": 0, "turn": None, "ctx": {}})
+            e["n"] += n
+            if turn is not None and (e["turn"] is None or turn < e["turn"]):
+                e["turn"] = turn
+            c = e["ctx"].setdefault(str(ctx or ""), {"n": 0, "turn": None})
+            c["n"] += n
+            if turn is not None and (c["turn"] is None or turn < c["turn"]):
+                c["turn"] = turn
+
+        for r in con.execute(
+                "SELECT t.campaign_id cid, a.action_key key, a.context_id ctx,"
+                " COUNT(*) n, MIN(d.turn) turn"
+                " FROM taken t"
+                " JOIN actions a ON a.action_id = t.action_id"
+                " JOIN decisions d ON d.decision_id = t.decision_id"
+                " WHERE t.counted = 1 AND a.action_type = ANY(%s)"
+                " GROUP BY 1, 2, 3", (list(spec["taken"]),)):
+            note(_i(r["cid"], 0), r["key"], r["ctx"], _i(r["n"], 0) or 0, _i(r["turn"]))
+        if spec["params_taken"]:
+            for r in con.execute(
+                    "SELECT t.campaign_id cid, a.params::json->>'building_key' key,"
+                    " a.context_id ctx, COUNT(*) n, MIN(d.turn) turn"
+                    " FROM taken t"
+                    " JOIN actions a ON a.action_id = t.action_id"
+                    " JOIN decisions d ON d.decision_id = t.decision_id"
+                    " WHERE t.counted = 1 AND a.action_type = ANY(%s)"
+                    " GROUP BY 1, 2, 3", (list(spec["params_taken"]),)):
+                note(_i(r["cid"], 0), r["key"], r["ctx"], _i(r["n"], 0) or 0,
+                     _i(r["turn"]))
+        offered = {k for k in pairs}
+        for r in con.execute(
+                "SELECT DISTINCT d.campaign_id cid, a.action_key key"
+                " FROM offers o"
+                " JOIN actions a ON a.action_id = o.action_id"
+                " AND a.action_type = ANY(%s)"
+                " JOIN decisions d ON d.decision_id = o.decision_id",
+                (list(spec["offers"]),)):
+            offered.add((_i(r["cid"], 0), r["key"]))
+        if spec["params_offers"]:
+            for r in con.execute(
+                    "SELECT DISTINCT d.campaign_id cid, x.key"
+                    " FROM offers o"
+                    " JOIN (SELECT action_id, params::json->>'building_key' key"
+                    "       FROM actions WHERE action_type = ANY(%s)) x"
+                    " ON x.action_id = o.action_id"
+                    " JOIN decisions d ON d.decision_id = o.decision_id",
+                    (list(spec["params_offers"]),)):
+                if r["key"]:
+                    offered.add((_i(r["cid"], 0), r["key"]))
+        return {"pairs": pairs, "offered": offered}
+    return _stamped_slow(("usage", family), build, force=force)
+
+
+def _char_subtypes(con, force=False) -> dict:
+    def build():
+        out = {}
+        for r in con.execute(
+                "WITH last AS (SELECT DISTINCT ON (d.campaign_id, e.context_id)"
+                " d.campaign_id cid, e.context_id cqi, e.context_kind kind,"
+                " e.features_blob fb"
+                " FROM entities e JOIN decisions d ON d.decision_id = e.decision_id"
+                " WHERE e.context_kind IN ('lord', 'hero')"
+                " ORDER BY d.campaign_id, e.context_id, e.decision_id DESC)"
+                " SELECT last.cid, last.cqi, last.kind, b.z::json->>'subtype' subtype"
+                " FROM last JOIN blobs b ON b.blob_id = last.fb"):
+            st = r["subtype"]
+            if st:
+                out[(_i(r["cid"], 0), str(r["cqi"]))] = (str(st), r["kind"])
+        return out
+    return _stamped_slow("char_subtypes", build, force=force)
+
+
+def _building_label(key):
+    return labels.name_for("building", key) or labels.pretty(key)
+
+
+def _building_level(info):
+    lv = _i(info.get("level"))
+    return lv + 1 if lv is not None else None
+
+
+def _fam_label(family, key):
+    if family == "building":
+        return _building_label(key)
+    if family == "research":
+        return labels.tech_name(key) or labels.pretty(key)
+    return labels.name_for(family, key) or labels.pretty(key)
+
+
+@db.timed
+def start_buildings(con, mkey: str, fkey: str) -> dict:
+    mine = _start_gains(con, mkey, fkey)
+    rewards = {_i(g["campaign_id"], 0): g["reward"] for g in mine}
+    mean_r = _mean(list(rewards.values()))
+    m = _usage_matrix(con, "building")
+    camp = _camp_meta(con)
+    cids = {cid for cid, c in camp.items() if _start_of(c) == (mkey, fkey)}
+    per: dict = {}
+    for (cid, key), v in m["pairs"].items():
+        if cid in cids:
+            e = per.setdefault(key, {"cids": [], "turns": []})
+            e["cids"].append(cid)
+            if v["turn"] is not None:
+                e["turns"].append(v["turn"])
+    offered: dict = {}
+    for cid, key in m["offered"]:
+        if cid in cids:
+            offered[key] = offered.get(key, 0) + 1
+    info = labels.building_info(set(per) | set(offered))
+    rows = []
+    for key in set(per) | set(offered):
+        e = per.get(key) or {"cids": [], "turns": []}
+        rs = [rewards[cid] for cid in e["cids"] if cid in rewards]
+        avg_r = _mean(rs)
+        i = info.get(key) or {}
+        rows.append(BuildingRow(
+            key=key, label=_building_label(key),
+            category=(i.get("chain_category") or "").replace("_", " ") or None,
+            level=_building_level(i), cost=_i(i.get("create_cost")),
+            offered_in=offered.get(key, 0),
+            took=Rate(n=len(e["cids"]), of=max(offered.get(key, 0), len(e["cids"])),
+                      noun="campaigns",
+                      population="of this start it was on offer in"),
+            avg_turn=_mean(e["turns"], 1), avg_reward=avg_r,
+            delta_mean=round(avg_r - mean_r, 2)
+            if avg_r is not None and mean_r is not None else None))
+    rows.sort(key=lambda r2: (-(r2.took.n if r2.took else 0), r2.key))
+    return {"mean_reward": mean_r, "constructed_ever": len(per),
+            "universe": len(rows), "rows": rows}
+
+
+_BUILDING_LEDGER = ("building", "horde_building", "building_repair",
+                    "building_dismantle")
+
+
+@db.timed
+def campaign_buildings(con, campaign_key: str) -> dict | None:
+    meta = _campaign_id_of(con, campaign_key)
+    if not meta:
+        return None
+    got = con.execute(
+        "SELECT d.turn, a.action_type kind, a.action_key, a.context_id ctx,"
+        " a.params"
+        " FROM taken t"
+        " JOIN actions a ON a.action_id = t.action_id"
+        " JOIN decisions d ON d.decision_id = t.decision_id"
+        " WHERE t.campaign_id = %s AND t.counted = 1 AND a.action_type = ANY(%s)"
+        " ORDER BY t.decision_id",
+        (_i(meta["campaign_id"], 0), list(_BUILDING_LEDGER))).fetchall()
+    parsed = [(r, _jload(r["params"]) or {}) for r in got]
+    info = labels.building_info(
+        {str(p.get("building_key") or r["action_key"] or "") for r, p in parsed})
+    rows = []
+    constructed = 0
+    cost_total = 0.0
+
+    def region_of(key):
+        k = str(key or "")
+        return (labels.name_for("garrison", k) or labels.pretty(k)) if k else None
+
+    for r, p in parsed:
+        atype = r["kind"]
+        key = str(p.get("building_key") or r["action_key"] or "")
+        cost = None
+        region = None
+        if atype == "building":
+            kind = "upgrade" if p.get("is_upgrade") else "construct"
+            cost = _f(p.get("cost"))
+            region = region_of(r["ctx"])
+        elif atype == "horde_building":
+            kind = "horde"
+            cost = _f(p.get("cost"))
+        elif atype == "building_repair":
+            kind = "repair"
+            cost = _f(p.get("repair_cost"))
+            region = region_of(p.get("region"))
+        else:
+            kind = "dismantle"
+            refund = _f(p.get("refund"))
+            cost = -refund if refund is not None else None
+            region = region_of(p.get("region"))
+        if kind in ("construct", "upgrade", "horde"):
+            constructed += 1
+        if cost is not None:
+            cost_total += cost
+        i = info.get(key) or {}
+        rows.append(CampaignBuildingRow(
+            turn=_i(r["turn"]), kind=kind, key=key, label=_building_label(key),
+            category=(i.get("chain_category") or "").replace("_", " ") or None,
+            level=_building_level(i), region=region, cost=cost))
+    return {"rows": rows, "constructed": constructed,
+            "total_cost": round(cost_total, 0) if rows else None}
+
+
+def _catalog_ref(family, keys) -> dict:
+    out: dict = {key: {} for key in keys}
+    if family == "building":
+        info = labels.building_info(keys)
+        for key in keys:
+            i = info.get(key) or {}
+            out[key] = {"category": (i.get("chain_category") or "")
+                        .replace("_", " ") or None,
+                        "level": _building_level(i), "cost": _i(i.get("create_cost"))}
+    elif family == "research":
+        prefixes = {m2.group(1) for k in keys
+                    for m2 in [_TECH_PREFIX_RE.match(k)] if m2}
+        uni = {u["key"]: u for u in labels.tech_rows(prefixes)}
+        groups = labels.tech_groups()
+        for key in keys:
+            u = uni.get(key) or {}
+            out[key] = {"line": labels.tech_group_name(groups.get(key)),
+                        "tier": _i(u.get("tier")),
+                        "points": _i(u.get("research_points_required"))}
+    return out
+
+
+@db.timed
+def catalog_index(con, family: str) -> dict:
+    m = _usage_matrix(con, family)
+    camp = _camp_meta(con)
+    subs = _char_subtypes(con) if family == "skills" else {}
+    per: dict = {}
+    for (cid, key), v in m["pairs"].items():
+        e = per.setdefault(key, {"cids": [], "turns": [], "starts": set(), "subs": {}})
+        e["cids"].append(cid)
+        if v["turn"] is not None:
+            e["turns"].append(v["turn"])
+        c = camp.get(cid)
+        if c:
+            e["starts"].add(_start_of(c))
+        for cqi, cv in v["ctx"].items():
+            st = subs.get((cid, cqi))
+            if st:
+                e["subs"][st[0]] = e["subs"].get(st[0], 0) + cv["n"]
+    offered: dict = {}
+    for cid, key in m["offered"]:
+        offered.setdefault(key, set()).add(cid)
+    ref = _catalog_ref(family, set(per) | set(offered))
+    noun = USAGE_FAMILIES[family]["noun"]
+    rows = []
+    for key in set(per) | set(offered):
+        e = per.get(key) or {"cids": [], "turns": [], "starts": set(), "subs": {}}
+        chars = None
+        if family == "skills" and e["subs"]:
+            best = sorted(e["subs"].items(), key=lambda kv: -kv[1])
+            chars = labels.subtype_name(best[0][0]) or labels.pretty(best[0][0])
+            if len(best) > 1:
+                chars += " +%d more" % (len(best) - 1)
+        r = ref.get(key) or {}
+        took_r = [camp[cid]["reward"] for cid in e["cids"] if cid in camp]
+        passed = (offered.get(key) or set()) - set(e["cids"])
+        passed_r = [camp[cid]["reward"] for cid in passed if cid in camp]
+        rt, rp = _mean(took_r), _mean(passed_r)
+        rows.append(CatalogIndexRow(
+            key=key, label=_fam_label(family, key), category=r.get("category"),
+            level=r.get("level"), cost=r.get("cost"), line=r.get("line"),
+            tier=r.get("tier"), points=r.get("points"), characters=chars,
+            took=Rate(n=len(e["cids"]),
+                      of=max(len(offered.get(key) or ()), len(e["cids"])),
+                      noun="campaigns",
+                      population="it was on offer in that %s it" % noun),
+            starts=len(e["starts"]), avg_turn=_mean(e["turns"], 1),
+            avg_reward_took=rt, avg_reward_passed=rp,
+            delta=round(rt - rp, 2)
+            if rt is not None and rp is not None and len(took_r) >= 5
+            and len(passed_r) >= 5 else None))
+    rows.sort(key=lambda r2: (-(r2.took.n if r2.took else 0), r2.key))
+    cats = sorted({r2.category for r2 in rows if r2.category}) \
+        if family == "building" else \
+        sorted({r2.line for r2 in rows if r2.line}) if family == "research" else []
+    return {"family": family, "total": len(rows), "campaigns": len(camp),
+            "categories": cats, "rows": rows}
+
+
+@db.timed
+def catalog_key_page(con, family: str, key: str) -> dict | None:
+    m = _usage_matrix(con, family)
+    camp = _camp_meta(con)
+    hits = {cid: v for (cid, k), v in m["pairs"].items() if k == key}
+    offered_cids = {cid for cid, k in m["offered"] if k == key}
+    if not hits and not offered_cids:
+        return None
+    means = _start_means(camp)
+    by_start: dict = {}
+    for cid in offered_cids | set(hits):
+        c = camp.get(cid)
+        if not c:
+            continue
+        sk = _start_of(c)
+        e = by_start.setdefault(sk, {"leader": None, "took": [], "offered": 0,
+                                     "turns": [], "rewards": []})
+        e["leader"] = e["leader"] or c["leader"]
+        e["offered"] += 1
+        v = hits.get(cid)
+        if v:
+            e["took"].append(cid)
+            e["rewards"].append(c["reward"])
+            if v["turn"] is not None:
+                e["turns"].append(v["turn"])
+    start_rows = []
+    for (mk, fk), e in sorted(by_start.items(), key=lambda kv: -len(kv[1]["took"])):
+        avg_r = _mean(e["rewards"])
+        sm = means.get((mk, fk))
+        start_rows.append(CatalogStartRow(
+            campaign_map=_id(ident.campaign_map(mk)) if mk else None,
+            faction=_fac(fk), leader=e["leader"],
+            took=Rate(n=len(e["took"]), of=max(e["offered"], len(e["took"])),
+                      noun="campaigns",
+                      population="of this start it was on offer in"),
+            offered_in=e["offered"], avg_turn=_mean(e["turns"], 1),
+            avg_reward=avg_r,
+            delta_mean=round(avg_r - sm, 2)
+            if avg_r is not None and sm is not None else None))
+    recent = []
+    for cid in sorted(hits, key=lambda c2: -(_f((camp.get(c2) or {}).get("first_ts"),
+                                               0.0) or 0.0))[:8]:
+        c = camp.get(cid)
+        if not c:
+            continue
+        recent.append(CatalogCampaignRow(
+            campaign=_camp(c["campaign_key"]), ts=_f(c["first_ts"]),
+            leader=c["leader"], turn=hits[cid]["turn"], reward=_f(c["reward"])))
+    turns = [v["turn"] for v in hits.values() if v["turn"] is not None]
+    noun = USAGE_FAMILIES[family]["noun"]
+    took_r = [camp[cid]["reward"] for cid in hits if cid in camp]
+    passed_r = [camp[cid]["reward"] for cid in offered_cids - set(hits)
+                if cid in camp]
+    rt, rp = _mean(took_r), _mean(passed_r)
+    out = {
+        "family": family, "key": key, "label": _fam_label(family, key),
+        "took_in": len(hits),
+        "took": Rate(n=len(hits), of=max(len(offered_cids), len(hits)),
+                     noun="campaigns",
+                     population="it was on offer in that %s it" % noun),
+        "starts": len({_start_of(camp[cid]) for cid in hits if cid in camp}),
+        "avg_turn": _mean(turns, 1),
+        "avg_reward_took": rt, "avg_reward_passed": rp,
+        "delta": round(rt - rp, 2)
+        if rt is not None and rp is not None and len(took_r) >= 5
+        and len(passed_r) >= 5 else None,
+        "by_start": start_rows, "recent": recent}
+    if family == "building":
+        info = labels.building_info([key]).get(key) or {}
+        out.update(category=(info.get("chain_category") or "")
+                   .replace("_", " ") or None,
+                   level=_building_level(info), cost=_i(info.get("create_cost")),
+                   upkeep=_i(info.get("upkeep_cost")) or None,
+                   turns_to_build=_i(info.get("create_time")))
+        chain = []
+        counts: dict = {}
+        for (cid, k), _v in m["pairs"].items():
+            counts[k] = counts.get(k, 0) + 1
+        for lv in labels.building_chain_levels(str(info.get("building_chain") or "")):
+            chain.append(ChainLevel(
+                key=lv["key"], label=_building_label(lv["key"]),
+                level=(_i(lv.get("level")) + 1
+                       if lv.get("level") is not None else None),
+                cost=_i(lv.get("create_cost")),
+                constructed_in=counts.get(lv["key"], 0), this=lv["key"] == key))
+        out["chain"] = chain
+    elif family == "research":
+        ref = _catalog_ref("research", [key]).get(key) or {}
+        out.update(line=ref.get("line"), tier=ref.get("tier"),
+                   points=ref.get("points"),
+                   parent=_parent_ident(labels.tech_parents(), key))
+    else:
+        subs = _char_subtypes(con)
+        by_char: dict = {}
+        for cid, v in hits.items():
+            for cqi, cv in v["ctx"].items():
+                st = subs.get((cid, cqi))
+                if not st:
+                    continue
+                e = by_char.setdefault(st[0], {"kind": st[1], "cids": set(),
+                                               "ns": [], "turns": []})
+                e["cids"].add(cid)
+                e["ns"].append(cv["n"])
+                if cv["turn"] is not None:
+                    e["turns"].append(cv["turn"])
+        out["by_character"] = [
+            SkillCharacterRow(
+                subtype=st, label=labels.subtype_name(st), kind=e["kind"],
+                campaigns=len(e["cids"]), avg_ranks=_mean(e["ns"], 1),
+                avg_turn=_mean(e["turns"], 1))
+            for st, e in sorted(by_char.items(),
+                                key=lambda kv: -len(kv[1]["cids"]))]
+        out["unlock_rank"] = _i(labels.skill_unlock_ranks([key]).get(key))
+    return out
+
+
+POSITION_RANGES = ("turn", "settlements", "income", "power_rank", "lord_level")
+POSITION_KEYS_SHOWN = 12
+_SETT_TYPES = ("attack_settlement", "colonize")
+
+
+def _positions_data(con, force=False) -> dict:
+    def build():
+        camps = {}
+        for r in con.execute(
+                "SELECT campaign_id, faction, campaign_map, leader FROM campaigns"):
+            camps[_i(r["campaign_id"], 0)] = (r["faction"], r["campaign_map"] or "",
+                                              r["leader"])
+        per_fac: dict = {}
+        for fk, _mk, leader in camps.values():
+            e = per_fac.setdefault(fk, {"n": 0, "leader": None})
+            e["n"] += 1
+            e["leader"] = e["leader"] or leader
+        factions = []
+        for fk, e in per_fac.items():
+            fac = _fac(fk)
+            factions.append(PositionFacetOption(
+                key=fk, label=e["leader"] or fac.label, culture=fac.culture,
+                campaigns=e["n"]))
+        factions.sort(key=lambda o: o.label)
+        maps = [_id(ident.campaign_map(mk))
+                for mk in sorted({mk for _f2, mk, _l in camps.values() if mk})]
+        base = {}
+        for r in con.execute(
+                "SELECT decision_id, AVG(score) m FROM offer_scores"
+                " WHERE score IS NOT NULL GROUP BY 1"):
+            m = _f(r["m"])
+            if m is not None:
+                base[_i(r["decision_id"], 0)] = m
+        takes = {}
+        for r in con.execute(
+                "SELECT t.decision_id, a.action_type, a.action_key, s.score"
+                " FROM taken t"
+                " JOIN actions a ON a.action_id = t.action_id"
+                " LEFT JOIN offer_scores s ON s.decision_id = t.decision_id"
+                " AND s.offer_seq = t.offer_seq"
+                " WHERE t.counted = 1"):
+            takes[_i(r["decision_id"], 0)] = (
+                sys.intern(str(r["action_type"])), r["action_key"], _f(r["score"]))
+        decs = []
+        for r in con.execute(
+                "SELECT decision_id, campaign_id, turn, settlements, income,"
+                " power_rank, lord_level FROM decisions"):
+            decs.append((_i(r["decision_id"], 0), _i(r["campaign_id"], 0),
+                         _f(r["turn"]), _f(r["settlements"]), _f(r["income"]),
+                         _f(r["power_rank"]), _f(r["lord_level"])))
+        captures: dict = {}
+        sett_camps: dict = {}
+        for r in con.execute(
+                "SELECT t.campaign_id cid, a.action_key key, MIN(d.turn) turn"
+                " FROM taken t"
+                " JOIN actions a ON a.action_id = t.action_id"
+                " JOIN decisions d ON d.decision_id = t.decision_id"
+                " WHERE t.counted = 1 AND a.action_type = ANY(%s)"
+                " GROUP BY 1, 2", (list(_SETT_TYPES),)):
+            key = str(r["key"] or "").split(":", 1)[-1]
+            if not key:
+                continue
+            cid = _i(r["cid"], 0)
+            t = _i(r["turn"])
+            e = captures.setdefault(cid, {})
+            if key not in e or (t is not None and (e[key] is None or t < e[key])):
+                e[key] = t
+            sett_camps[key] = sett_camps.get(key, 0) + 1
+        settlements = [
+            PositionFacetOption(
+                key=k, label=labels.name_for("attack_settlement", k)
+                or labels.pretty(k), campaigns=n2)
+            for k, n2 in sorted(sett_camps.items(), key=lambda kv: -kv[1])]
+        return {"camps": camps, "factions": factions, "maps": maps,
+                "cultures": sorted({o.culture for o in factions if o.culture}),
+                "base": base, "takes": takes, "decs": decs,
+                "captures": captures, "settlements": settlements}
+    return _stamped_slow("positions_data", build, force=force)
+
+
+@db.timed
+def positions_page(con, filters) -> dict:
+    data = _positions_data(con)
+    camps = data["camps"]
+    fac = filters.get("faction")
+    mp = filters.get("map")
+    holds = filters.get("holds")
+    cul_fac = None
+    if filters.get("culture"):
+        cul_fac = {o.key for o in data["factions"]
+                   if (o.culture or "") == filters["culture"]}
+    rng = []
+    for i, name in enumerate(POSITION_RANGES):
+        lo, hi = _f(filters.get(name + "_min")), _f(filters.get(name + "_max"))
+        if lo is not None or hi is not None:
+            rng.append((i + 2, lo, hi))
+    base = data["base"]
+    takes = data["takes"]
+    captures = data["captures"]
+    n_dec = 0
+    camp_ids: set = set()
+    sit_sum, sit_n = 0.0, 0
+    agg: dict = {}
+    for dec in data["decs"]:
+        cid = dec[1]
+        c = camps.get(cid)
+        if fac and (not c or c[0] != fac):
+            continue
+        if cul_fac is not None and (not c or c[0] not in cul_fac):
+            continue
+        if mp and (not c or c[1] != mp):
+            continue
+        ok = True
+        for idx, lo, hi in rng:
+            v = dec[idx]
+            if v is None or (lo is not None and v < lo) \
+                    or (hi is not None and v > hi):
+                ok = False
+                break
+        if not ok:
+            continue
+        if holds:
+            got = captures.get(cid)
+            if not got or holds not in got:
+                continue
+            t_cap = got[holds]
+            if t_cap is not None and dec[2] is not None and dec[2] < t_cap:
+                continue
+        did = dec[0]
+        n_dec += 1
+        camp_ids.add(cid)
+        b = base.get(did)
+        if b is not None:
+            sit_sum += b
+            sit_n += 1
+        tk = takes.get(did)
+        if tk is None:
+            continue
+        atype, akey, score = tk
+        e = agg.setdefault((atype, akey), [0, 0.0, 0, 0.0, 0])
+        e[0] += 1
+        if score is not None:
+            e[1] += score
+            e[2] += 1
+            if b is not None:
+                e[3] += score - b
+                e[4] += 1
+    by_type: dict = {}
+    for (atype, akey), e in agg.items():
+        by_type.setdefault(atype, []).append((akey, e))
+    takes_n = sum(e[0] for e in agg.values())
+
+    def pooled(items):
+        n2 = sum(e[0] for _k, e in items)
+        sc = sum(e[2] for _k, e in items)
+        dn = sum(e[4] for _k, e in items)
+        mean = sum(e[1] for _k, e in items) / sc if sc else None
+        delta = sum(e[3] for _k, e in items) / dn if dn else None
+        return n2, sc, mean, delta
+
+    rows = []
+    for atype, items in by_type.items():
+        items.sort(key=lambda ke: -ke[1][0])
+        keys = []
+        for akey, e in items[:POSITION_KEYS_SHOWN]:
+            keys.append(PositionKeyRow(
+                key=akey,
+                label=labels.target_for(atype, akey) or labels.pretty(akey),
+                n=e[0],
+                mean_score=round(e[1] / e[2], 3) if e[2] else None,
+                delta=round(e[3] / e[4], 3) if e[4] else None))
+        rest = items[POSITION_KEYS_SHOWN:]
+        if rest:
+            n2, _sc, mean, delta = pooled(rest)
+            keys.append(PositionKeyRow(
+                key="", label="… %d more keys" % len(rest), n=n2,
+                mean_score=round(mean, 3) if mean is not None else None,
+                delta=round(delta, 3) if delta is not None else None))
+        n2, sc, mean, delta = pooled(items)
+        rows.append(PositionTypeRow(
+            action_type=_phrase(atype), n=n2,
+            share=round(100.0 * n2 / takes_n, 1) if takes_n else None, scored=sc,
+            mean_score=round(mean, 3) if mean is not None else None,
+            delta=round(delta, 3) if delta is not None else None, keys=keys))
+    rows.sort(key=lambda r2: -r2.n)
+    return {
+        "factions": data["factions"], "cultures": data["cultures"],
+        "maps": data["maps"], "settlements": data["settlements"],
+        "decisions": n_dec, "campaigns": len(camp_ids), "takes": takes_n,
+        "situation_mean": round(sit_sum / sit_n, 3) if sit_n else None,
+        "rows": rows}
 
 
 def _campaign_id_of(con, campaign_key: str):

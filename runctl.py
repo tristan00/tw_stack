@@ -116,10 +116,13 @@ def start_recorder(shots=DEFAULT_SHOTS, dev=True, presave_radius=None, selector=
     return "recorder -> %s" % log
 
 
-def start_ui(port=DEFAULT_PORT):
-    log = os.path.join(SERVICES_LOG_DIR, "ui_%s.log" % _stamp())
-    _spawn([VENV_PY, "-u", "-m", "advisor_api.app", str(port)], log)
-    return "ui :%d -> %s" % (port, log)
+def start_ui(port=DEFAULT_PORT, dashboard=False):
+    log = os.path.join(SERVICES_LOG_DIR, "ui_%s_%d.log" % (_stamp(), port))
+    args = [VENV_PY, "-u", "-m", "advisor_api.app", str(port)]
+    if dashboard:
+        args.append("--dashboard")
+    _spawn(args, log)
+    return "ui%s :%d -> %s" % (" (dashboard-only)" if dashboard else "", port, log)
 
 
 def kill_analytics():
@@ -521,6 +524,12 @@ def main():
             s.add_argument("--no-ui", action="store_true")
     sub.add_parser("down")
     sub.add_parser("status")
+    d = sub.add_parser("dashboard",
+                       help="the game dashboard alone, model- and experiment-free: "
+                            "no session, no selector, no training surface")
+    d.add_argument("--port", type=int, default=DEFAULT_PORT)
+    d.add_argument("--record", action="store_true",
+                   help="also start the recorder, to track a manually played game")
     h = sub.add_parser("harness")
     h.add_argument("--every", type=float, default=HARNESS_EVERY_S)
     a = ap.parse_args()
@@ -529,6 +538,14 @@ def main():
         return
     if a.cmd == "down":
         print("\n".join(down()))
+        return
+    if a.cmd == "dashboard":
+        steps = [kill_ui()]
+        if a.record:
+            steps.append(kill_recorder())
+            steps.append(start_recorder(dev=False, presave_radius=0.0))
+        steps.append(start_ui(port=a.port, dashboard=True))
+        print("\n".join(steps))
         return
     if a.cmd == "harness":
         raise SystemExit(harness(a.every))

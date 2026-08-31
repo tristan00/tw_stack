@@ -53,15 +53,6 @@ def _loc(key, depth=0):
     return _cache[key]
 
 
-def _loc_like(pattern):
-    hit = _cache.get(pattern, "?")
-    if hit != "?":
-        return hit
-    row = _one("SELECT text FROM loc WHERE key LIKE %s AND text<>'' LIMIT 1", (pattern,))
-    _cache[pattern] = row["text"].strip() if row and row["text"] else None
-    return _cache[pattern]
-
-
 def pretty(key) -> str:
     k = str(key or "")
     k = _GAME_PREFIX.sub("", k)
@@ -99,7 +90,7 @@ def name_for(family: str, key: str) -> str | None:
     if fam in _REGION_TYPES:
         return _region(k)
     if fam == "building":
-        return _loc_like("building_culture_variants_name_" + k + "%")
+        return building_names([k]).get(k)
     if fam == "edict":
         return (_loc("effect_bundles_localised_title_" + k)
                 or _loc("provincial_initiative_records_localised_name_" + k))
@@ -158,37 +149,62 @@ _NUM_RE = re.compile(r"%\+?\.?\d*[nfd]")
 
 _SCOPES = (("character_to_character", "self"), ("character_to_force", "army"),
            ("character_to_province", "province"), ("character_to_faction", "faction"),
-           ("character_to_region", "region"), ("faction_to_faction", "faction"))
+           ("character_to_region", "region"), ("faction_to_faction", "faction"),
+           ("faction_to_character", "self"), ("faction_to_force", "army"),
+           ("faction_to_province", "province"))
 
 
-def _fmt_effect(desc, value, scope):
-    txt = re.sub(r"\[\[.*?\]\]", "", str(desc or ""))
-    if _NUM_RE.search(txt):
-        txt = _NUM_RE.sub(("%+g" % value) if value is not None else "", txt, count=1)
-    elif value is not None and value not in (0.0, 1.0):
-        txt = "%+g %s" % (value, txt)
-    txt = re.sub(r"\s+", " ", txt).strip()
-    if len(txt) > 1 and txt[0] == '"' and txt[-1] == '"':
-        txt = txt[1:-1]
-    sc = ""
+_effect_good: dict | None = None
+
+
+def _effect_positive() -> dict:
+    global _effect_good
+    if _effect_good is None:
+        _effect_good = ({r["effect"]: bool(r["positive_good"]) for r in _rows(
+            "SELECT effect, positive_good FROM effects_meta")}
+            if _have("effects_meta") else {})
+    return _effect_good
+
+
+def _scope_short(scope) -> str:
+    s = str(scope or "")
     for frag, short in _SCOPES:
-        if str(scope or "").startswith(frag):
-            sc = short
-            break
-    return "%s (%s)" % (txt, sc) if sc and sc != "self" else txt
+        if s.startswith(frag):
+            return short
+    return "self"
 
 
-def item_effects(key: str) -> str | None:
+def item_effect_rows(key: str) -> list:
     if not _have("ancillary_effects"):
-        return None
-    rows = _rows("SELECT effect, effect_scope, value FROM ancillary_effects"
-                 " WHERE ancillary = %s ORDER BY effect", (key,))
-    parts = []
-    for r in rows:
-        desc = _loc("effects_description_" + str(r["effect"] or ""))
-        parts.append(_fmt_effect(desc or pretty(r["effect"]), r["value"],
-                                 r["effect_scope"]))
-    return " · ".join(p for p in parts if p) or None
+        return []
+    good = _effect_positive()
+    out = []
+    for r in _rows("SELECT effect, effect_scope, value FROM ancillary_effects"
+                   " WHERE ancillary = %s ORDER BY effect", (key,)):
+        txt = re.sub(r"\[\[.*?\]\]", "",
+                     _loc("effects_description_" + str(r["effect"] or ""))
+                     or pretty(r["effect"]))
+        txt = re.sub(r"\s+", " ", txt).strip()
+        v = r["value"]
+        m = _NUM_RE.search(txt)
+        if m:
+            name = txt[:m.start()].rstrip(" :")
+            unit = txt[m.end():].strip()
+            value = (("%+g" % v) + (unit if unit == "%" else " " + unit if unit else "")
+                     if v is not None else None)
+        else:
+            name = txt
+            value = "%+g" % v if v is not None and v not in (0.0, 1.0) else None
+        if len(name) > 1 and name[0] == '"' and name[-1] == '"':
+            name = name[1:-1]
+        state = "neutral"
+        pos = good.get(r["effect"])
+        if v and value is not None and pos is not None:
+            state = "ok" if (v > 0) == pos else "bad"
+        out.append({"name": name, "value": value, "state": state,
+                    "scope": _scope_short(r["effect_scope"])})
+    out.sort(key=lambda e: e["name"])
+    return out
 
 
 _RES_PREFIX = re.compile(r"^wh\d?_(main|dlc\d+|pro\d+|twa\d+|cp\d+)_effect_")
@@ -226,6 +242,71 @@ def item_resources() -> dict:
                 e[name] = round(e.get(name, 0.0) + (r["value"] or 0.0), 2)
         _item_res_cache = out
     return _item_res_cache
+
+
+_bname_rows: list | None = None
+
+
+def _building_name_rows() -> list:
+    global _bname_rows
+    if _bname_rows is None:
+        got = []
+        for r in _rows("SELECT key, text FROM loc WHERE key LIKE %s"
+                       " AND text <> ''", ("building\\_culture\\_variants\\_name\\_%",)):
+            txt = r["text"].strip()
+            m = _TR_RE.match(txt)
+            if m:
+                txt = (_loc(m.group(1))
+                       or _loc("ui_text_replacements_localised_text_" + m.group(1))
+                       or "")
+            if txt:
+                got.append((r["key"][len("building_culture_variants_name_"):], txt))
+        if not got:
+            return []
+        _bname_rows = sorted(got)
+    return _bname_rows
+
+
+def building_names(keys) -> dict:
+    import bisect
+    rows = _building_name_rows()
+    rems = [r[0] for r in rows]
+    out = {}
+    for k in keys:
+        k = str(k or "")
+        if not k:
+            continue
+        i = bisect.bisect_left(rems, k)
+        if i < len(rems) and rems[i].startswith(k):
+            out[k] = rows[i][1]
+    return out
+
+
+def building_info(keys) -> dict:
+    ks = [str(k) for k in keys if k]
+    if not (_have("buildings") and ks):
+        return {}
+    return {r["key"]: dict(r) for r in _rows(
+        "SELECT b.key, b.building_chain, b.level, b.create_cost, b.upkeep_cost,"
+        " b.create_time, c.chain_category FROM buildings b"
+        " LEFT JOIN building_chains c ON c.key = b.building_chain"
+        " WHERE b.key = ANY(%s)", (ks,))}
+
+
+def building_chain_levels(chain: str) -> list:
+    if not (_have("buildings") and chain):
+        return []
+    return [dict(r) for r in _rows(
+        "SELECT key, level, create_cost FROM buildings"
+        " WHERE building_chain = %s ORDER BY level, key", (chain,))]
+
+
+def skill_unlock_ranks(keys) -> dict:
+    ks = [str(k) for k in keys if k]
+    if not (_have("skills") and ks):
+        return {}
+    return {r["key"]: r["unlocked_at_rank"] for r in _rows(
+        "SELECT key, unlocked_at_rank FROM skills WHERE key = ANY(%s)", (ks,))}
 
 
 def tech_parents() -> dict:
@@ -305,9 +386,10 @@ def tech_groups() -> dict:
 def tech_group_name(group: str | None) -> str | None:
     if not group:
         return None
-    return (_loc("technology_ui_groups_onscreen_name_" + group)
-            or _loc("uied_component_texts_localised_string_" + group)
-            or pretty(group))
+    got = (_loc("technology_ui_groups_onscreen_name_" + group)
+           or _loc("uied_component_texts_localised_string_" + group)
+           or pretty(group))
+    return None if not got or got.isdigit() else got
 
 
 def skill_parents() -> dict:

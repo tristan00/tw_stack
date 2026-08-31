@@ -11,10 +11,12 @@ import {
   Section,
   Skeleton,
 } from '@/components/primitives'
+import { useUiMode } from '@/components/Layout'
 import { SubNav, useSubView } from '@/components/SubNav'
 import { Steps } from '@/components/startcharts'
 import {
   useApi,
+  type CampaignBuildingsPage,
   type CampaignCharacter,
   type CampaignDecisions,
   type CampaignDetail as Detail,
@@ -32,6 +34,7 @@ type DiploEvent = Schemas['DiploEvent']
 
 const TABS = [
   { key: 'overview', label: 'overview', asks: 'what happened and why it ended' },
+  { key: 'buildings', label: 'buildings', asks: 'what it built, where and for how much' },
   { key: 'research', label: 'research', asks: 'what it researched and when it finished' },
   { key: 'skills', label: 'skills', asks: 'every point its characters spent' },
   { key: 'items', label: 'items', asks: 'who wore what' },
@@ -314,6 +317,65 @@ function OverviewTab({ data, campaignKey }: { data: Detail; campaignKey: string 
   )
 }
 
+function BuildingsTab({ campaignKey }: { campaignKey: string }) {
+  const { data, error, loading, reload } = useApi<CampaignBuildingsPage>(
+    `/api/campaigns/${encodeURIComponent(campaignKey)}/buildings`,
+    [campaignKey],
+    { live: false },
+  )
+  if (error) return <ErrorState error={error} onRetry={reload} />
+  if (loading || !data) return <Skeleton rows={5} />
+  return (
+    <Section
+      title="construction ledger"
+      scope={{
+        text: `every construction, upgrade, repair and dismantle, in order · ${n(data.constructed)} built, ${n(data.total_cost)} gold in total`,
+        detail: 'a dismantle’s cost is its refund, negative',
+      }}
+    >
+      <Card className="overflow-hidden">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-line text-dim border-b text-left text-2xs">
+              <th className="px-3 py-1.5 text-right font-normal">turn</th>
+              <th className="px-3 py-1.5 font-normal">action</th>
+              <th className="px-3 py-1.5 font-normal">building</th>
+              <th className="px-3 py-1.5 font-normal">category</th>
+              <th className="px-3 py-1.5 text-right font-normal">level</th>
+              <th className="px-3 py-1.5 font-normal">region</th>
+              <th className="px-3 py-1.5 text-right font-normal">cost</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(data.rows ?? []).map((r, i) => (
+              <tr key={i} className="border-line border-b last:border-0">
+                <td className="num px-3 py-1.5 text-right">{r.turn ?? '—'}</td>
+                <td className="px-3 py-1.5">
+                  <Chip state={r.kind === 'dismantle' ? 'warn' : 'neutral'}>{r.kind}</Chip>
+                </td>
+                <td className="px-3 py-1.5">
+                  <EntityLink to={`/buildings/${encodeURIComponent(r.key)}`} title={r.key}>
+                    {r.label ?? r.key}
+                  </EntityLink>
+                </td>
+                <td className="text-dim px-3 py-1.5">{r.category ?? '—'}</td>
+                <td className="num px-3 py-1.5 text-right">{r.level ?? '—'}</td>
+                <td className="text-dim px-3 py-1.5">{r.region ?? '—'}</td>
+                <td className="num px-3 py-1.5 text-right">{r.cost == null ? '—' : n(r.cost)}</td>
+              </tr>
+            ))}
+            {!(data.rows ?? []).length && (
+              <tr>
+                <td colSpan={7} className="text-dim px-3 py-4 text-center">nothing was built</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </Card>
+    </Section>
+  )
+}
+
 function ResearchTab({ campaignKey }: { campaignKey: string }) {
   const { data, error, loading, reload } = useApi<CampaignResearchPage>(
     `/api/campaigns/${encodeURIComponent(campaignKey)}/research`,
@@ -347,7 +409,11 @@ function ResearchTab({ campaignKey }: { campaignKey: string }) {
             {(data.rows ?? []).map((r, i) => (
               <tr key={`${r.key}-${i}`} className="border-line border-b last:border-0">
                 <td className="num px-3 py-1.5 text-right">{r.turn ?? '—'}</td>
-                <td className="px-3 py-1.5"><span title={r.key}>{r.label ?? r.key}</span></td>
+                <td className="px-3 py-1.5">
+                  <EntityLink to={`/research/${encodeURIComponent(r.key)}`} title={r.key}>
+                    {r.label ?? r.key}
+                  </EntityLink>
+                </td>
                 <td className="text-dim px-3 py-1.5">{r.parent?.label ?? '—'}</td>
                 <td className="num px-3 py-1.5 text-right">{r.tier ?? '—'}</td>
                 <td className="num px-3 py-1.5 text-right">{r.points == null ? '—' : n(r.points)}</td>
@@ -421,7 +487,11 @@ function SkillsTab({ campaignKey }: { campaignKey: string }) {
                 <tr key={i} className="border-line border-b last:border-0">
                   <td className="num px-3 py-1.5 text-right">{r.turn ?? '—'}</td>
                   <td className="text-dim px-3 py-1.5">{r.character ?? '—'}</td>
-                  <td className="px-3 py-1.5"><span title={r.key}>{r.label ?? r.key}</span></td>
+                  <td className="px-3 py-1.5">
+                    <EntityLink to={`/skills/${encodeURIComponent(r.key)}`} title={r.key}>
+                      {r.label ?? r.key}
+                    </EntityLink>
+                  </td>
                   <td className="num px-3 py-1.5 text-right">{r.rank ?? '—'}</td>
                   <td className="num text-dim px-3 py-1.5 text-right">{r.max_ranks ?? '—'}</td>
                 </tr>
@@ -682,6 +752,7 @@ function DecisionsTab({ campaignKey }: { campaignKey: string }) {
 
 export function CampaignDetail() {
   const { campaignKey = '' } = useParams()
+  const mode = useUiMode()
   const tab = useSubView(TABS, 'tab')
   const [seen, setSeen] = useState<Record<string, boolean>>({})
   useEffect(() => {
@@ -735,8 +806,8 @@ export function CampaignDetail() {
               ({n(row.confirm_rate.n)}/{n(row.confirm_rate.of)})
             </span>
           ) : null}
-          {row.pick_id != null && (
-            <EntityLink to={`/campaigns?view=selector&pick=${row.pick_id}`} className="text-dim">
+          {row.pick_id != null && mode === 'full' && (
+            <EntityLink to={`/selector?pick=${row.pick_id}`} className="text-dim">
               UCB pick <b className="num text-fg">#{row.pick_id}</b>
             </EntityLink>
           )}
@@ -746,6 +817,9 @@ export function CampaignDetail() {
       <SubNav views={TABS} param="tab" />
       <div className={tab === 'overview' ? '' : 'hidden'}>
         {seen.overview && <OverviewTab data={data} campaignKey={campaignKey} />}
+      </div>
+      <div className={tab === 'buildings' ? '' : 'hidden'}>
+        {seen.buildings && <BuildingsTab campaignKey={campaignKey} />}
       </div>
       <div className={tab === 'research' ? '' : 'hidden'}>
         {seen.research && <ResearchTab campaignKey={campaignKey} />}
