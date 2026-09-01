@@ -707,7 +707,13 @@ _LUA_PROVINCE = (_G +
     "end end return n end)()"
     "..'|'..ts(m and g(m,'GrowthPerTurn'))..'|'..ts(m and g(m,'GrossIncome'))"
     "..'|'..ts(m and g(m,'DevelopmentPoints'))..'|'..ts(g(s,'Income'))"
-    "..'|'..ts(g(s,'HasPort'))..'|'..ts(g(s,'HasWalls'))")
+    "..'|'..ts(g(s,'HasPort'))..'|'..ts(g(s,'HasWalls'))"
+    "..'|'..(function() local l=g(s,'EffectBundleList') if type(l)~='table' then return '' end "
+    "local o={} for i=1,#l do o[#o+1]=ts(g(l[i],'Key'))..'~'..ts(g(l[i],'TurnsRemaining')) end "
+    "return table.concat(o,',') end)()"
+    "..'|'..(function() local l=g(s,'PlagueEffectBundleList') if type(l)~='table' then return '' end "
+    "local o={} for i=1,#l do o[#o+1]=ts(g(l[i],'Key'))..'~'..ts(g(l[i],'TurnsRemaining')) end "
+    "return table.concat(o,',') end)()")
 
 
 def _parse_province(raw, region):
@@ -748,7 +754,9 @@ def _parse_province(raw, region):
             "development_points": (_num(p[15]) if len(p) > 15 else None),
             "income": (_num(p[16]) if len(p) > 16 else None),
             "has_port": (p[17] == "true") if len(p) > 17 else None,
-            "has_walls": (p[18] == "true") if len(p) > 18 else None}
+            "has_walls": (p[18] == "true") if len(p) > 18 else None,
+            "effect_bundles": _parse_bundles(p[19] if len(p) > 19 else ""),
+            "plague_bundles": _parse_bundles(p[20] if len(p) > 20 else "")}
 
 
 _LUA_MOVE_CANDIDATES = (
@@ -938,6 +946,36 @@ _LUA_HERO_OFFERS = (_G +
     "..'||'..table.concat(hk,',')..'||'..table.concat(tr,',')")
 
 
+_LUA_CHAR_EXTRA = (_G +
+    "local c=cco('CcoCampaignCharacter','%(cqi)s') "
+    "local bg=g(c,'BackgroundSkillContext') "
+    "local sc=ts(g(c,'CurrentXp'))..'~'..ts(g(c,'NextLevelThreshold'))"
+    "..'~'..ts(g(c,'SubterfugeLevel'))..'~'..ts(g(c,'ZealLevel'))..'~'..ts(g(c,'AuthorityLevel'))"
+    "..'~'..ts(g(c,'TurnsToResurrection'))..'~'..ts(g(c,'Upkeep'))..'~'..ts(bg and g(bg,'Key')) "
+    "local hs={} local h=g(c,'HiddenSkillList') "
+    "if type(h)=='table' then for i=1,#h do hs[#hs+1]=ts(g(h[i],'Key'))..'~'..ts(g(h[i],'Level'))"
+    "..'~'..ts(g(h[i],'TotalLevels')) end end "
+    "local eb={} local l=g(c,'EffectBundleUnfilteredList') "
+    "if type(l)=='table' then for i=1,#l do eb[#eb+1]=ts(g(l[i],'Key'))..'~'..ts(g(l[i],'TurnsRemaining')) end end "
+    "local fb={} local mf=g(c,'MilitaryForceContext') "
+    "local fl=mf and g(mf,'EffectBundleList') "
+    "if type(fl)=='table' then for i=1,#fl do fb[#fb+1]=ts(g(fl[i],'Key'))..'~'..ts(g(fl[i],'TurnsRemaining')) end end "
+    "local ar={} local al=g(c,'ArmoryItemVariantList') "
+    "if type(al)=='table' then for i=1,#al do if g(al[i],'IsEquipped')==true then "
+    "local vr=g(al[i],'ArmoryItemVariantRecordContext') local k=vr and g(vr,'Key') "
+    "if k then ar[#ar+1]=ts(k) end end end end "
+    "return sc..'||'..table.concat(hs,',')..'||'..table.concat(eb,',')"
+    "..'||'..table.concat(fb,',')..'||'..table.concat(ar,',')")
+
+
+_LUA_FACTION_BUNDLES = (_G +
+    "local f=cm:get_local_faction(true) local c=cco('CcoCampaignFaction',f:name()) "
+    "local l=g(c,'EffectBundleUnfilteredList') if type(l)~='table' then l=g(c,'EffectBundleList') end "
+    "if type(l)~='table' then return '' end local o={} "
+    "for i=1,#l do o[#o+1]=ts(g(l[i],'Key'))..'~'..ts(g(l[i],'TurnsRemaining')) end "
+    "return table.concat(o,',')")
+
+
 _LUA_ANCILLARY_POOL = (_G +
     "local f=cco('CcoCampaignFaction','%(fac)s') local l=g(f,'AncillaryList') "
     "if type(l)~='table' then return '' end local o={} "
@@ -1124,7 +1162,9 @@ _LUA_LORD_POOLS = (_G +
     "if not okt or nt==nil then trs='" + TRAITS_UNREAD + "' else "
     "for j=0,nt-1 do "
     "local okk,k=pcall(function() return f:Call(base..'.CharacterContext.TraitsList['..j..'].TraitRecordContext.Key') end) "
-    "if okk and k then tr[#tr+1]=ts(k) end end trs=table.concat(tr,'+') end "
+    "local okl,lv=pcall(function() return f:Call(base..'.CharacterContext.TraitsList['..j..'].Level') end) "
+    "if okk and k then tr[#tr+1]=ts(k)..((okl and lv~=nil) and ('~'..ts(lv)) or '') end end "
+    "trs=table.concat(tr,'+') end "
     "local oka,ia=pcall(function() return f:Call(base..'.CharacterContext.IsAgent') end) "
     "local bg=ts(g(f,e..'['..i..'].CharacterContext.BackgroundSkillContext.Key')) "
     "local cq=ts(g(f,e..'['..i..'].CharacterContext.CQI')) "
@@ -1328,6 +1368,52 @@ def _parse_traits(tr_raw):
     return out
 
 
+def _parse_bundles(raw):
+    out = []
+    for row in str(raw or "").split(","):
+        p = row.split("~")
+        if not p[0] or p[0] == "nil":
+            continue
+        out.append({"key": p[0], "turns_remaining": _num(p[1]) if len(p) > 1 else None})
+    return out
+
+
+def _parse_trait_progress(rows):
+    out = {}
+    for r in rows or []:
+        d = {}
+        for chunk in str(r.get("pts") or "").split(","):
+            k, _, v = chunk.partition("~")
+            if k:
+                d[k] = _num(v)
+        if d:
+            out[str(r.get("cqi"))] = d
+    return out
+
+
+def _parse_char_extra(raw):
+    parts = str(raw or "").split("||")
+    sc = (parts[0] if parts else "").split("~")
+
+    def _n(i):
+        return _num(sc[i]) if len(sc) > i and sc[i] not in ("nil", "") else None
+
+    hidden_states = []
+    for row in (parts[1] if len(parts) > 1 else "").split(","):
+        p = row.split("~")
+        if len(p) < 3 or not p[0] or p[0] == "nil":
+            continue
+        hidden_states.append({"key": p[0], "level": _num(p[1]), "total_levels": _num(p[2])})
+    return {"xp": _n(0), "xp_next_level": _n(1), "subterfuge": _n(2), "zeal": _n(3),
+            "authority": _n(4), "resurrection_turns": _n(5), "upkeep": _n(6),
+            "background_skill": (sc[7] if len(sc) > 7 and sc[7] not in ("nil", "") else None),
+            "hidden_skill_states": hidden_states,
+            "effect_bundles": _parse_bundles(parts[2] if len(parts) > 2 else ""),
+            "force_effect_bundles": _parse_bundles(parts[3] if len(parts) > 3 else ""),
+            "armory": [k for k in (parts[4] if len(parts) > 4 else "").split(",")
+                       if k and k != "nil"]}
+
+
 def _parse_hero_blob(raw):
     parts = str(raw or "").split("||")
     return {"is_agent": (parts[0] == "true") if parts else False,
@@ -1412,11 +1498,14 @@ def snapshot(bus, active=None):
                          ("eval", _LUA_REGIONS), ("chars", ""), ("setts", ""), ("hostiles", ""),
                          ("eval", _LUA_STATIONED), ("eval", _LUA_DIPLO_TARGETS),
                          ("eval", _LUA_ENEMY_AGENTS), ("eval", _LUA_AP_ALL),
-                         ("eval", _LUA_WAR_GRAPH)], timeout=40.0)
+                         ("eval", _LUA_WAR_GRAPH), ("eval", _LUA_FACTION_BUNDLES),
+                         ("trait_progress", "")], timeout=40.0)
     prof["wave_a_ms"] = int((time.time() - t0) * 1000)
     camp = _parse_campaign(_bres(ra[0], "campaign_state"))
     prof["campaign_state_engine_ms"] = camp.pop("_eval_ms", None)
     camp["resources"] = _parse_resources(_bres(ra[1], "faction_resources", allow_nil=True))
+    camp["effect_bundles"] = _parse_bundles(_bres(ra[11], "faction_bundles", allow_nil=True))
+    trait_progress = _parse_trait_progress(ra[12].get("chars") or [])
     camp["campaign_map"] = campaign_map(bus, camp.get("campaign_uuid"))
     camp["presave_radius"] = _presave_radius()
     camp["selector"] = _selector()
@@ -1483,12 +1572,14 @@ def snapshot(bus, active=None):
                    ("eval", _reach_lua(cqi, reach_cqis, reach_regions)),
                    ("eval", _LUA_EQUIPPED % {"cqi": cqi}),
                    ("eval", _horde_slots_lua(cqi)),
-                   ("eval", _LUA_MERC_POOLS % {"cqi": cqi})]
+                   ("eval", _LUA_MERC_POOLS % {"cqi": cqi}),
+                   ("eval", _LUA_CHAR_EXTRA % {"cqi": cqi})]
     for cqi in heroes:
         wave_b += [("eval", _LUA_LORD % {"cqi": cqi}),
                    ("eval", _LUA_HERO_OFFERS % {"cqi": cqi}),
                    ("eval", _reach_lua(cqi, reach_cqis, reach_regions)),
-                   ("eval", _LUA_EQUIPPED % {"cqi": cqi})]
+                   ("eval", _LUA_EQUIPPED % {"cqi": cqi}),
+                   ("eval", _LUA_CHAR_EXTRA % {"cqi": cqi})]
     for reg in regions:
         wave_b += [("eval", _LUA_PROVINCE % {"reg": reg}),
                    ("eval", _LUA_PROVINCE_OFFERS % reg),
@@ -1522,8 +1613,10 @@ def snapshot(bus, active=None):
                       _bres(rb[i + 5], "horde_slots:%s" % cqi, allow_nil=True)),
                   merc_pools=_parse_merc_pools(
                       _bres(rb[i + 6], "merc_pools:%s" % cqi, allow_nil=True)))
+        st.update(_parse_char_extra(_bres(rb[i + 7], "char_extra:%s" % cqi, allow_nil=True)))
+        st["trait_progress"] = trait_progress.get(cqi) or {}
         lord_state[cqi] = st
-        i += 7
+        i += 8
     for cqi in heroes:
         st = _parse_lord(_bres(rb[i], "hero_state:%s" % cqi), cqi)
         rc, rs_ = _parse_reach(_bres(rb[i + 2], "hero_reach:%s" % cqi, allow_nil=True))
@@ -1531,8 +1624,10 @@ def snapshot(bus, active=None):
         st.update(reach_chars=rc, reach_setts=rs_,
                   equipped=_parse_ancillaries(
                       _bres(rb[i + 3], "equipped:%s" % cqi, allow_nil=True)))
+        st.update(_parse_char_extra(_bres(rb[i + 4], "char_extra:%s" % cqi, allow_nil=True)))
+        st["trait_progress"] = trait_progress.get(cqi) or {}
         hero_state[cqi] = st
-        i += 4
+        i += 5
     for reg in regions:
         st = _parse_province(_bres(rb[i], "province_state:%s" % reg), reg)
         buildable, edicts = _parse_buildable(
