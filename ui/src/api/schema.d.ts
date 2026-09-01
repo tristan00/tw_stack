@@ -1881,6 +1881,8 @@ export interface components {
             by_character?: components["schemas"]["SkillCharacterRow"][];
             /** By Start */
             by_start?: components["schemas"]["CatalogStartRow"][];
+            /** By Version */
+            by_version?: components["schemas"]["CatalogVersionRow"][];
             /** Recent */
             recent?: components["schemas"]["CatalogCampaignRow"][];
         };
@@ -1902,6 +1904,18 @@ export interface components {
             avg_reward?: number | null;
             /** Delta Mean */
             delta_mean?: number | null;
+        };
+        /** CatalogVersionRow */
+        CatalogVersionRow: {
+            /** Version */
+            version: string;
+            /** Stamp */
+            stamp: string;
+            took?: components["schemas"]["Rate"] | null;
+            /** Avg Reward Took */
+            avg_reward_took?: number | null;
+            /** Avg Reward Passed */
+            avg_reward_passed?: number | null;
         };
         /** ChainLevel */
         ChainLevel: {

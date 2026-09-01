@@ -2,7 +2,7 @@ import { useParams } from 'react-router-dom'
 import { DataTable, type Col } from '@/components/DataTable'
 import { ByStartTable, RecentTable, TookCell, dashNum, signedNum } from '@/components/catalog'
 import { Chip, EntityLink, ErrorState, MetricTile, Section, Skeleton } from '@/components/primitives'
-import { useApi, type CatalogKeyPage, type ChainLevel, type RelatedKey, type SkillCharacterRow } from '@/lib/api'
+import { useApi, type CatalogKeyPage, type CatalogVersionRow, type ChainLevel, type RelatedKey, type SkillCharacterRow } from '@/lib/api'
 import { n, pct } from '@/lib/format'
 
 type Family = 'buildings' | 'research' | 'skills' | 'traits'
@@ -130,6 +130,16 @@ function CharacterTable({ rows }: { rows: SkillCharacterRow[] }) {
   return <DataTable rows={rows} cols={cols} rowId={(r) => r.subtype} dense pageSize={10} emptyWhat="no character snapshot attributes this skill" />
 }
 
+function versionCols(verb: string): Col<CatalogVersionRow>[] {
+  return [
+    { key: 'v', label: 'version', value: (r) => r.version, render: (r) => <span className="num" title={r.stamp}>{r.version}</span> },
+    { key: 'took', label: verb, align: 'right', value: (r) => (r.took?.of ? r.took.n / r.took.of : 0), render: (r) => <TookCell rate={r.took} /> },
+    { key: 'n', label: 'campaigns', align: 'right', value: (r) => r.took?.of ?? 0, render: (r) => dashNum(r.took?.of) },
+    { key: 'rt', label: 'avg reward', unit: 'took', align: 'right', value: (r) => r.avg_reward_took ?? undefined, sortUndefined: 'last', render: (r) => dashNum(r.avg_reward_took, 2) },
+    { key: 'rp', label: 'avg reward', unit: 'passed', align: 'right', value: (r) => r.avg_reward_passed ?? undefined, sortUndefined: 'last', render: (r) => dashNum(r.avg_reward_passed, 2) },
+  ]
+}
+
 export function CatalogDetail({ family }: { family: Family }) {
   const { key = '' } = useParams()
   const { data, error, loading, reload } = useApi<CatalogKeyPage>(
@@ -231,6 +241,22 @@ export function CatalogDetail({ family }: { family: Family }) {
       >
         <ByStartTable rows={data.by_start ?? []} verb={verb} />
       </Section>
+
+      {(data.by_version ?? []).length > 0 && (
+        <Section
+          title="by version"
+          scope={{ text: `${verb} rate under each code version, newest first · has the preference moved as the project evolved` }}
+        >
+          <DataTable
+            rows={data.by_version ?? []}
+            cols={versionCols(verb)}
+            rowId={(r) => r.stamp}
+            dense
+            pageSize={15}
+            emptyWhat="no versioned campaigns"
+          />
+        </Section>
+      )}
 
       <Section title={`recent campaigns that ${verb} it`} scope={{ text: 'newest first' }}>
         <RecentTable rows={data.recent ?? []} verb={verb} />
