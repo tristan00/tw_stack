@@ -1,8 +1,7 @@
-import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { DataTable, type Col } from '@/components/DataTable'
 import { CatalogNav, TookCell } from '@/components/catalog'
-import { EntityLink, ErrorState, Section, Skeleton } from '@/components/primitives'
+import { Bar, EntityLink, ErrorState, Section, Skeleton } from '@/components/primitives'
 import { SubNav, useSubView } from '@/components/SubNav'
 import { useApi, type ItemRow, type ItemsPage, type ItemSwapRow, type SwapsPage } from '@/lib/api'
 import { n } from '@/lib/format'
@@ -119,7 +118,11 @@ const swapCols: Col<ItemSwapRow>[] = [
   },
   { key: 'cat', label: 'category', value: (r) => r.category ?? '', render: (r) => <span className="text-dim">{r.category ?? '—'}</span> },
   { key: 'n', label: 'campaigns', align: 'right', value: (r) => r.campaigns, render: (r) => <span className="num">{n(r.campaigns)}</span> },
+  { key: 'events', label: 'swaps', align: 'right', optional: true, value: (r) => r.events, render: (r) => <span className="num">{n(r.events)}</span> },
   { key: 'turn', label: 'avg swap turn', align: 'right', value: (r) => r.avg_turn ?? undefined, sortUndefined: 'last', render: (r) => (r.avg_turn == null ? <span className="text-dim">—</span> : <span className="num">{n(r.avg_turn, 1)}</span>) },
+  { key: 'gap', label: 'avg gap', unit: 'turns', align: 'right', optional: true, value: (r) => r.avg_gap ?? undefined, sortUndefined: 'last', render: (r) => (r.avg_gap == null ? <span className="text-dim">—</span> : <span className="num">{n(r.avg_gap, 1)}</span>) },
+  { key: 'kept', label: 'kept to end', value: (r) => (r.kept_rate?.of ? r.kept_rate.n / r.kept_rate.of : -1), render: (r) => <Bar rate={r.kept_rate ?? null} /> },
+  { key: 'kept_turns', label: 'avg kept', unit: 'turns', align: 'right', optional: true, value: (r) => r.avg_kept_turns ?? undefined, sortUndefined: 'last', render: (r) => (r.avg_kept_turns == null ? <span className="text-dim">—</span> : <span className="num">{n(r.avg_kept_turns, 1)}</span>) },
   { key: 'reward', label: 'avg reward', align: 'right', value: (r) => r.avg_reward ?? undefined, sortUndefined: 'last', render: (r) => (r.avg_reward == null ? <span className="text-dim">—</span> : <span className="num">{n(r.avg_reward, 2)}</span>) },
   {
     key: 'delta',
@@ -174,92 +177,24 @@ function ItemsIndex({ data }: { data: ItemsPage }) {
   )
 }
 
-function KnobSelect({ value, onChange, options, label }: {
-  value: string
-  onChange: (v: string) => void
-  options: { v: string; label: string }[]
-  label: string
-}) {
-  return (
-    <label className="flex items-center gap-1.5">
-      <span className="text-dim">{label}</span>
-      <select value={value} onChange={(e) => onChange(e.target.value)} className="border-line bg-surface rounded-md border px-2 py-1">
-        {options.map((o) => (
-          <option key={o.v} value={o.v}>{o.label}</option>
-        ))}
-      </select>
-    </label>
-  )
-}
-
 function SwapsView() {
-  const [gap, setGap] = useState('0')
-  const [kept, setKept] = useState('forever')
-  const [reequip, setReequip] = useState('0')
-  const [turnLo, setTurnLo] = useState('')
-  const [turnHi, setTurnHi] = useState('')
-  const qs = new URLSearchParams({ gap })
-  if (kept !== 'forever') qs.set('kept', kept)
-  if (reequip === '1') qs.set('reequip', 'true')
-  if (turnLo) qs.set('turn_lo', turnLo)
-  if (turnHi) qs.set('turn_hi', turnHi)
-  const { data, error, loading, reload } = useApi<SwapsPage>(`/api/items/swaps?${qs.toString()}`, [qs.toString()], { live: false })
+  const { data, error, loading, reload } = useApi<SwapsPage>('/api/items/swaps', [], { live: false })
   if (error) return <ErrorState error={error} onRetry={reload} />
   if (loading || !data) return <Skeleton rows={8} />
   return (
     <Section
       title="kept swaps"
       scope={{
-        text: `${n(data.events)} swap${data.events === 1 ? '' : 's'} across ${n((data.rows ?? []).length)} pairs under these knobs`,
+        text: `${data.scope.text} · ${n(data.events)} swap${data.events === 1 ? '' : 's'} across ${n((data.rows ?? []).length)} pairs`,
       }}
     >
-      <div className="mb-3 flex flex-wrap items-center gap-3 text-xs">
-        <KnobSelect
-          label="pickup within"
-          value={gap}
-          onChange={setGap}
-          options={[
-            { v: '0', label: 'the same turn' },
-            { v: '1', label: '1 turn' },
-            { v: '2', label: '2 turns' },
-            { v: '5', label: '5 turns' },
-          ]}
-        />
-        <KnobSelect
-          label="kept for"
-          value={kept}
-          onChange={setKept}
-          options={[
-            { v: 'forever', label: 'the rest of the campaign' },
-            { v: '5', label: '5+ turns' },
-            { v: '3', label: '3+ turns' },
-            { v: '1', label: '1+ turn' },
-            { v: '0', label: 'any time' },
-          ]}
-        />
-        <KnobSelect
-          label="old item"
-          value={reequip}
-          onChange={setReequip}
-          options={[
-            { v: '0', label: 'stays off' },
-            { v: '1', label: 'may return' },
-          ]}
-        />
-        <label className="flex items-center gap-1.5">
-          <span className="text-dim">swap turn</span>
-          <input value={turnLo} onChange={(e) => setTurnLo(e.target.value.replace(/\D/g, ''))} placeholder="min" className="border-line bg-surface num w-12 rounded-md border px-1.5 py-1 text-right" />
-          <span className="text-dim">–</span>
-          <input value={turnHi} onChange={(e) => setTurnHi(e.target.value.replace(/\D/g, ''))} placeholder="max" className="border-line bg-surface num w-12 rounded-md border px-1.5 py-1 text-right" />
-        </label>
-      </div>
       <DataTable
         rows={data.rows ?? []}
         cols={swapCols}
         rowId={(r) => `${r.removed.raw}>${r.equipped.raw}`}
         searchPlaceholder="search swap…"
         pageSize={25}
-        emptyWhat="no swap matches these knobs"
+        emptyWhat="no character ever swapped one item for another"
       />
     </Section>
   )

@@ -1848,16 +1848,6 @@ export interface components {
         /** ChoicesPage */
         ChoicesPage: {
             scope: components["schemas"]["Scope"];
-            /**
-             * Censor
-             * @default 0
-             */
-            censor: number;
-            /**
-             * Min N
-             * @default 0
-             */
-            min_n: number;
             /** Forks */
             forks?: components["schemas"]["ForkRow"][];
         };
@@ -2244,6 +2234,8 @@ export interface components {
             avg_reward?: number | null;
             /** Avg Future */
             avg_future?: number | null;
+            /** Delta Future */
+            delta_future?: number | null;
         };
         /** ForkRow */
         ForkRow: {
@@ -2515,8 +2507,18 @@ export interface components {
              * @default 0
              */
             campaigns: number;
+            /**
+             * Events
+             * @default 0
+             */
+            events: number;
             /** Avg Turn */
             avg_turn?: number | null;
+            /** Avg Gap */
+            avg_gap?: number | null;
+            kept_rate?: components["schemas"]["Rate"] | null;
+            /** Avg Kept Turns */
+            avg_kept_turns?: number | null;
             /** Avg Reward */
             avg_reward?: number | null;
             /** Delta Mean */
@@ -3641,22 +3643,6 @@ export interface components {
              * @default 0
              */
             events: number;
-            /**
-             * Gap
-             * @default 0
-             */
-            gap: number;
-            /** Kept Min */
-            kept_min?: number | null;
-            /**
-             * Allow Reequip
-             * @default false
-             */
-            allow_reequip: boolean;
-            /** Turn Lo */
-            turn_lo?: number | null;
-            /** Turn Hi */
-            turn_hi?: number | null;
             /** Rows */
             rows?: components["schemas"]["ItemSwapRow"][];
         };
@@ -4497,13 +4483,7 @@ export interface operations {
     };
     get_item_swaps_api_items_swaps_get: {
         parameters: {
-            query?: {
-                gap?: number;
-                kept?: number | null;
-                reequip?: boolean;
-                turn_lo?: number | null;
-                turn_hi?: number | null;
-            };
+            query?: never;
             header?: never;
             path?: never;
             cookie?: never;
@@ -4517,15 +4497,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SwapsPage"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -4750,10 +4721,7 @@ export interface operations {
     };
     get_choices_api_choices__family__get: {
         parameters: {
-            query?: {
-                censor?: number;
-                min_n?: number;
-            };
+            query?: never;
             header?: never;
             path: {
                 family: string;

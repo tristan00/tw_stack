@@ -1,5 +1,6 @@
 import { DataTable, type Col } from '@/components/DataTable'
 import { Card, Chip, Dot, ErrorState, Section, Skeleton } from '@/components/primitives'
+import { RewardWeightsCard } from '@/components/reward'
 import { useApi, type InfraPage, type Schemas } from '@/lib/api'
 
 type ActivityRow = Schemas['ActivityRow']
@@ -55,6 +56,9 @@ export function Status() {
       </Section>
       <Section title="activity" scope={{ text: 'when each stream last wrote' }}>
         <ActivityTable rows={data.activity} />
+      </Section>
+      <Section title="view settings" scope={{ text: 'a save re-ranks every reward on this dashboard' }}>
+        <RewardWeightsCard />
       </Section>
     </div>
   )
