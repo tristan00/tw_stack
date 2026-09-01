@@ -108,8 +108,6 @@ rather than shipping a pack pointing at the machine that last built it.
 
 ## Running it
 
-    python check.py                      # every gate; do this first on a new machine
-
     python runctl.py up                  # the configured run: run_config.RUN
 
 `run_config.RUN` is the authoritative description of the run — campaigns, turns, the
@@ -138,9 +136,6 @@ The run is engineered for throughput measured in turns per hour, wall-clock hone
 campaigns kill the game the moment their fate is sealed and the next boots fresh, stalls
 end campaigns in seconds instead of being waited out, and every wait in the stack logs
 its use and outcome with ISO timestamps. `CLAUDE.md` states these rules precisely.
-
-`check.py` marks which gates need a live game or a populated corpus. The rest run on a
-fresh clone.
 
 ## The dashboard on its own — a manual run tracker
 

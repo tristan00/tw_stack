@@ -15,8 +15,7 @@ sys.path.insert(0, common.DECISIONS)
 
 import features as F
 import policy as P
-from base_model import (CB_INTERRUPT_ITERATIONS, CB_INTERRUPT_PARAMS,
-                        CB_INTERRUPT_TUNED_FROM, RUNS_ROOT, TARGET_PARTS,
+from base_model import (CB_INTERRUPT_PARAMS, RUNS_ROOT, TARGET_PARTS,
                         TRAIN_WINDOW_CAMPAIGNS, target,
                         decision_deltas, fit_es, grouped_split, params, _ranks)
 from store import DecisionStore, IncompatibleStore
@@ -202,7 +201,7 @@ def train(runs_root=RUNS_ROOT, window=TRAIN_WINDOW_CAMPAIGNS):
     fit_report = {}
     groups = data["groups"]
     m = fit_es(X, y, cat_idx, groups, "model", fit_report,
-               base=CB_INTERRUPT_PARAMS, iterations=CB_INTERRUPT_ITERATIONS)
+               base=CB_INTERRUPT_PARAMS)
     preds = list(m.predict(Pool(X, cat_features=cat_idx)))
     X = None
     val, _trn = grouped_split(len(preds), groups)
@@ -237,8 +236,7 @@ def train(runs_root=RUNS_ROOT, window=TRAIN_WINDOW_CAMPAIGNS):
             os.remove(p)
     return {"trained": True, "rows": n_rows, "mae_in_sample": round(mae, 5),
             "fit": fit_report,
-            "params": params(iterations=CB_INTERRUPT_ITERATIONS, base=CB_INTERRUPT_PARAMS,
-                             tuned_from=CB_INTERRUPT_TUNED_FROM),
+            "params": params(base=CB_INTERRUPT_PARAMS),
             "screens": meta["screens"], "runs": data["runs"]}
 
 

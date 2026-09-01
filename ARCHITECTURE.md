@@ -45,7 +45,7 @@
   `ui/dist` and served by `advisor_api`. Five destinations — run, campaigns, decisions,
   models, infra — each answering one question, with drill-down to a campaign or a decision.
   Every view is a URL. `npm run check` typechecks it, verifies every colour token against
-  WCAG in both themes, and builds it; `check.py` runs that as the `client` check.
+  WCAG in both themes, and builds it.
 - **launcher** — the driver. Game lifecycle (`bus_launcher.py`, `launcher.py`), the executor
   registry (`executor.py`, 18 action types incl. diplomacy), navigation, interrupt handling,
   PowerShell capture/input bridge (`ps/`). `config.py` is the only file allowed absolute paths.

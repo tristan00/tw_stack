@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 
+import gc
 import json
 import os
 import sys
@@ -20,9 +21,9 @@ STAMP = time.strftime("%Y%m%d_%H%M%S")
 OUT_DIR = os.path.join(common.native(common.LOGS_SERVICES), "optuna_gnn_greedy")
 TRIALS_JSONL = os.path.join(OUT_DIR, "trials_%s.jsonl" % STAMP)
 
-FIXED = {"epochs": 60, "patience": 10, "bf16": True, "seed": 0, "device": "cuda",
-         "epoch_cap_s": 60}
-STUDY_PATIENCE = 24
+FIXED = {"patience": 0, "bf16": True, "seed": 0, "device": "cuda",
+         "epoch_cap_s": 60, "batch": 512}
+STUDY_PATIENCE = 10
 SAMPLER_SEED = int(time.time()) % 100000
 
 
@@ -59,12 +60,11 @@ def _log(msg):
 def _space(trial):
     p = {"lr": trial.suggest_float("lr", 1e-5, 5e-4, log=True),
          "weight_decay": trial.suggest_float("weight_decay", 1e-6, 1e-1, log=True),
-         "hidden": trial.suggest_categorical("hidden", [32, 64, 128, 192]),
-         "batch": trial.suggest_categorical("batch", [256, 384, 512]),
+         "hidden": trial.suggest_int("hidden", 4, 64, step=4),
          "dropout": trial.suggest_float("dropout", 0.0, 0.5),
-         "grad_clip": trial.suggest_categorical("grad_clip", [0.5, 1.0, 2.0, 5.0, 10.0]),
-         "entity_layers": trial.suggest_int("entity_layers", 1, 3),
-         "action_rounds": trial.suggest_int("action_rounds", 1, 4),
+         "grad_clip": trial.suggest_float("grad_clip", 0.1, 10.0, log=True),
+         "entity_layers": trial.suggest_int("entity_layers", 1, 5),
+         "action_rounds": trial.suggest_int("action_rounds", 1, 5),
          "attn": trial.suggest_categorical("attn", ["none", "act", "map", "all"]),
          "update": trial.suggest_categorical("update", ["mlp", "linear", "none"]),
          "conv": trial.suggest_categorical("conv", ["sage", "rel"]),
@@ -72,7 +72,7 @@ def _space(trial):
          "map_aggr": trial.suggest_categorical("map_aggr",
                                                ["max", "mean", "add+mean", "mean+max"]),
          "act_aggr": trial.suggest_categorical("act_aggr", ["add+mean", "max", "mean"]),
-         "self_transform": False}
+         "self_transform": trial.suggest_categorical("self_transform", [False, True])}
     cm = trial.suggest_categorical("conv_map", ["inherit", "sage", "rel"])
     ca = trial.suggest_categorical("conv_a2e", ["inherit", "sage", "rel"])
     p["conv_map"] = None if cm == "inherit" else cm
@@ -80,13 +80,13 @@ def _space(trial):
     kinds = (p["conv"], p["conv_map"] or p["conv"], p["conv_a2e"] or p["conv"],
              p["conv_e2a"])
     if "rel" in kinds:
-        p["dst_dim"] = trial.suggest_categorical("dst_dim", [16, 32, 48, 64])
+        p["dst_dim"] = trial.suggest_int("dst_dim", 4, 64, step=4)
     else:
-        p["dst_dim"] = 48
+        p["dst_dim"] = 4
     return p
 
 
-def run(trials=None, budget_s=600.0, timeout_s=None, baseline=True):
+def run(trials=None, budget_s=600.0, timeout_s=None, baseline=False):
     import optuna
     import torch
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -100,18 +100,26 @@ def run(trials=None, budget_s=600.0, timeout_s=None, baseline=True):
          "sampler seed %d" % (len(ex), len(w["campaigns"]), budget_s, STUDY_PATIENCE,
                               SAMPLER_SEED))
 
-    def _fit(cfg, tag):
-        return GT.fit_net(datas, ys, groups, cfg,
-                          log=lambda s: _log("  %s %s" % (tag, s)))
-
-    base_fit = None
+    base_fit, norm = None, None
     if baseline:
         base_cfg = dict(GT.CFG, time_budget_s=budget_s)
         _log("BASELINE start (current greedy CFG at the %.0fs budget)" % budget_s)
-        _, base_fit, _, _ = _fit(base_cfg, "base")
+        base_log = lambda s: _log("  base %s" % s)
+        base_prep = GT.prepare(datas, ys, groups, base_cfg, log=base_log)
+        _, base_fit, _, _ = GT.fit_net(datas, ys, groups, base_cfg, log=base_log,
+                                       prep=base_prep)
         _log("BASELINE val_mse=%.5f r2=%+0.4f epochs=%d stopped=%s"
              % (base_fit["val_mse"], base_fit["val_r2"] or 0.0, base_fit["epochs_run"],
                 base_fit["stopped_by"]))
+        norm = base_prep["norm"]
+        base_prep = None
+        gc.collect()
+        torch.cuda.empty_cache()
+
+    t_prep = time.time()
+    prep = GT.prepare(datas, ys, groups, dict(GT.CFG, **FIXED), log=_log, norm=norm)
+    _log("optimize_greedy: trial batches prepared once at batch %d in %.1fs -- reused by "
+         "every trial" % (prep["batch"], time.time() - t_prep))
 
     study = optuna.create_study(
         study_name="gnn_greedy_%s" % STAMP, storage=_storage(), direction="minimize",
@@ -132,7 +140,7 @@ def run(trials=None, budget_s=600.0, timeout_s=None, baseline=True):
         try:
             _, fit, _, _ = GT.fit_net(datas, ys, groups, cfg,
                                       log=lambda s: _log("  t%d %s" % (trial.number, s)),
-                                      on_epoch=on_epoch)
+                                      on_epoch=on_epoch, prep=prep)
         except optuna.TrialPruned:
             torch.cuda.empty_cache()
             raise
@@ -140,7 +148,6 @@ def run(trials=None, budget_s=600.0, timeout_s=None, baseline=True):
             msg = repr(e)[:200]
             _log("TRIAL %d FAILED %s" % (trial.number, msg))
             e = None
-            import gc
             gc.collect()
             torch.cuda.empty_cache()
             raise RuntimeError(msg) from None
@@ -150,6 +157,10 @@ def run(trials=None, budget_s=600.0, timeout_s=None, baseline=True):
                "val_mse": fit["val_mse"], "val_r2": fit["val_r2"],
                "epochs": fit["epochs_run"], "stopped_by": fit["stopped_by"],
                "ts": time.time()}
+        trial.set_user_attr("r2", fit["val_r2"])
+        trial.set_user_attr("epochs", fit["epochs_run"])
+        trial.set_user_attr("stopped", fit["stopped_by"])
+        trial.set_user_attr("seconds", row["seconds"])
         with open(TRIALS_JSONL, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(row) + "\n")
         vals = [t.value for t in study.trials if t.value is not None]
@@ -182,4 +193,4 @@ if __name__ == "__main__":
     n = int(a[a.index("--trials") + 1]) if "--trials" in a else None
     b = float(a[a.index("--budget") + 1]) if "--budget" in a else 600.0
     t = float(a[a.index("--timeout") + 1]) if "--timeout" in a else None
-    raise SystemExit(run(n, b, t, baseline="--no-baseline" not in a))
+    raise SystemExit(run(n, b, t, baseline="--baseline" in a))
