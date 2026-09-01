@@ -20,10 +20,9 @@ STAMP = time.strftime("%Y%m%d_%H%M%S")
 OUT_DIR = os.path.join(common.native(common.LOGS_SERVICES), "optuna_catboost")
 
 FIT_CAP_S = {"main": 120.0, "interrupt": 60.0}
-CV_FOLDS = 3
-CV_TOP = 5
-PATIENCE = 10
+PATIENCE = 40
 TUNE_EARLY_STOPPING = 20
+TPE_STARTUP = 11
 SAMPLER_SEED = int(time.time()) % 100000
 
 
@@ -109,19 +108,6 @@ def _fit_val(X, y, cat_idx, val, trn, params, cap_s):
                   "hit_cap": cap.hit}
 
 
-def _folds(groups, k=CV_FOLDS):
-    import hashlib
-    out = []
-    for f in range(k):
-        held = {g for g in set(groups)
-                if int.from_bytes(hashlib.sha1(("cbcv|%s" % g).encode()).digest()[:4],
-                                  "big") % k == f}
-        val = [i for i, g in enumerate(groups) if g in held]
-        trn = [i for i, g in enumerate(groups) if g not in held]
-        out.append((val, trn))
-    return out
-
-
 def _matrices_main():
     from advisor import model as AM
     data = AM.gather()
@@ -157,16 +143,6 @@ def _trial_score(mats, params, cap_s, splits):
     return score, parts
 
 
-def _cv_score(mats, params, cap_s):
-    per_fold = []
-    for fold_splits in zip(*[_folds(groups) for _tag, _X, _y, _c, groups in mats]):
-        score, parts = _trial_score(mats, params, cap_s, list(fold_splits))
-        per_fold.append(round(score, 6))
-    mean = sum(per_fold) / len(per_fold)
-    sd = (sum((v - mean) ** 2 for v in per_fold) / max(1, len(per_fold) - 1)) ** 0.5
-    return round(mean, 6), round(sd, 6), per_fold
-
-
 def run(kind, trials, timeout_s):
     import optuna
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -174,14 +150,22 @@ def run(kind, trials, timeout_s):
     cap_s = FIT_CAP_S[kind]
     mats = _matrices_main() if kind == "main" else _matrices_interrupt()
     splits = [grouped_split(len(X), groups) for _tag, X, _y, _c, groups in mats]
+    sampler = optuna.samplers.TPESampler(seed=SAMPLER_SEED, multivariate=True,
+                                         n_startup_trials=TPE_STARTUP)
     study = optuna.create_study(
         study_name="catboost_%s_%s" % (kind, STAMP), storage=_storage(),
-        direction="minimize",
-        sampler=optuna.samplers.TPESampler(seed=SAMPLER_SEED, multivariate=True))
+        direction="minimize", sampler=sampler,
+        pruner=optuna.pruners.NopPruner())
+    _log("optimize_catboost: sampler %s reports n_startup_trials=%d (asked for %d), "
+         "pruner %s -- trials 0..%d are random, TPE from trial %d"
+         % (type(sampler).__name__, sampler._n_startup_trials, TPE_STARTUP,
+            type(study.pruner).__name__, TPE_STARTUP - 1, TPE_STARTUP))
 
     def objective(trial):
         p = _space(trial)
-        _log("TRIAL %d start %s" % (trial.number, json.dumps(p, sort_keys=True)))
+        _log("TRIAL %d start [%s] %s"
+             % (trial.number, "random" if trial.number < TPE_STARTUP else "tpe",
+                json.dumps(p, sort_keys=True)))
         t0 = time.time()
         score, parts = _trial_score(mats, p, cap_s, splits)
         row = {"trial": trial.number, "params": p, "score": round(score, 6),
@@ -212,28 +196,23 @@ def run(kind, trials, timeout_s):
                    catch=(RuntimeError,), callbacks=[_patience_cb()])
     done = [t for t in study.trials if t.value is not None]
     done.sort(key=lambda t: t.value)
-    top = done[:CV_TOP]
-    _log("study finished: %d scored trials, CV-checking top %d with %d grouped folds"
-         % (len(done), len(top), CV_FOLDS))
-    table = []
-    for t in top:
-        p = dict(t.params, grow_policy="SymmetricTree", bootstrap_type="Bernoulli")
-        mean, sd, folds = _cv_score(mats, p, cap_s)
-        table.append({"trial": t.number, "split_score": round(t.value, 6),
-                      "cv_mean": mean, "cv_sd": sd, "cv_folds": folds, "params": p})
-        _log("CV trial %d: split=%.5f cv=%.5f +/- %.5f folds=%s"
-             % (t.number, t.value, mean, sd, folds))
-    table.sort(key=lambda r: (r["cv_mean"], r["params"]["depth"]))
-    winner = table[0] if table else None
+    _log("study finished: %d scored trials" % len(done))
+    best = done[0] if done else None
+    winner = None if best is None else {
+        "trial": best.number, "split_score": round(best.value, 6),
+        "val_r2": best.user_attrs.get("r2"),
+        "trees": best.user_attrs.get("best_iteration"),
+        "params": dict(best.params, grow_policy="SymmetricTree",
+                       bootstrap_type="Bernoulli")}
     out = {"kind": kind, "stamp": STAMP, "trials_scored": len(done),
-           "fit_cap_s": cap_s, "cv_folds": CV_FOLDS, "tune_early_stopping":
-           TUNE_EARLY_STOPPING, "top": table, "winner": winner}
+           "fit_cap_s": cap_s, "tune_early_stopping": TUNE_EARLY_STOPPING,
+           "winner": winner}
     path = os.path.join(OUT_DIR, "best_%s_%s.json" % (kind, STAMP))
     json.dump(out, open(path, "w"), indent=1)
     if winner:
-        _log("WINNER trial %d cv=%.5f +/- %.5f params %s"
-             % (winner["trial"], winner["cv_mean"], winner["cv_sd"],
-                json.dumps(winner["params"], sort_keys=True)))
+        _log("WINNER trial %d split=%.5f r2=%s %s trees, params %s"
+             % (winner["trial"], winner["split_score"], winner["val_r2"],
+                winner["trees"], json.dumps(winner["params"], sort_keys=True)))
     _log("report -> %s" % path)
     return 0
 
