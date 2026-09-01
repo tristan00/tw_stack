@@ -2,9 +2,9 @@ import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { DataTable, type Col } from '@/components/DataTable'
 import { CatalogNav, TookCell, dashNum, signedNum } from '@/components/catalog'
-import { EntityLink, ErrorState, Section, Skeleton } from '@/components/primitives'
+import { Card, EntityLink, ErrorState, Help, Section, Skeleton } from '@/components/primitives'
 import { SubNav, useSubView } from '@/components/SubNav'
-import { useApi, type CatalogIndexPage, type CatalogIndexRow, type ChoicesPage, type ForkArmRow } from '@/lib/api'
+import { useApi, type CatalogIndexPage, type CatalogIndexRow, type ChoicesPage, type ForkArmRow, type ForkRow } from '@/lib/api'
 import { n } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
@@ -91,29 +91,16 @@ const CHOICE_FAMILY: Record<Family, string> = {
   skills: 'skills',
 }
 
-type ChoiceRow = { fork: string; forkLabel: string; cohort: number; arm: ForkArmRow }
+type ArmRow = { cohort: number; arm: ForkArmRow }
 
-const choiceCols = (family: Family): Col<ChoiceRow>[] => [
-  {
-    key: 'fork',
-    label: family === 'buildings' ? 'settlement' : 'fork',
-    value: (r) => r.forkLabel,
-    render: (r) =>
-      family !== 'buildings' && !r.fork.startsWith('root:') ? (
-        <EntityLink to={`/${family}/${encodeURIComponent(r.fork)}`} title={r.fork}>
-          {r.forkLabel}
-        </EntityLink>
-      ) : (
-        <span>{r.forkLabel}</span>
-      ),
-  },
+const armCols = (family: Family): Col<ArmRow>[] => [
   {
     key: 'arm',
-    label: family === 'buildings' ? 'first commitment' : 'picked first',
+    label: family === 'buildings' ? 'built first' : 'picked first',
     value: (r) => r.arm.label,
     render: (r) =>
       r.arm.key == null ? (
-        <span className="text-dim">neither</span>
+        <span className="text-dim">didn’t continue</span>
       ) : family === 'buildings' ? (
         <span>{r.arm.label}</span>
       ) : (
@@ -128,18 +115,16 @@ const choiceCols = (family: Family): Col<ChoiceRow>[] => [
     label: 'share',
     unit: 'of cohort',
     align: 'right',
-    help: 'this arm’s campaigns over every campaign that reached the fork',
     value: (r) => r.arm.n / Math.max(1, r.cohort),
     render: (r) => <span className="num">{Math.round((100 * r.arm.n) / Math.max(1, r.cohort))}%</span>,
   },
-  { key: 'reached', label: 'reached', unit: 'avg turn', align: 'right', optional: true, value: (r) => r.arm.avg_reached_turn ?? undefined, sortUndefined: 'last', render: (r) => dashNum(r.arm.avg_reached_turn, 1) },
   { key: 'picked', label: 'picked', unit: 'avg turn', align: 'right', value: (r) => r.arm.avg_picked_turn ?? undefined, sortUndefined: 'last', render: (r) => dashNum(r.arm.avg_picked_turn, 1) },
   {
     key: 'reward',
     label: 'avg reward',
     unit: 'campaign',
     align: 'right',
-    help: 'the whole campaign’s analytics reward, averaged over this arm',
+    help: 'the whole campaign’s reward, averaged over this path',
     value: (r) => r.arm.avg_reward ?? undefined,
     sortUndefined: 'last',
     render: (r) => dashNum(r.arm.avg_reward, 2),
@@ -148,62 +133,161 @@ const choiceCols = (family: Family): Col<ChoiceRow>[] => [
     key: 'future',
     label: 'avg future reward',
     align: 'right',
-    help: 'gains made after the fork was reached — peak minus state at the fork, analytics weights, same anchor for every arm of a fork',
+    help: 'gains made after the fork was reached — same anchor for every path',
     value: (r) => r.arm.avg_future ?? undefined,
     sortUndefined: 'last',
     render: (r) => dashNum(r.arm.avg_future, 2),
   },
+  {
+    key: 'delta',
+    label: 'Δ future',
+    unit: 'vs other paths',
+    align: 'right',
+    help: 'this path’s avg future reward minus every other path’s, didn’t-continue included',
+    value: (r) => r.arm.delta_future ?? undefined,
+    sortUndefined: 'last',
+    render: (r) => signedNum(r.arm.delta_future),
+  },
 ]
 
+function topPick(fk: ForkRow): ForkArmRow | null {
+  const picks = (fk.arms ?? []).filter((a) => a.key != null)
+  return picks.length ? picks.reduce((a, b) => (b.n > a.n ? b : a)) : null
+}
+
+function bestDelta(fk: ForkRow): number | null {
+  const ds = (fk.arms ?? []).filter((a) => a.key != null && a.delta_future != null)
+  return ds.length ? Math.max(...ds.map((a) => a.delta_future!)) : null
+}
+
+const SHOW_STEP = 50
+
 function ChoicesView({ family }: { family: Family }) {
-  const [censor, setCensor] = useState('3')
-  const [minN, setMinN] = useState('20')
   const { data, error, loading, reload } = useApi<ChoicesPage>(
-    `/api/choices/${CHOICE_FAMILY[family]}?censor=${censor}&min_n=${minN}`,
-    [family, censor, minN],
+    `/api/choices/${CHOICE_FAMILY[family]}`,
+    [family],
     { live: false },
   )
+  const [open, setOpen] = useState<Set<string>>(new Set())
+  const [q, setQ] = useState('')
+  const [shown, setShown] = useState(SHOW_STEP)
   if (error) return <ErrorState error={error} onRetry={reload} />
   if (loading || !data) return <Skeleton rows={10} />
-  const rows: ChoiceRow[] = (data.forks ?? []).flatMap((fk) =>
-    (fk.arms ?? []).map((arm) => ({ fork: fk.fork, forkLabel: fk.label, cohort: fk.cohort, arm })),
+  const needle = q.toLowerCase()
+  const forks = (data.forks ?? []).filter(
+    (fk) =>
+      !needle ||
+      fk.label.toLowerCase().includes(needle) ||
+      (fk.arms ?? []).some((a) => a.label.toLowerCase().includes(needle)),
   )
+  const visible = forks.slice(0, shown)
+  const toggle = (key: string) => {
+    const next = new Set(open)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    setOpen(next)
+  }
+  const cols = armCols(family)
   return (
     <Section
       title={`${FAMILY[family].noun} choices`}
       scope={{
         text: `${data.scope.text} · ${n((data.forks ?? []).length)} forks`,
-        detail: data.scope.detail ?? undefined,
       }}
     >
-      <div className="mb-3 flex flex-wrap items-center gap-3 text-xs">
-        <label className="flex items-center gap-1.5">
-          <span className="text-dim">neither needs</span>
-          <select value={censor} onChange={(e) => setCensor(e.target.value)} className="border-line bg-surface rounded-md border px-2 py-1">
-            <option value="0">any survival</option>
-            <option value="3">3+ turns past the fork</option>
-            <option value="5">5+ turns past the fork</option>
-            <option value="10">10+ turns past the fork</option>
-          </select>
+      <div className="mb-2 flex items-center gap-2">
+        <label className="border-line bg-surface flex min-w-0 flex-1 items-center gap-1.5 rounded-md border px-2 py-1">
+          <input
+            value={q}
+            onChange={(e) => {
+              setQ(e.target.value)
+              setShown(SHOW_STEP)
+            }}
+            placeholder="search fork, path…"
+            className="min-w-0 flex-1 bg-transparent text-xs outline-none"
+          />
         </label>
-        <label className="flex items-center gap-1.5">
-          <span className="text-dim">cohort at least</span>
-          <select value={minN} onChange={(e) => setMinN(e.target.value)} className="border-line bg-surface rounded-md border px-2 py-1">
-            <option value="0">anything</option>
-            <option value="10">10 campaigns</option>
-            <option value="20">20 campaigns</option>
-            <option value="50">50 campaigns</option>
-          </select>
-        </label>
+        <span className="text-dim text-2xs whitespace-nowrap num">{forks.length} forks</span>
       </div>
-      <DataTable
-        rows={rows}
-        cols={choiceCols(family)}
-        rowId={(r) => `${r.fork}>${r.arm.key ?? 'neither'}`}
-        searchPlaceholder="search fork, choice…"
-        pageSize={25}
-        emptyWhat="no fork clears these knobs"
-      />
+      <Card className="overflow-hidden">
+        <div className="tablewrap">
+          <table className="w-full border-collapse text-xs">
+            <thead>
+              <tr className="border-line text-dim border-b">
+                <th className="px-3 py-1.5 text-left font-medium">{family === 'buildings' ? 'settlement' : 'fork'}</th>
+                <th className="px-3 py-1.5 text-right font-medium">paths</th>
+                <th className="px-3 py-1.5 text-right font-medium">campaigns</th>
+                <th className="px-3 py-1.5 text-left font-medium">most picked</th>
+                <th className="px-3 py-1.5 text-right font-medium">
+                  <span className="inline-flex items-center gap-1">
+                    best Δ future
+                    <Help>the strongest path’s avg future reward minus the rest — expand for every path</Help>
+                  </span>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {visible.map((fk) => {
+                const isOpen = open.has(fk.fork)
+                const top = topPick(fk)
+                const picks = (fk.arms ?? []).filter((a) => a.key != null).length
+                return [
+                  <tr
+                    key={fk.fork}
+                    onClick={() => toggle(fk.fork)}
+                    className="border-line/60 hover:bg-raised cursor-pointer border-b"
+                  >
+                    <td className="px-3 py-1.5">
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="text-dim text-2xs">{isOpen ? '▾' : '▸'}</span>
+                        {fk.label}
+                      </span>
+                    </td>
+                    <td className="num px-3 py-1.5 text-right">{picks}</td>
+                    <td className="num px-3 py-1.5 text-right">{n(fk.cohort)}</td>
+                    <td className="px-3 py-1.5">
+                      {top ? (
+                        <span>
+                          {top.label}{' '}
+                          <span className="text-dim num text-2xs">
+                            {Math.round((100 * top.n) / Math.max(1, fk.cohort))}%
+                          </span>
+                        </span>
+                      ) : (
+                        <span className="text-dim">—</span>
+                      )}
+                    </td>
+                    <td className="num px-3 py-1.5 text-right">{signedNum(bestDelta(fk))}</td>
+                  </tr>,
+                  isOpen ? (
+                    <tr key={`${fk.fork}#arms`} className="border-line/60 border-b">
+                      <td colSpan={5} className="bg-raised/40 px-3 py-2">
+                        <DataTable
+                          rows={(fk.arms ?? []).map((arm) => ({ cohort: fk.cohort, arm }))}
+                          cols={cols}
+                          rowId={(r) => r.arm.key ?? 'neither'}
+                          dense
+                          emptyWhat="no path recorded"
+                        />
+                      </td>
+                    </tr>
+                  ) : null,
+                ]
+              })}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+      {forks.length > shown && (
+        <div className="mt-2 flex justify-center">
+          <button
+            onClick={() => setShown(shown + SHOW_STEP)}
+            className="border-line bg-surface text-dim hover:text-fg rounded-md border px-3 py-1 text-2xs"
+          >
+            show {Math.min(SHOW_STEP, forks.length - shown)} more of {forks.length}
+          </button>
+        </div>
+      )}
     </Section>
   )
 }

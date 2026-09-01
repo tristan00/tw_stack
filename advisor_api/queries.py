@@ -1570,9 +1570,12 @@ def start_items(con, mkey: str, fkey: str) -> dict:
             "behaviour": behaviour}
 
 
+SWAP_GAP_TURNS = 2
+SWAP_FLAP_TURNS = 1
+
+
 @db.timed
-def _fact_item_swaps(gap=0, kept_min=None, allow_reequip=False,
-                     turn_lo=None, turn_hi=None) -> dict:
+def _fact_item_swaps() -> dict:
     camp = {int(r["campaign_id"]): r for r in adb.rows(
         "WITH " + _FACT_CAMPS +
         " SELECT campaign_id, campaign_map, faction, reward, turns_reached"
@@ -1597,48 +1600,56 @@ def _fact_item_swaps(gap=0, kept_min=None, allow_reequip=False,
         for kind, key, turn, did in evs:
             (offs if kind == "off" else ons).setdefault(key, []).append(
                 (turn, did))
+        flap_off: set = set()
+        flap_on: set = set()
+        for key, alist in offs.items():
+            for aturn, adid in alist:
+                if aturn is None:
+                    continue
+                back = [(t2, d2) for t2, d2 in ons.get(key, ())
+                        if d2 > adid and t2 is not None
+                        and t2 - aturn <= SWAP_FLAP_TURNS]
+                if back:
+                    flap_off.add((key, adid))
+                    flap_on.add((key, min(back)[1]))
         for ak, alist in offs.items():
             cat = labels.item_category(ak)
             if not cat:
                 continue
             for aturn, adid in alist:
-                if aturn is None:
-                    continue
-                if turn_lo is not None and aturn < turn_lo:
-                    continue
-                if turn_hi is not None and aturn > turn_hi:
-                    continue
-                if not allow_reequip and any(
-                        d2 > adid for _t2, d2 in ons.get(ak, ())):
+                if aturn is None or (ak, adid) in flap_off:
                     continue
                 best = None
                 for bk, blist in ons.items():
                     if bk == ak or labels.item_category(bk) != cat:
                         continue
                     for bturn, bdid in blist:
-                        if bturn is None or bdid < adid:
+                        if bturn is None or bdid < adid \
+                                or (bk, bdid) in flap_on:
                             continue
-                        if bturn - aturn > (gap or 0):
+                        if bturn - aturn > SWAP_GAP_TURNS:
                             continue
                         if best is None or bdid < best[2]:
                             best = (bk, bturn, bdid)
                 if best is None:
                     continue
                 bk, bturn, bdid = best
-                later_offs = [t2 for t2, d2 in offs.get(bk, ()) if d2 > bdid]
-                if kept_min is None:
-                    if later_offs:
-                        continue
-                else:
-                    kept_until = min(later_offs) if later_offs else end_turn
-                    if kept_until is None \
-                            or kept_until - bturn < kept_min:
-                        continue
+                later_offs = [t2 for t2, d2 in offs.get(bk, ())
+                              if d2 > bdid and (bk, d2) not in flap_off]
+                kept_to_end = not later_offs
+                kept_until = min(later_offs) if later_offs else end_turn
                 events += 1
-                p = pairs.setdefault((ak, bk), {"cids": set(), "turns": [],
-                                                "cat": cat})
+                p = pairs.setdefault((ak, bk), {
+                    "cids": set(), "turns": [], "gaps": [], "kept": [],
+                    "to_end": 0, "n": 0, "cat": cat})
                 p["cids"].add(cid)
+                p["n"] += 1
                 p["turns"].append(aturn)
+                p["gaps"].append(bturn - aturn)
+                if kept_to_end:
+                    p["to_end"] += 1
+                if kept_until is not None:
+                    p["kept"].append(max(0, kept_until - bturn))
     rows = []
     for (ak, bk), p in pairs.items():
         rewards = [_f(camp[cid]["reward"]) for cid in p["cids"] if cid in camp]
@@ -1654,7 +1665,13 @@ def _fact_item_swaps(gap=0, kept_min=None, allow_reequip=False,
             removed=Ident(raw=ak, label=_item_ident(ak) or ak),
             equipped=Ident(raw=bk, label=_item_ident(bk) or bk),
             category=p["cat"],
-            campaigns=len(p["cids"]), avg_turn=_mean(p["turns"], 1),
+            campaigns=len(p["cids"]), events=p["n"],
+            avg_turn=_mean(p["turns"], 1),
+            avg_gap=_mean(p["gaps"], 1),
+            kept_rate=Rate(n=p["to_end"], of=p["n"], noun="swaps",
+                           population="where the new item stayed on to the "
+                                      "end of the campaign"),
+            avg_kept_turns=_mean(p["kept"], 1),
             avg_reward=_mean(rewards),
             delta_mean=_mean(deltas)))
     rows.sort(key=lambda r2: (-r2.campaigns, r2.removed.raw))
@@ -2241,8 +2258,6 @@ def _fork_specs(family) -> list:
         for parent, kids in labels.tech_children().items():
             if len(kids) > 1:
                 out.append((parent, parent, sorted(set(kids))))
-        for ns, roots in labels.tech_roots().items():
-            out.append(("root:" + ns, None, roots))
     elif family == "skills":
         for parent, kids in labels.skill_children().items():
             if len(kids) > 1:
@@ -2250,8 +2265,37 @@ def _fork_specs(family) -> list:
     return out
 
 
+def _arm_note(arms, arm, cid, reached, t, camp, states, peaks):
+    e = arms.setdefault(arm, {"n": 0, "reached": [], "picked": [],
+                              "rewards": [], "futures": []})
+    e["n"] += 1
+    if reached is not None:
+        e["reached"].append(reached)
+    if t is not None:
+        e["picked"].append(t)
+    e["rewards"].append(_f(camp[cid]["reward"], 0.0) or 0.0)
+    fut = _future_reward(states, peaks, cid, reached)
+    if fut is not None:
+        e["futures"].append(fut)
+
+
+def _member_arm(got, kids, parent, reached):
+    for k in kids:
+        g = got.get(k)
+        if g and g[2] is not None and g[2] == g[3]:
+            return "unobserved", None, None
+    taken = [(g[3], g[1], k) for k in kids
+             for g in [got.get(k)] if g and g[3] is not None
+             and g[2] is not None and g[3] > g[2]
+             and (g[1] is None or reached is None or g[1] >= reached)]
+    if not taken:
+        return "neither", None, None
+    _d, t, k = min(taken)
+    return "picked", k, t
+
+
 @db.timed
-def choices_page(con, family: str, censor=0, min_n=0) -> dict:
+def choices_page(con, family: str) -> dict:
     camp = {int(r["campaign_id"]): r for r in adb.rows(
         "WITH " + _FACT_CAMPS +
         " SELECT campaign_id, reward, turns_reached FROM camps",
@@ -2261,16 +2305,19 @@ def choices_page(con, family: str, censor=0, min_n=0) -> dict:
     if family == "building":
         per_region: dict = {}
         for r in adb.rows(
-                "SELECT campaign_id cid, ctx, key, MIN(first_seen_turn) seen,"
-                " MIN(acquired_turn) turn, MIN(acquired_decision) dec"
+                "SELECT campaign_id cid, ctx, key, MIN(first_seen_turn) st,"
+                " MIN(first_seen_decision) sd, MIN(acquired_turn) turn,"
+                " MIN(acquired_decision) dec"
                 " FROM acquisitions WHERE family = 'building' AND ctx <> ''"
                 " GROUP BY 1, 2, 3"):
             per_region.setdefault(str(r["ctx"]), {}).setdefault(
                 int(r["cid"]), []).append(
-                (r["key"], _i(r["seen"]), _i(r["turn"]), _i(r["dec"])))
+                (r["key"], _i(r["st"]), _i(r["sd"]), _i(r["turn"]),
+                 _i(r["dec"])))
         info = labels.building_info(
             {k for camps in per_region.values() for rows in camps.values()
-             for k, _s, _t, _d in rows})
+             for k, _st, _sd, _t, _d in rows})
+        chain_label: dict = {}
         for region, camps in per_region.items():
             arms: dict = {}
             cohort = 0
@@ -2278,111 +2325,97 @@ def choices_page(con, family: str, censor=0, min_n=0) -> dict:
                 if cid not in camp:
                     continue
                 cohort += 1
-                reached = min((s for _k, s, _t, _d in rows if s is not None),
-                              default=None)
-                built = [(d, t, k) for k, _s, t, d in rows
-                         if d is not None and t is not None
-                         and reached is not None and t > reached]
+                reached = min((st for _k, st, _sd, _t, _d in rows
+                               if st is not None), default=None)
+                built = [(d, t, k) for k, _st, sd, t, d in rows
+                         if d is not None and sd is not None and d > sd]
                 if built:
-                    d, t, k = min(built)
-                    cat = str((info.get(k) or {}).get("chain_category") or "")
-                    arm = cat.replace("_", " ") or "uncategorised"
+                    _d, t, k = min(built)
+                    chain = str((info.get(k) or {}).get("building_chain")
+                                or k)
+                    chain_label.setdefault(chain, _building_label(k))
+                    arm = chain
                 else:
-                    end = _i(camp[cid]["turns_reached"], 0) or 0
-                    if reached is not None and end - reached < censor:
-                        continue
                     arm, t = None, None
-                e = arms.setdefault(arm, {"n": 0, "reached": [], "picked": [],
-                                          "rewards": [], "futures": []})
-                e["n"] += 1
-                if reached is not None:
-                    e["reached"].append(reached)
-                if t is not None:
-                    e["picked"].append(t)
-                e["rewards"].append(_f(camp[cid]["reward"], 0.0) or 0.0)
-                fut = _future_reward(states, peaks, cid, reached)
-                if fut is not None:
-                    e["futures"].append(fut)
-            if cohort >= min_n and arms:
+                _arm_note(arms, arm, cid, reached, t, camp, states, peaks)
+            if arms:
                 forks.append((region,
                               labels.name_for("attack_settlement", region)
-                              or labels.pretty(region), cohort, arms))
+                              or labels.pretty(region), cohort, arms,
+                              chain_label))
     else:
         specs = _fork_specs(family)
         keys = sorted({k for _f2, p, kids in specs for k in kids}
                       | {p for _f2, p, _k in specs if p})
-        acq: dict = {}
+        per_member: dict = {}
+        member_sub: dict = {}
+        per_char = family == "skills"
         for r in adb.rows(
-                "SELECT campaign_id cid, key, MIN(first_seen_turn) seen,"
+                "SELECT campaign_id cid, ctx, sub, key,"
+                " MIN(first_seen_turn) st, MIN(first_seen_decision) sd,"
                 " MIN(acquired_turn) turn, MIN(acquired_decision) dec"
                 " FROM acquisitions WHERE family = %(fam)s"
-                " AND key = ANY(%(keys)s) GROUP BY 1, 2",
+                " AND key = ANY(%(keys)s) GROUP BY 1, 2, 3, 4",
                 {"fam": family, "keys": keys}):
-            acq.setdefault(int(r["cid"]), {})[r["key"]] = (
-                _i(r["seen"]), _i(r["turn"]), _i(r["dec"]))
+            member = ((int(r["cid"]), str(r["ctx"])) if per_char
+                      else int(r["cid"]))
+            per_member.setdefault(member, {})[r["key"]] = (
+                _i(r["st"]), _i(r["turn"]), _i(r["sd"]), _i(r["dec"]))
+            if per_char and r["sub"]:
+                member_sub[member] = str(r["sub"])
         for fork_key, parent, kids in specs:
-            arms: dict = {}
-            cohort = 0
-            for cid, got in acq.items():
+            by_sub: dict = {}
+            for member, got in per_member.items():
+                cid = member[0] if per_char else member
                 if cid not in camp:
                     continue
-                if parent is not None:
-                    pa = got.get(parent)
-                    if not pa or pa[1] is None:
-                        continue
-                    reached = pa[1]
-                else:
-                    seen = [got[k][0] for k in kids
-                            if k in got and got[k][0] is not None]
-                    if not seen:
-                        continue
-                    reached = min(seen)
-                cohort += 1
-                taken = [(got[k][2], got[k][1], k) for k in kids
-                         if k in got and got[k][2] is not None
-                         and (parent is None or got[k][1] is None
-                              or got[k][1] >= reached)]
-                if taken:
-                    _d, t, k = min(taken)
-                    arm = k
-                else:
-                    end = _i(camp[cid]["turns_reached"], 0) or 0
-                    if end - reached < censor:
-                        continue
-                    arm, t = None, None
-                e = arms.setdefault(arm, {"n": 0, "reached": [], "picked": [],
-                                          "rewards": [], "futures": []})
-                e["n"] += 1
-                e["reached"].append(reached)
-                if t is not None:
-                    e["picked"].append(t)
-                e["rewards"].append(_f(camp[cid]["reward"], 0.0) or 0.0)
-                fut = _future_reward(states, peaks, cid, reached)
-                if fut is not None:
-                    e["futures"].append(fut)
-            if cohort >= min_n and arms:
-                label = (_fam_label(family, parent) if parent
-                         else "tree start · " + fork_key.split(":", 1)[1])
-                forks.append((fork_key, label, cohort, arms))
+                pa = got.get(parent)
+                if not pa or pa[1] is None:
+                    continue
+                reached = pa[1]
+                verdict, k, t = _member_arm(got, kids, parent, reached)
+                if verdict == "unobserved":
+                    continue
+                sub = member_sub.get(member) if per_char else None
+                bucket = by_sub.setdefault(sub, {"arms": {}, "cohort": 0})
+                bucket["cohort"] += 1
+                _arm_note(bucket["arms"], k, cid, reached, t, camp, states,
+                          peaks)
+            for sub, bucket in by_sub.items():
+                if not bucket["arms"]:
+                    continue
+                label = _fam_label(family, parent)
+                if sub:
+                    label += " · " + (labels.subtype_name(sub)
+                                      or labels.pretty(sub))
+                forks.append((fork_key + ("@" + sub if sub else ""),
+                              label, bucket["cohort"], bucket["arms"], {}))
     forks.sort(key=lambda f2: -f2[2])
     out = []
-    for fork_key, label, cohort, arms in forks:
+    for fork_key, label, cohort, arms, chain_label in forks:
         arm_rows = []
         for arm, e in sorted(arms.items(),
                              key=lambda kv: (kv[0] is None, -kv[1]["n"])):
+            others = [f2 for a2, e2 in arms.items() if a2 != arm
+                      for f2 in e2["futures"]]
+            mine_f = _mean(e["futures"])
+            other_f = _mean(others)
             arm_rows.append(ForkArmRow(
                 key=arm,
-                label=("neither" if arm is None
-                       else arm if family == "building"
+                label=("didn't continue" if arm is None
+                       else chain_label.get(arm, arm)
+                       if family == "building"
                        else _fam_label(family, arm)),
                 n=e["n"],
                 avg_reached_turn=_mean(e["reached"], 1),
                 avg_picked_turn=_mean(e["picked"], 1),
                 avg_reward=_mean(e["rewards"]),
-                avg_future=_mean(e["futures"])))
+                avg_future=mine_f,
+                delta_future=round(mine_f - other_f, 2)
+                if mine_f is not None and other_f is not None else None))
         out.append(ForkRow(fork=fork_key, label=label, cohort=cohort,
                            arms=arm_rows))
-    return {"censor": censor, "min_n": min_n, "forks": out}
+    return {"forks": out}
 
 
 @db.timed

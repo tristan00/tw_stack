@@ -569,7 +569,11 @@ class ItemSwapRow(BaseModel):
     equipped: Ident
     category: str | None = None
     campaigns: int = 0
+    events: int = 0
     avg_turn: float | None = None
+    avg_gap: float | None = None
+    kept_rate: Rate | None = None
+    avg_kept_turns: float | None = None
     avg_reward: float | None = None
     delta_mean: float | None = None
 
@@ -585,11 +589,6 @@ class ItemsPage(BaseModel):
 class SwapsPage(BaseModel):
     scope: Scope
     events: int = 0
-    gap: int = 0
-    kept_min: int | None = None
-    allow_reequip: bool = False
-    turn_lo: int | None = None
-    turn_hi: int | None = None
     rows: list[ItemSwapRow] = Field(default_factory=list)
 
 
@@ -601,6 +600,7 @@ class ForkArmRow(BaseModel):
     avg_picked_turn: float | None = None
     avg_reward: float | None = None
     avg_future: float | None = None
+    delta_future: float | None = None
 
 
 class ForkRow(BaseModel):
@@ -612,8 +612,6 @@ class ForkRow(BaseModel):
 
 class ChoicesPage(BaseModel):
     scope: Scope
-    censor: int = 0
-    min_n: int = 0
     forks: list[ForkRow] = Field(default_factory=list)
 
 

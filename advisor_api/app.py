@@ -274,17 +274,12 @@ def get_items() -> ItemsPage:
 
 @app.get("/api/items/swaps", response_model=SwapsPage,
          response_model_exclude_none=True, tags=["catalog"])
-def get_item_swaps(gap: int = Query(0, ge=0, le=50),
-                   kept: int | None = Query(None, ge=0, le=100),
-                   reequip: bool = False,
-                   turn_lo: int | None = Query(None, ge=0),
-                   turn_hi: int | None = Query(None, ge=0)) -> SwapsPage:
-    got = q._fact_item_swaps(gap=gap, kept_min=kept, allow_reequip=reequip,
-                             turn_lo=turn_lo, turn_hi=turn_hi)
+def get_item_swaps() -> SwapsPage:
+    got = q._fact_item_swaps()
     return SwapsPage(
-        scope=_scope("same-category swaps a character kept, under these knobs"),
-        events=got["events"], gap=gap, kept_min=kept, allow_reequip=reequip,
-        turn_lo=turn_lo, turn_hi=turn_hi, rows=got["rows"])
+        scope=_scope("a character took one item off and put another of the "
+                     "same category on within %d turns" % q.SWAP_GAP_TURNS),
+        events=got["events"], rows=got["rows"])
 
 
 @app.get("/api/items/{item_key}", response_model=ItemPage, tags=["catalog"])
@@ -377,15 +372,14 @@ def get_positions(faction: str | None = None, culture: str | None = None,
 
 @app.get("/api/choices/{family}", response_model=ChoicesPage,
          response_model_exclude_none=True, tags=["catalog"])
-def get_choices(family: str, censor: int = Query(0, ge=0, le=50),
-                min_n: int = Query(0, ge=0, le=1000)) -> ChoicesPage:
+def get_choices(family: str) -> ChoicesPage:
     if family not in ("research", "skills", "building"):
         raise HTTPException(404, "no choices view for %r" % family)
     con = _con()
-    got = q.choices_page(con, family, censor=censor, min_n=min_n)
+    got = q.choices_page(con, family)
     return ChoicesPage(
         scope=_scope("every fork in the %s tree, and what each path -- or "
-                     "neither -- went on to gain"
+                     "not continuing -- went on to gain"
                      % ("building slot" if family == "building" else family)),
         **got)
 

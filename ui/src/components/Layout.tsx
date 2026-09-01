@@ -3,7 +3,6 @@ import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { EntityLink, Dot } from '@/components/primitives'
 import { QuickJump } from '@/components/QuickJump'
-import { RewardControl } from '@/components/reward'
 import { mapShort } from '@/components/startcharts'
 import { useApi, type RunPage } from '@/lib/api'
 import { ago } from '@/lib/format'
@@ -17,7 +16,7 @@ const GAME_NAV = [
   { to: '/campaigns', label: 'campaigns', asks: 'how are campaigns going' },
   { to: '/lookup', label: 'lookup', asks: 'which campaigns passed through situations like this' },
   { to: '/items', label: 'catalog', asks: 'items, buildings, research and skills across the corpus' },
-  { to: '/status', label: 'status', asks: 'are the services alive and the streams writing' },
+  { to: '/status', label: 'status', asks: 'services, streams, and view settings' },
 ]
 
 const STACK_NAV = [
@@ -173,7 +172,6 @@ export function Layout() {
         <div className="mb-2 flex items-center justify-between gap-4">
           <StatusLine />
           <span className="flex shrink-0 items-center gap-1.5">
-            <RewardControl />
             {server === 'full' && (
               <button
                 onClick={() => setDevMode(!dev)}
