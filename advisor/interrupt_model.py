@@ -45,8 +45,59 @@ def _num(v):
         return 0.0
 
 
+def _by_cqi(rows, cqi):
+    if cqi in (None, ""):
+        return None
+    want = str(cqi)
+    for r in rows or []:
+        if str(r.get("cqi")) == want:
+            return r
+    return None
+
+
+def _local_block(panel, world, campaign):
+    p = panel or {}
+    w = world or {}
+    lord = _by_cqi(w.get("armies"), p.get("ally_cqi"))
+    enemy = (_by_cqi(w.get("hostiles"), p.get("enemy_cqi"))
+             or _by_cqi(w.get("armies"), p.get("enemy_cqi")))
+    region = str(p.get("region") or "")
+    rrow = next((r for r in (w.get("regions") or [])
+                 if str(r.get("region")) == region), None) if region else None
+    faction = str((campaign or {}).get("faction") or "")
+    lu = F._f((lord or {}).get("units"))
+    eu = F._f((enemy or {}).get("units"))
+    out = {
+        "isc_lord_known": 1.0 if lord else 0.0,
+        "isc_lord_hp": F._f((lord or {}).get("hp")),
+        "isc_lord_rank": F._f((lord or {}).get("rank")),
+        "isc_lord_units": lu,
+        "isc_lord_ap_pct": F._f((lord or {}).get("ap_pct")),
+        "isc_lord_is_leader": F._f((lord or {}).get("is_leader")),
+        "isc_lord_in_own_territory": F._f((lord or {}).get("in_own_territory")),
+        "isc_enemy_known": 1.0 if enemy else 0.0,
+        "isc_enemy_hp": F._f((enemy or {}).get("hp")),
+        "isc_enemy_units": eu,
+        "isc_units_delta": (lu - eu) if lu is not None and eu is not None else None,
+        "isc_siege": 1.0 if region else 0.0,
+        "isc_ally_armies": F._f(p.get("n_ally_armies")),
+        "isc_enemy_armies": F._f(p.get("n_enemy_armies")),
+        "isc_region_ours": None,
+        "isc_setts_in_province": None,
+    }
+    if rrow is not None and faction:
+        out["isc_region_ours"] = 1.0 if str(rrow.get("owner")) == faction else 0.0
+        prov = str(rrow.get("province") or "")
+        if prov:
+            out["isc_setts_in_province"] = float(sum(
+                1 for r in (w.get("regions") or [])
+                if str(r.get("province")) == prov and str(r.get("owner")) == faction))
+    return out
+
+
 def _row(screen, option, n_options, campaign, world=None, panel=None, meta=None):
     row = _state_row(screen, n_options, campaign, world)
+    row.update(_local_block(panel, world, campaign))
     row["isc_option"] = str(option)
     m = (meta or {}).get(option) or {}
     row["isc_dilemma_id"] = str(m.get("dilemma_id") or "none")
