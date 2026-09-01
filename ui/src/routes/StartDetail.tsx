@@ -179,8 +179,6 @@ function OpeningsTab({ base }: { base: string }) {
   const onBranch = (family: string, key: string) =>
     navigate(`?tab=campaigns&ff=${encodeURIComponent(family)}&fk=${encodeURIComponent(key)}`)
   const families = data.families ?? []
-  const spreads = families.filter((f) => f.spread != null)
-  const maxSpread = Math.max(0.1, ...spreads.map((f) => f.spread ?? 0))
   const conquestCols: Col<ConquestStep>[] = [
     { key: 'step', label: 'step', align: 'right', value: (r) => r.step, render: (r) => <span className="num">{r.step}</span> },
     { key: 'sett', label: 'settlement (most common)', value: (r) => r.label ?? r.key, render: (r) => <span title={r.key}>{r.label ?? r.key}</span> },
@@ -194,28 +192,6 @@ function OpeningsTab({ base }: { base: string }) {
   ]
   return (
     <div className="space-y-7">
-      {spreads.length > 0 && (
-        <Card className="px-3.5 py-2.5">
-          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-            <span className="text-dim text-2xs uppercase tracking-wide">where the openings diverge</span>
-            <span className="text-dim text-2xs">
-              best−worst first choice, branches n≥10 · reward sd {n(data.sd_reward, 1)}
-            </span>
-          </div>
-          <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-xs">
-            {spreads.map((f) => (
-              <span key={f.family} className="inline-flex items-center gap-2">
-                {f.family}
-                <span
-                  className="bg-accent inline-block h-2 rounded"
-                  style={{ width: 8 + (110 * (f.spread ?? 0)) / maxSpread, opacity: 0.4 + (0.6 * (f.spread ?? 0)) / maxSpread }}
-                />
-                <b className="num">{n(f.spread, 1)}R</b>
-              </span>
-            ))}
-          </div>
-        </Card>
-      )}
       <div className="text-dim flex flex-wrap items-center gap-2 text-2xs">
         <span>
           openings, not builds — campaigns are short rollouts · {data.campaigns} campaigns · mean R {n(data.mean_reward, 2)} · turn band:
