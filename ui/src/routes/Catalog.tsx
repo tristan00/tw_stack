@@ -17,7 +17,7 @@ const FAMILY: Record<
   buildings: { title: 'buildings', noun: 'building', verb: 'constructed', filterOn: 'category' },
   research: { title: 'research', noun: 'tech', verb: 'started', filterOn: 'line' },
   skills: { title: 'skills', noun: 'skill', verb: 'ranked', filterOn: null },
-  traits: { title: 'traits', noun: 'trait', verb: 'developed', filterOn: null },
+  traits: { title: 'traits', noun: 'trait', verb: 'developed', filterOn: 'category' },
 }
 
 function famCols(family: Family): Col<CatalogIndexRow>[] {
@@ -57,6 +57,7 @@ function famCols(family: Family): Col<CatalogIndexRow>[] {
   }
   if (family === 'traits') {
     cols.push(
+      { key: 'category', label: 'category', value: (r) => r.category ?? '', render: (r) => <span className="text-dim">{r.category ?? '—'}</span> },
       { key: 'race', label: 'race', value: (r) => r.race ?? '', render: (r) => (r.race ? <span className="text-dim">{r.race}</span> : <span className="text-dim">—</span>) },
       { key: 'levels', label: 'levels', align: 'right', optional: true, value: (r) => r.levels ?? 0, render: (r) => dashNum(r.levels) },
       { key: 'threshold', label: 'first at', unit: 'points', align: 'right', optional: true, value: (r) => r.threshold ?? undefined, sortUndefined: 'last', render: (r) => dashNum(r.threshold) },

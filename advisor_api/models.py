@@ -868,6 +868,13 @@ class SkillCharacterRow(BaseModel):
     avg_turn: float | None = None
 
 
+class TraitLevelRow(BaseModel):
+    level: int
+    name: str | None = None
+    threshold: int | None = None
+    effects: list[ItemEffect] = Field(default_factory=list)
+
+
 class CatalogVersionRow(BaseModel):
     version: str
     stamp: str
@@ -902,6 +909,7 @@ class CatalogKeyPage(BaseModel):
     chain: list[ChainLevel] = Field(default_factory=list)
     related: list[RelatedKey] = Field(default_factory=list)
     by_character: list[SkillCharacterRow] = Field(default_factory=list)
+    trait_levels: list[TraitLevelRow] = Field(default_factory=list)
     by_start: list[CatalogStartRow] = Field(default_factory=list)
     by_version: list[CatalogVersionRow] = Field(default_factory=list)
     recent: list[CatalogCampaignRow] = Field(default_factory=list)

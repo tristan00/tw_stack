@@ -769,6 +769,33 @@ def build_extra():
                         (r["trait"], r["level"], r["threshold_points"], r["key"]))
         cur.execute("CREATE INDEX idx_trait_levels ON trait_levels (trait)")
 
+    tfx, tfmeta = src("trait_level_effects_tables")
+    if tfmeta["ok"]:
+        cur.execute("DROP TABLE IF EXISTS trait_effects")
+        cur.execute("CREATE TABLE trait_effects (level_key TEXT, effect TEXT,"
+                    " effect_scope TEXT, value REAL)")
+        for r in tfx:
+            cur.execute("INSERT INTO trait_effects VALUES (%s, %s, %s, %s)",
+                        (r["level_key"], r["effect"], r["effect_scope"], r["value"]))
+        cur.execute("CREATE INDEX idx_trait_effects ON trait_effects (level_key)")
+
+    tme, tmmeta = src("character_traits_tables")
+    if tmmeta["ok"]:
+        cur.execute("DROP TABLE IF EXISTS trait_meta")
+        cur.execute("CREATE TABLE trait_meta (trait TEXT PRIMARY KEY, category TEXT)")
+        for r in tme:
+            cur.execute("INSERT INTO trait_meta VALUES (%s, %s)"
+                        " ON CONFLICT (trait) DO NOTHING",
+                        (r["key"], r["category"]))
+
+    tat, tameta = src("trait_to_antitraits_tables")
+    if tameta["ok"]:
+        cur.execute("DROP TABLE IF EXISTS trait_antitraits")
+        cur.execute("CREATE TABLE trait_antitraits (trait TEXT, antitrait TEXT)")
+        for r in tat:
+            cur.execute("INSERT INTO trait_antitraits VALUES (%s, %s)",
+                        (r["trait"], r["antitrait"]))
+
     effs, emeta = src("effects_tables")
     if emeta["ok"]:
         cur.execute("DROP TABLE IF EXISTS effects_meta")
@@ -788,7 +815,7 @@ def build_extra():
         print(f"  [{tag}] {t:38s} ver={m['version']} rows={m['rows']} :: {m['reason']}")
     for t in ("tech_links", "ancillaries", "ancillary_effects", "effects_meta",
               "skill_links", "skill_categories", "skill_indents", "tech_groups",
-              "trait_levels"):
+              "trait_levels", "trait_effects", "trait_meta", "trait_antitraits"):
         n = cur.execute("SELECT COUNT(*) FROM " + t).fetchone()[0]
         print(f"  {t:16s} {n} rows")
     con.close()

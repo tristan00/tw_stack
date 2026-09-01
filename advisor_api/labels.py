@@ -178,35 +178,37 @@ def _scope_short(scope) -> str:
     return "self"
 
 
+def _effect_row(effect, scope, v, good) -> dict:
+    txt = re.sub(r"\[\[.*?\]\]", "",
+                 _loc("effects_description_" + str(effect or ""))
+                 or pretty(effect))
+    txt = re.sub(r"\s+", " ", txt).strip()
+    m = _NUM_RE.search(txt)
+    if m:
+        name = txt[:m.start()].rstrip(" :")
+        unit = txt[m.end():].strip()
+        value = (("%+g" % v) + (unit if unit == "%" else " " + unit if unit else "")
+                 if v is not None else None)
+    else:
+        name = txt
+        value = "%+g" % v if v is not None and v not in (0.0, 1.0) else None
+    if len(name) > 1 and name[0] == '"' and name[-1] == '"':
+        name = name[1:-1]
+    state = "neutral"
+    pos = good.get(effect)
+    if v and value is not None and pos is not None:
+        state = "ok" if (v > 0) == pos else "bad"
+    return {"name": name, "value": value, "state": state,
+            "scope": _scope_short(scope)}
+
+
 def item_effect_rows(key: str) -> list:
     if not _have("ancillary_effects"):
         return []
     good = _effect_positive()
-    out = []
-    for r in _rows("SELECT effect, effect_scope, value FROM ancillary_effects"
-                   " WHERE ancillary = %s ORDER BY effect", (key,)):
-        txt = re.sub(r"\[\[.*?\]\]", "",
-                     _loc("effects_description_" + str(r["effect"] or ""))
-                     or pretty(r["effect"]))
-        txt = re.sub(r"\s+", " ", txt).strip()
-        v = r["value"]
-        m = _NUM_RE.search(txt)
-        if m:
-            name = txt[:m.start()].rstrip(" :")
-            unit = txt[m.end():].strip()
-            value = (("%+g" % v) + (unit if unit == "%" else " " + unit if unit else "")
-                     if v is not None else None)
-        else:
-            name = txt
-            value = "%+g" % v if v is not None and v not in (0.0, 1.0) else None
-        if len(name) > 1 and name[0] == '"' and name[-1] == '"':
-            name = name[1:-1]
-        state = "neutral"
-        pos = good.get(r["effect"])
-        if v and value is not None and pos is not None:
-            state = "ok" if (v > 0) == pos else "bad"
-        out.append({"name": name, "value": value, "state": state,
-                    "scope": _scope_short(r["effect_scope"])})
+    out = [_effect_row(r["effect"], r["effect_scope"], r["value"], good)
+           for r in _rows("SELECT effect, effect_scope, value FROM ancillary_effects"
+                          " WHERE ancillary = %s ORDER BY effect", (key,))]
     out.sort(key=lambda e: e["name"])
     return out
 
@@ -333,6 +335,60 @@ def trait_name(key) -> str | None:
     lk = lv[0]["level_key"] if lv else k
     return (_loc("character_trait_levels_onscreen_name_" + lk)
             or _loc("character_trait_levels_onscreen_name_" + k))
+
+
+def trait_categories(keys) -> dict:
+    ks = [str(k) for k in keys if k]
+    if not (_have("trait_meta") and ks):
+        return {}
+    return {r["trait"]: (r["category"] or "").replace("_", " ") or None
+            for r in _rows("SELECT trait, category FROM trait_meta"
+                           " WHERE trait = ANY(%s)", (ks,))}
+
+
+def trait_flavour(key) -> str | None:
+    k = str(key or "")
+    if not k:
+        return None
+    lv = trait_levels_for([k]).get(k)
+    lk = lv[0]["level_key"] if lv else k
+    txt = (_loc("character_trait_levels_colour_text_" + lk)
+           or _loc("character_trait_levels_colour_text_" + k)) or ""
+    return re.sub(r"\[\[.*?\]\]", "", txt).strip().strip('"') or None
+
+
+def trait_antitraits(key) -> list:
+    k = str(key or "")
+    if not (_have("trait_antitraits") and k):
+        return []
+    return [r["antitrait"] for r in _rows(
+        "SELECT antitrait FROM trait_antitraits WHERE trait = %s"
+        " ORDER BY antitrait", (k,))]
+
+
+def trait_level_rows(key) -> list:
+    k = str(key or "")
+    lv = trait_levels_for([k]).get(k) or []
+    if not lv:
+        return []
+    good = _effect_positive()
+    have_fx = _have("trait_effects")
+    out = []
+    for row in lv:
+        effs = []
+        if have_fx:
+            effs = [_effect_row(r["effect"], r["effect_scope"], r["value"], good)
+                    for r in _rows(
+                        "SELECT effect, effect_scope, value FROM trait_effects"
+                        " WHERE level_key = %s ORDER BY effect",
+                        (row["level_key"],))]
+            effs.sort(key=lambda e: e["name"])
+        out.append({"level": row["level"], "threshold": row["threshold"],
+                    "level_key": row["level_key"],
+                    "name": _loc("character_trait_levels_onscreen_name_"
+                                 + row["level_key"]),
+                    "effects": effs})
+    return out
 
 
 def tech_parents() -> dict:
