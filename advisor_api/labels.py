@@ -86,6 +86,8 @@ def name_for(family: str, key: str) -> str | None:
         k = k.split(":", 1)[1]
     if fam == "research":
         return tech_name(k)
+    if fam == "traits":
+        return trait_name(k)
     pre = _LOC_PREFIX.get(fam)
     if pre:
         return _loc(pre + k)
@@ -309,6 +311,28 @@ def skill_unlock_ranks(keys) -> dict:
         return {}
     return {r["key"]: r["unlocked_at_rank"] for r in _rows(
         "SELECT key, unlocked_at_rank FROM skills WHERE key = ANY(%s)", (ks,))}
+
+
+def trait_levels_for(keys) -> dict:
+    ks = [str(k) for k in keys if k]
+    if not (_have("trait_levels") and ks):
+        return {}
+    out: dict = {}
+    for r in _rows(
+            "SELECT trait, level, threshold, level_key FROM trait_levels"
+            " WHERE trait = ANY(%s) ORDER BY trait, level", (ks,)):
+        out.setdefault(r["trait"], []).append(dict(r))
+    return out
+
+
+def trait_name(key) -> str | None:
+    k = str(key or "")
+    if not k:
+        return None
+    lv = trait_levels_for([k]).get(k)
+    lk = lv[0]["level_key"] if lv else k
+    return (_loc("character_trait_levels_onscreen_name_" + lk)
+            or _loc("character_trait_levels_onscreen_name_" + k))
 
 
 def tech_parents() -> dict:

@@ -759,6 +759,16 @@ def build_extra():
                                 row)
         cur.execute("CREATE INDEX idx_skill_links_child ON skill_links (child)")
 
+    tlv, tlmeta = src("character_trait_levels_tables")
+    if tlmeta["ok"]:
+        cur.execute("DROP TABLE IF EXISTS trait_levels")
+        cur.execute("CREATE TABLE trait_levels (trait TEXT, level INT,"
+                    " threshold INT, level_key TEXT)")
+        for r in tlv:
+            cur.execute("INSERT INTO trait_levels VALUES (%s, %s, %s, %s)",
+                        (r["trait"], r["level"], r["threshold_points"], r["key"]))
+        cur.execute("CREATE INDEX idx_trait_levels ON trait_levels (trait)")
+
     effs, emeta = src("effects_tables")
     if emeta["ok"]:
         cur.execute("DROP TABLE IF EXISTS effects_meta")
@@ -777,7 +787,8 @@ def build_extra():
         tag = "OK" if m["ok"] else "SKIP"
         print(f"  [{tag}] {t:38s} ver={m['version']} rows={m['rows']} :: {m['reason']}")
     for t in ("tech_links", "ancillaries", "ancillary_effects", "effects_meta",
-              "skill_links", "skill_categories", "skill_indents", "tech_groups"):
+              "skill_links", "skill_categories", "skill_indents", "tech_groups",
+              "trait_levels"):
         n = cur.execute("SELECT COUNT(*) FROM " + t).fetchone()[0]
         print(f"  {t:16s} {n} rows")
     con.close()

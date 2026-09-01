@@ -11,6 +11,7 @@ export const CATALOG = [
   { to: '/buildings', label: 'buildings', asks: 'what gets built, where offered' },
   { to: '/research', label: 'research', asks: 'which techs get started' },
   { to: '/skills', label: 'skills', asks: 'which skills get points, and by whom' },
+  { to: '/traits', label: 'traits', asks: 'which traits characters develop, and how far' },
 ]
 
 export function CatalogNav({ active }: { active: string }) {

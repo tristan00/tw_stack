@@ -5,12 +5,13 @@ import { Chip, EntityLink, ErrorState, MetricTile, Section, Skeleton } from '@/c
 import { useApi, type CatalogKeyPage, type ChainLevel, type RelatedKey, type SkillCharacterRow } from '@/lib/api'
 import { n, pct } from '@/lib/format'
 
-type Family = 'buildings' | 'research' | 'skills'
+type Family = 'buildings' | 'research' | 'skills' | 'traits'
 
 const VERB: Record<Family, string> = {
   buildings: 'constructed',
   research: 'started',
   skills: 'ranked',
+  traits: 'developed',
 }
 
 function facts(family: Family, d: CatalogKeyPage): string | null {

@@ -299,6 +299,8 @@ _CATALOG_SCOPES = {
                  "took = campaigns that started it"),
     "skills": ("every skill a campaign ever put a point in, one row each",
                "took = campaigns that ranked it at least once"),
+    "traits": ("every trait a campaign character ever gained points toward, one row each",
+               "took = campaigns where it materialized (reached level 1)"),
 }
 
 
@@ -352,6 +354,18 @@ def get_skills() -> CatalogIndexPage:
          response_model_exclude_none=True, tags=["catalog"])
 def get_skill(key: str) -> CatalogKeyPage:
     return _catalog_key("skills", key)
+
+
+@app.get("/api/traits", response_model=CatalogIndexPage,
+         response_model_exclude_none=True, tags=["catalog"])
+def get_traits() -> CatalogIndexPage:
+    return _catalog_index("traits")
+
+
+@app.get("/api/traits/{key}", response_model=CatalogKeyPage,
+         response_model_exclude_none=True, tags=["catalog"])
+def get_trait(key: str) -> CatalogKeyPage:
+    return _catalog_key("traits", key)
 
 
 @app.get("/api/positions", response_model=PositionsPage, tags=["positions"])

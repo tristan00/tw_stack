@@ -41,6 +41,8 @@ export default function App() {
         <Route path="/research/:key" element={<CatalogDetail family="research" />} />
         <Route path="/skills" element={<Catalog family="skills" />} />
         <Route path="/skills/:key" element={<CatalogDetail family="skills" />} />
+        <Route path="/traits" element={<Catalog family="traits" />} />
+        <Route path="/traits/:key" element={<CatalogDetail family="traits" />} />
         <Route path="/decisions" element={<Decisions />} />
         <Route path="/decisions/:decisionId" element={<DecisionDetail />} />
         <Route path="/models" element={<Models />} />
