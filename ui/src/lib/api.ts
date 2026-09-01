@@ -5,7 +5,8 @@ import type { components, paths } from '@/api/schema'
 export type Schemas = components['schemas']
 
 export type RunPage = Schemas['RunPage']
-export type NowPage = Schemas['NowPage']
+export type Current = Schemas['Current']
+export type CampaignStatePage = Schemas['CampaignStatePage']
 export type CampaignsPage = Schemas['CampaignsPage']
 export type CampaignDetail = Schemas['CampaignDetail']
 export type CampaignRow = Schemas['CampaignRow']

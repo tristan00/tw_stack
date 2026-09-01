@@ -25,7 +25,7 @@ from advisor_api.models import (
     LogPage,
     MatrixCell,
     Ident,
-    MatrixPage, MatrixRow, MatrixTotal, MenusPage, ModelsPage, NowPage, Rate,
+    MatrixPage, MatrixRow, MatrixTotal, MenusPage, ModelsPage, CampaignStatePage, Rate,
     RunPage, Scope,
     StartsPage, StartActions, StartCampaignsPage, StartDetail, StartOpenings,
     StartPerformance, TimelinePage, TrainingPage, CorrelationsPage, UcbPickPage,
@@ -836,12 +836,15 @@ def post_coldstart(params: LaunchDefaults) -> ControlResult:
     return ControlResult(ok=True, steps=proc.launch("cold", params.model_dump()))
 
 
-@app.get("/api/now", response_model=NowPage,
-         response_model_exclude_none=True, tags=["run"])
-def get_now() -> NowPage:
+@app.get("/api/campaigns/{campaign_key}/state", response_model=CampaignStatePage,
+         response_model_exclude_none=True, tags=["campaigns"])
+def get_campaign_state(campaign_key: str) -> CampaignStatePage:
     con = _con()
-    got = q.now_page(con)
-    return NowPage(scope=_scope("the campaign playing right now"), **got)
+    got = q.campaign_state(con, campaign_key)
+    if got is None:
+        raise HTTPException(404, "no campaign %r in this run dir" % campaign_key)
+    return CampaignStatePage(
+        scope=_scope("the campaign's latest recorded state"), **got)
 
 
 @app.get("/api/events", tags=["run"])

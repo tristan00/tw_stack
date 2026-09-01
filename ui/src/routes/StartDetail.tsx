@@ -12,7 +12,6 @@ import {
   Section,
   Skeleton,
 } from '@/components/primitives'
-import { useUiMode } from '@/components/Layout'
 import { SubNav, useSubView } from '@/components/SubNav'
 import { ChartFrame } from '@/components/charts'
 import {
@@ -28,12 +27,10 @@ import {
   useApi,
   type BuildingRow,
   type ConquestStep,
-  type MatrixCell,
   type OpeningBranch,
   type OpeningFamily,
   type OpeningOffer,
   type SkillRow,
-  type StartActions,
   type StartBuildings,
   type StartCampaign,
   type StartCampaignsPage,
@@ -57,7 +54,6 @@ const TABS = [
   { key: 'skills', label: 'skills', asks: 'how its characters spend their points' },
   { key: 'items', label: 'items', asks: 'does wearing an item pay' },
   { key: 'campaigns', label: 'campaigns', asks: 'the individual runs' },
-  { key: 'actions', label: 'actions', asks: 'is the machinery executing cleanly here' },
 ]
 
 const BANDS = ['all', '1-3', '4-6', '7+']
@@ -265,7 +261,6 @@ function OpeningsTab({ base }: { base: string }) {
 
 function PerformanceTab({ base, lord }: { base: string; lord: string }) {
   const navigate = useNavigate()
-  const dev = useUiMode() === 'full'
   const { data, error, loading, reload } = useApi<StartPerformance>(`${base}/performance`, [], { live: false })
   if (error) return <ErrorState error={error} onRetry={reload} />
   if (loading || !data) return <Skeleton rows={8} />
@@ -318,8 +313,8 @@ function PerformanceTab({ base, lord }: { base: string; lord: string }) {
           </ChartFrame>
         </Section>
         <Section
-          title={dev ? 'length & outcome' : 'length'}
-          scope={{ text: dev ? 'how long its campaigns live and how they end' : 'how long its campaigns live' }}
+          title="length"
+          scope={{ text: 'how long its campaigns live' }}
         >
           <Card className="space-y-3 px-3.5 py-3">
             <Histogram
@@ -328,22 +323,7 @@ function PerformanceTab({ base, lord }: { base: string; lord: string }) {
               height={120}
               xLabel="turns reached"
             />
-            <div className={cn('grid gap-4', dev ? 'grid-cols-2' : 'grid-cols-1')}>
-              {dev && (
-                <table className="w-full text-xs">
-                  <tbody>
-                    {(data.outcomes ?? []).map((o) => (
-                      <tr key={o.outcome.raw}>
-                        <td className="py-0.5">
-                          <Chip state={o.state ?? 'neutral'}>{o.outcome.label}</Chip>
-                        </td>
-                        <td className="num py-0.5 text-right">{n(o.n)}</td>
-                        <td className="num text-dim py-0.5 text-right">{n(o.avg_turns, 1)} t̄</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
+            <div className="grid gap-4 grid-cols-1">
               <table className="w-full text-xs">
                 <thead>
                   <tr className="text-dim text-2xs">
@@ -378,7 +358,6 @@ function PerformanceTab({ base, lord }: { base: string; lord: string }) {
 function CampaignsTab({ base }: { base: string }) {
   const [params, setParams] = useSearchParams()
   const navigate = useNavigate()
-  const mode = useUiMode()
   const { data, error, loading, reload } = useApi<StartCampaignsPage>(`${base}/campaigns`, [], { live: false })
   if (error) return <ErrorState error={error} onRetry={reload} />
   if (loading || !data) return <Skeleton rows={8} />
@@ -405,15 +384,6 @@ function CampaignsTab({ base }: { base: string }) {
     { key: 'reward', label: 'reward', align: 'right', value: (r) => r.reward ?? undefined, sortUndefined: 'last', render: (r) => <strong className="num">{n(r.reward)}</strong> },
     { key: 'sett', label: 'settlements', unit: 'gained', align: 'right', value: (r) => r.settlements_gained ?? undefined, sortUndefined: 'last', render: (r) => dash(r.settlements_gained) },
     { key: 'lvl', label: 'lord levels', unit: 'gained', align: 'right', value: (r) => r.levels_gained ?? undefined, sortUndefined: 'last', render: (r) => dash(r.levels_gained) },
-    {
-      key: 'outcome',
-      label: 'outcome',
-      value: (r) => r.outcome?.label ?? '',
-      render: (r) => (r.outcome ? <Chip state={r.outcome_state ?? 'neutral'}>{r.outcome.label}</Chip> : <span className="text-dim">running</span>),
-    },
-    { key: 'why', label: 'why it ended', optional: true, value: (r) => r.ended_because ?? '', render: (r) => (r.ended_because ? <span className="text-2xs">{r.ended_because}</span> : <span className="text-dim">—</span>) },
-    { key: 'decisions', label: 'decisions', align: 'right', value: (r) => r.decisions, render: (r) => n(r.decisions) },
-    { key: 'confirm', label: 'confirmed', value: (r) => (r.confirm_rate?.of ? r.confirm_rate.n / r.confirm_rate.of : -1), render: (r) => <Bar rate={r.confirm_rate ?? null} /> },
     { key: 'fb', label: 'first building', optional: true, value: (r) => r.first_building?.label ?? '', render: (r) => <span className="text-dim text-2xs">{r.first_building?.label ?? '—'}</span> },
     { key: 'fs', label: 'first skill', optional: true, value: (r) => r.first_skill?.label ?? '', render: (r) => <span className="text-dim text-2xs">{r.first_skill?.label ?? '—'}</span> },
     { key: 'fr', label: 'first research', optional: true, value: (r) => r.first_research?.label ?? '', render: (r) => <span className="text-dim text-2xs">{r.first_research?.label ?? '—'}</span> },
@@ -440,7 +410,7 @@ function CampaignsTab({ base }: { base: string }) {
       )}
       <DataTable
         rows={rows}
-        cols={mode === 'full' ? cols : cols.filter((c) => !['decisions', 'confirm', 'outcome', 'why'].includes(c.key))}
+        cols={cols}
         rowId={(r) => r.campaign.raw}
         onRowClick={(r) => navigate(`/campaigns/${encodeURIComponent(r.campaign.raw)}`)}
         searchPlaceholder="search campaign…"
@@ -711,40 +681,10 @@ function ItemsTab({ base }: { base: string }) {
   )
 }
 
-function ActionsTab({ base, faction }: { base: string; faction: string }) {
-  const { data, error, loading, reload } = useApi<StartActions>(`${base}/actions`, [], { live: false })
-  if (error) return <ErrorState error={error} onRetry={reload} />
-  if (loading || !data) return <Skeleton rows={8} />
-  const cols: Col<MatrixCell>[] = [
-    { key: 'type', label: 'action type', value: (r) => r.action_type.label, render: (r) => r.action_type.label },
-    {
-      key: 'rate',
-      label: 'confirmed',
-      value: (r) => (r.rate.of ? r.rate.n / r.rate.of : 2),
-      render: (r) => <Bar rate={r.rate} width={140} />,
-    },
-    { key: 'tried', label: 'attempted', align: 'right', value: (r) => r.rate.of, render: (r) => n(r.rate.of) },
-    { key: 'per_try', label: 'per try', unit: 'ms', align: 'right', value: (r) => r.per_try_ms ?? 0, render: (r) => n(r.per_try_ms) },
-    {
-      key: 'counted',
-      label: 'counted',
-      value: (r) => (r.counted?.of ? r.counted.n / r.counted.of : 2),
-      render: (r) => <Bar rate={r.counted ?? null} />,
-    },
-  ]
-  return (
-    <Section title="action types for this faction" scope={{ text: `every ${faction} attempt in this run dir, worst confirmed first` }}>
-      <DataTable rows={data.cells ?? []} cols={cols} rowId={(r) => r.action_type.raw} pageSize={25} emptyWhat="no action attempted by this faction" />
-    </Section>
-  )
-}
-
 export function StartDetail() {
   const { campaignMap = '', faction = '' } = useParams()
-  const mode = useUiMode()
   const base = `/api/campaigns/starts/${encodeURIComponent(campaignMap)}/${encodeURIComponent(faction)}`
-  const tabs = mode === 'full' ? TABS : TABS.filter((t) => t.key !== 'actions')
-  const tab = useSubView(tabs, 'tab')
+  const tab = useSubView(TABS, 'tab')
   const [seen, setSeen] = useState<Record<string, boolean>>({})
   useEffect(() => {
     setSeen((s) => (s[tab] ? s : { ...s, [tab]: true }))
@@ -759,20 +699,7 @@ export function StartDetail() {
     { label: 'plays', value: s.n, sub: `${s.n_window} in window` },
     { label: 'mean reward', value: s.mean == null ? null : n(s.mean, 2), sub: s.std == null ? undefined : `± ${n(s.std, 2)} std` },
     { label: 'best reward', value: s.best, sub: s.zero_rate?.of ? `${((100 * s.zero_rate.n) / s.zero_rate.of).toFixed(0)}% zero` : undefined },
-    {
-      label: 'avg turns',
-      value: s.avg_turns == null ? null : n(s.avg_turns, 1),
-      sub: mode === 'full' && s.sec_per_turn != null ? `${n(s.sec_per_turn, 1)} s/turn` : undefined,
-    },
-    ...(mode === 'full'
-      ? [
-          {
-            label: 'confirmed',
-            value: s.confirm_rate?.of ? `${((100 * s.confirm_rate.n) / s.confirm_rate.of).toFixed(0)}%` : null,
-            sub: s.confirm_rate ? `${n(s.confirm_rate.n)}/${n(s.confirm_rate.of)} actions` : undefined,
-          },
-        ]
-      : []),
+    { label: 'avg turns', value: s.avg_turns == null ? null : n(s.avg_turns, 1), sub: undefined },
   ]
   return (
     <div className="space-y-5">
@@ -784,7 +711,6 @@ export function StartDetail() {
             <EntityLink to="/campaigns?view=starts" className="text-dim">starts</EntityLink>
             <span className="text-dim"> / {lord}</span>
           </span>
-          {mode === 'full' && <EntityLink to="/selector" className="text-dim">selector view →</EntityLink>}
         </div>
         <h1 className="mt-1 flex flex-wrap items-baseline gap-3">
           <span className="text-lg font-semibold">{lord}</span>
@@ -799,20 +725,19 @@ export function StartDetail() {
           {last && (
             <span className="text-dim ml-auto text-2xs">
               last played {clock(last.ts)}
-              {mode === 'full' && last.outcome ? ` · ${last.outcome.label.toLowerCase()}` : ''}
               {last.reward != null ? `, reward ${n(last.reward)}` : ''}
             </span>
           )}
         </h1>
       </div>
 
-      <div className={cn('grid gap-3 sm:grid-cols-2', mode === 'full' ? 'lg:grid-cols-5' : 'lg:grid-cols-4')}>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {tiles.map((t) => (
           <MetricTile key={t.label} metric={{ label: t.label, value: t.value ?? null, unit: null, sub: t.sub ?? null, state: 'neutral', spark: [] }} />
         ))}
       </div>
 
-      <SubNav views={tabs} param="tab" />
+      <SubNav views={TABS} param="tab" />
       <div className={tab === 'performance' ? '' : 'hidden'}>{seen.performance && <PerformanceTab base={base} lord={lord} />}</div>
       <div className={tab === 'openings' ? '' : 'hidden'}>{seen.openings && <OpeningsTab base={base} />}</div>
       <div className={tab === 'buildings' ? '' : 'hidden'}>{seen.buildings && <BuildingsTab base={base} />}</div>
@@ -820,7 +745,6 @@ export function StartDetail() {
       <div className={tab === 'skills' ? '' : 'hidden'}>{seen.skills && <SkillsTab base={base} />}</div>
       <div className={tab === 'items' ? '' : 'hidden'}>{seen.items && <ItemsTab base={base} />}</div>
       <div className={tab === 'campaigns' ? '' : 'hidden'}>{seen.campaigns && <CampaignsTab base={base} />}</div>
-      <div className={tab === 'actions' ? '' : 'hidden'}>{mode === 'full' && seen.actions && <ActionsTab base={base} faction={s.faction.label} />}</div>
     </div>
   )
 }

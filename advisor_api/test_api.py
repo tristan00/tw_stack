@@ -100,6 +100,7 @@ def _all_responses():
     if camps.get("rows"):
         key = camps["rows"][0]["campaign"]["raw"]
         out["/api/campaigns/<key>"] = _client.get("/api/campaigns/%s" % key)
+        out["/api/campaigns/<key>/state"] = _client.get("/api/campaigns/%s/state" % key)
     starts = _client.get("/api/campaigns/starts").json()
     played = [s for s in starts.get("rows") or [] if s.get("n_window")]
     if played:
@@ -164,7 +165,9 @@ def test_keyed_views_answer():
 
 
 def test_unknown_ids_404_rather_than_500():
-    for ep in ("/api/campaigns/no_such_campaign_key", "/api/decisions/999999999"):
+    for ep in ("/api/campaigns/no_such_campaign_key",
+               "/api/campaigns/no_such_campaign_key/state",
+               "/api/decisions/999999999"):
         r = _client.get(ep)
         assert r.status_code == 404, "%s -> %s" % (ep, r.status_code)
         assert "Traceback" not in r.text
@@ -228,6 +231,32 @@ def test_api_agrees_with_sql():
 
     total = _client.get("/api/decisions").json()["total"]["value"]
     assert total == con.execute("SELECT COUNT(*) FROM action_taken").fetchone()[0]
+
+
+def test_campaign_state_agrees_with_sql():
+    con = db.connect()
+    camps = _client.get("/api/campaigns").json()["rows"]
+    assert camps
+    key = camps[0]["campaign"]["raw"]
+    r = _client.get("/api/campaigns/%s/state" % key)
+    assert r.status_code == 200
+    got = r.json()
+    cid = con.execute("SELECT campaign_id FROM campaigns WHERE campaign_key = %s",
+                      (key,)).fetchone()[0]
+    sql = {row["family"]: row["n"] for row in adb.rows(
+        "SELECT family, COUNT(DISTINCT key) n FROM acquisitions"
+        " WHERE campaign_id = %(cid)s AND acquired_decision IS NOT NULL"
+        " AND acquired_decision > first_seen_decision"
+        " AND family IN ('research', 'building', 'skills') GROUP BY 1",
+        {"cid": cid})}
+    assert got["researched_n"] == sql.get("research", 0)
+    assert got["built_n"] == sql.get("building", 0)
+    assert got["ranked_n"] == sql.get("skills", 0)
+    lord = got.get("lord")
+    if lord and lord.get("hp") is not None:
+        assert 0 <= lord["hp"] <= 100
+    for it in (got.get("equipped") or []) + (got.get("pool") or []):
+        assert it["raw"] and it["label"]
 
 
 def test_campaign_id_join_trap():

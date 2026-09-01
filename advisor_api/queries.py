@@ -34,7 +34,7 @@ from advisor_api.models import (
     BehaviourRow, BuildingRow, CampaignBuildingRow, CampaignCharacter,
     CampaignItemEvent, CampaignSkillRow, CampaignTechRow, CatalogCampaignRow,
     CatalogIndexRow, CatalogStartRow, ChainLevel, ForkArmRow, ForkRow,
-    ItemCampaignRow, ItemRow, NowLord,
+    ItemCampaignRow, ItemRow, LordState,
     ItemStartRow, ItemSwapRow, LookupCampaignRow, PositionFacetOption,
     PositionKeyRow, PositionTypeRow, RelatedKey, SkillCharacterRow, SkillRow,
     StartCharacterRow, TechRow,
@@ -229,23 +229,22 @@ def _truthy_blob(v) -> bool:
 
 
 @db.timed
-def now_page(con) -> dict:
-    cur = current(con)
-    out = {"current": cur, "turns": [], "settlements": [], "lord_levels": [],
-           "research": None, "lord": None, "equipped": [], "pool": []}
-    if not cur or not cur.campaign:
-        return out
-    meta = _campaign_id_of(con, cur.campaign.raw)
+def campaign_state(con, campaign_key: str) -> dict | None:
+    meta = _campaign_id_of(con, campaign_key)
     if not meta:
-        return out
+        return None
     cid = _i(meta["campaign_id"], 0)
-    for r in con.execute(
-            "SELECT turn, MAX(settlements) s, MAX(lord_level) l"
-            " FROM decisions WHERE campaign_id = %s AND turn IS NOT NULL"
-            " GROUP BY turn ORDER BY turn", (cid,)):
-        out["turns"].append(_i(r["turn"], 0) or 0)
-        out["settlements"].append(_f(r["s"], 0.0) or 0.0)
-        out["lord_levels"].append(_f(r["l"], 0.0) or 0.0)
+    out = {"research": None, "researched_n": 0, "built_n": 0, "ranked_n": 0,
+           "lord": None, "equipped": [], "pool": []}
+    counts = {r["family"]: _i(r["n"], 0) or 0 for r in adb.rows(
+        "SELECT family, COUNT(DISTINCT key) n FROM acquisitions"
+        " WHERE campaign_id = %(cid)s AND acquired_decision IS NOT NULL"
+        " AND acquired_decision > first_seen_decision"
+        " AND family IN ('research', 'building', 'skills') GROUP BY 1",
+        {"cid": cid})}
+    out["researched_n"] = counts.get("research", 0)
+    out["built_n"] = counts.get("building", 0)
+    out["ranked_n"] = counts.get("skills", 0)
     row = con.execute(
         "SELECT b.z FROM entities e"
         " JOIN decisions d ON d.decision_id = e.decision_id"
@@ -276,7 +275,7 @@ def now_page(con) -> dict:
             continue
         region = str(lz.get("region") or "")
         hp = _f(lz.get("hp"))
-        out["lord"] = NowLord(
+        out["lord"] = LordState(
             rank=_i(_f(lz.get("rank"))),
             hp=round(hp * 100) if hp is not None and 0 <= hp <= 1 else None,
             wounded=_truthy_blob(lz.get("wounded")),
@@ -2189,15 +2188,8 @@ def catalog_index(con, family: str) -> dict:
         "  AVG(p.ranks) FILTER (WHERE p.taken) avg_ranks"
         " FROM per p JOIN camps m USING (campaign_id)"
         " GROUP BY p.key", _fact_params(fam=family))
-    chars: dict = {}
-    if family == "skills":
-        for r in adb.rows(
-                "SELECT key, sub, COUNT(DISTINCT campaign_id) n FROM acquisitions"
-                " WHERE family = 'skills' AND acquired_turn IS NOT NULL"
-                " AND sub IS NOT NULL GROUP BY 1, 2"):
-            chars.setdefault(r["key"], []).append((r["sub"], _i(r["n"], 0) or 0))
     ref = _catalog_ref(family, {r["key"] for r in per})
-    races = _fact_key_cultures(family)
+    races = _fact_key_cultures(family) if family == "research" else {}
     noun = USAGE_FAMILIES[family]["noun"]
     rows = []
     for p in per:
@@ -2205,12 +2197,6 @@ def catalog_index(con, family: str) -> dict:
         took_n = _i(p["took_n"], 0) or 0
         of_n = _i(p["of_n"], 0) or 0
         passed_n = of_n - took_n
-        char_label = None
-        if family == "skills" and chars.get(key):
-            best = sorted(chars[key], key=lambda kv: (-kv[1], kv[0]))
-            char_label = labels.subtype_name(best[0][0]) or labels.pretty(best[0][0])
-            if len(best) > 1:
-                char_label += " +%d more" % (len(best) - 1)
         r = ref.get(key) or {}
         rt, rp = _f(p["rt"]), _f(p["rp"])
         if rt is not None:
@@ -2221,7 +2207,7 @@ def catalog_index(con, family: str) -> dict:
             key=key, label=_fam_label(family, key), race=races.get(key),
             category=r.get("category"),
             level=r.get("level"), cost=r.get("cost"), line=r.get("line"),
-            tier=r.get("tier"), points=r.get("points"), characters=char_label,
+            tier=r.get("tier"), points=r.get("points"),
             unlock_rank=r.get("unlock_rank"),
             avg_ranks=(round(_f(p["avg_ranks"]) or 0, 1)
                        if family == "skills" and p["avg_ranks"] is not None
@@ -2244,14 +2230,6 @@ def catalog_index(con, family: str) -> dict:
             "categories": cats, "rows": rows}
 
 
-def _culture_tag(counts) -> str | None:
-    if not counts:
-        return None
-    if len(counts) == 1:
-        return next(iter(counts))
-    return "%d races" % len(counts)
-
-
 def _fact_key_cultures(family) -> dict:
     per: dict = {}
     cul_of: dict = {}
@@ -2268,7 +2246,7 @@ def _fact_key_cultures(family) -> dict:
         if cul:
             e = per.setdefault(r["key"], {})
             e[cul] = e.get(cul, 0) + (_i(r["n"], 0) or 0)
-    return {k: _culture_tag(v) for k, v in per.items()}
+    return {k: next(iter(v)) for k, v in per.items() if len(v) == 1}
 
 
 def _fact_key_stats(family, keys) -> dict:
@@ -2535,7 +2513,8 @@ def choices_page(con, family: str) -> dict:
                 delta_future=round(mine_f - other_f, 2)
                 if mine_f is not None and other_f is not None else None))
         out.append(ForkRow(fork=fork_key, label=label, cohort=cohort,
-                           race=_culture_tag(who["culs"]),
+                           race=(next(iter(who["culs"]))
+                                 if len(who["culs"]) == 1 else None),
                            starts=_start_tag(who["starts"]),
                            n_starts=len(who["starts"]),
                            arms=arm_rows))

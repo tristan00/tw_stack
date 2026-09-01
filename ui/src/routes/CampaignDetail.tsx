@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
 import { DataTable, type Col } from '@/components/DataTable'
 import {
-  Bar,
   Card,
   Chip,
   EntityLink,
@@ -11,25 +10,23 @@ import {
   Section,
   Skeleton,
 } from '@/components/primitives'
-import { useUiMode } from '@/components/Layout'
 import { SubNav, useSubView } from '@/components/SubNav'
 import { Steps } from '@/components/startcharts'
 import {
   useApi,
   type CampaignBuildingsPage,
   type CampaignCharacter,
-  type CampaignDecisions,
   type CampaignDetail as Detail,
+  type CampaignStatePage,
+  type Current,
   type CampaignItemsPage,
   type CampaignResearchPage,
   type CampaignSkillsPage,
   type Schemas,
 } from '@/lib/api'
-import { clock, n } from '@/lib/format'
-import { cn } from '@/lib/utils'
+import { ago, n } from '@/lib/format'
 
 type RewardPoint = Schemas['RewardPoint']
-type DecisionRow = Schemas['DecisionRow']
 type DiploEvent = Schemas['DiploEvent']
 
 const TABS = [
@@ -38,7 +35,6 @@ const TABS = [
   { key: 'research', label: 'research', asks: 'what it researched and when it finished' },
   { key: 'skills', label: 'skills', asks: 'every point its characters spent' },
   { key: 'items', label: 'items', asks: 'who wore what' },
-  { key: 'decisions', label: 'decisions', asks: 'every action taken inside it' },
 ]
 
 const SERIES: { key: keyof RewardPoint & string; label: string }[] = [
@@ -130,11 +126,96 @@ function DiploDigest({ events }: { events: DiploEvent[] }) {
   )
 }
 
-function OverviewTab({ data, campaignKey, mode }: { data: Detail; campaignKey: string; mode: 'full' | 'dashboard' }) {
-  const navigate = useNavigate()
-  const dev = mode === 'full'
+function StateCards({ campaignKey }: { campaignKey: string }) {
+  const { data } = useApi<CampaignStatePage>(
+    `/api/campaigns/${encodeURIComponent(campaignKey)}/state`,
+    [campaignKey],
+  )
+  if (!data) return null
+  const lord = data.lord
+  const worn = data.equipped ?? []
+  const pool = (data.pool ?? []).filter((p) => !worn.some((w) => w.raw === p.raw))
+  return (
+    <Section title="state" scope={{ text: 'from the latest recorded snapshot' }}>
+      <div className="grid gap-3 lg:grid-cols-3">
+        <Card className="px-3.5 py-3">
+          <div className="text-dim text-2xs uppercase tracking-wide">lord</div>
+          {lord ? (
+            <>
+              <div className="mt-1 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-xs">
+                <span className="text-dim">
+                  rank <b className="num text-fg text-sm">{lord.rank ?? '—'}</b>
+                </span>
+                {lord.hp != null && (
+                  <span className="text-dim">
+                    hp <b className="num text-fg text-sm">{n(lord.hp)}%</b>
+                  </span>
+                )}
+                {lord.skill_points != null && lord.skill_points > 0 && (
+                  <span className="text-dim">
+                    unspent points <b className="num text-fg text-sm">{n(lord.skill_points)}</b>
+                  </span>
+                )}
+                {lord.wounded && <Chip state="bad">wounded</Chip>}
+              </div>
+              {lord.region && <div className="text-dim mt-1.5 text-xs">at {lord.region}</div>}
+            </>
+          ) : (
+            <div className="text-dim mt-1.5 text-xs">no lord snapshot</div>
+          )}
+        </Card>
+        <Card className="px-3.5 py-3">
+          <div className="text-dim text-2xs uppercase tracking-wide">progress</div>
+          <div className="mt-1 text-xs">
+            researching{' '}
+            {data.research ? (
+              <EntityLink to={`/research/${encodeURIComponent(data.research.raw)}`} title={data.research.raw}>
+                {data.research.label}
+              </EntityLink>
+            ) : (
+              <span className="text-dim">nothing</span>
+            )}
+          </div>
+          <div className="text-dim mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-xs">
+            <span>
+              researched <b className="num text-fg">{n(data.researched_n)}</b>
+            </span>
+            <span>
+              built <b className="num text-fg">{n(data.built_n)}</b>
+            </span>
+            <span>
+              skill ranks <b className="num text-fg">{n(data.ranked_n)}</b>
+            </span>
+          </div>
+        </Card>
+        <Card className="px-3.5 py-3">
+          <div className="text-dim text-2xs uppercase tracking-wide">items</div>
+          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs">
+            {worn.length === 0 && <span className="text-dim">nothing equipped</span>}
+            {worn.map((it) => (
+              <EntityLink key={it.raw} to={`/items/${encodeURIComponent(it.raw)}`} title={it.raw}>
+                {it.label}
+              </EntityLink>
+            ))}
+          </div>
+          {pool.length > 0 && (
+            <div className="text-dim mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-2xs">
+              <span className="uppercase tracking-wide">in the pool</span>
+              {pool.map((it) => (
+                <EntityLink key={it.raw} to={`/items/${encodeURIComponent(it.raw)}`} title={it.raw} className="text-dim">
+                  {it.label}
+                </EntityLink>
+              ))}
+            </div>
+          )}
+        </Card>
+      </div>
+    </Section>
+  )
+}
+
+function OverviewTab({ data, campaignKey }: { data: Detail; campaignKey: string }) {
   const row = data.row
-  const verdict = data.verdict
   const turns = data.turns ?? []
   const pts = data.reward
   const constant = new Set(data.constant_columns)
@@ -147,81 +228,15 @@ function OverviewTab({ data, campaignKey, mode }: { data: Detail; campaignKey: s
       label: 'turn',
       align: 'right',
       value: (r) => r.turn,
-      render: (r) =>
-        dev ? (
-          <EntityLink to={`?tab=decisions&turn=${r.turn}`} className="num">
-            {r.turn}
-          </EntityLink>
-        ) : (
-          <span className="num">{r.turn}</span>
-        ),
+      render: (r) => <span className="num">{r.turn}</span>,
     },
-    ...(dev
-      ? ([
-          { key: 'decisions', label: 'decisions', align: 'right', value: (r) => r.decisions, render: (r) => <span className="num">{r.decisions}</span> },
-          {
-            key: 'refused',
-            label: 'refused',
-            align: 'right',
-            value: (r) => r.refused,
-            render: (r) => (r.refused ? <span className="num">{r.refused}</span> : <span className="text-dim">—</span>),
-          },
-        ] as Col<(typeof turns)[number]>[])
-      : []),
     { key: 'income', label: 'income', align: 'right', value: (r) => byTurn.get(r.turn)?.income ?? 0, render: (r) => <span className="num">{n(byTurn.get(r.turn)?.income)}</span> },
     { key: 'setts', label: 'setts', align: 'right', value: (r) => byTurn.get(r.turn)?.settlements ?? 0, render: (r) => <span className="num">{n(byTurn.get(r.turn)?.settlements)}</span> },
     { key: 'rank', label: 'rank', align: 'right', value: (r) => byTurn.get(r.turn)?.power_rank ?? 0, render: (r) => <span className="num">{n(byTurn.get(r.turn)?.power_rank)}</span> },
   ]
   return (
     <div className="space-y-7">
-      <div className={cn('grid gap-3', dev ? 'lg:grid-cols-[1.7fr_1fr_1fr_1.2fr]' : 'lg:grid-cols-2')}>
-        {dev && (
-        <Card className="px-3.5 py-3">
-          <div className="text-dim text-2xs uppercase tracking-wide">why it ended</div>
-          {verdict ? (
-            <>
-              <div className="mt-1.5 text-sm">{verdict.text}</div>
-              {verdict.detail && (
-                <div className="mt-0.5 flex items-center gap-2.5 text-xs">
-                  <span className="text-dim">{verdict.detail}</span>
-                  {verdict.pct != null && (
-                    <>
-                      <span className="bg-raised relative inline-block h-1.5 w-28 rounded">
-                        <span
-                          className={cn('absolute inset-y-0 left-0 rounded', verdict.pct >= 99 ? 'bg-warn' : 'bg-fg/45')}
-                          style={{ width: `${Math.min(100, verdict.pct)}%` }}
-                        />
-                      </span>
-                      <span className={cn('num text-2xs', verdict.pct >= 99 && 'text-warn')}>{n(verdict.pct)}%</span>
-                    </>
-                  )}
-                </div>
-              )}
-              {(verdict.roots ?? []).length > 0 && (
-                <>
-                  <div className="text-dim mt-2.5 text-2xs">UI roots open at the stall · {(verdict.roots ?? []).length}</div>
-                  <div className="mt-1 flex flex-wrap gap-1">
-                    {(verdict.roots ?? []).map((r) => (
-                      <span key={r} className="num bg-raised text-dim rounded px-1.5 py-0.5 text-2xs">
-                        {r}
-                      </span>
-                    ))}
-                  </div>
-                </>
-              )}
-              {row.turns != null && (
-                <div className="mt-2 text-2xs">
-                  <EntityLink to={`?tab=decisions&turn=${row.turns}`} className="text-dim">
-                    open turn {row.turns} in decisions →
-                  </EntityLink>
-                </div>
-              )}
-            </>
-          ) : (
-            <div className="text-dim mt-1.5 text-xs">no ending recorded for this campaign</div>
-          )}
-        </Card>
-        )}
+      <div className="grid gap-3 lg:grid-cols-2">
         <Card className="px-3.5 py-3">
           <div className="text-dim text-2xs uppercase tracking-wide">reward</div>
           <div className="num mt-0.5 text-xl">{row.reward == null ? '—' : n(row.reward)}</div>
@@ -229,17 +244,6 @@ function OverviewTab({ data, campaignKey, mode }: { data: Detail; campaignKey: s
             {row.reward == null ? 'not measured' : `${n(row.settlements_gained)} settlements + ${n(row.levels_gained)} levels`}
           </div>
         </Card>
-        {dev && (
-          <Card className="px-3.5 py-3">
-            <div className="text-dim text-2xs uppercase tracking-wide">confirmed</div>
-            <div className="num mt-0.5 text-xl">
-              {row.confirm_rate?.of ? `${((100 * row.confirm_rate.n) / row.confirm_rate.of).toFixed(0)}%` : '—'}
-            </div>
-            <div className="mt-1.5">
-              <Bar rate={row.confirm_rate ?? null} width={120} />
-            </div>
-          </Card>
-        )}
         <Card className="px-3.5 py-3">
           <div className="text-dim text-2xs uppercase tracking-wide">growth</div>
           {row.growth_state === 'measured' ? (
@@ -260,6 +264,8 @@ function OverviewTab({ data, campaignKey, mode }: { data: Detail; campaignKey: s
           )}
         </Card>
       </div>
+
+      <StateCards campaignKey={campaignKey} />
 
       <Section
         title="turn series"
@@ -313,13 +319,12 @@ function OverviewTab({ data, campaignKey, mode }: { data: Detail; campaignKey: s
       <div className="grid gap-6 lg:grid-cols-2">
         <Section
           title="turn ledger"
-          scope={{ text: dev ? 'one row per turn, newest first · a turn links to its decisions' : 'one row per turn, newest first' }}
+          scope={{ text: 'one row per turn, newest first' }}
         >
           <DataTable
             rows={turns}
             cols={turnCols}
             rowId={(r) => String(r.turn)}
-            onRowClick={dev ? (r) => navigate(`/campaigns/${encodeURIComponent(campaignKey)}?tab=decisions&turn=${r.turn}`) : undefined}
             dense
             emptyWhat="no turn was recorded"
           />
@@ -633,151 +638,8 @@ function ItemsTab({ campaignKey }: { campaignKey: string }) {
   )
 }
 
-function DecisionsTab({ campaignKey }: { campaignKey: string }) {
-  const [params, setParams] = useSearchParams()
-  const navigate = useNavigate()
-  const { data, error, loading, reload } = useApi<CampaignDecisions>(
-    `/api/campaigns/${encodeURIComponent(campaignKey)}/decisions`,
-    [campaignKey],
-    { live: false },
-  )
-  const [result, setResult] = useState('')
-  const [policy, setPolicy] = useState('')
-  const [action, setAction] = useState('')
-  const turnParam = params.get('turn')
-  if (error) return <ErrorState error={error} onRetry={reload} />
-  if (loading || !data) return <Skeleton rows={8} />
-  const rows = data.rows ?? []
-  const policies = [...new Map(rows.filter((r) => r.policy).map((r) => [r.policy!.raw, r.policy!])).values()]
-  const actions = [...new Map(rows.filter((r) => r.action_type).map((r) => [r.action_type!.raw, r.action_type!])).values()]
-  const confirmed = rows.filter((r) => r.result?.raw === 'confirmed').length
-  const refused = rows.filter((r) => r.result?.raw === 'refused').length
-  const filtered = rows.filter(
-    (r) =>
-      (!result || r.result?.raw === result) &&
-      (!policy || r.policy?.raw === policy) &&
-      (!action || r.action_type?.raw === action) &&
-      (!turnParam || String(r.turn) === turnParam),
-  )
-  const byTurn = new Map<number, DecisionRow[]>()
-  for (const r of filtered) {
-    const t = r.turn ?? 0
-    byTurn.set(t, [...(byTurn.get(t) ?? []), r])
-  }
-  const groups = [...byTurn.entries()].sort((a, b) => b[0] - a[0])
-  const seg = (label: string, count: number, val: string) => (
-    <button
-      key={val || 'all'}
-      onClick={() => setResult(val === result ? '' : val)}
-      className={cn('px-2 py-0.5', result === val ? 'bg-raised text-fg font-semibold' : 'text-dim hover:text-fg')}
-    >
-      {label} {n(count)}
-    </button>
-  )
-  return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-2 text-2xs">
-        <span className="border-line flex overflow-hidden rounded-md border">
-          {seg('all', rows.length, '')}
-          {seg('confirmed', confirmed, 'confirmed')}
-          {seg('refused', refused, 'refused')}
-        </span>
-        <span className="text-dim ml-1">policy</span>
-        {policies.map((p) => (
-          <button
-            key={p.raw}
-            onClick={() => setPolicy(policy === p.raw ? '' : p.raw)}
-            className={cn(
-              'rounded-full px-2 py-0.5',
-              policy === p.raw ? 'bg-raised text-fg font-semibold' : 'bg-surface border-line border hover:text-fg',
-            )}
-          >
-            {p.label} {n(rows.filter((r) => r.policy?.raw === p.raw).length)}
-          </button>
-        ))}
-        <span className="text-dim ml-1">action</span>
-        <select
-          value={action}
-          onChange={(e) => setAction(e.target.value)}
-          className="border-line bg-surface rounded-md border px-2 py-1"
-        >
-          <option value="">all types</option>
-          {actions.map((a) => (
-            <option key={a.raw} value={a.raw}>
-              {a.label}
-            </option>
-          ))}
-        </select>
-        {turnParam && (
-          <button
-            onClick={() => {
-              const next = new URLSearchParams(params)
-              next.delete('turn')
-              setParams(next, { replace: true })
-            }}
-            className="bg-accent-soft text-accent rounded-full px-2 py-0.5"
-          >
-            turn {turnParam} ×
-          </button>
-        )}
-        <span className="text-dim num ml-auto">
-          {filtered.length} of {rows.length}
-        </span>
-      </div>
-      {groups.length === 0 && <Card className="text-dim px-4 py-6 text-center text-sm">no decision matches these filters</Card>}
-      {groups.map(([turn, list]) => {
-        const ts = list.map((r) => r.ts).filter((t): t is number => t != null)
-        const span = ts.length > 1 ? Math.round(Math.max(...ts) - Math.min(...ts)) : null
-        const ref = list.filter((r) => r.result?.raw === 'refused').length
-        return (
-          <Card key={turn} className="overflow-hidden">
-            <div className="border-line bg-surface sticky top-0 z-10 border-b px-3 py-1.5 text-2xs">
-              <b>turn {turn}</b>
-              <span className="text-dim">
-                {' '}· {list.length} decision{list.length === 1 ? '' : 's'}
-                {ref ? ` · ${ref} refused` : ''}
-                {ts.length > 0 && ` · ${clock(Math.min(...ts))} → ${clock(Math.max(...ts))}`}
-              </span>
-              {span != null && span > 0 && <span className="num text-dim"> · {span}s</span>}
-            </div>
-            <table className="w-full text-xs">
-              <tbody>
-                {list.map((r) => (
-                  <tr
-                    key={r.decision_id}
-                    onClick={() => navigate(`/decisions/${r.decision_id}`)}
-                    className="border-line hover:bg-raised cursor-pointer border-b last:border-0"
-                  >
-                    <td className="num text-dim w-20 px-3 py-1.5">{clock(r.ts)}</td>
-                    <td className="w-32 px-2 py-1.5">{r.action_type?.label ?? '—'}</td>
-                    <td className="px-2 py-1.5">
-                      {r.target ? (
-                        <span title={r.action_key ?? undefined}>{r.target}</span>
-                      ) : (
-                        <span className="num text-dim text-2xs">{r.action_key ?? '—'}</span>
-                      )}
-                    </td>
-                    <td className="w-24 px-2 py-1.5">
-                      {r.result ? <Chip state={r.result_state ?? 'neutral'}>{r.result.label}</Chip> : '—'}
-                    </td>
-                    <td className="text-dim w-32 px-2 py-1.5">{r.policy?.label ?? '—'}</td>
-                    <td className="text-dim w-6 px-2 py-1.5 text-right">›</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </Card>
-        )
-      })}
-    </div>
-  )
-}
-
-export function CampaignDetail() {
-  const { campaignKey = '' } = useParams()
-  const mode = useUiMode()
-  const tabs = mode === 'full' ? TABS : TABS.filter((t) => t.key !== 'decisions')
-  const tab = useSubView(tabs, 'tab')
+export function CampaignView({ campaignKey, playingNow }: { campaignKey: string; playingNow?: Current }) {
+  const tab = useSubView(TABS, 'tab')
   const [seen, setSeen] = useState<Record<string, boolean>>({})
   useEffect(() => {
     setSeen((s) => (s[tab] ? s : { ...s, [tab]: true }))
@@ -786,6 +648,13 @@ export function CampaignDetail() {
     `/api/campaigns/${encodeURIComponent(campaignKey)}`,
     [campaignKey],
   )
+  if (error && playingNow) {
+    return (
+      <Card className="text-dim px-4 py-6 text-center text-sm">
+        the campaign just started — its first snapshot is still being recorded
+      </Card>
+    )
+  }
   if (error) return <ErrorState error={error} onRetry={reload} />
   if (loading || !data) return <Skeleton rows={8} />
   const row = data.row
@@ -804,45 +673,32 @@ export function CampaignDetail() {
             </EntityLink>
             <span className="text-dim num"> / {row.campaign.tag ?? row.campaign.raw.slice(-12)}</span>
           </span>
-          {row.ended_when && <span className="text-dim num">{row.ended_when}</span>}
+          {playingNow ? (
+            <span className="text-ok text-2xs">
+              playing now{playingNow.age_seconds != null && <span className="text-dim"> · state {ago(playingNow.age_seconds)}</span>}
+            </span>
+          ) : row.ended_when ? (
+            <span className="text-dim num">{row.ended_when}</span>
+          ) : null}
         </div>
         <h1 className="mt-1 flex flex-wrap items-baseline gap-3">
           <IdentLabel ident={row.campaign} className="text-lg font-semibold" />
-          {mode === 'full' && row.outcome && <Chip state={row.outcome_state ?? 'neutral'}>{row.outcome.label}</Chip>}
-          {mode === 'full' && row.suspicious && <Chip state="bad">suspicious</Chip>}
-          {mode === 'full' && data.verdict?.kind && <span className="text-dim text-xs">{data.verdict.text.replace(/\.$/, '').toLowerCase()}</span>}
         </h1>
         <div className="text-dim mt-1 flex flex-wrap gap-4 text-2xs">
           <span>
             turn <b className="num text-fg">{n(row.turns)}</b>
           </span>
-          {mode === 'full' && (
-            <span>
-              <b className="num text-fg">{n(row.decisions)}</b> decisions
-            </span>
-          )}
           {row.reward != null && (
             <span>
               reward <b className="num text-fg">{n(row.reward)}</b>
             </span>
           )}
-          {mode === 'full' && row.confirm_rate?.of ? (
-            <span>
-              confirmed <b className="num text-fg">{((100 * row.confirm_rate.n) / row.confirm_rate.of).toFixed(0)}%</b>{' '}
-              ({n(row.confirm_rate.n)}/{n(row.confirm_rate.of)})
-            </span>
-          ) : null}
-          {row.pick_id != null && mode === 'full' && (
-            <EntityLink to={`/selector?pick=${row.pick_id}`} className="text-dim">
-              UCB pick <b className="num text-fg">#{row.pick_id}</b>
-            </EntityLink>
-          )}
         </div>
       </div>
 
-      <SubNav views={tabs} param="tab" />
+      <SubNav views={TABS} param="tab" />
       <div className={tab === 'overview' ? '' : 'hidden'}>
-        {seen.overview && <OverviewTab data={data} campaignKey={campaignKey} mode={mode} />}
+        {seen.overview && <OverviewTab data={data} campaignKey={campaignKey} />}
       </div>
       <div className={tab === 'buildings' ? '' : 'hidden'}>
         {seen.buildings && <BuildingsTab campaignKey={campaignKey} />}
@@ -856,9 +712,11 @@ export function CampaignDetail() {
       <div className={tab === 'items' ? '' : 'hidden'}>
         {seen.items && <ItemsTab campaignKey={campaignKey} />}
       </div>
-      <div className={tab === 'decisions' ? '' : 'hidden'}>
-        {mode === 'full' && seen.decisions && <DecisionsTab campaignKey={campaignKey} />}
-      </div>
     </div>
   )
+}
+
+export function CampaignDetail() {
+  const { campaignKey = '' } = useParams()
+  return <CampaignView campaignKey={campaignKey} />
 }
