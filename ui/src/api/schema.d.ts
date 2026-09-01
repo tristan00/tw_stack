@@ -1705,6 +1705,8 @@ export interface components {
             key: string;
             /** Label */
             label?: string | null;
+            /** Race */
+            race?: string | null;
             /** Category */
             category?: string | null;
             /** Level */
@@ -2248,6 +2250,15 @@ export interface components {
              * @default 0
              */
             cohort: number;
+            /** Race */
+            race?: string | null;
+            /** Starts */
+            starts?: string | null;
+            /**
+             * N Starts
+             * @default 0
+             */
+            n_starts: number;
             /** Arms */
             arms?: components["schemas"]["ForkArmRow"][];
         };
@@ -2410,6 +2421,8 @@ export interface components {
             category?: string | null;
             /** Effects */
             effects?: components["schemas"]["ItemEffect"][];
+            /** Description */
+            description?: string | null;
             /** Acquisition */
             acquisition?: string | null;
             /** Lord Share */

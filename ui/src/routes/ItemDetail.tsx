@@ -6,9 +6,13 @@ import { useApi, type ItemCampaignRow, type ItemEffect, type ItemPage, type Item
 import { clock, n, stateText } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
-function EffectsTable({ effects }: { effects: ItemEffect[] }) {
+function EffectsTable({ effects, description }: { effects: ItemEffect[]; description?: string | null }) {
   if (!effects.length) {
-    return <Card className="text-dim px-4 py-4 text-center text-xs">no effect in the reference schema</Card>
+    return (
+      <Card className="px-4 py-3 text-xs">
+        {description ? <span>{description}</span> : <span className="text-dim">no effect recorded for it</span>}
+      </Card>
+    )
   }
   return (
     <Card className="overflow-hidden">
@@ -146,8 +150,8 @@ export function ItemDetail() {
         ))}
       </div>
 
-      <Section title="what it does" scope={{ text: 'from the reference schema · green helps, red hurts' }}>
-        <EffectsTable effects={data.effects ?? []} />
+      <Section title="what it does" scope={{ text: 'green helps, red hurts' }}>
+        <EffectsTable effects={data.effects ?? []} description={data.description} />
       </Section>
 
       <Section title="by start" scope={{ text: 'the same worn-vs-benched comparison, per start that held it' }}>
