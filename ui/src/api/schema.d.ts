@@ -1922,6 +1922,12 @@ export interface components {
             ribbon_labels?: string[];
             /** Ribbon */
             ribbon?: components["schemas"]["RibbonBucket"][];
+            /** Races */
+            races?: string[];
+            /** Lords */
+            lords?: string[];
+            /** Starts */
+            starts?: components["schemas"]["PositionFacetOption"][];
         };
         /** CatalogStartRow */
         CatalogStartRow: {
@@ -4966,7 +4972,11 @@ export interface operations {
     };
     get_overtime_api_overtime__family__get: {
         parameters: {
-            query?: never;
+            query?: {
+                race?: string | null;
+                lord?: string | null;
+                start?: string | null;
+            };
             header?: never;
             path: {
                 family: string;

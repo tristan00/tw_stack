@@ -5,6 +5,7 @@ import { CatalogNav, TookCell, dashNum, signedNum } from '@/components/catalog'
 import { Card, EntityLink, ErrorState, Help, Section, Skeleton } from '@/components/primitives'
 import { StackShares } from '@/components/startcharts'
 import { SubNav, useSubView } from '@/components/SubNav'
+import { Select } from '@/routes/Campaigns'
 import { useApi, type CatalogIndexPage, type CatalogIndexRow, type CatalogOvertime, type ChoicesPage, type ForkArmRow, type ForkRow } from '@/lib/api'
 import { n } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -316,9 +317,23 @@ function ChoicesView({ family }: { family: Family }) {
 }
 
 function OvertimeView({ family }: { family: Family }) {
+  const [params, setParams] = useSearchParams()
+  const lord = params.get('lord') ?? ''
+  const start = params.get('start') ?? ''
+  const race = params.get('race') ?? ''
+  const setP = (k: string, v: string) => {
+    const next = new URLSearchParams(params)
+    if (v) next.set(k, v)
+    else next.delete(k)
+    setParams(next, { replace: true })
+  }
+  const qs = new URLSearchParams()
+  if (lord) qs.set('lord', lord)
+  if (start) qs.set('start', start)
+  if (race) qs.set('race', race)
   const { data, error, loading, reload } = useApi<CatalogOvertime>(
-    `/api/overtime/${CHOICE_FAMILY[family]}`,
-    [family],
+    `/api/overtime/${CHOICE_FAMILY[family]}${qs.size ? `?${qs}` : ''}`,
+    [family, lord, start, race],
     { live: false },
   )
   if (error) return <ErrorState error={error} onRetry={reload} />
@@ -328,6 +343,29 @@ function OvertimeView({ family }: { family: Family }) {
       title="openings over time"
       scope={{ text: `share of first ${FAMILY[family].noun} per bucket of campaigns, play order` }}
     >
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <Select value={lord} onChange={(v) => setP('lord', v)}>
+          <option value="">every lord/hero</option>
+          {(data.lords ?? []).map((l) => (
+            <option key={l} value={l}>{l}</option>
+          ))}
+        </Select>
+        <Select value={start} onChange={(v) => setP('start', v)}>
+          <option value="">every start</option>
+          {(data.starts ?? []).map((s) => (
+            <option key={s.key} value={s.key}>{s.label}</option>
+          ))}
+        </Select>
+        <Select value={race} onChange={(v) => setP('race', v)}>
+          <option value="">every race</option>
+          {(data.races ?? []).map((r) => (
+            <option key={r} value={r}>{r}</option>
+          ))}
+        </Select>
+        <Card className="text-dim ml-auto px-2 py-1 text-2xs">
+          <b className="num text-fg">{n(data.campaigns)}</b> campaigns
+        </Card>
+      </div>
       <Card className="px-3 py-2">
         <StackShares buckets={(data.ribbon ?? []).map((b) => ({ label: b.label, shares: b.shares ?? [] }))} keys={data.ribbon_labels ?? []} />
       </Card>
