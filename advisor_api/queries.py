@@ -34,7 +34,7 @@ from advisor_api.models import (
     BehaviourRow, BuildingRow, CampaignBuildingRow, CampaignCharacter,
     CampaignItemEvent, CampaignSkillRow, CampaignTechRow, CatalogCampaignRow,
     CatalogIndexRow, CatalogStartRow, ChainLevel, ForkArmRow, ForkRow,
-    ItemCampaignRow, ItemRow,
+    ItemCampaignRow, ItemRow, NowLord,
     ItemStartRow, ItemSwapRow, LookupCampaignRow, PositionFacetOption,
     PositionKeyRow, PositionTypeRow, RelatedKey, SkillCharacterRow, SkillRow,
     StartCharacterRow, TechRow,
@@ -222,6 +222,69 @@ def current(con) -> Current:
                    decisions=_i(span["n"]) if span else None,
                    started_ts=_f(span["t0"]) if span else None,
                    pick_id=_i(pick["pick_id"]) if pick else None)
+
+
+def _truthy_blob(v) -> bool:
+    return v in (True, "True", "true", 1, 1.0)
+
+
+@db.timed
+def now_page(con) -> dict:
+    cur = current(con)
+    out = {"current": cur, "turns": [], "settlements": [], "lord_levels": [],
+           "research": None, "lord": None, "equipped": [], "pool": []}
+    if not cur or not cur.campaign:
+        return out
+    meta = _campaign_id_of(con, cur.campaign.raw)
+    if not meta:
+        return out
+    cid = _i(meta["campaign_id"], 0)
+    for r in con.execute(
+            "SELECT turn, MAX(settlements) s, MAX(lord_level) l"
+            " FROM decisions WHERE campaign_id = %s AND turn IS NOT NULL"
+            " GROUP BY turn ORDER BY turn", (cid,)):
+        out["turns"].append(_i(r["turn"], 0) or 0)
+        out["settlements"].append(_f(r["s"], 0.0) or 0.0)
+        out["lord_levels"].append(_f(r["l"], 0.0) or 0.0)
+    row = con.execute(
+        "SELECT b.z FROM entities e"
+        " JOIN decisions d ON d.decision_id = e.decision_id"
+        " JOIN blobs b ON b.blob_id = e.features_blob"
+        " WHERE d.campaign_id = %s AND e.context_kind = 'campaign'"
+        " ORDER BY e.decision_id DESC LIMIT 1", (cid,)).fetchone()
+    z = _jload(row["z"]) if row else {}
+    rk = str(z.get("current_research") or "")
+    if rk and rk != "None":
+        out["research"] = Ident(raw=rk,
+                                label=labels.tech_name(rk) or labels.pretty(rk))
+    for it in z.get("equipped_all") or []:
+        if isinstance(it, dict) and it.get("key"):
+            out["equipped"].append(Ident(raw=str(it["key"]),
+                                         label=_item_ident(str(it["key"]))))
+    for it in z.get("anc_pool") or []:
+        if isinstance(it, dict) and it.get("key"):
+            out["pool"].append(Ident(raw=str(it["key"]),
+                                     label=_item_ident(str(it["key"]))))
+    for r in con.execute(
+            "SELECT DISTINCT ON (e.context_id) b.z FROM entities e"
+            " JOIN decisions d ON d.decision_id = e.decision_id"
+            " JOIN blobs b ON b.blob_id = e.features_blob"
+            " WHERE d.campaign_id = %s AND e.context_kind = 'lord'"
+            " ORDER BY e.context_id, e.decision_id DESC", (cid,)):
+        lz = _jload(r["z"])
+        if not _truthy_blob(lz.get("is_leader")):
+            continue
+        region = str(lz.get("region") or "")
+        hp = _f(lz.get("hp"))
+        out["lord"] = NowLord(
+            rank=_i(_f(lz.get("rank"))),
+            hp=round(hp * 100) if hp is not None and 0 <= hp <= 1 else None,
+            wounded=_truthy_blob(lz.get("wounded")),
+            region=(labels.name_for("garrison", region)
+                    or labels.pretty(region)) if region else None,
+            skill_points=_i(_f(lz.get("skill_points"))))
+        break
+    return out
 
 
 _totals_memo: tuple = (0.0, None)
@@ -1908,7 +1971,7 @@ def start_skills(con, mkey: str, fkey: str, subtype: str | None = None) -> dict:
                 struct[k] = {"tier": _i(node.get("tier")),
                              "max": _i(node.get("total_levels"))}
     tree_keys = set(struct)
-    all_parents = labels.skill_parents()
+    all_parents = labels.skill_parents_for(chosen)
     lines = labels.skill_lines(chosen)
     first_turn: dict = {}
     for r in adb.rows(
@@ -2288,10 +2351,6 @@ def _fork_specs(family) -> list:
         for parent, kids in labels.tech_children().items():
             if len(kids) > 1:
                 out.append((parent, parent, sorted(set(kids))))
-    elif family == "skills":
-        for parent, kids in labels.skill_children().items():
-            if len(kids) > 1:
-                out.append((parent, parent, sorted(set(kids))))
     return out
 
 
@@ -2398,12 +2457,17 @@ def choices_page(con, family: str) -> dict:
                               or labels.pretty(region), cohort, arms,
                               chain_label, who))
     else:
-        specs = _fork_specs(family)
-        keys = sorted({k for _f2, p, kids in specs for k in kids}
-                      | {p for _f2, p, _k in specs if p})
+        per_char = family == "skills"
+        if per_char:
+            specs = [(parent + "@" + sub, parent, kids, sub)
+                     for sub, parent, kids in labels.skill_forks()]
+        else:
+            specs = [(fk, parent, kids, None)
+                     for fk, parent, kids in _fork_specs(family)]
+        keys = sorted({k for _f2, _p, kids, _s in specs for k in kids}
+                      | {p for _f2, p, _k, _s in specs if p})
         per_member: dict = {}
         member_sub: dict = {}
-        per_char = family == "skills"
         for r in adb.rows(
                 "SELECT campaign_id cid, ctx, sub, key,"
                 " MIN(first_seen_turn) st, MIN(first_seen_decision) sd,"
@@ -2417,9 +2481,15 @@ def choices_page(con, family: str) -> dict:
                 _i(r["st"]), _i(r["turn"]), _i(r["sd"]), _i(r["dec"]))
             if per_char and r["sub"]:
                 member_sub[member] = str(r["sub"])
-        for fork_key, parent, kids in specs:
-            by_sub: dict = {}
-            for member, got in per_member.items():
+        members_by_sub: dict = {}
+        for member in per_member:
+            members_by_sub.setdefault(
+                member_sub.get(member) if per_char else None,
+                []).append(member)
+        for fork_key, parent, kids, want_sub in specs:
+            bucket = {"arms": {}, "cohort": 0, "starts": {}, "culs": {}}
+            for member in members_by_sub.get(want_sub, []):
+                got = per_member[member]
                 cid = member[0] if per_char else member
                 if cid not in camp:
                     continue
@@ -2430,23 +2500,17 @@ def choices_page(con, family: str) -> dict:
                 verdict, k, t = _member_arm(got, kids, parent, reached)
                 if verdict == "unobserved":
                     continue
-                sub = member_sub.get(member) if per_char else None
-                bucket = by_sub.setdefault(sub, {"arms": {}, "cohort": 0,
-                                                 "starts": {}, "culs": {}})
                 bucket["cohort"] += 1
                 _fork_note(bucket, camp[cid])
                 _arm_note(bucket["arms"], k, cid, reached, t, camp, states,
                           peaks)
-            for sub, bucket in by_sub.items():
-                if not bucket["arms"]:
-                    continue
+            if bucket["arms"]:
                 label = _fam_label(family, parent)
-                if sub:
-                    label += " · " + (labels.subtype_name(sub)
-                                      or labels.pretty(sub))
-                forks.append((fork_key + ("@" + sub if sub else ""),
-                              label, bucket["cohort"], bucket["arms"], {},
-                              bucket))
+                if want_sub:
+                    label += " · " + (labels.subtype_name(want_sub)
+                                      or labels.pretty(want_sub))
+                forks.append((fork_key, label, bucket["cohort"],
+                              bucket["arms"], {}, bucket))
     forks.sort(key=lambda f2: -f2[2])
     out = []
     for fork_key, label, cohort, arms, chain_label, who in forks:
@@ -2633,8 +2697,11 @@ def catalog_key_page(con, family: str, key: str) -> dict | None:
             if (_i(r["tn"], 0) or 0) > 0]
         out["unlock_rank"] = _i(labels.skill_unlock_ranks([key]).get(key))
         out["description"] = labels.skill_description(key)
-        parents = labels.skill_parents().get(key) or []
-        children = labels.skill_children().get(key) or []
+        subs = [r["sub"] for r in adb.rows(
+            "SELECT DISTINCT sub FROM acquisitions"
+            " WHERE family = 'skills' AND key = %(key)s AND sub IS NOT NULL",
+            {"key": key})]
+        parents, children = labels.skill_neighbors(key, subs)
         out["related"] = related_rows(
             parents, children,
             _catalog_ref("skills", set(parents) | set(children)))

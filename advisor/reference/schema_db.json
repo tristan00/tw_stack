@@ -1557,6 +1557,22 @@
    ]
   ]
  },
+ "character_skill_node_set_items_tables": {
+  "0": [
+   [
+    "set_key",
+    "StringU8"
+   ],
+   [
+    "item",
+    "StringU8"
+   ],
+   [
+    "extra",
+    "OptionalStringU8"
+   ]
+  ]
+ },
  "character_skill_node_sets_tables": {
   "0": [
    [

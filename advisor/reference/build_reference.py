@@ -723,19 +723,40 @@ def build_extra():
         for (sk, ind), n in counts.items():
             cur.execute("INSERT INTO skill_indents VALUES (%s, %s, %s)", (sk, ind, n))
         cur.execute("CREATE INDEX idx_skill_indents ON skill_indents (skill)")
-    if nmeta["ok"] and klmeta["ok"]:
+    nsets, nsmeta = src("character_skill_node_sets_tables")
+    nitems, nimeta = src("character_skill_node_set_items_tables")
+    if nsmeta["ok"]:
+        cur.execute("DROP TABLE IF EXISTS skill_node_sets")
+        cur.execute("CREATE TABLE skill_node_sets (node_set TEXT, subtype TEXT,"
+                    " agent TEXT)")
+        for r in nsets:
+            cur.execute("INSERT INTO skill_node_sets VALUES (%s, %s, %s)",
+                        (r["key"], r.get("agent_subtype_key") or "",
+                         r.get("agent_key") or ""))
+        cur.execute("CREATE INDEX idx_skill_node_sets ON skill_node_sets"
+                    " (node_set)")
+    if nmeta["ok"] and klmeta["ok"] and nimeta["ok"]:
         skill_of = {r["key"]: r["character_skill_key"] for r in nodes}
+        sets_of: dict = {}
+        for r in nitems:
+            sets_of.setdefault(r["item"], set()).add(r["set_key"])
         cur.execute("DROP TABLE IF EXISTS skill_links")
-        cur.execute("CREATE TABLE skill_links (child TEXT, parent TEXT, link_type TEXT)")
+        cur.execute("CREATE TABLE skill_links (child TEXT, parent TEXT,"
+                    " link_type TEXT, node_set TEXT)")
         seen = set()
         for r in nlinks:
             child = skill_of.get(r["child_key"])
             parent = skill_of.get(r["parent_key"])
-            if child and parent and child != parent:
-                row = (child, parent, r["link_type"])
+            if not child or not parent or child == parent:
+                continue
+            shared = (sets_of.get(r["child_key"], set())
+                      & sets_of.get(r["parent_key"], set()))
+            for ns in shared or {""}:
+                row = (child, parent, r["link_type"], ns)
                 if row not in seen:
                     seen.add(row)
-                    cur.execute("INSERT INTO skill_links VALUES (%s, %s, %s)", row)
+                    cur.execute("INSERT INTO skill_links VALUES (%s, %s, %s, %s)",
+                                row)
         cur.execute("CREATE INDEX idx_skill_links_child ON skill_links (child)")
 
     effs, emeta = src("effects_tables")

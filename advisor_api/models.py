@@ -95,6 +95,26 @@ class RunPage(BaseModel):
     cycle_timing: list[TimingRow]
 
 
+class NowLord(BaseModel):
+    rank: int | None = None
+    hp: float | None = None
+    wounded: bool = False
+    region: str | None = None
+    skill_points: int | None = None
+
+
+class NowPage(BaseModel):
+    scope: Scope
+    current: Current
+    turns: list[int] = []
+    settlements: list[float] = []
+    lord_levels: list[float] = []
+    research: Ident | None = None
+    lord: NowLord | None = None
+    equipped: list[Ident] = []
+    pool: list[Ident] = []
+
+
 class LogPage(BaseModel):
     scope: Scope
     file: str | None = None

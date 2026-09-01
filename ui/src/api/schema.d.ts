@@ -940,6 +940,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/now": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Now */
+        get: operations["get_now_api_now_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/events": {
         parameters: {
             query?: never;
@@ -2857,6 +2874,54 @@ export interface components {
             cards: components["schemas"]["ModelCard"][];
             /** Fit */
             fit: components["schemas"]["FitConfigRow"][];
+        };
+        /** NowLord */
+        NowLord: {
+            /** Rank */
+            rank?: number | null;
+            /** Hp */
+            hp?: number | null;
+            /**
+             * Wounded
+             * @default false
+             */
+            wounded: boolean;
+            /** Region */
+            region?: string | null;
+            /** Skill Points */
+            skill_points?: number | null;
+        };
+        /** NowPage */
+        NowPage: {
+            scope: components["schemas"]["Scope"];
+            current: components["schemas"]["Current"];
+            /**
+             * Turns
+             * @default []
+             */
+            turns: number[];
+            /**
+             * Settlements
+             * @default []
+             */
+            settlements: number[];
+            /**
+             * Lord Levels
+             * @default []
+             */
+            lord_levels: number[];
+            research?: components["schemas"]["Ident"] | null;
+            lord?: components["schemas"]["NowLord"] | null;
+            /**
+             * Equipped
+             * @default []
+             */
+            equipped: components["schemas"]["Ident"][];
+            /**
+             * Pool
+             * @default []
+             */
+            pool: components["schemas"]["Ident"][];
         };
         /** OfferRow */
         OfferRow: {
@@ -5693,6 +5758,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_now_api_now_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NowPage"];
                 };
             };
         };
