@@ -25,31 +25,31 @@ CB_ITERATIONS = 5000
 CB_LOSS = "RMSE"
 
 CB_PARAMS = {
-    "depth": 7,
-    "learning_rate": 0.024487953789644423,
-    "l2_leaf_reg": 2.922285825981472,
+    "depth": 8,
+    "learning_rate": 0.15910569655649676,
+    "l2_leaf_reg": 36.44392682337629,
     "grow_policy": "SymmetricTree",
     "bootstrap_type": "Bernoulli",
-    "subsample": 0.6424708453018988,
-    "random_strength": 14.03778390875424,
-    "border_count": 128,
-    "min_data_in_leaf": 30,
-    "one_hot_max_size": 16,
-    "leaf_estimation_iterations": 4,
+    "subsample": 0.728095200496247,
+    "random_strength": 0.6969143630841835,
+    "border_count": 64,
+    "min_data_in_leaf": 5,
+    "one_hot_max_size": 64,
+    "leaf_estimation_iterations": 3,
 }
 
 CB_INTERRUPT_PARAMS = {
-    "depth": 7,
-    "learning_rate": 0.0661826908266778,
-    "l2_leaf_reg": 33.09500250520711,
+    "depth": 8,
+    "learning_rate": 0.1517282087953418,
+    "l2_leaf_reg": 32.61379352997577,
     "grow_policy": "SymmetricTree",
     "bootstrap_type": "Bernoulli",
-    "subsample": 0.9541437449403876,
-    "random_strength": 4.6214644265696725,
-    "border_count": 128,
+    "subsample": 0.9007264009647795,
+    "random_strength": 5.441202149352948,
+    "border_count": 64,
     "min_data_in_leaf": 1,
     "one_hot_max_size": 64,
-    "leaf_estimation_iterations": 2,
+    "leaf_estimation_iterations": 3,
 }
 
 CB_DEPTH = CB_PARAMS["depth"]
