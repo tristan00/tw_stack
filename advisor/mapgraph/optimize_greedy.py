@@ -21,9 +21,10 @@ STAMP = time.strftime("%Y%m%d_%H%M%S")
 OUT_DIR = os.path.join(common.native(common.LOGS_SERVICES), "optuna_gnn_greedy")
 TRIALS_JSONL = os.path.join(OUT_DIR, "trials_%s.jsonl" % STAMP)
 
-FIXED = {"patience": 0, "bf16": True, "seed": 0, "device": "cuda",
+FIXED = {"patience": 4, "bf16": True, "seed": 0, "device": "cuda",
          "epoch_cap_s": 60, "batch": 512}
-STUDY_PATIENCE = 10
+STUDY_PATIENCE = 40
+TPE_STARTUP = 11
 SAMPLER_SEED = int(time.time()) % 100000
 
 
@@ -60,7 +61,7 @@ def _log(msg):
 def _space(trial):
     p = {"lr": trial.suggest_float("lr", 1e-5, 5e-4, log=True),
          "weight_decay": trial.suggest_float("weight_decay", 1e-6, 1e-1, log=True),
-         "hidden": trial.suggest_int("hidden", 4, 64, step=4),
+         "hidden": trial.suggest_int("hidden", 4, 128, step=4),
          "dropout": trial.suggest_float("dropout", 0.0, 0.5),
          "grad_clip": trial.suggest_float("grad_clip", 0.1, 10.0, log=True),
          "entity_layers": trial.suggest_int("entity_layers", 1, 5),
@@ -86,7 +87,7 @@ def _space(trial):
     return p
 
 
-def run(trials=None, budget_s=600.0, timeout_s=None, baseline=False):
+def run(trials=None, budget_s=300.0, timeout_s=None, baseline=False):
     import optuna
     import torch
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -121,15 +122,22 @@ def run(trials=None, budget_s=600.0, timeout_s=None, baseline=False):
     _log("optimize_greedy: trial batches prepared once at batch %d in %.1fs -- reused by "
          "every trial" % (prep["batch"], time.time() - t_prep))
 
+    sampler = optuna.samplers.TPESampler(seed=SAMPLER_SEED, multivariate=True,
+                                         n_startup_trials=TPE_STARTUP)
     study = optuna.create_study(
         study_name="gnn_greedy_%s" % STAMP, storage=_storage(), direction="minimize",
-        sampler=optuna.samplers.TPESampler(seed=SAMPLER_SEED, multivariate=True),
-        pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=2))
+        sampler=sampler, pruner=optuna.pruners.NopPruner())
+    _log("optimize_greedy: sampler %s reports n_startup_trials=%d (asked for %d), "
+         "pruner %s -- trials 0..%d are random, TPE from trial %d"
+         % (type(sampler).__name__, sampler._n_startup_trials, TPE_STARTUP,
+            type(study.pruner).__name__, TPE_STARTUP - 1, TPE_STARTUP))
 
     def objective(trial):
         p = _space(trial)
         cfg = dict(GT.CFG, **FIXED, **p, time_budget_s=budget_s)
-        _log("TRIAL %d start %s" % (trial.number, json.dumps(p, sort_keys=True)))
+        _log("TRIAL %d start [%s] %s"
+             % (trial.number, "random" if trial.number < TPE_STARTUP else "tpe",
+                json.dumps(p, sort_keys=True)))
         t0 = time.time()
 
         def on_epoch(epoch, score):
@@ -191,6 +199,6 @@ if __name__ == "__main__":
     common.require_venv()
     a = sys.argv[1:]
     n = int(a[a.index("--trials") + 1]) if "--trials" in a else None
-    b = float(a[a.index("--budget") + 1]) if "--budget" in a else 600.0
+    b = float(a[a.index("--budget") + 1]) if "--budget" in a else 300.0
     t = float(a[a.index("--timeout") + 1]) if "--timeout" in a else None
     raise SystemExit(run(n, b, t, baseline="--baseline" in a))
