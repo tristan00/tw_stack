@@ -382,6 +382,10 @@ def skill_description(key: str) -> str | None:
     return _clean_text(_loc("character_skills_localised_description_" + key))
 
 
+def item_description(key: str) -> str | None:
+    return _clean_text(_loc("ancillaries_colour_text_" + key))
+
+
 _skill_line_cache: dict = {}
 
 

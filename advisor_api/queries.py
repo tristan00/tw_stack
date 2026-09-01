@@ -1762,6 +1762,7 @@ def item_page(con, key: str) -> dict | None:
     return {
         "key": key, "label": _item_ident(key), "category": labels.item_category(key),
         "effects": labels.item_effect_rows(key),
+        "description": labels.item_description(key),
         "acquisition": labels._loc("ancillaries_explanation_text_" + key),
         "lord_share": round(100.0 * (_i(ev.get("l"), 0) or 0)
                             / (_i(ev.get("n"), 0) or 1), 0)
@@ -2133,6 +2134,7 @@ def catalog_index(con, family: str) -> dict:
                 " AND sub IS NOT NULL GROUP BY 1, 2"):
             chars.setdefault(r["key"], []).append((r["sub"], _i(r["n"], 0) or 0))
     ref = _catalog_ref(family, {r["key"] for r in per})
+    races = _fact_key_cultures(family)
     noun = USAGE_FAMILIES[family]["noun"]
     rows = []
     for p in per:
@@ -2153,7 +2155,8 @@ def catalog_index(con, family: str) -> dict:
         if rp is not None:
             rp = round(rp, 2)
         rows.append(CatalogIndexRow(
-            key=key, label=_fam_label(family, key), category=r.get("category"),
+            key=key, label=_fam_label(family, key), race=races.get(key),
+            category=r.get("category"),
             level=r.get("level"), cost=r.get("cost"), line=r.get("line"),
             tier=r.get("tier"), points=r.get("points"), characters=char_label,
             unlock_rank=r.get("unlock_rank"),
@@ -2176,6 +2179,33 @@ def catalog_index(con, family: str) -> dict:
     return {"family": family, "total": len(rows),
             "campaigns": _fact_campaign_count(),
             "categories": cats, "rows": rows}
+
+
+def _culture_tag(counts) -> str | None:
+    if not counts:
+        return None
+    if len(counts) == 1:
+        return next(iter(counts))
+    return "%d races" % len(counts)
+
+
+def _fact_key_cultures(family) -> dict:
+    per: dict = {}
+    cul_of: dict = {}
+    for r in adb.rows(
+            "WITH " + _FACT_CAMPS + " SELECT a.key, m.faction,"
+            " COUNT(DISTINCT a.campaign_id) n"
+            " FROM acquisitions a JOIN camps m USING (campaign_id)"
+            " WHERE a.family = %(fam)s GROUP BY 1, 2",
+            _fact_params(fam=family)):
+        fk = str(r["faction"])
+        if fk not in cul_of:
+            cul_of[fk] = _fac(fk).culture
+        cul = cul_of[fk]
+        if cul:
+            e = per.setdefault(r["key"], {})
+            e[cul] = e.get(cul, 0) + (_i(r["n"], 0) or 0)
+    return {k: _culture_tag(v) for k, v in per.items()}
 
 
 def _fact_key_stats(family, keys) -> dict:
@@ -2294,11 +2324,33 @@ def _member_arm(got, kids, parent, reached):
     return "picked", k, t
 
 
+def _start_tag(starts) -> str | None:
+    if not starts:
+        return None
+    got = sorted(starts.items(), key=lambda kv: (-kv[1]["n"], kv[0]))
+    top = got[0][1]
+    tag = top["leader"] or _fac(got[0][0][1]).label
+    if len(got) > 1:
+        tag += " +%d more" % (len(got) - 1)
+    return tag
+
+
+def _fork_note(bucket, c):
+    sk = (c["campaign_map"], c["faction"])
+    e = bucket["starts"].setdefault(sk, {"n": 0, "leader": None})
+    e["n"] += 1
+    e["leader"] = e["leader"] or c["leader"]
+    cul = _fac(c["faction"]).culture
+    if cul:
+        bucket["culs"][cul] = bucket["culs"].get(cul, 0) + 1
+
+
 @db.timed
 def choices_page(con, family: str) -> dict:
     camp = {int(r["campaign_id"]): r for r in adb.rows(
         "WITH " + _FACT_CAMPS +
-        " SELECT campaign_id, reward, turns_reached FROM camps",
+        " SELECT campaign_id, reward, turns_reached, faction,"
+        " campaign_map, leader FROM camps",
         _fact_params())}
     states, peaks = _fact_turn_states()
     forks = []
@@ -2321,10 +2373,12 @@ def choices_page(con, family: str) -> dict:
         for region, camps in per_region.items():
             arms: dict = {}
             cohort = 0
+            who = {"starts": {}, "culs": {}}
             for cid, rows in camps.items():
                 if cid not in camp:
                     continue
                 cohort += 1
+                _fork_note(who, camp[cid])
                 reached = min((st for _k, st, _sd, _t, _d in rows
                                if st is not None), default=None)
                 built = [(d, t, k) for k, _st, sd, t, d in rows
@@ -2342,7 +2396,7 @@ def choices_page(con, family: str) -> dict:
                 forks.append((region,
                               labels.name_for("attack_settlement", region)
                               or labels.pretty(region), cohort, arms,
-                              chain_label))
+                              chain_label, who))
     else:
         specs = _fork_specs(family)
         keys = sorted({k for _f2, p, kids in specs for k in kids}
@@ -2377,8 +2431,10 @@ def choices_page(con, family: str) -> dict:
                 if verdict == "unobserved":
                     continue
                 sub = member_sub.get(member) if per_char else None
-                bucket = by_sub.setdefault(sub, {"arms": {}, "cohort": 0})
+                bucket = by_sub.setdefault(sub, {"arms": {}, "cohort": 0,
+                                                 "starts": {}, "culs": {}})
                 bucket["cohort"] += 1
+                _fork_note(bucket, camp[cid])
                 _arm_note(bucket["arms"], k, cid, reached, t, camp, states,
                           peaks)
             for sub, bucket in by_sub.items():
@@ -2389,10 +2445,11 @@ def choices_page(con, family: str) -> dict:
                     label += " · " + (labels.subtype_name(sub)
                                       or labels.pretty(sub))
                 forks.append((fork_key + ("@" + sub if sub else ""),
-                              label, bucket["cohort"], bucket["arms"], {}))
+                              label, bucket["cohort"], bucket["arms"], {},
+                              bucket))
     forks.sort(key=lambda f2: -f2[2])
     out = []
-    for fork_key, label, cohort, arms, chain_label in forks:
+    for fork_key, label, cohort, arms, chain_label, who in forks:
         arm_rows = []
         for arm, e in sorted(arms.items(),
                              key=lambda kv: (kv[0] is None, -kv[1]["n"])):
@@ -2414,6 +2471,9 @@ def choices_page(con, family: str) -> dict:
                 delta_future=round(mine_f - other_f, 2)
                 if mine_f is not None and other_f is not None else None))
         out.append(ForkRow(fork=fork_key, label=label, cohort=cohort,
+                           race=_culture_tag(who["culs"]),
+                           starts=_start_tag(who["starts"]),
+                           n_starts=len(who["starts"]),
                            arms=arm_rows))
     return {"forks": out}
 

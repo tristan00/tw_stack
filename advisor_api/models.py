@@ -607,6 +607,9 @@ class ForkRow(BaseModel):
     fork: str
     label: str
     cohort: int = 0
+    race: str | None = None
+    starts: str | None = None
+    n_starts: int = 0
     arms: list[ForkArmRow] = Field(default_factory=list)
 
 
@@ -648,6 +651,7 @@ class ItemPage(BaseModel):
     label: str | None = None
     category: str | None = None
     effects: list[ItemEffect] = Field(default_factory=list)
+    description: str | None = None
     acquisition: str | None = None
     lord_share: float | None = None
     held_in: int = 0
@@ -761,6 +765,7 @@ class CampaignBuildingsPage(BaseModel):
 class CatalogIndexRow(BaseModel):
     key: str
     label: str | None = None
+    race: str | None = None
     category: str | None = None
     level: int | None = None
     cost: int | None = None
