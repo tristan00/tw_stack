@@ -34,7 +34,8 @@ from advisor_api.models import (
     SwapsPage,
     StartItems, StartResearch, StartSkills,
     CampaignBuildingsPage, CampaignLookupPage, CatalogIndexPage, CatalogKeyPage,
-    ChoicesPage, LookupFacets, PositionsPage, RewardWeightsPage, StartBuildings,
+    CatalogOvertime, ChoicesPage, LookupFacets, PositionsPage, RewardWeightsPage,
+    StartBuildings,
 )
 
 UI_DIST = os.path.join(common.ROOT, "ui", "dist")
@@ -396,6 +397,20 @@ def get_choices(family: str) -> ChoicesPage:
         scope=_scope("every fork in the %s tree, and what each path -- or "
                      "not continuing -- went on to gain"
                      % ("building slot" if family == "building" else family)),
+        **got)
+
+
+@app.get("/api/overtime/{family}", response_model=CatalogOvertime,
+         response_model_exclude_none=True, tags=["catalog"])
+def get_overtime(family: str) -> CatalogOvertime:
+    if family not in ("research", "skills", "building"):
+        raise HTTPException(404, "no overtime view for %r" % family)
+    con = _con()
+    got = q.catalog_overtime(con, family)
+    return CatalogOvertime(
+        scope=_scope("share of first %s per bucket of campaigns, play order"
+                     % ("tech" if family == "research"
+                        else "skill" if family == "skills" else "building")),
         **got)
 
 

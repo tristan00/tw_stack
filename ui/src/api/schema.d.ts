@@ -429,6 +429,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/overtime/{family}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Overtime */
+        get: operations["get_overtime_api_overtime__family__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/lookup": {
         parameters: {
             query?: never;
@@ -1885,6 +1902,26 @@ export interface components {
             by_start?: components["schemas"]["CatalogStartRow"][];
             /** Recent */
             recent?: components["schemas"]["CatalogCampaignRow"][];
+        };
+        /** CatalogOvertime */
+        CatalogOvertime: {
+            scope: components["schemas"]["Scope"];
+            /**
+             * Campaigns
+             * @default 0
+             */
+            campaigns: number;
+            /**
+             * Ribbon Family
+             * @default
+             */
+            ribbon_family: string;
+            /** Ribbon Keys */
+            ribbon_keys?: string[];
+            /** Ribbon Labels */
+            ribbon_labels?: string[];
+            /** Ribbon */
+            ribbon?: components["schemas"]["RibbonBucket"][];
         };
         /** CatalogStartRow */
         CatalogStartRow: {
@@ -4914,6 +4951,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ChoicesPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_overtime_api_overtime__family__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                family: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogOvertime"];
                 };
             };
             /** @description Validation Error */
