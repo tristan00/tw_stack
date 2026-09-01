@@ -33,7 +33,7 @@ from advisor_api.models import (
     StartCampaign, Verdict, WindowEdgeRow,
     BehaviourRow, BuildingRow, CampaignBuildingRow, CampaignCharacter,
     CampaignItemEvent, CampaignSkillRow, CampaignTechRow, CatalogCampaignRow,
-    CatalogIndexRow, CatalogStartRow, CatalogVersionRow, ChainLevel, ForkArmRow,
+    CatalogIndexRow, CatalogStartRow, ChainLevel, ForkArmRow,
     ForkRow, ItemEffect, TraitLevelRow,
     ItemCampaignRow, ItemRow, LordState,
     ItemStartRow, ItemSwapRow, LookupCampaignRow, PositionFacetOption,
@@ -2584,31 +2584,6 @@ def catalog_key_page(con, family: str, key: str) -> dict | None:
             " SELECT m.campaign_key, m.first_ts, m.leader, p.turn, m.reward"
             " FROM per p JOIN camps m USING (campaign_id)"
             " ORDER BY m.first_ts DESC NULLS LAST LIMIT 8", params)]
-    version_rows = []
-    for r in adb.rows(
-            "WITH " + _FACT_CAMPS + ", per AS ("
-            " SELECT a.campaign_id, BOOL_OR(a.acquired_turn IS NOT NULL) taken"
-            " FROM acquisitions a WHERE a.family = %(fam)s AND a.key = %(key)s"
-            " GROUP BY 1)"
-            " SELECT cv.collector_sha sha, MIN(m.first_ts) t0,"
-            "  COUNT(*) of_n, COUNT(*) FILTER (WHERE p.taken) took_n,"
-            "  AVG(m.reward) FILTER (WHERE p.taken) rt,"
-            "  AVG(m.reward) FILTER (WHERE NOT p.taken) rp"
-            " FROM per p JOIN camps m USING (campaign_id)"
-            " JOIN campaigns c ON c.campaign_id = p.campaign_id"
-            " JOIN decisions d ON d.decision_id = c.first_decision_id"
-            " JOIN collector_versions cv ON cv.version_id = d.version_id"
-            " GROUP BY 1 ORDER BY t0 DESC", params):
-        sha = str(r["sha"] or "")
-        tn = _i(r["took_n"], 0) or 0
-        on = _i(r["of_n"], 0) or 0
-        rt, rp = _f(r["rt"]), _f(r["rp"])
-        version_rows.append(CatalogVersionRow(
-            version=sha.split("+", 1)[0], stamp=sha,
-            took=Rate(n=tn, of=max(on, tn), noun="campaigns",
-                      population="on that version it was available in"),
-            avg_reward_took=round(rt, 2) if rt is not None else None,
-            avg_reward_passed=round(rp, 2) if rp is not None else None))
     noun = USAGE_FAMILIES[family]["noun"]
     mine = _fact_key_stats(family, [key]).get(key) or {}
     tn_all = mine.get("tn", 0)
@@ -2631,7 +2606,7 @@ def catalog_key_page(con, family: str, key: str) -> dict | None:
         "avg_turn": mine.get("avg_turn"),
         "avg_reward_took": rt, "avg_reward_passed": rp,
         "delta": mine.get("delta"),
-        "by_start": start_rows, "by_version": version_rows, "recent": recent}
+        "by_start": start_rows, "recent": recent}
 
     def related_rows(parents, children, refs):
         rel = []
