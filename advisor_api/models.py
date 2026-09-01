@@ -868,6 +868,14 @@ class SkillCharacterRow(BaseModel):
     avg_turn: float | None = None
 
 
+class CatalogVersionRow(BaseModel):
+    version: str
+    stamp: str
+    took: Rate | None = None
+    avg_reward_took: float | None = None
+    avg_reward_passed: float | None = None
+
+
 class CatalogKeyPage(BaseModel):
     scope: Scope
     family: str
@@ -895,6 +903,7 @@ class CatalogKeyPage(BaseModel):
     related: list[RelatedKey] = Field(default_factory=list)
     by_character: list[SkillCharacterRow] = Field(default_factory=list)
     by_start: list[CatalogStartRow] = Field(default_factory=list)
+    by_version: list[CatalogVersionRow] = Field(default_factory=list)
     recent: list[CatalogCampaignRow] = Field(default_factory=list)
 
 
