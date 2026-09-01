@@ -17,14 +17,14 @@ sys.path.insert(0, common.DECISIONS)
 
 THREADS = max(1, os.cpu_count() or 8)
 
-CFG = {"hidden": 32, "entity_layers": 3, "action_rounds": 4,
-       "map_aggr": "mean", "act_aggr": "max", "attn": "map",
-       "conv": "rel", "conv_map": "sage", "conv_a2e": None, "conv_e2a": "rel",
-       "dst_dim": 32, "update": "none", "self_transform": False,
-       "dropout": 0.3503581770006523,
-       "lr": 0.00020311262314605467, "weight_decay": 1.1778744095308347e-06,
-       "batch": 384, "epochs": 60, "patience": 10,
-       "grad_clip": 1.0, "bf16": True,
+CFG = {"hidden": 44, "entity_layers": 3, "action_rounds": 2,
+       "map_aggr": "max", "act_aggr": "add+mean", "attn": "all",
+       "conv": "rel", "conv_map": "sage", "conv_a2e": "sage", "conv_e2a": "sage",
+       "dst_dim": 32, "update": "linear", "self_transform": True,
+       "dropout": 0.4581887064335544,
+       "lr": 0.0002026947291305249, "weight_decay": 0.0002992084952930319,
+       "batch": 512, "patience": 10,
+       "grad_clip": 5.262826428440763, "bf16": True,
        "seed": 0, "time_budget_s": 600, "device": "cuda"}
 
 MIN_FIT_S = 30

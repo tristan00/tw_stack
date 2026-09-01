@@ -14,8 +14,7 @@ import common
 sys.path.insert(0, common.DECISIONS)
 
 import features as F
-from base_model import (CB_EARLY_STOPPING, CB_INTERRUPT_PARAMS, CB_ITERATIONS, CB_LOSS,
-                        CB_PARAMS, grouped_split)
+from base_model import CB_ITERATIONS, CB_LOSS, grouped_split
 
 STAMP = time.strftime("%Y%m%d_%H%M%S")
 OUT_DIR = os.path.join(common.native(common.LOGS_SERVICES), "optuna_catboost")
@@ -23,7 +22,8 @@ OUT_DIR = os.path.join(common.native(common.LOGS_SERVICES), "optuna_catboost")
 FIT_CAP_S = {"main": 120.0, "interrupt": 60.0}
 CV_FOLDS = 3
 CV_TOP = 5
-PATIENCE = 24
+PATIENCE = 10
+TUNE_EARLY_STOPPING = 20
 SAMPLER_SEED = int(time.time()) % 100000
 
 
@@ -85,31 +85,27 @@ def _space(trial):
                 "leaf_estimation_iterations", 1, 4)}
 
 
-_BASE = {"main": CB_PARAMS, "interrupt": CB_INTERRUPT_PARAMS}
-
-
-def _enqueue(kind):
-    return {k: _BASE[kind][k] for k in
-            ("depth", "learning_rate", "l2_leaf_reg", "subsample", "random_strength",
-             "border_count", "min_data_in_leaf", "one_hot_max_size",
-             "leaf_estimation_iterations")}
-
-
 def _fit_val(X, y, cat_idx, val, trn, params, cap_s):
     from catboost import CatBoostRegressor, Pool
     m = CatBoostRegressor(iterations=CB_ITERATIONS, loss_function=CB_LOSS, verbose=0,
                           allow_writing_files=False, **params)
     cap = _TimeCap(cap_s)
     t0 = time.time()
+    yv = [y[i] for i in val]
+    vpool = Pool([X[i] for i in val], yv, cat_features=cat_idx)
     m.fit(Pool([X[i] for i in trn], [y[i] for i in trn], cat_features=cat_idx),
-          eval_set=Pool([X[i] for i in val], [y[i] for i in val], cat_features=cat_idx),
-          early_stopping_rounds=CB_EARLY_STOPPING, use_best_model=True, verbose=0,
-          callbacks=[cap])
+          eval_set=vpool, early_stopping_rounds=TUNE_EARLY_STOPPING,
+          use_best_model=True, verbose=0, callbacks=[cap])
     best = m.get_best_score() or {}
     rmse = float((best.get("validation") or {}).get("RMSE", 0.0))
+    pv = list(m.predict(vpool))
+    ybar = sum(yv) / len(yv)
+    sst = sum((v - ybar) ** 2 for v in yv)
+    sse = sum((a - b) ** 2 for a, b in zip(yv, pv))
     return rmse, {"seconds": round(time.time() - t0, 1),
                   "iterations": int(m.tree_count_),
                   "best_iteration": int(m.get_best_iteration() or 0),
+                  "val_r2": round(1.0 - sse / sst, 5) if sst > 0 else None,
                   "hit_cap": cap.hit}
 
 
@@ -153,9 +149,9 @@ def _trial_score(mats, params, cap_s, splits):
     for (tag, X, y, cat_idx, groups), (val, trn) in zip(mats, splits):
         rmse, info = _fit_val(X, y, cat_idx, val, trn, params, cap_s)
         parts[tag] = dict(info, val_rmse=round(rmse, 6))
-        _log("  fit %s: rmse=%.5f %d/%d rows, %d trees (best %d), %.0fs%s"
-             % (tag, rmse, len(trn), len(trn) + len(val), info["iterations"],
-                info["best_iteration"], info["seconds"],
+        _log("  fit %s: rmse=%.5f r2=%+0.4f %d/%d rows, %d trees (best %d), %.0fs%s"
+             % (tag, rmse, info["val_r2"] or 0.0, len(trn), len(trn) + len(val),
+                info["iterations"], info["best_iteration"], info["seconds"],
                 " -- HIT THE %.0fs CAP" % cap_s if info["hit_cap"] else ""))
     score = sum(p["val_rmse"] for p in parts.values()) / len(parts)
     return score, parts
@@ -182,7 +178,6 @@ def run(kind, trials, timeout_s):
         study_name="catboost_%s_%s" % (kind, STAMP), storage=_storage(),
         direction="minimize",
         sampler=optuna.samplers.TPESampler(seed=SAMPLER_SEED, multivariate=True))
-    study.enqueue_trial(_enqueue(kind))
 
     def objective(trial):
         p = _space(trial)
@@ -191,6 +186,12 @@ def run(kind, trials, timeout_s):
         score, parts = _trial_score(mats, p, cap_s, splits)
         row = {"trial": trial.number, "params": p, "score": round(score, 6),
                "parts": parts, "seconds": round(time.time() - t0, 1), "ts": time.time()}
+        one = parts["model"]
+        trial.set_user_attr("r2", one["val_r2"])
+        trial.set_user_attr("iterations", one["iterations"])
+        trial.set_user_attr("best_iteration", one["best_iteration"])
+        trial.set_user_attr("hit_cap", one["hit_cap"])
+        trial.set_user_attr("seconds", row["seconds"])
         with open(trail, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(row) + "\n")
         vals = [t.value for t in study.trials if t.value is not None]
@@ -203,10 +204,10 @@ def run(kind, trials, timeout_s):
         return score
 
     _log("%s study: %s trials, %s study timeout, %.0fs fit cap, serial trials, "
-         "patience %d, sampler seed %d"
+         "study patience %d, fit early stopping %d, sampler seed %d"
          % (kind, trials if trials else "unbounded",
             ("%.0fs" % timeout_s) if timeout_s else "none",
-            cap_s, PATIENCE, SAMPLER_SEED))
+            cap_s, PATIENCE, TUNE_EARLY_STOPPING, SAMPLER_SEED))
     study.optimize(objective, n_trials=trials, timeout=timeout_s, gc_after_trial=True,
                    catch=(RuntimeError,), callbacks=[_patience_cb()])
     done = [t for t in study.trials if t.value is not None]
@@ -223,16 +224,12 @@ def run(kind, trials, timeout_s):
         _log("CV trial %d: split=%.5f cv=%.5f +/- %.5f folds=%s"
              % (t.number, t.value, mean, sd, folds))
     table.sort(key=lambda r: (r["cv_mean"], r["params"]["depth"]))
-    base_mean, base_sd, base_folds = _cv_score(mats, dict(_BASE[kind]), cap_s)
     winner = table[0] if table else None
     out = {"kind": kind, "stamp": STAMP, "trials_scored": len(done),
-           "fit_cap_s": cap_s, "cv_folds": CV_FOLDS,
-           "baseline_params": dict(_BASE[kind]),
-           "baseline_cv": {"mean": base_mean, "sd": base_sd, "folds": base_folds},
-           "top": table, "winner": winner}
+           "fit_cap_s": cap_s, "cv_folds": CV_FOLDS, "tune_early_stopping":
+           TUNE_EARLY_STOPPING, "top": table, "winner": winner}
     path = os.path.join(OUT_DIR, "best_%s_%s.json" % (kind, STAMP))
     json.dump(out, open(path, "w"), indent=1)
-    _log("BASELINE cv=%.5f +/- %.5f folds=%s" % (base_mean, base_sd, base_folds))
     if winner:
         _log("WINNER trial %d cv=%.5f +/- %.5f params %s"
              % (winner["trial"], winner["cv_mean"], winner["cv_sd"],

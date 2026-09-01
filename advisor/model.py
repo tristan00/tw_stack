@@ -14,7 +14,7 @@ sys.path.insert(0, common.DECISIONS)
 
 import features as F
 import memory as MEM
-from base_model import (CB_MAIN_ITERATIONS, RUNS_ROOT, TARGET_PARTS,
+from base_model import (RUNS_ROOT, TARGET_PARTS,
                         TRAIN_WINDOW_CAMPAIGNS, target,
                         SHORT_HORIZON, SHORT_WEIGHT, decision_deltas, fit_es,
                         grouped_split, params, _ranks)
@@ -122,8 +122,7 @@ def train(runs_root=RUNS_ROOT, window=TRAIN_WINDOW_CAMPAIGNS):
     n_rows = len(rows)
     rows = data["full"] = None
     cat_idx = list(range(len(num), len(num) + len(cat)))
-    m = fit_es(X, y, cat_idx, groups, "model", fit_report,
-               iterations=CB_MAIN_ITERATIONS)
+    m = fit_es(X, y, cat_idx, groups, "model", fit_report)
     preds = list(m.predict(Pool(X, cat_features=cat_idx)))
     X = None
     val, _trn = grouped_split(len(preds), groups)
@@ -156,7 +155,7 @@ def train(runs_root=RUNS_ROOT, window=TRAIN_WINDOW_CAMPAIGNS):
         if os.path.exists(p):
             os.remove(p)
     return {"trained": True, "rows": n_rows, "mae_in_sample": round(mae, 5),
-            "fit": fit_report, "params": params(iterations=CB_MAIN_ITERATIONS),
+            "fit": fit_report, "params": params(),
             **_counts(data)}
 
 

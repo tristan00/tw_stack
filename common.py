@@ -141,7 +141,7 @@ UI_CAPTURE = os.path.join(ROOT, "ui-capture")
 
 VERSION_FILE = os.path.join(ROOT, "VERSION")
 
-LOOKBACK_CAMPAIGNS = 2500
+LOOKBACK_CAMPAIGNS = 1000
 
 
 def code_version():

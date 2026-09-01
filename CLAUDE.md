@@ -61,8 +61,7 @@ changing or operating it. These rules were set explicitly by the owner; do not r
 
 ## Verification
 
-- Verify, don't assume: after changes run `check.py` (22 offline gates) and `pytest -q`
-  (all green is the bar), and verify behavior in the live run, not just syntax.
+- Verify, don't assume: verify behavior in the live run, not just syntax.
 - `runctl.py` is the entrypoint. Every run parameter must be stated explicitly on its
  command line — there are no defaults and `run_config.RUN` no longer feeds any. Each
  launch's full param set is recorded to `logs/services/last_launch.json`, the only

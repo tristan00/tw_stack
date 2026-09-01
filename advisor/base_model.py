@@ -24,48 +24,33 @@ SHORT_WEIGHT = 0.5
 CB_ITERATIONS = 5000
 CB_LOSS = "RMSE"
 
-CB_TUNED_FROM = ("optuna catboost_main_20260827_111057 trial 21 of 36 (patience 12, 120s "
-                 "fit cap): split rmse 1.4157, cv 1.49267 +/- 0.04839 vs old production "
-                 "1.50919 +/- 0.05393 on 20260827 corpus (94448 rows, 2814 campaigns), "
-                 "pairwise better on all 3 folds; small-fast runner-up trial 15 (176 "
-                 "trees, 44s) cv 1.49713")
-
 CB_PARAMS = {
-    "depth": 8,
-    "learning_rate": 0.036383825640027526,
-    "l2_leaf_reg": 1.3565747026380994,
+    "depth": 7,
+    "learning_rate": 0.024487953789644423,
+    "l2_leaf_reg": 2.922285825981472,
     "grow_policy": "SymmetricTree",
     "bootstrap_type": "Bernoulli",
-    "subsample": 0.7157512597031922,
-    "random_strength": 0.8803026036337803,
-    "border_count": 32,
-    "min_data_in_leaf": 6,
-    "one_hot_max_size": 64,
-    "leaf_estimation_iterations": 1,
+    "subsample": 0.6424708453018988,
+    "random_strength": 14.03778390875424,
+    "border_count": 128,
+    "min_data_in_leaf": 30,
+    "one_hot_max_size": 16,
+    "leaf_estimation_iterations": 4,
 }
-
-CB_MAIN_ITERATIONS = 634
-
-CB_INTERRUPT_TUNED_FROM = ("optuna catboost_interrupt_20260827_101340 trial 30 of 35 (60s "
-                           "fit cap, one-model interrupt): split rmse 1.6978, cv 1.63982 "
-                           "+/- 0.02003 vs production-params baseline 1.65084 +/- 0.02873 "
-                           "on 20260827 corpus (20494 rows); 396 trees, ~47s fit")
 
 CB_INTERRUPT_PARAMS = {
-    "depth": 8,
-    "learning_rate": 0.08002610130462377,
-    "l2_leaf_reg": 22.27676846486425,
+    "depth": 7,
+    "learning_rate": 0.0661826908266778,
+    "l2_leaf_reg": 33.09500250520711,
     "grow_policy": "SymmetricTree",
     "bootstrap_type": "Bernoulli",
-    "subsample": 0.9665884328973036,
-    "random_strength": 0.1176281598265645,
+    "subsample": 0.9541437449403876,
+    "random_strength": 4.6214644265696725,
     "border_count": 128,
-    "min_data_in_leaf": 5,
+    "min_data_in_leaf": 1,
     "one_hot_max_size": 64,
-    "leaf_estimation_iterations": 1,
+    "leaf_estimation_iterations": 2,
 }
-
-CB_INTERRUPT_ITERATIONS = 396
 
 CB_DEPTH = CB_PARAMS["depth"]
 CB_LEARNING_RATE = CB_PARAMS["learning_rate"]
@@ -119,14 +104,13 @@ def stable_split(n, groups, frac=VAL_FRACTION, salt=HOLDOUT_SALT):
     return val, trn
 
 
-def params(iterations=None, learning_rate=None, base=None, tuned_from=None):
+def params(iterations=None, learning_rate=None, base=None):
     p = dict(base or CB_PARAMS)
     return dict(p,
                 learning_rate=float(learning_rate or p["learning_rate"]),
                 early_stopping_rounds=CB_EARLY_STOPPING,
                 iteration_cap=int(iterations or CB_ITERATIONS),
-                loss=CB_LOSS, val_fraction=VAL_FRACTION,
-                tuned_from=tuned_from or CB_TUNED_FROM)
+                loss=CB_LOSS, val_fraction=VAL_FRACTION)
 
 
 def regressor(iterations=None, learning_rate=None, base=None):

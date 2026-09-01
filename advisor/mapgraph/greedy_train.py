@@ -22,21 +22,12 @@ MODEL_DIR = common.MODEL_MAPGRAPH_GREEDY
 CFG = dict(T.CFG)
 MIN_ROWS = S.MIN_ROWS
 
-TARGET = ("base_model.target(decision_deltas(...)), z-scored -- identical to the CatBoost "
-          "target, unmodified")
-LOSS = ("MSE(q_taken, y_z): one reward prediction per action node, read off the action "
-        "node plus the pooled graph and g_ctx; no advantage, no value head, no "
-        "state-only model")
 
-
-def fit_net(datas, ys, groups, cfg, log=print, on_epoch=None, free_datas=False):
+def prepare(datas, ys, groups, cfg, log=print, norm=None, free_datas=False):
     import torch
     from base_model import stable_split
-    from advisor.mapgraph import greedy_net as GN
+    from advisor.mapgraph import net as N
 
-    torch.set_num_threads(int(cfg.get("threads") or T.THREADS))
-    torch.manual_seed(cfg["seed"])
-    torch.set_float32_matmul_precision("high")
     dev = T._device(cfg, log)
     val_idx, trn_idx = stable_split(len(datas), groups)
     y_trn = [ys[i] for i in trn_idx]
@@ -45,27 +36,55 @@ def fit_net(datas, ys, groups, cfg, log=print, on_epoch=None, free_datas=False):
     for d in datas:
         d.y_z = (d.y - y_mean) / y_sd
 
-    net = GN.from_cfg(cfg).to(dev)
-    net.encoder.type_enc.fit_norm([datas[i] for i in trn_idx], log=log)
-    opt = torch.optim.AdamW(net.parameters(), lr=cfg["lr"],
-                            weight_decay=cfg["weight_decay"],
-                            fused=(dev.type == "cuda"))
-    gen = torch.Generator().manual_seed(cfg["seed"])
+    if norm is None:
+        t_n = time.time()
+        norm = N.norm_stats([datas[i] for i in trn_idx], log=log)
+        log("mapgraph.greedy_train: norm stats %.1fs" % (time.time() - t_n))
 
+    gen = torch.Generator().manual_seed(cfg["seed"])
     order0 = torch.randperm(len(trn_idx), generator=gen).tolist()
     trn = [datas[trn_idx[i]] for i in order0]
     loader = T._collate(trn, cfg["batch"], dev, log, "greedy train")
     vloader = T._collate([datas[i] for i in val_idx], cfg["batch"], dev, log,
                          "greedy val") if val_idx else []
+    del trn
     if free_datas:
-        del trn
         datas.clear()
-    amp = (dev.type == "cuda") and bool(cfg.get("bf16", True))
 
     val_var = None
     if vloader:
         yv = torch.cat([b.y_z for b in vloader])
         val_var = float(yv.var(unbiased=False)) or 1.0
+    return {"batch": cfg["batch"], "seed": cfg["seed"], "norm": norm, "loader": loader,
+            "vloader": vloader, "val_var": val_var, "y_mean": y_mean, "y_sd": y_sd,
+            "train_rows": len(trn_idx), "val_rows": len(val_idx)}
+
+
+def fit_net(datas, ys, groups, cfg, log=print, on_epoch=None, free_datas=False,
+            prep=None):
+    import torch
+    from advisor.mapgraph import greedy_net as GN
+
+    torch.set_num_threads(int(cfg.get("threads") or T.THREADS))
+    torch.manual_seed(cfg["seed"])
+    torch.set_float32_matmul_precision("high")
+    dev = T._device(cfg, log)
+    if prep is None:
+        prep = prepare(datas, ys, groups, cfg, log=log, free_datas=free_datas)
+    elif (prep["batch"], prep["seed"]) != (cfg["batch"], cfg["seed"]):
+        raise RuntimeError("mapgraph.greedy_train: prepared batch/seed %r does not match "
+                           "cfg %r" % ((prep["batch"], prep["seed"]),
+                                       (cfg["batch"], cfg["seed"])))
+    loader, vloader, val_var = prep["loader"], prep["vloader"], prep["val_var"]
+    y_mean, y_sd = prep["y_mean"], prep["y_sd"]
+
+    net = GN.from_cfg(cfg).to(dev)
+    net.encoder.type_enc.load_norm(prep["norm"])
+    opt = torch.optim.AdamW(net.parameters(), lr=cfg["lr"],
+                            weight_decay=cfg["weight_decay"],
+                            fused=(dev.type == "cuda"))
+    gen = torch.Generator().manual_seed(cfg["seed"])
+    amp = (dev.type == "cuda") and bool(cfg.get("bf16", True))
 
     def step(b):
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=amp):
@@ -74,14 +93,15 @@ def fit_net(datas, ys, groups, cfg, log=print, on_epoch=None, free_datas=False):
         q = GN.taken_q(out["q"].float(), out["action_graph"], b.is_taken, n)
         return torch.nn.functional.mse_loss(q, b.y_z, reduction="none")
 
-    best, best_state, bad, stopped = None, None, 0, "epochs"
+    best, best_state, bad, stopped = None, None, 0, "time_budget"
     out_of_time = False
     curve = []
     val_s = None
     VAL_S_GUESS = 6.0
     t0 = time.time()
     epoch = -1
-    for epoch in range(cfg["epochs"]):
+    while True:
+        epoch += 1
         net.train()
         t_ep = time.time()
         for i in torch.randperm(len(loader), generator=gen).tolist():
@@ -122,7 +142,7 @@ def fit_net(datas, ys, groups, cfg, log=print, on_epoch=None, free_datas=False):
                    "*" if improved else " ", time.time() - t0))
             if on_epoch is not None:
                 on_epoch(epoch + 1, score)
-            if bad >= cfg["patience"]:
+            if bad >= max(1, cfg["patience"]):
                 stopped = "patience"
                 break
         if out_of_time:
@@ -137,7 +157,7 @@ def fit_net(datas, ys, groups, cfg, log=print, on_epoch=None, free_datas=False):
            "val_r2": (round(1.0 - best / (val_var or 1.0), 5) if best is not None else None),
            "val_var": round(val_var, 5) if val_var is not None else None,
            "epochs_run": epoch + 1, "stopped_by": stopped, "device": dev.type,
-           "val_rows": len(val_idx), "train_rows": len(trn_idx),
+           "val_rows": prep["val_rows"], "train_rows": prep["train_rows"],
            "curve": curve,
            "seconds": round(time.time() - t0, 1)}
     return net, fit, y_mean, y_sd
@@ -163,8 +183,7 @@ def _meta(backend, cfg, ex, fit, y_mean, y_sd, tally):
             "campaigns": sorted({e["campaign_id"] for e in ex}), "fit": fit,
             "y_mean": round(y_mean, 6), "y_sd": round(y_sd, 6),
             "n_scalars": S.N_SCALARS, "node_types": list(S.NODE_TYPES),
-            "relations": list(S.RELATIONS), "tally": tally,
-            "target": TARGET, "loss": LOSS}
+            "relations": list(S.RELATIONS), "tally": tally}
 
 
 def _budget(cfg, walked, log):
@@ -204,7 +223,7 @@ def train(runs_root=None, cfg=None, log=None, model_dir=MODEL_DIR, limit=None):
 
 
 _OVERRIDES = {"--budget": ("time_budget_s", int), "--batch": ("batch", int),
-              "--epochs": ("epochs", int), "--patience": ("patience", int),
+              "--patience": ("patience", int),
               "--device": ("device", str), "--threads": ("threads", int),
               "--hidden": ("hidden", int), "--entity-layers": ("entity_layers", int),
               "--action-rounds": ("action_rounds", int), "--lr": ("lr", float)}

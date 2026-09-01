@@ -121,6 +121,36 @@ _NT = len(S.NODE_TYPES)
 _NORM_SAMPLE = 2_000_000
 
 
+@torch.no_grad()
+def norm_stats(datas, log=None):
+    x = torch.cat([d.x for d in datas])
+    nt = torch.cat([d.node_type for d in datas])
+    center = torch.zeros(_NT, S.MAX_FIELDS)
+    spread = torch.ones(_NT, S.MAX_FIELDS)
+    fitted = 0
+    for t in range(_NT):
+        rows = x[nt == t]
+        if rows.numel() == 0 or rows.size(0) < 8:
+            continue
+        for c in range(S.MAX_FIELDS):
+            v = rows[:, c]
+            if v.numel() > _NORM_SAMPLE:
+                gen = torch.Generator().manual_seed(t * S.MAX_FIELDS + c)
+                v = v[torch.randint(0, v.numel(), (_NORM_SAMPLE,), generator=gen)]
+            q = torch.quantile(v, torch.tensor([0.25, 0.5, 0.75], dtype=v.dtype))
+            iqr = float(q[2] - q[0])
+            sd = float(v.std(unbiased=False))
+            s = iqr / 1.349 if iqr > 0 else sd
+            if s <= 0:
+                continue
+            center[t, c] = float(q[1])
+            spread[t, c] = s
+            fitted += 1
+    if log:
+        log("mapgraph.net: input norm fitted on %d (node type, field) pairs" % fitted)
+    return center, spread, fitted
+
+
 class TypeEncoders(nn.Module):
 
     def __init__(self, hidden):
@@ -134,35 +164,13 @@ class TypeEncoders(nn.Module):
 
     @torch.no_grad()
     def fit_norm(self, datas, log=None):
-        cols = [[[] for _ in range(S.MAX_FIELDS)] for _ in range(_NT)]
-        for d in datas:
-            x, nt = d.x, d.node_type
-            for t in nt.unique().tolist():
-                rows = x[nt == t]
-                for c in range(S.MAX_FIELDS):
-                    cols[t][c].append(rows[:, c])
-        fitted = 0
-        for t in range(_NT):
-            for c in range(S.MAX_FIELDS):
-                if not cols[t][c]:
-                    continue
-                v = torch.cat(cols[t][c])
-                if v.numel() < 8:
-                    continue
-                if v.numel() > _NORM_SAMPLE:
-                    gen = torch.Generator().manual_seed(t * S.MAX_FIELDS + c)
-                    v = v[torch.randint(0, v.numel(), (_NORM_SAMPLE,), generator=gen)]
-                q = torch.quantile(v, torch.tensor([0.25, 0.5, 0.75], dtype=v.dtype))
-                iqr = float(q[2] - q[0])
-                sd = float(v.std(unbiased=False))
-                s = iqr / 1.349 if iqr > 0 else sd
-                if s <= 0:
-                    continue
-                self.center[t, c] = float(q[1])
-                self.spread[t, c] = s
-                fitted += 1
-        if log:
-            log("mapgraph.net: input norm fitted on %d (node type, field) pairs" % fitted)
+        return self.load_norm(norm_stats(datas, log=log))
+
+    @torch.no_grad()
+    def load_norm(self, stats):
+        center, spread, fitted = stats
+        self.center.copy_(center)
+        self.spread.copy_(spread)
         return fitted
 
     def forward(self, x, node_type):
