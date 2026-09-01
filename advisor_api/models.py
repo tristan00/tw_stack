@@ -637,15 +637,6 @@ class ChoicesPage(BaseModel):
     forks: list[ForkRow] = Field(default_factory=list)
 
 
-class CatalogOvertime(BaseModel):
-    scope: Scope
-    campaigns: int = 0
-    ribbon_family: str = ""
-    ribbon_keys: list[str] = Field(default_factory=list)
-    ribbon_labels: list[str] = Field(default_factory=list)
-    ribbon: list[RibbonBucket] = Field(default_factory=list)
-
-
 class ItemStartRow(BaseModel):
     campaign_map: Ident | None = None
     faction: Ident
@@ -949,6 +940,18 @@ class LookupFacets(BaseModel):
     settlements: list[PositionFacetOption] = Field(default_factory=list)
     resources: list[PositionFacetOption] = Field(default_factory=list)
     hero_types: list[PositionFacetOption] = Field(default_factory=list)
+
+
+class CatalogOvertime(BaseModel):
+    scope: Scope
+    campaigns: int = 0
+    ribbon_family: str = ""
+    ribbon_keys: list[str] = Field(default_factory=list)
+    ribbon_labels: list[str] = Field(default_factory=list)
+    ribbon: list[RibbonBucket] = Field(default_factory=list)
+    races: list[str] = Field(default_factory=list)
+    lords: list[str] = Field(default_factory=list)
+    starts: list[PositionFacetOption] = Field(default_factory=list)
 
 
 class PositionsPage(BaseModel):

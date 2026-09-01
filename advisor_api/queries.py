@@ -2534,10 +2534,32 @@ def choices_page(con, family: str) -> dict:
 
 
 @db.timed
-def catalog_overtime(con, family: str) -> dict:
-    camps = adb.rows(
+def catalog_overtime(con, family: str, race: str | None = None,
+                     lord: str | None = None, start: str | None = None) -> dict:
+    camps = [(r, _fac(r["faction"]).culture) for r in adb.rows(
         "WITH " + _FACT_CAMPS +
-        " SELECT campaign_id, first_ts FROM camps", _fact_params())
+        " SELECT campaign_id, faction, campaign_map, leader, first_ts"
+        " FROM camps", _fact_params())]
+    races = sorted({cul for _r, cul in camps if cul})
+    lords = sorted({r["leader"] for r, _cul in camps if r["leader"]})
+    opts: dict = {}
+    for r, cul in camps:
+        sk = "%s|%s" % (r["campaign_map"], r["faction"])
+        if sk not in opts:
+            m = (_id(ident.campaign_map(r["campaign_map"]))
+                 if r["campaign_map"] else None)
+            who = r["leader"] or _fac(r["faction"]).label
+            opts[sk] = PositionFacetOption(
+                key=sk, label=who + (" · " + m.label if m else ""), culture=cul)
+        opts[sk].campaigns += 1
+    starts = sorted(opts.values(), key=lambda o: o.label)
+    if race:
+        camps = [(r, cul) for r, cul in camps if (cul or "") == race]
+    if lord:
+        camps = [(r, cul) for r, cul in camps if (r["leader"] or "") == lord]
+    if start:
+        camps = [(r, cul) for r, cul in camps
+                 if "%s|%s" % (r["campaign_map"], r["faction"]) == start]
     firsts: dict = {}
     for r in con.execute(
             "SELECT DISTINCT ON (t.campaign_id) t.campaign_id, a.action_key"
@@ -2545,7 +2567,8 @@ def catalog_overtime(con, family: str) -> dict:
             " WHERE t.counted = 1 AND a.action_type = %s"
             " ORDER BY t.campaign_id, t.decision_id", (family,)):
         firsts[_i(r["campaign_id"], 0)] = r["action_key"]
-    ordered = sorted(camps, key=lambda r2: _f(r2["first_ts"]) or 0.0)
+    ordered = sorted((r2 for r2, _c2 in camps),
+                     key=lambda r2: _f(r2["first_ts"]) or 0.0)
     seq = [firsts.get(_i(r3["campaign_id"], 0)) for r3 in ordered]
     counts: dict = {}
     for k in seq:
@@ -2564,7 +2587,8 @@ def catalog_overtime(con, family: str) -> dict:
             "ribbon_keys": rib_keys,
             "ribbon_labels": [labels.name_for(family, k4) or labels.pretty(k4)
                               for k4 in rib_keys],
-            "ribbon": ribbon}
+            "ribbon": ribbon,
+            "races": races, "lords": lords, "starts": starts}
 
 
 @db.timed

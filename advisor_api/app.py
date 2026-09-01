@@ -402,11 +402,12 @@ def get_choices(family: str) -> ChoicesPage:
 
 @app.get("/api/overtime/{family}", response_model=CatalogOvertime,
          response_model_exclude_none=True, tags=["catalog"])
-def get_overtime(family: str) -> CatalogOvertime:
+def get_overtime(family: str, race: str | None = None, lord: str | None = None,
+                 start: str | None = None) -> CatalogOvertime:
     if family not in ("research", "skills", "building"):
         raise HTTPException(404, "no overtime view for %r" % family)
     con = _con()
-    got = q.catalog_overtime(con, family)
+    got = q.catalog_overtime(con, family, race=race, lord=lord, start=start)
     return CatalogOvertime(
         scope=_scope("share of first %s per bucket of campaigns, play order"
                      % ("tech" if family == "research"
