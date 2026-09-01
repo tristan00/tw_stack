@@ -940,15 +940,15 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/now": {
+    "/api/campaigns/{campaign_key}/state": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Get Now */
-        get: operations["get_now_api_now_get"];
+        /** Get Campaign State */
+        get: operations["get_campaign_state_api_campaigns__campaign_key__state_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1633,6 +1633,37 @@ export interface components {
             /** Rows */
             rows?: components["schemas"]["CampaignSkillRow"][];
         };
+        /** CampaignStatePage */
+        CampaignStatePage: {
+            scope: components["schemas"]["Scope"];
+            research?: components["schemas"]["Ident"] | null;
+            /**
+             * Researched N
+             * @default 0
+             */
+            researched_n: number;
+            /**
+             * Built N
+             * @default 0
+             */
+            built_n: number;
+            /**
+             * Ranked N
+             * @default 0
+             */
+            ranked_n: number;
+            lord?: components["schemas"]["LordState"] | null;
+            /**
+             * Equipped
+             * @default []
+             */
+            equipped: components["schemas"]["Ident"][];
+            /**
+             * Pool
+             * @default []
+             */
+            pool: components["schemas"]["Ident"][];
+        };
         /** CampaignTechRow */
         CampaignTechRow: {
             /** Turn */
@@ -1736,8 +1767,6 @@ export interface components {
             tier?: number | null;
             /** Points */
             points?: number | null;
-            /** Characters */
-            characters?: string | null;
             /** Unlock Rank */
             unlock_rank?: number | null;
             /** Avg Ranks */
@@ -2724,6 +2753,22 @@ export interface components {
             /** Hero Types */
             hero_types?: components["schemas"]["PositionFacetOption"][];
         };
+        /** LordState */
+        LordState: {
+            /** Rank */
+            rank?: number | null;
+            /** Hp */
+            hp?: number | null;
+            /**
+             * Wounded
+             * @default false
+             */
+            wounded: boolean;
+            /** Region */
+            region?: string | null;
+            /** Skill Points */
+            skill_points?: number | null;
+        };
         /** MatrixCell */
         MatrixCell: {
             action_type: components["schemas"]["Ident"];
@@ -2874,54 +2919,6 @@ export interface components {
             cards: components["schemas"]["ModelCard"][];
             /** Fit */
             fit: components["schemas"]["FitConfigRow"][];
-        };
-        /** NowLord */
-        NowLord: {
-            /** Rank */
-            rank?: number | null;
-            /** Hp */
-            hp?: number | null;
-            /**
-             * Wounded
-             * @default false
-             */
-            wounded: boolean;
-            /** Region */
-            region?: string | null;
-            /** Skill Points */
-            skill_points?: number | null;
-        };
-        /** NowPage */
-        NowPage: {
-            scope: components["schemas"]["Scope"];
-            current: components["schemas"]["Current"];
-            /**
-             * Turns
-             * @default []
-             */
-            turns: number[];
-            /**
-             * Settlements
-             * @default []
-             */
-            settlements: number[];
-            /**
-             * Lord Levels
-             * @default []
-             */
-            lord_levels: number[];
-            research?: components["schemas"]["Ident"] | null;
-            lord?: components["schemas"]["NowLord"] | null;
-            /**
-             * Equipped
-             * @default []
-             */
-            equipped: components["schemas"]["Ident"][];
-            /**
-             * Pool
-             * @default []
-             */
-            pool: components["schemas"]["Ident"][];
         };
         /** OfferRow */
         OfferRow: {
@@ -5762,11 +5759,13 @@ export interface operations {
             };
         };
     };
-    get_now_api_now_get: {
+    get_campaign_state_api_campaigns__campaign_key__state_get: {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                campaign_key: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -5777,7 +5776,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["NowPage"];
+                    "application/json": components["schemas"]["CampaignStatePage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

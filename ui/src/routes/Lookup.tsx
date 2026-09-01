@@ -1,8 +1,7 @@
 import { useNavigate } from 'react-router-dom'
 import { ConditionBar, useConditionQuery } from '@/components/conditions'
-import { useUiMode } from '@/components/Layout'
 import { DataTable, useServerTable, type Col } from '@/components/DataTable'
-import { Chip, EntityLink, ErrorState, MetricTile, Section, Skeleton } from '@/components/primitives'
+import { EntityLink, ErrorState, MetricTile, Section, Skeleton } from '@/components/primitives'
 import { useApi, type CampaignLookupPage, type LookupCampaignRow } from '@/lib/api'
 import { clock, n } from '@/lib/format'
 
@@ -41,19 +40,10 @@ const cols: Col<LookupCampaignRow>[] = [
   { key: 'reward', label: 'reward', align: 'right', value: (r) => r.reward ?? undefined, sortUndefined: 'last', render: (r) => <strong className="num">{n(r.reward, 2)}</strong> },
   { key: 'sett', label: 'settlements', unit: 'gained', align: 'right', optional: true, value: (r) => r.settlements_gained ?? undefined, sortUndefined: 'last', render: (r) => dash(r.settlements_gained) },
   { key: 'lvl', label: 'lord levels', unit: 'gained', align: 'right', optional: true, value: (r) => r.levels_gained ?? undefined, sortUndefined: 'last', render: (r) => dash(r.levels_gained) },
-  {
-    key: 'outcome',
-    label: 'outcome',
-    value: (r) => r.outcome?.label ?? '',
-    render: (r) => (r.outcome ? <Chip state={r.outcome_state ?? 'neutral'}>{r.outcome.label}</Chip> : <span className="text-dim">—</span>),
-  },
 ]
-
-const defaultCols = cols.filter((c) => c.key !== 'outcome')
 
 export function Lookup() {
   const navigate = useNavigate()
-  const dev = useUiMode() === 'full'
   const qs = useConditionQuery()
   const st = useServerTable(25)
   const { data, error, loading, reload } = useApi<CampaignLookupPage>(
@@ -81,10 +71,10 @@ export function Lookup() {
       <Section title="matching campaigns" scope={data.scope}>
         <DataTable
           rows={data.rows ?? []}
-          cols={dev ? cols : defaultCols}
+          cols={cols}
           rowId={(r) => r.campaign.raw}
           onRowClick={(r) => navigate(`/campaigns/${encodeURIComponent(r.campaign.raw)}`)}
-          searchPlaceholder="search campaign, start, outcome…"
+          searchPlaceholder="search campaign, start…"
           server={st.bind(data.total ?? 0)}
           emptyWhat="no campaign ever passed through a matching situation"
         />

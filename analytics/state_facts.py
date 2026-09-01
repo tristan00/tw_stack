@@ -182,16 +182,24 @@ def _char_facts(z):
     return out
 
 
+def _building_key(v):
+    if isinstance(v, dict):
+        v = v.get("key")
+    return str(v) if v else None
+
+
 def _province_facts(z):
     out = []
     region = str(z.get("region") or "")
     for key in (z.get("built") or {}).values():
+        key = _building_key(key)
         if key:
-            out.append(("building", str(key), region, None, None, True, None))
+            out.append(("building", key, region, None, None, True, None))
     now = z.get("building_now") or {}
     for key in (now.values() if isinstance(now, dict) else []):
+        key = _building_key(key)
         if key:
-            out.append(("building", str(key), region, None, None, True, None))
+            out.append(("building", key, region, None, None, True, None))
     for b in z.get("buildable") or []:
         if isinstance(b, dict) and b.get("key") and _truthy(b.get("active")):
             out.append(("building", str(b["key"]), region, None, None, False, None))

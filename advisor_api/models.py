@@ -95,7 +95,7 @@ class RunPage(BaseModel):
     cycle_timing: list[TimingRow]
 
 
-class NowLord(BaseModel):
+class LordState(BaseModel):
     rank: int | None = None
     hp: float | None = None
     wounded: bool = False
@@ -103,14 +103,13 @@ class NowLord(BaseModel):
     skill_points: int | None = None
 
 
-class NowPage(BaseModel):
+class CampaignStatePage(BaseModel):
     scope: Scope
-    current: Current
-    turns: list[int] = []
-    settlements: list[float] = []
-    lord_levels: list[float] = []
     research: Ident | None = None
-    lord: NowLord | None = None
+    researched_n: int = 0
+    built_n: int = 0
+    ranked_n: int = 0
+    lord: LordState | None = None
     equipped: list[Ident] = []
     pool: list[Ident] = []
 
@@ -792,7 +791,6 @@ class CatalogIndexRow(BaseModel):
     line: str | None = None
     tier: int | None = None
     points: int | None = None
-    characters: str | None = None
     unlock_rank: int | None = None
     avg_ranks: float | None = None
     took: Rate | None = None

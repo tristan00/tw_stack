@@ -33,7 +33,6 @@ function famCols(family: Family): Col<CatalogIndexRow>[] {
       ),
     },
     { key: 'key', label: 'key', optional: true, value: (r) => r.key, render: (r) => <span className="num text-dim text-2xs">{r.key}</span> },
-    { key: 'race', label: 'race', value: (r) => r.race ?? '', render: (r) => <span className="text-dim">{r.race ?? '—'}</span> },
   ]
   if (family === 'buildings') {
     cols.push(
@@ -44,18 +43,13 @@ function famCols(family: Family): Col<CatalogIndexRow>[] {
   }
   if (family === 'research') {
     cols.push(
+      { key: 'race', label: 'race', value: (r) => r.race ?? '', render: (r) => (r.race ? <span className="text-dim">{r.race}</span> : <span className="text-dim">—</span>) },
       { key: 'tier', label: 'tier', align: 'right', value: (r) => r.tier ?? 0, render: (r) => dashNum(r.tier) },
       { key: 'points', label: 'points', align: 'right', value: (r) => r.points ?? undefined, sortUndefined: 'last', render: (r) => dashNum(r.points) },
     )
   }
   if (family === 'skills') {
     cols.push(
-      {
-        key: 'characters',
-        label: 'most ranked by',
-        value: (r) => r.characters ?? '',
-        render: (r) => <span className="text-dim">{r.characters ?? '—'}</span>,
-      },
       { key: 'unlock', label: 'unlocks at', unit: 'rank', align: 'right', optional: true, value: (r) => r.unlock_rank ?? 0, render: (r) => dashNum(r.unlock_rank) },
       { key: 'ranks', label: 'avg ranks', align: 'right', value: (r) => r.avg_ranks ?? undefined, sortUndefined: 'last', render: (r) => dashNum(r.avg_ranks, 1) },
     )
