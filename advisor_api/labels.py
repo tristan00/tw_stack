@@ -443,13 +443,47 @@ def tech_group_name(group: str | None) -> str | None:
     return None if not got or got.isdigit() else got
 
 
-def skill_parents() -> dict:
-    if not _have("skill_links"):
+def skill_parents_for(subtype) -> dict:
+    if not (_have("skill_links") and _have("skill_node_sets") and subtype):
         return {}
     out: dict = {}
-    for r in _rows("SELECT DISTINCT child, parent FROM skill_links ORDER BY 1, 2"):
+    for r in _rows(
+            "SELECT DISTINCT l.child, l.parent FROM skill_links l"
+            " JOIN skill_node_sets s ON s.node_set = l.node_set"
+            " WHERE s.subtype = %s ORDER BY 1, 2", (str(subtype),)):
         out.setdefault(r["child"], []).append(r["parent"])
     return out
+
+
+def skill_neighbors(key, subtypes) -> tuple:
+    subs = [str(s) for s in subtypes if s]
+    if not (_have("skill_links") and _have("skill_node_sets") and subs):
+        return [], []
+    parents = [r["parent"] for r in _rows(
+        "SELECT DISTINCT l.parent FROM skill_links l"
+        " JOIN skill_node_sets s ON s.node_set = l.node_set"
+        " WHERE l.child = %s AND s.subtype = ANY(%s) ORDER BY 1",
+        (str(key), subs))]
+    children = [r["child"] for r in _rows(
+        "SELECT DISTINCT l.child FROM skill_links l"
+        " JOIN skill_node_sets s ON s.node_set = l.node_set"
+        " WHERE l.parent = %s AND s.subtype = ANY(%s) ORDER BY 1",
+        (str(key), subs))]
+    return parents, children
+
+
+def skill_forks() -> list:
+    if not (_have("skill_links") and _have("skill_node_sets")):
+        return []
+    agg: dict = {}
+    for r in _rows(
+            "SELECT DISTINCT s.subtype, l.parent, l.child FROM skill_links l"
+            " JOIN skill_node_sets s ON s.node_set = l.node_set"
+            " WHERE s.subtype <> ''"):
+        agg.setdefault((r["subtype"], r["parent"]), set()).add(r["child"])
+    return [(sub, parent, sorted(kids))
+            for (sub, parent), kids in sorted(agg.items())
+            if len(kids) > 1]
 
 
 def _invert(parents: dict) -> dict:
@@ -462,10 +496,6 @@ def _invert(parents: dict) -> dict:
 
 def tech_children() -> dict:
     return _invert(tech_parents())
-
-
-def skill_children() -> dict:
-    return _invert(skill_parents())
 
 
 def pooled_resource_name(key: str) -> str:

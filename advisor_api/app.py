@@ -25,7 +25,8 @@ from advisor_api.models import (
     LogPage,
     MatrixCell,
     Ident,
-    MatrixPage, MatrixRow, MatrixTotal, MenusPage, ModelsPage, Rate, RunPage, Scope,
+    MatrixPage, MatrixRow, MatrixTotal, MenusPage, ModelsPage, NowPage, Rate,
+    RunPage, Scope,
     StartsPage, StartActions, StartCampaignsPage, StartDetail, StartOpenings,
     StartPerformance, TimelinePage, TrainingPage, CorrelationsPage, UcbPickPage,
     UcbPicksPage,
@@ -833,6 +834,14 @@ def post_launch(params: LaunchDefaults) -> ControlResult:
 @app.post("/api/infra/coldstart", response_model=ControlResult, tags=["infra"])
 def post_coldstart(params: LaunchDefaults) -> ControlResult:
     return ControlResult(ok=True, steps=proc.launch("cold", params.model_dump()))
+
+
+@app.get("/api/now", response_model=NowPage,
+         response_model_exclude_none=True, tags=["run"])
+def get_now() -> NowPage:
+    con = _con()
+    got = q.now_page(con)
+    return NowPage(scope=_scope("the campaign playing right now"), **got)
 
 
 @app.get("/api/events", tags=["run"])

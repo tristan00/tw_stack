@@ -219,7 +219,6 @@ function ChoicesView({ family }: { family: Family }) {
               <tr className="border-line text-dim border-b">
                 <th className="px-3 py-1.5 text-left font-medium">{family === 'buildings' ? 'settlement' : 'fork'}</th>
                 <th className="px-3 py-1.5 text-left font-medium">race</th>
-                <th className="px-3 py-1.5 text-left font-medium">starts</th>
                 <th className="px-3 py-1.5 text-right font-medium">paths</th>
                 <th className="px-3 py-1.5 text-right font-medium">campaigns</th>
                 <th className="px-3 py-1.5 text-left font-medium">most picked</th>
@@ -245,11 +244,21 @@ function ChoicesView({ family }: { family: Family }) {
                     <td className="px-3 py-1.5">
                       <span className="inline-flex items-center gap-1.5">
                         <span className="text-dim text-2xs">{isOpen ? '▾' : '▸'}</span>
-                        {fk.label}
+                        {family === 'buildings' ? (
+                          <span>{fk.label}</span>
+                        ) : (
+                          <span onClick={(e) => e.stopPropagation()}>
+                            <EntityLink
+                              to={`/${family}/${encodeURIComponent(fk.fork.split('@')[0])}`}
+                              title={fk.fork}
+                            >
+                              {fk.label}
+                            </EntityLink>
+                          </span>
+                        )}
                       </span>
                     </td>
                     <td className="text-dim px-3 py-1.5">{fk.race ?? '—'}</td>
-                    <td className="text-dim px-3 py-1.5">{fk.starts ?? '—'}</td>
                     <td className="num px-3 py-1.5 text-right">{picks}</td>
                     <td className="num px-3 py-1.5 text-right">{n(fk.cohort)}</td>
                     <td className="px-3 py-1.5">
@@ -268,7 +277,7 @@ function ChoicesView({ family }: { family: Family }) {
                   </tr>,
                   isOpen ? (
                     <tr key={`${fk.fork}#arms`} className="border-line/60 border-b">
-                      <td colSpan={7} className="bg-raised/40 px-3 py-2">
+                      <td colSpan={6} className="bg-raised/40 px-3 py-2">
                         <DataTable
                           rows={(fk.arms ?? []).map((arm) => ({ cohort: fk.cohort, arm }))}
                           cols={cols}
