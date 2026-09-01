@@ -3,8 +3,9 @@ import { useSearchParams } from 'react-router-dom'
 import { DataTable, type Col } from '@/components/DataTable'
 import { CatalogNav, TookCell, dashNum, signedNum } from '@/components/catalog'
 import { Card, EntityLink, ErrorState, Help, Section, Skeleton } from '@/components/primitives'
+import { StackShares } from '@/components/startcharts'
 import { SubNav, useSubView } from '@/components/SubNav'
-import { useApi, type CatalogIndexPage, type CatalogIndexRow, type ChoicesPage, type ForkArmRow, type ForkRow } from '@/lib/api'
+import { useApi, type CatalogIndexPage, type CatalogIndexRow, type CatalogOvertime, type ChoicesPage, type ForkArmRow, type ForkRow } from '@/lib/api'
 import { n } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
@@ -314,9 +315,30 @@ function ChoicesView({ family }: { family: Family }) {
   )
 }
 
+function OvertimeView({ family }: { family: Family }) {
+  const { data, error, loading, reload } = useApi<CatalogOvertime>(
+    `/api/overtime/${CHOICE_FAMILY[family]}`,
+    [family],
+    { live: false },
+  )
+  if (error) return <ErrorState error={error} onRetry={reload} />
+  if (loading || !data) return <Skeleton rows={8} />
+  return (
+    <Section
+      title="openings over time"
+      scope={{ text: `share of first ${FAMILY[family].noun} per bucket of campaigns, play order` }}
+    >
+      <Card className="px-3 py-2">
+        <StackShares buckets={(data.ribbon ?? []).map((b) => ({ label: b.label, shares: b.shares ?? [] }))} keys={data.ribbon_labels ?? []} />
+      </Card>
+    </Section>
+  )
+}
+
 const CATALOG_TABS = [
   { key: 'all', label: 'index', asks: 'every key, take rates and reward deltas' },
   { key: 'choices', label: 'choices', asks: 'at each fork, what did picking one path over the others go on to gain' },
+  { key: 'overtime', label: 'over time', asks: 'has the preference among first picks moved as the corpus grew' },
 ]
 
 export function Catalog({ family }: { family: Family }) {
@@ -328,6 +350,7 @@ export function Catalog({ family }: { family: Family }) {
       {tabs.length > 1 && <SubNav views={tabs} param="tab" />}
       {tab === 'all' && <CatalogIndex family={family} />}
       {tab === 'choices' && <ChoicesView family={family} />}
+      {tab === 'overtime' && <OvertimeView family={family} />}
     </div>
   )
 }

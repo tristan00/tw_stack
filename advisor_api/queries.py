@@ -2534,6 +2534,40 @@ def choices_page(con, family: str) -> dict:
 
 
 @db.timed
+def catalog_overtime(con, family: str) -> dict:
+    camps = adb.rows(
+        "WITH " + _FACT_CAMPS +
+        " SELECT campaign_id, first_ts FROM camps", _fact_params())
+    firsts: dict = {}
+    for r in con.execute(
+            "SELECT DISTINCT ON (t.campaign_id) t.campaign_id, a.action_key"
+            " FROM taken t JOIN actions a ON a.action_id = t.action_id"
+            " WHERE t.counted = 1 AND a.action_type = %s"
+            " ORDER BY t.campaign_id, t.decision_id", (family,)):
+        firsts[_i(r["campaign_id"], 0)] = r["action_key"]
+    ordered = sorted(camps, key=lambda r2: _f(r2["first_ts"]) or 0.0)
+    seq = [firsts.get(_i(r3["campaign_id"], 0)) for r3 in ordered]
+    counts: dict = {}
+    for k in seq:
+        if k:
+            counts[k] = counts.get(k, 0) + 1
+    rib_keys = [k2 for k2, _n2 in sorted(counts.items(), key=lambda kv: -kv[1])[:3]]
+    bsize = max(RIBBON_BUCKET_MIN, math.ceil(len(seq) / RIBBON_BUCKETS_MAX) if seq else 1)
+    ribbon = []
+    for i0 in range(0, len(seq), bsize):
+        chunk = seq[i0:i0 + bsize]
+        shares = [round(100.0 * sum(1 for s in chunk if s == k3) / len(chunk), 1)
+                  for k3 in rib_keys]
+        ribbon.append(RibbonBucket(label="c%d-%d" % (i0 + 1, i0 + len(chunk)),
+                                   shares=shares))
+    return {"campaigns": len(seq), "ribbon_family": family,
+            "ribbon_keys": rib_keys,
+            "ribbon_labels": [labels.name_for(family, k4) or labels.pretty(k4)
+                              for k4 in rib_keys],
+            "ribbon": ribbon}
+
+
+@db.timed
 def catalog_key_page(con, family: str, key: str) -> dict | None:
     params = _fact_params(fam=family, key=key)
     per = adb.rows(

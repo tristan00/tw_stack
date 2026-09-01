@@ -637,6 +637,15 @@ class ChoicesPage(BaseModel):
     forks: list[ForkRow] = Field(default_factory=list)
 
 
+class CatalogOvertime(BaseModel):
+    scope: Scope
+    campaigns: int = 0
+    ribbon_family: str = ""
+    ribbon_keys: list[str] = Field(default_factory=list)
+    ribbon_labels: list[str] = Field(default_factory=list)
+    ribbon: list[RibbonBucket] = Field(default_factory=list)
+
+
 class ItemStartRow(BaseModel):
     campaign_map: Ident | None = None
     faction: Ident
