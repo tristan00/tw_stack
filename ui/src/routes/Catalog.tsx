@@ -8,7 +8,7 @@ import { useApi, type CatalogIndexPage, type CatalogIndexRow, type ChoicesPage, 
 import { n } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
-type Family = 'buildings' | 'research' | 'skills'
+type Family = 'buildings' | 'research' | 'skills' | 'traits'
 
 const FAMILY: Record<
   Family,
@@ -17,6 +17,7 @@ const FAMILY: Record<
   buildings: { title: 'buildings', noun: 'building', verb: 'constructed', filterOn: 'category' },
   research: { title: 'research', noun: 'tech', verb: 'started', filterOn: 'line' },
   skills: { title: 'skills', noun: 'skill', verb: 'ranked', filterOn: null },
+  traits: { title: 'traits', noun: 'trait', verb: 'developed', filterOn: null },
 }
 
 function famCols(family: Family): Col<CatalogIndexRow>[] {
@@ -54,6 +55,14 @@ function famCols(family: Family): Col<CatalogIndexRow>[] {
       { key: 'ranks', label: 'avg ranks', align: 'right', value: (r) => r.avg_ranks ?? undefined, sortUndefined: 'last', render: (r) => dashNum(r.avg_ranks, 1) },
     )
   }
+  if (family === 'traits') {
+    cols.push(
+      { key: 'race', label: 'race', value: (r) => r.race ?? '', render: (r) => (r.race ? <span className="text-dim">{r.race}</span> : <span className="text-dim">—</span>) },
+      { key: 'levels', label: 'levels', align: 'right', optional: true, value: (r) => r.levels ?? 0, render: (r) => dashNum(r.levels) },
+      { key: 'threshold', label: 'first at', unit: 'points', align: 'right', optional: true, value: (r) => r.threshold ?? undefined, sortUndefined: 'last', render: (r) => dashNum(r.threshold) },
+      { key: 'ranks', label: 'avg level', align: 'right', value: (r) => r.avg_ranks ?? undefined, sortUndefined: 'last', render: (r) => dashNum(r.avg_ranks, 1) },
+    )
+  }
   cols.push(
     { key: 'took', label: f.verb, align: 'right', value: (r) => r.took?.n ?? 0, render: (r) => <TookCell rate={r.took} /> },
     { key: 'starts', label: 'starts', align: 'right', value: (r) => r.starts, render: (r) => dashNum(r.starts) },
@@ -78,12 +87,14 @@ const FAM_COLS: Record<Family, Col<CatalogIndexRow>[]> = {
   buildings: famCols('buildings'),
   research: famCols('research'),
   skills: famCols('skills'),
+  traits: famCols('traits'),
 }
 
 const CHOICE_FAMILY: Record<Family, string> = {
   buildings: 'building',
   research: 'research',
   skills: 'skills',
+  traits: 'traits',
 }
 
 type ArmRow = { cohort: number; arm: ForkArmRow }
@@ -308,11 +319,12 @@ const CATALOG_TABS = [
 ]
 
 export function Catalog({ family }: { family: Family }) {
-  const tab = useSubView(CATALOG_TABS, 'tab')
+  const tabs = family === 'traits' ? CATALOG_TABS.slice(0, 1) : CATALOG_TABS
+  const tab = useSubView(tabs, 'tab')
   return (
     <div>
       <CatalogNav active={`/${family}`} />
-      <SubNav views={CATALOG_TABS} param="tab" />
+      {tabs.length > 1 && <SubNav views={tabs} param="tab" />}
       {tab === 'all' && <CatalogIndex family={family} />}
       {tab === 'choices' && <ChoicesView family={family} />}
     </div>

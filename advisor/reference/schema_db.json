@@ -1815,6 +1815,26 @@
    ]
   ]
  },
+ "character_trait_levels_tables": {
+  "0": [
+   [
+    "key",
+    "StringU8"
+   ],
+   [
+    "level",
+    "I32"
+   ],
+   [
+    "trait",
+    "StringU8"
+   ],
+   [
+    "threshold_points",
+    "I32"
+   ]
+  ]
+ },
  "effects_tables": {
   "0": [
    [

@@ -792,6 +792,8 @@ class CatalogIndexRow(BaseModel):
     tier: int | None = None
     points: int | None = None
     unlock_rank: int | None = None
+    levels: int | None = None
+    threshold: int | None = None
     avg_ranks: float | None = None
     took: Rate | None = None
     starts: int = 0

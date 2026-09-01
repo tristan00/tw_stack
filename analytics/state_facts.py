@@ -179,6 +179,18 @@ def _char_facts(z):
     for it in z.get("equipped") or []:
         if isinstance(it, dict) and it.get("key"):
             out.append(("items", str(it["key"]), "", None, kind, True, None))
+    materialized = set()
+    for t in z.get("traits") or []:
+        if not isinstance(t, dict) or not t.get("key"):
+            continue
+        key = str(t["key"])
+        materialized.add(key)
+        lv = _f(t.get("level")) or 0.0
+        out.append(("traits", key, "@cqi", sub, kind, lv > 0,
+                    lv if lv > 0 else None))
+    for key, pts in (z.get("trait_progress") or {}).items():
+        if key and key not in materialized and (_f(pts) or 0.0) > 0:
+            out.append(("traits", str(key), "@cqi", sub, kind, False, None))
     return out
 
 
@@ -237,7 +249,7 @@ def _facts_for(blob_id, kind, z_text):
 class _Acquisitions:
     NAME = "acquisitions"
     TABLES = ("acquisitions",)
-    FORMULA_VERSION = 2
+    FORMULA_VERSION = 3
     SOURCE = "decisions"
     DEPENDS_ON = ()
     DDL = ACQ_DDL

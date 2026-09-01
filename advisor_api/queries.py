@@ -2016,6 +2016,7 @@ USAGE_FAMILIES = {
     "building": {"noun": "constructed"},
     "research": {"noun": "started"},
     "skills": {"noun": "ranked"},
+    "traits": {"noun": "developed"},
 }
 
 
@@ -2166,6 +2167,12 @@ def _catalog_ref(family, keys) -> dict:
         unlocks = labels.skill_unlock_ranks(keys)
         for key in keys:
             out[key] = {"unlock_rank": _i(unlocks.get(key)) or None}
+    elif family == "traits":
+        lv = labels.trait_levels_for(keys)
+        for key in keys:
+            rows = lv.get(key) or []
+            out[key] = {"levels": len(rows) or None,
+                        "threshold": _i(rows[0]["threshold"]) if rows else None}
     return out
 
 
@@ -2189,7 +2196,7 @@ def catalog_index(con, family: str) -> dict:
         " FROM per p JOIN camps m USING (campaign_id)"
         " GROUP BY p.key", _fact_params(fam=family))
     ref = _catalog_ref(family, {r["key"] for r in per})
-    races = _fact_key_cultures(family) if family == "research" else {}
+    races = _fact_key_cultures(family) if family in ("research", "traits") else {}
     noun = USAGE_FAMILIES[family]["noun"]
     rows = []
     for p in per:
@@ -2209,8 +2216,10 @@ def catalog_index(con, family: str) -> dict:
             level=r.get("level"), cost=r.get("cost"), line=r.get("line"),
             tier=r.get("tier"), points=r.get("points"),
             unlock_rank=r.get("unlock_rank"),
+            levels=r.get("levels"), threshold=r.get("threshold"),
             avg_ranks=(round(_f(p["avg_ranks"]) or 0, 1)
-                       if family == "skills" and p["avg_ranks"] is not None
+                       if family in ("skills", "traits")
+                       and p["avg_ranks"] is not None
                        else None),
             took=Rate(n=took_n, of=max(of_n, took_n), noun="campaigns",
                       population="it was available in that %s it" % noun),
