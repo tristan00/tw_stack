@@ -389,7 +389,10 @@ def live_control_ids(bus, root):
 
 
 def clickable_options(bus, root):
-    nodes = _tree(bus, root, 22, 3000)
+    return options_from_nodes(_tree(bus, root, 22, 3000))
+
+
+def options_from_nodes(nodes):
     by_path = {str(n.get("path")): n for n in nodes}
     out = {}
     for n in nodes:
@@ -556,13 +559,39 @@ def pending(bus, open_roots=None):
     return out
 
 
-def prebattle_forecast(bus):
+def prebattle_forecast(nodes):
     out = {}
-    for n in _tree(bus, "popup_pre_battle", 30, 40000):
+    for n in nodes or []:
         i = str(n.get("id") or "")
         if i in ("dy_result", "dy_casualties") and n.get("visible"):
             out[i[3:]] = {"text": str(n.get("text") or "").strip() or None,
                           "state": str(n.get("state") or "") or None}
+    return out
+
+
+def combatant_identity(nodes):
+    out = {}
+    ally_headers, enemy_headers = set(), set()
+    for n in nodes or []:
+        c = str(n.get("context") or "")
+        p = str(n.get("path") or "")
+        if c.startswith("CcoCampaignCharacter:"):
+            cqi = c.split(":", 1)[1]
+            if "allies_combatants_panel" in p:
+                out.setdefault("ally_cqi", cqi)
+            elif "enemy_combatants_panel" in p:
+                out.setdefault("enemy_cqi", cqi)
+        elif c.startswith("CcoCampaignSettlement:"):
+            out.setdefault("region", c.split(":", 1)[1])
+        if str(n.get("id") or "") == "army_header":
+            if "allies_combatants_panel" in p:
+                ally_headers.add(p)
+            elif "enemy_combatants_panel" in p:
+                enemy_headers.add(p)
+    if ally_headers:
+        out["n_ally_armies"] = len(ally_headers)
+    if enemy_headers:
+        out["n_enemy_armies"] = len(enemy_headers)
     return out
 
 
@@ -580,7 +609,8 @@ def resolve_prebattle(bus):
         sys.stderr.write("interrupts: pre-battle offers no usable control -- clickable=%s\n"
                          % ",".join(sorted(ctrls)[:10]))
         return False
-    forecast = prebattle_forecast(bus)
+    tree = _tree(bus, "popup_pre_battle", 30, 40000)
+    forecast = dict(prebattle_forecast(tree), **combatant_identity(tree))
     m = _sticky_choice("pre_battle", "popup_pre_battle", legal, forecast,
                        live=lambda: live_control_ids(bus, "popup_pre_battle"))
     if m["tries"] > _ANSWER_TRIES:
@@ -591,7 +621,6 @@ def resolve_prebattle(bus):
     _LAST_POLICY[0], _LAST_SCORES[0] = m["policy"], dict(m["scores"] or {})
     final_try = m["tries"] >= _ANSWER_TRIES
     opts = _options_of(bus, "popup_pre_battle", legal)
-    tree = _tree(bus, "popup_pre_battle", 30, 40000)
     offered_all = sorted({str(n.get("id")) for n in tree
                           if str(n.get("id") or "").startswith("button_") and n.get("visible")})
     t0 = time.time()
@@ -700,7 +729,8 @@ def handle_results(bus):
                 "recorded under its own id), or to ADVANCE_PREFERENCE if it advances the panel. "
                 "clickable=%s" % (unknown, sorted(ctrls)))
         fates = sorted(i for i in ctrls if is_captive_option(i))
-        target = (_choose("battle_results", fates, _campaign_hint(),
+        facts = battle_result_facts(bus)
+        target = (_choose("battle_results", fates, _campaign_hint(), panel=facts,
                           live=lambda: live_control_ids(bus, "popup_battle_results")) if fates
                   else next((i for i in ADVANCE_PREFERENCE if i in ctrls), None))
         if target is None:
@@ -717,7 +747,6 @@ def handle_results(bus):
         decisions = sorted([i for i in ctrls if is_captive_option(i)]
                            + [i for i in ADVANCE_PREFERENCE if i in ctrls])
         opts_before = _options_of(bus, "popup_battle_results", decisions)
-        facts = battle_result_facts(bus)
         repeats = repeats + 1 if target == last else 0
         if repeats >= 2:
             sys.stderr.write("interrupts: %s clicked twice with no effect -- not hammering it\n"
@@ -762,17 +791,20 @@ def handle_results(bus):
 
 
 def occupy(bus):
-    opts = clickable_options(bus, "settlement_captured")
+    nodes = _tree(bus, "settlement_captured", 22, 3000)
+    opts = options_from_nodes(nodes)
     if not opts:
         sys.stderr.write("interrupts: settlement_captured has no clickable option_button nodes\n")
         return None
+    panel = occupation_panel(nodes)
     detail = {k: {"context": None, "text": k} for k in opts}
-    want = _choose("occupation", sorted(opts), _campaign_hint(),
+    want = _choose("occupation", sorted(opts), _campaign_hint(), panel=panel,
                    live=lambda: live_option_texts(bus, "settlement_captured"))
     t0 = time.time()
     clicked = _click(bus, opts[want], settle=2.5)
     if not clicked:
         _record_choice("occupation", "settlement_captured", detail, want,
+                       extra={"panel": panel} if panel else None,
                        executed=False, confirmed=False, refusal="execute_failed",
                        latency_ms=int((time.time() - t0) * 1000))
         return None
@@ -781,10 +813,24 @@ def occupy(bus):
         sys.stderr.write("interrupts: occupation %r clicked but settlement_captured is still open\n"
                          % want)
     _record_choice("occupation", "settlement_captured", detail, want,
+                   extra={"panel": panel} if panel else None,
                    executed=clicked, confirmed=gone,
                    refusal=None if gone else "command_silently_refused",
                    latency_ms=int((time.time() - t0) * 1000))
     return want if gone else None
+
+
+def occupation_panel(nodes):
+    out = {}
+    for n in nodes or []:
+        c = str(n.get("context") or "")
+        if c.startswith("CcoCampaignSettlement:"):
+            out.setdefault("region", c.split(":", 1)[1])
+        if str(n.get("id") or "") == "settlement_name":
+            t = str(n.get("text") or "").strip()
+            if t:
+                out.setdefault("name", t)
+    return out
 
 
 def _await_roots_change(bus, before, cap, tag, tick=0.1):
@@ -1563,7 +1609,7 @@ def battle_facts_from(nodes):
     def txt(n):
         return str(n.get("text") or "").strip()
 
-    out = {"rows": [], "resources": {}, "rewards": [], "armies": {}}
+    out = dict(combatant_identity(nodes), rows=[], resources={}, rewards=[], armies={})
 
     for n in nodes:
         p, t = path(n), txt(n)

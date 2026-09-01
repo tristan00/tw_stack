@@ -837,7 +837,17 @@ _LUA_LORD_OFFERS = (_G +
     "..'~'..ts(g(s[i],'Level'))..'~'..ts(g(s[i],'TotalLevels'))..'~'..ts(g(s[i],'Tier')) end end "
     "local hk={} local h=g(c,'HiddenSkillList') "
     "if type(h)=='table' then for i=1,#h do hk[#hk+1]=ts(g(h[i],'Key')) end end "
-    "return table.concat(st,',')..'||'..table.concat(sk,',')..'||'..table.concat(hk,',')")
+    "local cr={} local q=g(c,'ChaosRealmTraitsList') "
+    "if type(q)=='table' then for i=1,#q do cr[ts(g(q[i],'TraitKey'))]=true end end "
+    "local ch=cm:get_character_by_cqi(%(cqi)s) "
+    "local tr={} local t=g(c,'TraitsList') "
+    "if type(t)=='table' then for i=1,#t do local k=ts(g(t[i],'TraitKey')) local pts='' "
+    "if ch then local ok,v=pcall(function() return ch:trait_points(k) end) "
+    "if ok then pts=ts(v) end end "
+    "tr[#tr+1]=k..'~'..ts(g(t[i],'Level'))..'~'..ts(g(t[i],'ThresholdPoints'))"
+    "..'~'..pts..'~'..(cr[k] and '1' or '0')..'~'..ts(g(t[i],'Key')) end end "
+    "return table.concat(st,',')..'||'..table.concat(sk,',')..'||'..table.concat(hk,',')"
+    "..'||'..table.concat(tr,',')")
 
 
 _LUA_STATIONED = (_G +
@@ -916,8 +926,16 @@ _LUA_HERO_OFFERS = (_G +
     "if ok then tk=ts(v) end end "
     "local hk={} local h=g(c,'HiddenSkillList') "
     "if type(h)=='table' then for i=1,#h do hk[#hk+1]=ts(g(h[i],'Key')) end end "
+    "local cr={} local q=g(c,'ChaosRealmTraitsList') "
+    "if type(q)=='table' then for i=1,#q do cr[ts(g(q[i],'TraitKey'))]=true end end "
+    "local tr={} local t=g(c,'TraitsList') "
+    "if type(t)=='table' then for i=1,#t do local k=ts(g(t[i],'TraitKey')) local pts='' "
+    "if ch then local ok,v=pcall(function() return ch:trait_points(k) end) "
+    "if ok then pts=ts(v) end end "
+    "tr[#tr+1]=k..'~'..ts(g(t[i],'Level'))..'~'..ts(g(t[i],'ThresholdPoints'))"
+    "..'~'..pts..'~'..(cr[k] and '1' or '0')..'~'..ts(g(t[i],'Key')) end end "
     "return ts(g(c,'IsAgent'))..'||'..ts(g(c,'CanBeEmbedded'))..'||'..table.concat(sk,',')..'||'..tk"
-    "..'||'..table.concat(hk,',')")
+    "..'||'..table.concat(hk,',')..'||'..table.concat(tr,',')")
 
 
 _LUA_ANCILLARY_POOL = (_G +
@@ -1271,6 +1289,7 @@ def _parse_stance_skills(raw):
     st_raw = parts[0] if parts else ""
     sk_raw = parts[1] if len(parts) > 1 else ""
     hk_raw = parts[2] if len(parts) > 2 else ""
+    tr_raw = parts[3] if len(parts) > 3 else ""
     stances = []
     for row in st_raw.split(","):
         p = row.split("~")
@@ -1279,7 +1298,7 @@ def _parse_stance_skills(raw):
         stances.append({"key": p[0], "active": p[1] == "true",
                         "can_activate": p[2] == "true", "can_afford": p[3] == "true"})
     hidden = [k for k in hk_raw.split(",") if k and k not in ("nil", "-")]
-    return stances, _parse_skills(sk_raw), hidden
+    return stances, _parse_skills(sk_raw), hidden, _parse_traits(tr_raw)
 
 
 def _parse_skills(sk_raw):
@@ -1295,13 +1314,28 @@ def _parse_skills(sk_raw):
     return out
 
 
+def _parse_traits(tr_raw):
+    out = []
+    for row in str(tr_raw or "").split(","):
+        p = row.split("~")
+        if len(p) < 2 or not p[0] or p[0] == "nil":
+            continue
+        out.append({"key": p[0], "level": _num(p[1]),
+                    "threshold_points": _num(p[2]) if len(p) > 2 else None,
+                    "points": _num(p[3]) if len(p) > 3 else None,
+                    "chaos_realm": (p[4] == "1") if len(p) > 4 else False,
+                    "level_key": (p[5] or None) if len(p) > 5 else None})
+    return out
+
+
 def _parse_hero_blob(raw):
     parts = str(raw or "").split("||")
     return {"is_agent": (parts[0] == "true") if parts else False,
             "can_embed": (parts[1] == "true") if len(parts) > 1 else False,
             "skills": _parse_skills(parts[2] if len(parts) > 2 else ""),
             "agent_type": parts[3].strip() if len(parts) > 3 else "",
-            "hidden_skills": [k for k in (parts[4] if len(parts) > 4 else "").split(",") if k]}
+            "hidden_skills": [k for k in (parts[4] if len(parts) > 4 else "").split(",") if k],
+            "traits": _parse_traits(parts[5] if len(parts) > 5 else "")}
 
 
 def _parse_buildable(raw):
@@ -1475,10 +1509,10 @@ def snapshot(bus, active=None):
     lord_state, hero_state, prov_state = {}, {}, {}
     for cqi in lords:
         st = _parse_lord(_bres(rb[i], "lord_state:%s" % cqi), cqi)
-        stances, skills, hidden = _parse_stance_skills(
+        stances, skills, hidden, traits = _parse_stance_skills(
             _bres(rb[i + 1], "lord_blob:%s" % cqi, allow_nil=True))
         rc, rs_ = _parse_reach(_bres(rb[i + 3], "reach:%s" % cqi, allow_nil=True))
-        st.update(stances=stances, skills=skills, hidden_skills=hidden,
+        st.update(stances=stances, skills=skills, hidden_skills=hidden, traits=traits,
                   recruitable=_parse_recruitable(
                       _bres(rb[i + 2], "recruitable:%s" % cqi, allow_nil=True)),
                   reach_chars=rc, reach_setts=rs_,

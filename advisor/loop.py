@@ -203,6 +203,7 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
     act_counts = {}
     mem = MEM.CampaignMemory()
     I.reset_answers()
+    I.set_snapshot(None, None)
     I.set_chooser(lambda screen, options, campaign, panel=None, record=None, meta=None:
                   ranker.choose(screen, options, F.stamp_action_counts(
                       F.stamp_prev_actions(dict(campaign or {}), act_hist), act_counts),
