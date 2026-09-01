@@ -1,9 +1,10 @@
 import { useParams } from 'react-router-dom'
 import { DataTable, type Col } from '@/components/DataTable'
 import { ByStartTable, RecentTable, TookCell, dashNum, signedNum } from '@/components/catalog'
-import { Chip, EntityLink, ErrorState, MetricTile, Section, Skeleton } from '@/components/primitives'
-import { useApi, type CatalogKeyPage, type CatalogVersionRow, type ChainLevel, type RelatedKey, type SkillCharacterRow } from '@/lib/api'
-import { n, pct } from '@/lib/format'
+import { Card, Chip, EntityLink, ErrorState, MetricTile, Section, Skeleton } from '@/components/primitives'
+import { useApi, type CatalogKeyPage, type CatalogVersionRow, type ChainLevel, type RelatedKey, type SkillCharacterRow, type TraitLevelRow } from '@/lib/api'
+import { n, pct, stateText } from '@/lib/format'
+import { cn } from '@/lib/utils'
 
 type Family = 'buildings' | 'research' | 'skills' | 'traits'
 
@@ -130,6 +131,40 @@ function CharacterTable({ rows }: { rows: SkillCharacterRow[] }) {
   return <DataTable rows={rows} cols={cols} rowId={(r) => r.subtype} dense pageSize={10} emptyWhat="no character snapshot attributes this skill" />
 }
 
+function TraitLevelsTable({ levels }: { levels: TraitLevelRow[] }) {
+  const rows = levels.flatMap((lv) =>
+    (lv.effects?.length ? lv.effects : [null]).map((e, i) => ({ lv, e, first: i === 0 })),
+  )
+  return (
+    <Card className="overflow-hidden">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="border-line text-dim border-b text-left text-2xs">
+            <th className="px-3 py-1.5 text-right font-normal">level</th>
+            <th className="px-3 py-1.5 font-normal">name</th>
+            <th className="px-3 py-1.5 text-right font-normal">at points</th>
+            <th className="px-3 py-1.5 font-normal">effect</th>
+            <th className="px-3 py-1.5 text-right font-normal">value</th>
+            <th className="px-3 py-1.5 font-normal">applies to</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={i} className="border-line border-b last:border-0">
+              <td className="num px-3 py-1.5 text-right">{r.first ? r.lv.level : ''}</td>
+              <td className="px-3 py-1.5">{r.first ? (r.lv.name ?? '—') : ''}</td>
+              <td className="num px-3 py-1.5 text-right">{r.first ? (r.lv.threshold ?? '—') : ''}</td>
+              <td className="px-3 py-1.5">{r.e ? r.e.name : <span className="text-dim">no effect in the pack</span>}</td>
+              <td className={cn('num px-3 py-1.5 text-right', stateText[r.e?.state ?? 'neutral'])}>{r.e?.value ?? '—'}</td>
+              <td className="text-dim px-3 py-1.5">{r.e?.scope ?? ''}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Card>
+  )
+}
+
 function versionCols(verb: string): Col<CatalogVersionRow>[] {
   return [
     { key: 'v', label: 'version', value: (r) => r.version, render: (r) => <span className="num" title={r.stamp}>{r.version}</span> },
@@ -215,22 +250,36 @@ export function CatalogDetail({ family }: { family: Family }) {
         </Section>
       )}
 
+      {family === 'traits' && (data.trait_levels ?? []).length > 0 && (
+        <Section
+          title="levels"
+          scope={{ text: 'each level, the points that unlock it, and what it changes · from the game pack' }}
+        >
+          <TraitLevelsTable levels={data.trait_levels ?? []} />
+        </Section>
+      )}
+
       {family !== 'buildings' && (data.related ?? []).length > 0 && (
         <Section
-          title="requires & unlocks"
+          title={family === 'traits' ? 'antitraits' : 'requires & unlocks'}
           scope={{
             text:
               family === 'research'
                 ? 'its neighbours in the tech tree, from the reference schema'
-                : 'its neighbours pooled across every character tree that carries it, from the reference schema',
+                : family === 'traits'
+                  ? 'traits the game removes or blocks when this one is present, from the reference schema'
+                  : 'its neighbours pooled across every character tree that carries it, from the reference schema',
           }}
         >
           <RelatedTable rows={data.related ?? []} family={family} verb={verb} />
         </Section>
       )}
 
-      {family === 'skills' && (
-        <Section title="by character" scope={{ text: 'which characters put points in it, from live snapshots' }}>
+      {(family === 'skills' || family === 'traits') && (
+        <Section
+          title="by character"
+          scope={{ text: family === 'skills' ? 'which characters put points in it, from live snapshots' : 'which characters develop it, from live snapshots' }}
+        >
           <CharacterTable rows={data.by_character ?? []} />
         </Section>
       )}

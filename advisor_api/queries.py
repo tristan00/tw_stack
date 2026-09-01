@@ -34,7 +34,7 @@ from advisor_api.models import (
     BehaviourRow, BuildingRow, CampaignBuildingRow, CampaignCharacter,
     CampaignItemEvent, CampaignSkillRow, CampaignTechRow, CatalogCampaignRow,
     CatalogIndexRow, CatalogStartRow, CatalogVersionRow, ChainLevel, ForkArmRow,
-    ForkRow,
+    ForkRow, ItemEffect, TraitLevelRow,
     ItemCampaignRow, ItemRow, LordState,
     ItemStartRow, ItemSwapRow, LookupCampaignRow, PositionFacetOption,
     PositionKeyRow, PositionTypeRow, RelatedKey, SkillCharacterRow, SkillRow,
@@ -2170,10 +2170,12 @@ def _catalog_ref(family, keys) -> dict:
             out[key] = {"unlock_rank": _i(unlocks.get(key)) or None}
     elif family == "traits":
         lv = labels.trait_levels_for(keys)
+        cats = labels.trait_categories(keys)
         for key in keys:
             rows = lv.get(key) or []
             out[key] = {"levels": len(rows) or None,
-                        "threshold": _i(rows[0]["threshold"]) if rows else None}
+                        "threshold": _i(rows[0]["threshold"]) if rows else None,
+                        "category": cats.get(key)}
     return out
 
 
@@ -2233,7 +2235,7 @@ def catalog_index(con, family: str) -> dict:
             and passed_n >= 5 else None))
     rows.sort(key=lambda r2: (-(r2.took.n if r2.took else 0), r2.key))
     cats = sorted({r2.category for r2 in rows if r2.category}) \
-        if family == "building" else \
+        if family in ("building", "traits") else \
         sorted({r2.line for r2 in rows if r2.line}) if family == "research" else []
     return {"family": family, "total": len(rows),
             "campaigns": _fact_campaign_count(),
@@ -2684,6 +2686,44 @@ def catalog_key_page(con, family: str, key: str) -> dict | None:
                    related=related_rows(
                        parents, children,
                        _catalog_ref("research", set(parents) | set(children))))
+    elif family == "traits":
+        ref = _catalog_ref("traits", [key]).get(key) or {}
+        out.update(category=ref.get("category"),
+                   description=labels.trait_flavour(key))
+        out["trait_levels"] = [
+            TraitLevelRow(level=_i(lv["level"], 0) or 0, name=lv["name"],
+                          threshold=_i(lv["threshold"]),
+                          effects=[ItemEffect(**e) for e in lv["effects"]])
+            for lv in labels.trait_level_rows(key)]
+        out["by_character"] = [
+            SkillCharacterRow(
+                subtype=r["sub"], label=labels.subtype_name(r["sub"]),
+                kind=r["kind"] or "lord",
+                campaigns=_i(r["tn"], 0) or 0,
+                ranked=Rate(n=_i(r["tn"], 0) or 0,
+                            of=max(_i(r["onn"], 0) or 0, _i(r["tn"], 0) or 0),
+                            noun="campaigns",
+                            population="that fielded this character and"
+                                       " developed it"),
+                avg_ranks=(round(_f(r["avg_ranks"]) or 0, 1)
+                           if r["avg_ranks"] is not None else None),
+                avg_turn=(round(_f(r["avg_turn"]) or 0, 1)
+                          if r["avg_turn"] is not None else None))
+            for r in adb.rows(
+                "SELECT sub, MAX(kind) kind,"
+                " COUNT(DISTINCT campaign_id)"
+                "  FILTER (WHERE acquired_turn IS NOT NULL) tn,"
+                " COUNT(DISTINCT campaign_id) onn,"
+                " AVG(ranks) FILTER (WHERE acquired_turn IS NOT NULL) avg_ranks,"
+                " AVG(acquired_turn) avg_turn"
+                " FROM acquisitions"
+                " WHERE family = 'traits' AND key = %(key)s AND sub IS NOT NULL"
+                " GROUP BY sub ORDER BY tn DESC", {"key": key})
+            if (_i(r["onn"], 0) or 0) > 0]
+        anti = labels.trait_antitraits(key)
+        out["related"] = related_rows(anti, [], _catalog_ref("traits", set(anti)))
+        out["related"] = [r.model_copy(update={"kind": "antitrait"})
+                          for r in out["related"]]
     else:
         out["by_character"] = [
             SkillCharacterRow(

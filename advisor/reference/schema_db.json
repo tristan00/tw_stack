@@ -1835,6 +1835,42 @@
    ]
   ]
  },
+ "character_traits_tables": {
+  "3": [
+   [
+    "key",
+    "StringU8"
+   ],
+   [
+    "unk_a",
+    "I32"
+   ],
+   [
+    "unk_b",
+    "I32"
+   ],
+   [
+    "unk_c",
+    "Boolean"
+   ],
+   [
+    "category",
+    "StringU8"
+   ],
+   [
+    "unk_d",
+    "I32"
+   ],
+   [
+    "unk_e",
+    "Boolean"
+   ],
+   [
+    "unk_f",
+    "Boolean"
+   ]
+  ]
+ },
  "effects_tables": {
   "0": [
    [
@@ -5526,6 +5562,38 @@
    [
     "optional_background_image",
     "OptionalStringU8"
+   ]
+  ]
+ },
+ "trait_level_effects_tables": {
+  "0": [
+   [
+    "level_key",
+    "StringU8"
+   ],
+   [
+    "effect",
+    "StringU8"
+   ],
+   [
+    "effect_scope",
+    "StringU8"
+   ],
+   [
+    "value",
+    "F32"
+   ]
+  ]
+ },
+ "trait_to_antitraits_tables": {
+  "0": [
+   [
+    "trait",
+    "StringU8"
+   ],
+   [
+    "antitrait",
+    "StringU8"
    ]
   ]
  },

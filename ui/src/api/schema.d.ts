@@ -1879,6 +1879,8 @@ export interface components {
             related?: components["schemas"]["RelatedKey"][];
             /** By Character */
             by_character?: components["schemas"]["SkillCharacterRow"][];
+            /** Trait Levels */
+            trait_levels?: components["schemas"]["TraitLevelRow"][];
             /** By Start */
             by_start?: components["schemas"]["CatalogStartRow"][];
             /** By Version */
@@ -3905,6 +3907,17 @@ export interface components {
             group_order: string[];
             /** Reward */
             reward: components["schemas"]["CampaignReward"][];
+        };
+        /** TraitLevelRow */
+        TraitLevelRow: {
+            /** Level */
+            level: number;
+            /** Name */
+            name?: string | null;
+            /** Threshold */
+            threshold?: number | null;
+            /** Effects */
+            effects?: components["schemas"]["ItemEffect"][];
         };
         /** TrialCorr */
         TrialCorr: {
