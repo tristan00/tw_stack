@@ -21,6 +21,20 @@ POLL = 0.1
 PRUNE_EVERY = 600
 
 
+def _tag_campaign(campaign_key, ctx):
+    eid = os.environ.get("TW_EXPERIMENT_ID")
+    sid = os.environ.get("TW_SEGMENT_ID")
+    if not (eid or sid):
+        return
+    try:
+        from decisions import workspace
+        workspace.tag_campaign(campaign_key,
+                               experiment_id=int(eid) if eid else None,
+                               segment_id=int(sid) if sid else None)
+    except Exception as e:
+        ctx.on_error("tag_campaign", e)
+
+
 def _sync_reference(bus, snap, ctx):
     camp = None
     chars = []
@@ -71,6 +85,7 @@ def run(ctx):
         u = (snap_camp or {}).get("campaign_uuid")
         if not u or u == last_uuid[0]:
             return False
+        _tag_campaign(u, ctx)
         if last_uuid[0] is not None:
             ctx.emit({"kind": "decisions_status", "status": "campaign_changed",
                       "from": last_uuid[0], "to": u, "same_dir": True})

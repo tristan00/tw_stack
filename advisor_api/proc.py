@@ -139,7 +139,13 @@ def launch(kind: str, params: dict) -> list:
     if presave_radius in (None, ""):
         import run_config
         presave_radius = run_config.RUN["presave_radius"]
+    record = dict(params, campaigns=int(params.get("campaigns") or 10), turns=turns,
+                  cold=cold, code_version=code_version, presave_radius=float(presave_radius),
+                  ucb=None if ucb in (None, "") else float(ucb))
+    seg = runctl._record_launch(record, argv=["ui", kind])
     steps = [runctl.kill_session(), runctl.kill_recorder()]
+    if seg:
+        steps.append("experiment %s segment %s" % (seg["experiment_id"], seg["seq"]))
     common.wait("api_launch_kill_settle", 1.5)
     steps.append(runctl.start_recorder(dev=bool(params.get("dev")),
                                        presave_radius=float(presave_radius),
@@ -154,7 +160,6 @@ def launch(kind: str, params: dict) -> list:
         factions=params.get("factions") or "all",
         strategies=None if cold else (params.get("strategies") or None),
         interrupt_strategies=None if cold else (params.get("interrupt_strategies") or None),
-        ruleset=None if cold else (params.get("ruleset") or None),
         presave_radius=float(presave_radius),
         width=int(params.get("width") or 0),
         ucb=None if ucb in (None, "") else float(ucb),
