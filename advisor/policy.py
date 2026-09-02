@@ -12,7 +12,6 @@ import common
 import arms
 import model as M
 import options as O
-import ruleset as R
 import strategies as S
 
 
@@ -85,13 +84,10 @@ def _tally(values):
 
 class Policy:
     def __init__(self, ranker=None, seed=None,
-                 max_actions_per_entity=MAX_ACTIONS_PER_ENTITY, strategies=None, ruleset=None):
+                 max_actions_per_entity=MAX_ACTIONS_PER_ENTITY, strategies=None):
         self.ranker = ranker if ranker is not None else M.Ranker()
         self.rng = random.Random(seed)
         self.strategies = normalize_strategies(strategies)
-        self.ruleset = R.RuleSet.load(ruleset) if ruleset else None
-        if "ruleset" in self.strategies and self.ruleset is None:
-            raise ValueError("strategy mix includes 'ruleset' but no ruleset name was given")
         self.ggnn = None
         if "greedy_gnn" in self.strategies:
             if common.ROOT not in sys.path:
@@ -99,7 +95,7 @@ class Policy:
             from advisor.mapgraph import greedy_rank as GGNN
             self.ggnn = GGNN.Ranker()
         self.members = {name: S.build(name, rng=self.rng, ranker=self.ranker,
-                                      ruleset=self.ruleset, ggnn=self.ggnn)
+                                      ggnn=self.ggnn)
                         for name in self.strategies}
         self.fallback = self.members.get("random") or S.build("random", rng=self.rng)
         self.max_actions_per_entity = max_actions_per_entity
@@ -160,8 +156,6 @@ class Policy:
                     % (drawn, len(elig)))
             mode = "%s_random_fallback" % drawn
             best = self.fallback.pick(elig, record)
-        elif drawn == "ruleset":
-            mode = "ruleset(%s)" % member.last_rule
         else:
             mode = drawn
         if drawn == "greedy_gnn" and member.last_reward is not None:

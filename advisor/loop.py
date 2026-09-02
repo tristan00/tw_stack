@@ -197,8 +197,8 @@ def run_campaign(run_dir, executor, pol=None, turns=3, log=print,
     import interrupt_model as IM
     import interrupts as I
     _verify_action_catalogues(log)
-    ranker = (IM.InterruptRanker(NO_MODEL_DIR, strategies=imix, ruleset=pol.ruleset)
-              if cold else IM.InterruptRanker(strategies=imix, ruleset=pol.ruleset))
+    ranker = (IM.InterruptRanker(NO_MODEL_DIR, strategies=imix)
+              if cold else IM.InterruptRanker(strategies=imix))
     act_hist = []
     act_counts = {}
     mem = MEM.CampaignMemory()

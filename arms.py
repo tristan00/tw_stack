@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 
-NAMES = ("random", "greedy_catboost", "ruleset", "greedy_gnn")
+NAMES = ("random", "greedy_catboost", "greedy_gnn")
 
 TRAINABLE = ("greedy_catboost", "greedy_gnn")
 
-RETIRED = ("marwil_gnn",)
+RETIRED = ("marwil_gnn", "ruleset")
 
-INTERRUPT_NAMES = ("random", "greedy_catboost", "ruleset")
+INTERRUPT_NAMES = ("random", "greedy_catboost")
 
 
 class ModelUnavailable(RuntimeError):
@@ -47,8 +47,6 @@ def arm_of(policy) -> str | None:
     p = canonical(p)
     if p in NAMES or p in RETIRED:
         return p
-    if p.startswith("ruleset(") and p.endswith(")"):
-        return "ruleset"
     if p.endswith(_FALLBACK):
         stem = canonical(p[:-len(_FALLBACK)])
         if stem in NAMES or stem in RETIRED:
@@ -59,7 +57,7 @@ def arm_of(policy) -> str | None:
             return stem
     raise ValueError(
         "arms.arm_of: %r is not a policy shape this project writes. advisor/policy.py "
-        "produces one of: a bare arm %s, 'ruleset(<rule>)', '<arm>%s', or %r. A new shape "
+        "produces one of: a bare arm %s, '<arm>%s', or %r. A new shape "
         "must be added here deliberately -- bucketing it silently would move every arm's "
         "share with nothing to show why." % (policy, list(NAMES), _FALLBACK, NOT_A_DRAW[0]))
 

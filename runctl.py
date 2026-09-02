@@ -147,7 +147,7 @@ def rebuild_analytics():
 
 def start_session(campaigns, turns, retrain_every=0,
                   cold=False, dev=True, factions="all", strategies=None,
-                  ruleset=None, retrain_first=False, presave_radius=None,
+                  retrain_first=False, presave_radius=None,
                   width=0, ucb=None, interrupt_strategies=None, code_version=None):
     if not str(factions or "").strip():
         raise SystemExit("--factions must be 'all' or a comma-separated list of faction keys")
@@ -171,7 +171,6 @@ def start_session(campaigns, turns, retrain_every=0,
             + (["--strategies", str(strategies)] if strategies else [])
             + (["--interrupt-strategies", str(interrupt_strategies)]
                if interrupt_strategies else [])
-            + (["--ruleset", str(ruleset)] if ruleset else [])
             + ["--presave-radius", str(presave_radius)]
             + (["--width", str(width)] if width else [])
             + (["--ucb", str(ucb)] if ucb is not None else [])
@@ -190,7 +189,7 @@ def start_session(campaigns, turns, retrain_every=0,
 
 def up(campaigns, turns, retrain_every=0, cold=False,
        dev=True, shots=DEFAULT_SHOTS, port=DEFAULT_PORT, with_ui=True,
-       factions="all", strategies=None, ruleset=None, retrain_first=False,
+       factions="all", strategies=None, retrain_first=False,
        presave_radius=None, width=0, ucb=None, interrupt_strategies=None,
        code_version=None):
     steps = [kill_session(), kill_recorder()]
@@ -214,7 +213,6 @@ def up(campaigns, turns, retrain_every=0, cold=False,
                                                  retrain_every=retrain_every,
                                                  cold=cold, dev=dev,
                                                  factions=factions, strategies=strategies,
-                                                 ruleset=ruleset,
                                                  retrain_first=retrain_first,
                                                  presave_radius=presave_radius,
                                                  width=width, ucb=ucb,
@@ -402,7 +400,7 @@ def harness_tick():
         for step in up(rec["campaigns"], rec["turns"],
                        retrain_every=rec["retrain_every"], retrain_first=False,
                        cold=rec.get("cold", False), dev=rec["dev"], with_ui=True,
-                       strategies=rec["strategies"], ruleset=rec.get("ruleset"),
+                       strategies=rec["strategies"],
                        interrupt_strategies=rec["interrupt_strategies"],
                        factions=rec["factions"],
                        presave_radius=rec["presave_radius"],
@@ -499,9 +497,8 @@ def main():
         s.add_argument("--strategies", default=None,
                        help="the action-arm mix; required unless --cold")
         s.add_argument("--interrupt-strategies", default=None,
-                       help="the mix for blocking screens (random, greedy_catboost, "
-                            "ruleset); required unless --cold")
-        s.add_argument("--ruleset", default=None)
+                       help="the mix for blocking screens (random, greedy_catboost); "
+                            "required unless --cold")
         s.add_argument("--presave-radius", type=_presave_radius, required=True,
                        help="sample starts from the baked trimmed saves of exactly this "
                             "radius; fails if none are baked at that radius. Fresh "
@@ -582,7 +579,6 @@ def main():
                   cold=a.cold, dev=a.dev,
                   factions=a.factions,
                   strategies=None if a.cold else a.strategies,
-                  ruleset=None if a.cold else a.ruleset,
                   interrupt_strategies=None if a.cold else a.interrupt_strategies,
                   presave_radius=a.presave_radius, width=a.width, ucb=ucb,
                   code_version=code_version)

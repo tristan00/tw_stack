@@ -47,25 +47,6 @@ class GreedyCatboost:
         return max(elig, key=lambda r: r.get("exploit") or 0.0)
 
 
-class Ruleset:
-
-    def __init__(self, ruleset):
-        self.ruleset = ruleset
-        self.last_rule = None
-
-    @property
-    def ready(self):
-        return self.ruleset is not None
-
-    def pick(self, elig, record):
-        self.last_rule = None
-        hit = self.ruleset.match(elig, record)
-        if hit is None:
-            return None
-        row, rule_name = hit
-        self.last_rule = rule_name
-        return row
-
 
 def offer_key(r):
     return (r.get("context_kind"), str(r.get("context_id")),
@@ -102,14 +83,12 @@ class GreedyGnn:
         return best
 
 
-def build(name, rng=None, ranker=None, ruleset=None, ggnn=None):
+def build(name, rng=None, ranker=None, ggnn=None):
     name = arms.canonical(name)
     if name == "random":
         return Random(rng)
     if name == "greedy_catboost":
         return GreedyCatboost(ranker)
-    if name == "ruleset":
-        return Ruleset(ruleset)
     if name == "greedy_gnn":
         return GreedyGnn(ggnn)
     raise ValueError("unknown strategy %r -- known: %s" % (name, ", ".join(NAMES)))

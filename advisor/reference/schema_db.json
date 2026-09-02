@@ -877,6 +877,38 @@
    ]
   ]
  },
+ "building_effects_junction_tables": {
+  "0": [
+   [
+    "building",
+    "StringU8"
+   ],
+   [
+    "effect",
+    "StringU8"
+   ],
+   [
+    "effect_scope",
+    "StringU8"
+   ],
+   [
+    "value",
+    "F32"
+   ],
+   [
+    "value_damaged",
+    "F32"
+   ],
+   [
+    "value_ruined",
+    "F32"
+   ],
+   [
+    "context_requirement",
+    "StringU8"
+   ]
+  ]
+ },
  "building_levels_tables": {
   "0": [
    [
@@ -1363,6 +1395,18 @@
    ]
   ]
  },
+ "campaign_map_regions_tables": {
+  "0": [
+   [
+    "campaign_map",
+    "StringU8"
+   ],
+   [
+    "region",
+    "StringU8"
+   ]
+  ]
+ },
  "campaign_post_battle_captive_options_tables": {
   "6": [
    [
@@ -1460,36 +1504,6 @@
   ]
  },
  "character_skill_level_details_tables": {
-  "0": [
-   [
-    "campaign_key",
-    "OptionalStringU8"
-   ],
-   [
-    "faction_key",
-    "OptionalStringU8"
-   ],
-   [
-    "image_path",
-    "StringU8"
-   ],
-   [
-    "level",
-    "I32"
-   ],
-   [
-    "skill_key",
-    "StringU8"
-   ],
-   [
-    "subculture_key",
-    "OptionalStringU8"
-   ],
-   [
-    "unlocked_at_rank",
-    "I32"
-   ]
-  ],
   "1": [
    [
     "campaign_key",
@@ -1518,6 +1532,30 @@
    [
     "unlocked_at_rank",
     "I32"
+   ]
+  ]
+ },
+ "character_skill_level_to_effects_junctions_tables": {
+  "1": [
+   [
+    "character_skill_key",
+    "StringU8"
+   ],
+   [
+    "effect_key",
+    "StringU8"
+   ],
+   [
+    "effect_scope",
+    "StringU8"
+   ],
+   [
+    "level",
+    "I32"
+   ],
+   [
+    "value",
+    "F32"
    ]
   ]
  },
@@ -1871,6 +1909,122 @@
    ]
   ]
  },
+ "cultures_subcultures_tables": {
+  "6": [
+   [
+    "subculture",
+    "StringU8"
+   ],
+   [
+    "culture",
+    "StringU8"
+   ],
+   [
+    "index",
+    "I32"
+   ],
+   [
+    "audio_state_override",
+    "OptionalStringU8"
+   ],
+   [
+    "audio_corruption_state_override",
+    "OptionalStringU8"
+   ],
+   [
+    "audio_rtpc_override",
+    "OptionalStringU8"
+   ],
+   [
+    "region_owner_audio_switch",
+    "OptionalStringU8"
+   ]
+  ]
+ },
+ "cultures_tables": {
+  "11": [
+   [
+    "key",
+    "StringU8"
+   ],
+   [
+    "index",
+    "I64"
+   ],
+   [
+    "fallback_ui_culture",
+    "OptionalStringU8"
+   ],
+   [
+    "ui_background_image",
+    "OptionalStringU8"
+   ],
+   [
+    "audio_state",
+    "OptionalStringU8"
+   ],
+   [
+    "ui_group_by_culture",
+    "Boolean"
+   ],
+   [
+    "audio_rtpc",
+    "OptionalStringU8"
+   ],
+   [
+    "audio_corruption_state",
+    "OptionalStringU8"
+   ]
+  ]
+ },
+ "dilemmas_tables": {
+  "3": [
+   [
+    "generate",
+    "Boolean"
+   ],
+   [
+    "key",
+    "StringU8"
+   ],
+   [
+    "localised_description",
+    "StringU8"
+   ],
+   [
+    "localised_title",
+    "StringU8"
+   ],
+   [
+    "ui_image",
+    "StringU8"
+   ],
+   [
+    "prioritized",
+    "Boolean"
+   ],
+   [
+    "event_category",
+    "OptionalStringU8"
+   ],
+   [
+    "sound_popup_override",
+    "OptionalStringU8"
+   ],
+   [
+    "sound_click_override",
+    "OptionalStringU8"
+   ],
+   [
+    "override_icon",
+    "OptionalStringU8"
+   ],
+   [
+    "is_large_dilemma",
+    "Boolean"
+   ]
+  ]
+ },
  "effects_tables": {
   "0": [
    [
@@ -1941,6 +2095,298 @@
    ],
    [
     "mod_disabled",
+    "Boolean"
+   ]
+  ]
+ },
+ "factions_tables": {
+  "6": [
+   [
+    "key",
+    "StringU8"
+   ],
+   [
+    "index",
+    "I64"
+   ],
+   [
+    "subculture",
+    "StringU8"
+   ],
+   [
+    "category",
+    "StringU8"
+   ],
+   [
+    "name_group",
+    "StringU8"
+   ],
+   [
+    "skin",
+    "StringU8"
+   ],
+   [
+    "ui_skin",
+    "OptionalStringU8"
+   ],
+   [
+    "is_rebel",
+    "Boolean"
+   ],
+   [
+    "flags_path",
+    "StringU8"
+   ],
+   [
+    "primary_colour_r",
+    "F32"
+   ],
+   [
+    "primary_colour_g",
+    "F32"
+   ],
+   [
+    "primary_colour_b",
+    "F32"
+   ],
+   [
+    "alt_primary_colour_r",
+    "F32"
+   ],
+   [
+    "alt_primary_colour_g",
+    "F32"
+   ],
+   [
+    "alt_primary_colour_b",
+    "F32"
+   ],
+   [
+    "secondary_colour_r",
+    "F32"
+   ],
+   [
+    "secondary_colour_g",
+    "F32"
+   ],
+   [
+    "secondary_colour_b",
+    "F32"
+   ],
+   [
+    "alt_secondary_colour_r",
+    "F32"
+   ],
+   [
+    "alt_secondary_colour_g",
+    "F32"
+   ],
+   [
+    "alt_secondary_colour_b",
+    "F32"
+   ],
+   [
+    "uniform_colour_r",
+    "F32"
+   ],
+   [
+    "uniform_colour_g",
+    "F32"
+   ],
+   [
+    "uniform_colour_b",
+    "F32"
+   ],
+   [
+    "alt_uniform_colour_r",
+    "F32"
+   ],
+   [
+    "alt_uniform_colour_g",
+    "F32"
+   ],
+   [
+    "alt_uniform_colour_b",
+    "F32"
+   ],
+   [
+    "rebel_colour_r",
+    "F32"
+   ],
+   [
+    "rebel_colour_g",
+    "F32"
+   ],
+   [
+    "rebel_colour_b",
+    "F32"
+   ],
+   [
+    "military_group",
+    "StringU8"
+   ],
+   [
+    "movie_death_event",
+    "OptionalStringU8"
+   ],
+   [
+    "unit_regiment_name_group",
+    "StringU8"
+   ],
+   [
+    "ship_name_group",
+    "StringU8"
+   ],
+   [
+    "pre_battle_speech_parameter",
+    "StringU8"
+   ],
+   [
+    "card_colour_r",
+    "F32"
+   ],
+   [
+    "card_colour_g",
+    "F32"
+   ],
+   [
+    "card_colour_b",
+    "F32"
+   ],
+   [
+    "audio_voiceover_culture",
+    "StringU8"
+   ],
+   [
+    "mp_force_gen_template",
+    "StringU8"
+   ],
+   [
+    "faction_swapping_id",
+    "StringU8"
+   ],
+   [
+    "win_movie",
+    "OptionalStringU8"
+   ],
+   [
+    "waaagh_faction",
+    "OptionalStringU8"
+   ],
+   [
+    "waaagh_general_unit",
+    "OptionalStringU8"
+   ],
+   [
+    "is_quest_faction",
+    "Boolean"
+   ],
+   [
+    "cdir_military_generator_config",
+    "StringU8"
+   ],
+   [
+    "feature_forest",
+    "StringU8"
+   ],
+   [
+    "default_audio_actor_vo_group",
+    "StringU8"
+   ],
+   [
+    "text_replacement_key",
+    "OptionalStringU8"
+   ],
+   [
+    "neutral_reinforcement_factions",
+    "StringU8"
+   ],
+   [
+    "can_accept_gifts_when_dead",
+    "Boolean"
+   ],
+   [
+    "uniform_colour_primary",
+    "ColourRGB"
+   ],
+   [
+    "uniform_colour_secondary",
+    "ColourRGB"
+   ],
+   [
+    "uniform_colour_tertiary",
+    "ColourRGB"
+   ],
+   [
+    "banner_colour_primary",
+    "ColourRGB"
+   ],
+   [
+    "banner_colour_secondary",
+    "ColourRGB"
+   ],
+   [
+    "banner_colour_tertiary",
+    "ColourRGB"
+   ],
+   [
+    "primary_colour",
+    "ColourRGB"
+   ],
+   [
+    "override_target_unit_vo_culture",
+    "Boolean"
+   ],
+   [
+    "music_feedback_group",
+    "StringU8"
+   ],
+   [
+    "ui_main_theme_skin",
+    "StringU8"
+   ]
+  ]
+ },
+ "incidents_tables": {
+  "7": [
+   [
+    "generate",
+    "Boolean"
+   ],
+   [
+    "key",
+    "StringU8"
+   ],
+   [
+    "ui_image",
+    "StringU8"
+   ],
+   [
+    "prioritised",
+    "Boolean"
+   ],
+   [
+    "event_category",
+    "OptionalStringU8"
+   ],
+   [
+    "override_icon",
+    "OptionalStringU8"
+   ],
+   [
+    "is_large_incident",
+    "Boolean"
+   ],
+   [
+    "additional_sound_event",
+    "OptionalStringU8"
+   ],
+   [
+    "sepia_fade",
+    "F32"
+   ],
+   [
+    "use_revealing_text",
     "Boolean"
    ]
   ]
@@ -4407,6 +4853,146 @@
    ]
   ]
  },
+ "missions_tables": {
+  "0": [
+   [
+    "key",
+    "StringU8"
+   ],
+   [
+    "mission_type",
+    "StringU8"
+   ],
+   [
+    "localised_title",
+    "StringU8"
+   ],
+   [
+    "localised_description",
+    "StringU8"
+   ],
+   [
+    "ui_image",
+    "StringU8"
+   ],
+   [
+    "ui_icon",
+    "StringU8"
+   ],
+   [
+    "generate",
+    "Boolean"
+   ],
+   [
+    "prioritised",
+    "Boolean"
+   ],
+   [
+    "event_category",
+    "OptionalStringU8"
+   ],
+   [
+    "set_piece_battle",
+    "OptionalStringU8"
+   ],
+   [
+    "location_x",
+    "I32"
+   ],
+   [
+    "location_y",
+    "I32"
+   ],
+   [
+    "quest_mission",
+    "Boolean"
+   ],
+   [
+    "quest_mission_final",
+    "Boolean"
+   ],
+   [
+    "trigger_radius",
+    "F32"
+   ],
+   [
+    "quest_character",
+    "OptionalStringU8"
+   ],
+   [
+    "sticky_by_default",
+    "Boolean"
+   ],
+   [
+    "localised_mission_completed_text",
+    "StringU8"
+   ],
+   [
+    "can_be_manually_cancelled",
+    "Boolean"
+   ]
+  ]
+ },
+ "provinces_tables": {
+  "0": [
+   [
+    "key",
+    "StringU8"
+   ]
+  ]
+ },
+ "region_to_province_junctions_tables": {
+  "1": [
+   [
+    "province",
+    "StringU8"
+   ],
+   [
+    "region",
+    "StringU8"
+   ],
+   [
+    "is_capital",
+    "Boolean"
+   ]
+  ]
+ },
+ "regions_tables": {
+  "0": [
+   [
+    "key",
+    "StringU8"
+   ],
+   [
+    "r",
+    "I32"
+   ],
+   [
+    "g",
+    "I32"
+   ],
+   [
+    "b",
+    "I32"
+   ],
+   [
+    "owner_bundle",
+    "OptionalStringU8"
+   ],
+   [
+    "faction_swapping_id",
+    "StringU8"
+   ],
+   [
+    "hidden_settlement_override",
+    "Boolean"
+   ],
+   [
+    "terrain_patch_area",
+    "OptionalStringU8"
+   ]
+  ]
+ },
  "ritual_chains_tables": {
   "3": [
    [
@@ -5301,6 +5887,26 @@
    ]
   ]
  },
+ "technology_effects_junction_tables": {
+  "0": [
+   [
+    "technology",
+    "StringU8"
+   ],
+   [
+    "effect",
+    "StringU8"
+   ],
+   [
+    "effect_scope",
+    "StringU8"
+   ],
+   [
+    "value",
+    "F32"
+   ]
+  ]
+ },
  "technology_node_links_tables": {
   "0": [
    [
@@ -5364,6 +5970,42 @@
    [
     "child_link_position_offset",
     "F32"
+   ]
+  ]
+ },
+ "technology_node_sets_tables": {
+  "3": [
+   [
+    "campaign_key",
+    "OptionalStringU8"
+   ],
+   [
+    "faction_key",
+    "OptionalStringU8"
+   ],
+   [
+    "culture",
+    "OptionalStringU8"
+   ],
+   [
+    "subculture",
+    "OptionalStringU8"
+   ],
+   [
+    "key",
+    "StringU8"
+   ],
+   [
+    "colour_r",
+    "I32"
+   ],
+   [
+    "colour_g",
+    "I32"
+   ],
+   [
+    "colour_b",
+    "I32"
    ]
   ]
  },

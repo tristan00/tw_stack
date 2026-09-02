@@ -242,13 +242,12 @@ def train(runs_root=RUNS_ROOT, window=TRAIN_WINDOW_CAMPAIGNS):
 
 class InterruptRanker:
 
-    def __init__(self, model_dir=MODEL_DIR, seed=None, strategies=None, ruleset=None):
+    def __init__(self, model_dir=MODEL_DIR, seed=None, strategies=None):
         self.ready = False
         self.meta = {}
         self.model = None
         self.rng = random.Random(seed)
         self.strategies = P.normalize_interrupt_strategies(strategies)
-        self.ruleset = ruleset
         try:
             from catboost import CatBoostRegressor
             mp = os.path.join(model_dir, MODEL_FILE)
@@ -315,11 +314,6 @@ class InterruptRanker:
         drawn = self._draw()
         if drawn == "random":
             return self.rng.choice(opts), "random", rich
-        if drawn == "ruleset":
-            hit = self.ruleset.match_screen(str(screen), opts) if self.ruleset else None
-            if hit:
-                return hit[0], "ruleset(%s)" % hit[1], rich
-            return self.rng.choice(opts), "ruleset_random_fallback", rich
         if drawn != "greedy_catboost":
             raise RuntimeError("interrupt_model: drawn strategy %r has no interrupt branch -- "
                                "refusing to silently play greedy_catboost" % (drawn,))

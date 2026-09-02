@@ -759,6 +759,31 @@ def build_extra():
                                 row)
         cur.execute("CREATE INDEX idx_skill_links_child ON skill_links (child)")
 
+    if nmeta["ok"] and nimeta["ok"]:
+        skill_of = {r["key"]: r["character_skill_key"] for r in nodes}
+        tier_of = {r["key"]: _i0(r.get("tier")) for r in nodes}
+        indent_of = {r["key"]: _i0(r.get("indent")) for r in nodes}
+        sets_of = {}
+        for r in nitems:
+            sets_of.setdefault(r["item"], set()).add(r["set_key"])
+        for r in nodes:
+            ns = r.get("character_skill_node_set_key")
+            if ns:
+                sets_of.setdefault(r["key"], set()).add(ns)
+        cur.execute("DROP TABLE IF EXISTS skill_set_members")
+        cur.execute("CREATE TABLE skill_set_members (node_set TEXT, skill TEXT,"
+                    " tier INT, indent INT)")
+        seen = set()
+        for nk, sk in skill_of.items():
+            for ns in sets_of.get(nk, ()):
+                row = (ns, sk)
+                if row in seen:
+                    continue
+                seen.add(row)
+                cur.execute("INSERT INTO skill_set_members VALUES (%s, %s, %s, %s)",
+                            (ns, sk, tier_of.get(nk), indent_of.get(nk)))
+        cur.execute("CREATE INDEX idx_skill_set_members ON skill_set_members (node_set)")
+
     tlv, tlmeta = src("character_trait_levels_tables")
     if tlmeta["ok"]:
         cur.execute("DROP TABLE IF EXISTS trait_levels")
@@ -796,6 +821,54 @@ def build_extra():
             cur.execute("INSERT INTO trait_antitraits VALUES (%s, %s)",
                         (r["trait"], r["antitrait"]))
 
+    tfx, tfxmeta = src("technology_effects_junction_tables")
+    if tfxmeta["ok"]:
+        cur.execute("DROP TABLE IF EXISTS tech_effects")
+        cur.execute("CREATE TABLE tech_effects (tech TEXT, effect TEXT,"
+                    " effect_scope TEXT, value REAL)")
+        for r in tfx:
+            cur.execute("INSERT INTO tech_effects VALUES (%s, %s, %s, %s)",
+                        (r["technology"], r["effect"], r["effect_scope"], r["value"]))
+        cur.execute("CREATE INDEX idx_tech_effects ON tech_effects (tech)")
+
+    sfx, sfxmeta = src("character_skill_level_to_effects_junctions_tables")
+    if sfxmeta["ok"]:
+        cur.execute("DROP TABLE IF EXISTS skill_effects")
+        cur.execute("CREATE TABLE skill_effects (skill TEXT, level INT, effect TEXT,"
+                    " effect_scope TEXT, value REAL)")
+        for r in sfx:
+            cur.execute("INSERT INTO skill_effects VALUES (%s, %s, %s, %s, %s)",
+                        (r["character_skill_key"], r["level"], r["effect_key"],
+                         r["effect_scope"], r["value"]))
+        cur.execute("CREATE INDEX idx_skill_effects ON skill_effects (skill, level)")
+
+    bfx, bfxmeta = src("building_effects_junction_tables")
+    if bfxmeta["ok"]:
+        cur.execute("DROP TABLE IF EXISTS building_effects")
+        cur.execute("CREATE TABLE building_effects (building TEXT, effect TEXT,"
+                    " effect_scope TEXT, value REAL, value_damaged REAL,"
+                    " value_ruined REAL)")
+        for r in bfx:
+            cur.execute("INSERT INTO building_effects VALUES (%s, %s, %s, %s, %s, %s)",
+                        (r["building"], r["effect"], r["effect_scope"], r["value"],
+                         r["value_damaged"], r["value_ruined"]))
+        cur.execute("CREATE INDEX idx_building_effects ON building_effects (building)")
+
+    sld, sldmeta = src("character_skill_level_details_tables")
+    if sldmeta["ok"]:
+        cur.execute("DROP TABLE IF EXISTS skill_level_ranks")
+        cur.execute("CREATE TABLE skill_level_ranks (skill TEXT, level INT,"
+                    " unlocked_at_rank INT)")
+        seen = set()
+        for r in sld:
+            k = (r["skill_key"], r["level"])
+            if k in seen:
+                continue
+            seen.add(k)
+            cur.execute("INSERT INTO skill_level_ranks VALUES (%s, %s, %s)",
+                        (r["skill_key"], r["level"], r["unlocked_at_rank"]))
+        cur.execute("CREATE INDEX idx_skill_level_ranks ON skill_level_ranks (skill)")
+
     effs, emeta = src("effects_tables")
     if emeta["ok"]:
         cur.execute("DROP TABLE IF EXISTS effects_meta")
@@ -815,7 +888,9 @@ def build_extra():
         print(f"  [{tag}] {t:38s} ver={m['version']} rows={m['rows']} :: {m['reason']}")
     for t in ("tech_links", "ancillaries", "ancillary_effects", "effects_meta",
               "skill_links", "skill_categories", "skill_indents", "tech_groups",
-              "trait_levels", "trait_effects", "trait_meta", "trait_antitraits"):
+              "trait_levels", "trait_effects", "trait_meta", "trait_antitraits",
+              "tech_effects", "skill_effects", "building_effects", "skill_level_ranks",
+              "skill_set_members"):
         n = cur.execute("SELECT COUNT(*) FROM " + t).fetchone()[0]
         print(f"  {t:16s} {n} rows")
     con.close()
