@@ -68,6 +68,32 @@ DEFAULT_SETTINGS = {
 
 SEED_BOARD = "Exclusive choices"
 
+SEED_VIEWS = (
+    ("Opening research · first pick", {
+        "record": "research",
+        "computed": [{"name": "opening",
+                      "expr": "CASE WHEN turn <= 3 THEN 'first three turns'"
+                              " WHEN turn <= 10 THEN 'turns 4-10' ELSE 'later' END"}],
+        "rows": ["opening"],
+        "columns": [],
+        "values": [{"field": "*", "agg": "share", "label": "share"},
+                   {"field": "turn", "agg": "median", "label": "turn, median"}],
+        "filters": [{"field": "researched", "op": "=", "value": 1}],
+        "chart": "table"}),
+    ("Settlement size · public order", {
+        "record": "regions",
+        "computed": [{"name": "size_band",
+                      "expr": "CASE WHEN buildings >= 4 THEN 'large'"
+                              " WHEN buildings >= 2 THEN 'mid' ELSE 'small' END"}],
+        "rows": ["size_band"],
+        "columns": [],
+        "values": [{"field": "*", "agg": "share", "label": "share"},
+                   {"field": "public_order", "agg": "median", "label": "order, median"},
+                   {"field": "income", "agg": "median", "label": "income, median"}],
+        "filters": [{"field": "mine", "op": "=", "value": 1}],
+        "chart": "bars"}),
+)
+
 
 def ensure(con=None):
     own = con is None
@@ -77,8 +103,14 @@ def ensure(con=None):
     cur = con.cursor()
     cur.execute("SELECT COUNT(*) FROM app.boards")
     if cur.fetchone()[0] == 0:
-        cur.execute("INSERT INTO app.boards(name, ord, created_ts) VALUES(%s,0,%s)",
-                    (SEED_BOARD, time.time()))
+        cur.execute("INSERT INTO app.boards(name, ord, created_ts) VALUES(%s,0,%s)"
+                    " RETURNING board_id", (SEED_BOARD, time.time()))
+        bid = cur.fetchone()[0]
+        for i, (name, spec) in enumerate(SEED_VIEWS):
+            cur.execute(
+                "INSERT INTO app.views(board_id, name, spec, ord, created_ts)"
+                " VALUES(%s,%s,%s,%s,%s)",
+                (bid, name, json.dumps(spec), i, time.time()))
     if own:
         con.close()
 
