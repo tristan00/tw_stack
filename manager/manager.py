@@ -276,6 +276,7 @@ def main():
         sys.path.insert(0, os.path.join(os.path.dirname(here), repo))
     import input_stream
     import shots_stream
+    import events_stream
     import logs_stream
     import ui_capture_stream
     import actions_stream
@@ -322,6 +323,9 @@ def main():
     if decisions_on:
         streams.append({"run": decisions_stream.run, "name": "decisions",
                         "out_file": "decisions_stream.jsonl"})
+    streams.append({"run": events_stream.run, "name": "events",
+                    "out_file": "events_stream.jsonl",
+                    "kwargs": {"log_dirs": log_dirs}})
     if input_on:
         streams.append({"run": input_stream.run, "name": "input"})
     if shots_on:
