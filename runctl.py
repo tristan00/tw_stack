@@ -228,8 +228,8 @@ def down():
 LAUNCH_RECORD = os.path.join(SERVICES_LOG_DIR, "last_launch.json")
 
 
-def _record_launch(vals):
-    rec = dict(vals, ts=time.time(), argv=sys.argv[1:])
+def _record_launch(vals, argv=None):
+    rec = dict(vals, ts=time.time(), argv=argv if argv is not None else sys.argv[1:])
     tmp = LAUNCH_RECORD + ".tmp"
     try:
         os.makedirs(SERVICES_LOG_DIR, exist_ok=True)
@@ -238,6 +238,27 @@ def _record_launch(vals):
         os.replace(tmp, LAUNCH_RECORD)
     except OSError as e:
         sys.stderr.write("runctl: could not record the launch -> %s\n" % repr(e)[:80])
+    return open_segment(rec)
+
+
+def experiment_name(vals):
+    mix = str(vals.get("strategies") or "cold")
+    return "mix %s · window %s · turns %s" % (
+        mix, vals.get("retrain_every") or 0, vals.get("turns"))
+
+
+def open_segment(vals, note=None):
+    try:
+        from decisions import workspace
+        eid = workspace.experiment(experiment_name(vals), config=dict(vals))
+        sid, seq = workspace.open_segment(
+            eid, code_version=vals.get("code_version"), note=note, params=dict(vals))
+        os.environ["TW_EXPERIMENT_ID"] = str(eid)
+        os.environ["TW_SEGMENT_ID"] = str(sid)
+        return {"experiment_id": eid, "segment_id": sid, "seq": seq}
+    except Exception as e:
+        sys.stderr.write("runctl: could not open a segment -> %s\n" % repr(e)[:110])
+        return None
 
 
 def version_unbumped(info):
