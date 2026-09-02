@@ -381,7 +381,7 @@ def _require_models(mix, imix, cold, log, bootstrap=False):
 def run_campaigns(n=3, turns=20, plan="all",
                   log=print, runs_root=RUNS_ROOT, retrain_every=0, seed=None,
                   cold=False, strategies=None, interrupt_strategies=None,
-                  ruleset=None, retrain_first=False, presave_radius=None, width=0,
+                  retrain_first=False, presave_radius=None, width=0,
                   ucb=None):
     from bus import Bus
     from executor import Executor
@@ -435,29 +435,13 @@ def run_campaigns(n=3, turns=20, plan="all",
         raise SystemExit("--cold is cold: it always plays pure random on blocking screens "
                          "too -- got %s; drop --interrupt-strategies or drop --cold"
                          % json.dumps(imix))
-    if cold and ruleset:
-        raise SystemExit("--cold is cold: it always plays pure random -- drop --ruleset %r "
-                         "or drop --cold" % ruleset)
-    if ("ruleset" in mix or "ruleset" in imix) and not ruleset:
-        raise SystemExit("a strategy mix includes 'ruleset' but no --ruleset <name> was given")
-    if ruleset and "ruleset" not in mix and "ruleset" not in imix:
-        raise SystemExit("--ruleset %r given but 'ruleset' is in neither the action mix %s "
-                         "nor the interrupt mix %s"
-                         % (ruleset, json.dumps(mix), json.dumps(imix)))
     _require_models(mix, imix, cold, log,
                     bootstrap=bool(retrain_every and retrain_first))
-    ruleset_meta = None
-    if ruleset:
-        import ruleset as RS
-        rs = RS.RuleSet.load(ruleset)
-        ruleset_meta = {"name": rs.name, "sha256": rs.sha256}
-        log("ruleset: %s (%d rules, sha256 %s)" % (rs.name, len(rs.rules), rs.sha256[:12]))
     log("strategy mix: %s" % json.dumps(mix))
     log("interrupt mix: %s" % json.dumps(imix))
     report = {"started": time.time(), "requested": {"campaigns": n, "turns": turns, "plan": plan,
                                                     "strategies": mix,
                                                     "interrupt_strategies": imix,
-                                                    "ruleset": ruleset_meta,
                                                     "code_version":
                                                         os.environ.get("TW_CODE_VERSION")},
               "campaigns": []}
@@ -577,7 +561,7 @@ def run_campaigns(n=3, turns=20, plan="all",
             try:
                 r = M.Ranker() if ("greedy_catboost" in mix and not cold) else None
                 _models["ranker"] = r
-                _models["policy"] = P.Policy(r, strategies=mix, ruleset=ruleset)
+                _models["policy"] = P.Policy(r, strategies=mix)
             except BaseException as e:
                 _models["error"] = e
 
@@ -944,7 +928,6 @@ def _trial_row(stretch, gen_n, report, trained, log):
            "campaigns": len(played),
            "strategies": (report.get("requested") or {}).get("strategies"),
            "interrupt_strategies": (report.get("requested") or {}).get("interrupt_strategies"),
-           "ruleset": (report.get("requested") or {}).get("ruleset"),
            "feature_version": _feature_version(),
            "code_version": (report.get("requested") or {}).get("code_version"),
            "corpus_at_train": report.get("_corpus"),
@@ -1173,16 +1156,6 @@ def _parse_strategies(argv, flag="--strategies", normalize=None):
         raise SystemExit(str(e))
 
 
-def _parse_ruleset(argv):
-    if "--ruleset" not in argv:
-        return None
-    try:
-        name = argv[argv.index("--ruleset") + 1].strip()
-    except IndexError:
-        raise SystemExit("--ruleset needs a name (<TWDATA>/rules\\<name>.json)")
-    if not name or name.startswith("--"):
-        raise SystemExit("--ruleset needs a name (<TWDATA>/rules\\<name>.json)")
-    return name
 
 
 def _parse_turns(arg):
@@ -1218,7 +1191,7 @@ def main():
         raise SystemExit("usage: session.py <campaigns> <turns|min-max> --factions "
                          "all|<key,key,...> --presave-radius R\n"
                          "                  [--strategies a=x,b=y[,c=z]]\n"
-                         "                  [--interrupt-strategies a=x,b=y] [--ruleset <name>]\n"
+                         "                  [--interrupt-strategies a=x,b=y]\n"
                          "  --strategies -- per-decision sampling mix over %s\n"
                          "                 (default greedy_catboost=0.8,random=0.2; the weights "
                          "must sum to 1). Trainable arms (%s) require their trained models and "
@@ -1226,8 +1199,6 @@ def main():
                          "  --interrupt-strategies -- the mix for blocking screens, over %s "
                          "only (the gnn arms have no interrupt model); defaults to the "
                          "action mix when that mix has no gnn arm, else required\n"
-                         "  --ruleset   -- rule file name under <TWDATA>/rules\\<name>.json "
-                         "(required when 'ruleset' is in a mix)\n"
                          % (",".join(ST.NAMES), ",".join(ST.TRAINABLE),
                             ",".join(arms.INTERRUPT_NAMES))
                          + "\n"
@@ -1278,7 +1249,6 @@ def main():
     strategies = _parse_strategies(sys.argv)
     interrupt_strategies = _parse_strategies(sys.argv, "--interrupt-strategies",
                                              P.normalize_interrupt_strategies)
-    ruleset = _parse_ruleset(sys.argv)
     if "--presave-radius" not in sys.argv:
         raise SystemExit("--presave-radius R is required: a session boots a start baked at "
                          "that radius and the map comes with it. bake.py makes them.")
@@ -1296,7 +1266,7 @@ def main():
     r = run_campaigns(n, turns, plan=plan,
                       retrain_every=every, cold=cold, strategies=strategies,
                       interrupt_strategies=interrupt_strategies,
-                      ruleset=ruleset, retrain_first=retrain_first,
+                      retrain_first=retrain_first,
                       presave_radius=presave_radius, width=width, ucb=ucb)
     return 0 if r["totals"]["completed"] else 2
 

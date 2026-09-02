@@ -54,11 +54,23 @@ def db_path(run: str | None = None) -> str:
     return pg.dsn()
 
 
+SEARCH_PATH = "public, analytics, app, reference"
+
+
 def connect(run: str | None = None):
     con = getattr(_local, "con", None)
     if con is None or con.closed:
         con = _local.con = pg.connect(autocommit=True, readonly=True,
-                                      row_factory=pg.row_factory)
+                                      row_factory=pg.row_factory,
+                                      search_path=SEARCH_PATH)
+    return con
+
+
+def write():
+    con = getattr(_local, "wcon", None)
+    if con is None or con.closed:
+        con = _local.wcon = pg.connect(autocommit=True, row_factory=pg.row_factory,
+                                       search_path=SEARCH_PATH)
     return con
 
 
