@@ -12,12 +12,51 @@ import common
 sys.path.insert(0, common.BUS)
 
 import collect
+import gameref
 import journal
 from store import DecisionStore
 
 POLL = 0.1
 
 PRUNE_EVERY = 600
+
+
+def _sync_reference(bus, snap, ctx):
+    camp = None
+    chars = []
+    for e in snap.get("entities") or ():
+        if e["context_kind"] == "campaign":
+            camp = e["state"]
+        elif e["context_kind"] in ("lord", "hero"):
+            st = e.get("state") or {}
+            if st.get("subtype"):
+                chars.append((e["context_id"], st["subtype"]))
+    if camp is None:
+        return
+    faction = camp.get("faction")
+    subtypes = {s for _, s in chars}
+    try:
+        want_tech = not gameref.have_faction_tech(faction)
+        want_subtypes = sorted(subtypes - gameref.have_subtypes(subtypes))
+        want_regions = gameref.region_count() == 0
+    except Exception as e:
+        ctx.on_error("gameref probe", e)
+        return
+    if not (want_tech or want_subtypes or want_regions):
+        return
+    t0 = time.time()
+    try:
+        ref = collect.game_reference(
+            bus, characters=[c for c in chars if c[1] in set(want_subtypes)],
+            with_regions=want_regions)
+        if not want_tech:
+            ref["tech"] = ref["tech_effect"] = ref["tech_parent"] = []
+        n = gameref.write(ref, faction)
+    except Exception as e:
+        ctx.on_error("gameref collect", e)
+        return
+    ctx.emit({"kind": "gameref", "faction": faction, "ms": int((time.time() - t0) * 1000),
+              "rows": n})
 
 
 def run(ctx):
@@ -68,6 +107,7 @@ def run(ctx):
                         pickup_lag_ms = int((t0 - (row.get("ts") or t0)) * 1000)
                         snap = collect.snapshot(bus, active=row.get("active"))
                         t1 = time.time()
+                        _sync_reference(bus, snap, ctx)
                         if campaign_changed(snap.get("campaign")):
                             seq = 0
                         did = store.write_decision(snap, decision_seq=seq)

@@ -976,6 +976,183 @@ _LUA_FACTION_BUNDLES = (_G +
     "return table.concat(o,',')")
 
 
+_LUA_MISSIONS = (_G +
+    "local f=cm:get_local_faction(true) local c=cco('CcoCampaignFaction',f:name()) "
+    "local o={} "
+    "local function add(l,pending) if type(l)~='table' then return end "
+    "  for i=1,#l do local m=l[i] local r=g(m,'MissionRecordContext') "
+    "    o[#o+1]=ts(r and g(r,'Key'))..'~'..ts(g(m,'CompletionStatus'))"
+    "..'~'..ts(g(m,'TurnsRemaining'))..'~'..ts(g(m,'IsQuest'))"
+    "..'~'..ts(g(m,'IsVictoryCondition'))..'~'..ts(g(m,'Completed'))"
+    "..'~'..ts(g(m,'IsCancelled'))..'~'..pending"
+    "..'~'..ts(r and g(r,'EventCategoryContext.Key'))"
+    "..'~'..ts(g(m,'MissionIssuerContext.Key')) end end "
+    "add(g(c,'MissionList'),'0') add(g(c,'PendingMissionList'),'1') "
+    "return table.concat(o,',')")
+
+
+_MISSION_STATUS = {"0": "active", "1": "succeeded", "2": "cancelled", "3": "expired"}
+
+
+def _parse_missions(raw):
+    if raw is None or str(raw) in ("nil", "None"):
+        return None
+    out = []
+    for row in str(raw).split(","):
+        p = row.split("~")
+        if len(p) < 8 or not p[0]:
+            continue
+        out.append({"mission": p[0], "status": _MISSION_STATUS.get(p[1], p[1]),
+                    "turns_remaining": _num(p[2]), "is_quest": p[3] == "true",
+                    "is_victory": p[4] == "true", "completed": p[5] == "true",
+                    "cancelled": p[6] == "true", "pending": p[7] == "1",
+                    "category": _key(p[8]) if len(p) > 8 else None,
+                    "issuer": _key(p[9]) if len(p) > 9 else None})
+    return out
+
+
+def missions(bus):
+    return _parse_missions(_ev(bus, _LUA_MISSIONS, timeout=20.0, allow_nil=True))
+
+
+_LUA_REF_REGIONS = (
+    "local function t(fn) local ok,v=pcall(fn) if ok then return v end return nil end "
+    "local function ts(v) if v==nil then return '' end return tostring(v) end "
+    "local rl=cm:model():world():region_manager():region_list() local o={} "
+    "for i=0,rl:num_items()-1 do local r=rl:item_at(i) "
+    "  local s=t(function() return r:settlement() end) "
+    "  local adj={} local al=t(function() return r:adjacent_region_list() end) "
+    "  if al then for j=0,al:num_items()-1 do "
+    "    local an=t(function() return al:item_at(j):name() end) "
+    "    if an then adj[#adj+1]=an end end end "
+    "  o[#o+1]=ts(t(function() return r:name() end))"
+    "..'~'..ts(s and t(function() return s:logical_position_x() end))"
+    "..'~'..ts(s and t(function() return s:logical_position_y() end))"
+    "..'~'..ts(t(function() return r:province_name() end))"
+    "..'~'..ts(t(function() return r:is_province_capital() end))"
+    "..'~'..ts(t(function() return s and s:get_climate() end))"
+    "..'~'..table.concat(adj,'|') end "
+    "return table.concat(o,',')")
+
+
+def _parse_ref_regions(raw):
+    out = []
+    for row in str(raw or "").split(","):
+        p = row.split("~")
+        if len(p) < 7 or not p[0]:
+            continue
+        out.append({"region": p[0], "x": _num(p[1]), "y": _num(p[2]),
+                    "province": _key(p[3]), "is_capital": p[4] == "true",
+                    "climate": _key(p[5]),
+                    "adjacent": [a for a in p[6].split("|") if a]})
+    return out
+
+
+_LUA_REF_TECH = (_G +
+    "local f=cm:get_local_faction(true) local c=cco('CcoCampaignFaction',f:name()) "
+    "local l=g(c,'TechnologyList') if type(l)~='table' then return '' end local o={} "
+    "for i=1,#l do local x=l[i] local k=ts(g(x,'NodeKey')) "
+    "  o[#o+1]='T~'..k..'~'..ts(g(x,'Tier'))..'~'..ts(g(x,'Indent'))"
+    "..'~'..ts(g(x,'Duration'))..'~'..ts(g(x,'Cost'))..'~'..ts(g(x,'ResearchPointsCost'))"
+    "..'~'..ts(g(x,'RequiredParentsNumber')) "
+    "  local el=g(x,'EffectList') "
+    "  if type(el)=='table' then for j=1,#el do local e=el[j] "
+    "    o[#o+1]='E~'..k..'~'..ts(g(e,'EffectKey'))..'~'..ts(g(e,'Value'))"
+    "..'~'..ts(g(e,'IsPositive'))..'~'..ts(g(e,'EffectScopeContext.Key')) end end "
+    "  local rl=g(x,'RequiredTechnologiesList') "
+    "  if type(rl)=='table' then for j=1,#rl do "
+    "    o[#o+1]='P~'..k..'~'..ts(g(rl[j],'Key')) end end end "
+    "return table.concat(o,',')")
+
+
+_LUA_REF_SKILLS = (_G +
+    "local ch=cco('CcoCampaignCharacter','%(cqi)s') if not ch then return '' end "
+    "local l=g(ch,'SkillList') if type(l)~='table' then return '' end local o={} "
+    "for i=1,#l do local s=l[i] local k=ts(g(s,'Key')) "
+    "  local ps={} local pl=g(s,'ParentSkillsList') "
+    "  if type(pl)=='table' then for j=1,#pl do ps[#ps+1]=ts(g(pl[j],'Key')) end end "
+    "  o[#o+1]='S~'..k..'~'..ts(g(s,'Tier'))..'~'..ts(g(s,'Indent'))"
+    "..'~'..ts(g(s,'TotalLevels'))..'~'..ts(g(s,'IsBackgroundSkill'))"
+    "..'~'..table.concat(ps,'|') "
+    "  local ll=g(s,'LevelsDetailsList') "
+    "  if type(ll)=='table' then for j=1,#ll do local d=ll[j] "
+    "    local lv=ts(g(d,'Level')) "
+    "    o[#o+1]='L~'..k..'~'..lv..'~'..ts(g(d,'RankRequired')) "
+    "    local el=g(d,'EffectList') "
+    "    if type(el)=='table' then for m=1,#el do local e=el[m] "
+    "      o[#o+1]='E~'..k..'~'..lv..'~'..ts(g(e,'EffectKey'))..'~'..ts(g(e,'Value'))"
+    "..'~'..ts(g(e,'IsPositive')) end end end end end "
+    "return table.concat(o,',')")
+
+
+def _parse_ref_tech(raw):
+    techs, effects, parents = {}, [], []
+    for row in str(raw or "").split(","):
+        p = row.split("~")
+        if len(p) < 3 or not p[1]:
+            continue
+        if p[0] == "T" and len(p) >= 8:
+            techs[p[1]] = {"tech": p[1], "tier": _num(p[2]), "indent": _num(p[3]),
+                           "duration": _num(p[4]), "cost": _num(p[5]),
+                           "research_points": _num(p[6]), "required_parents": _num(p[7])}
+        elif p[0] == "E" and len(p) >= 5:
+            effects.append({"tech": p[1], "effect": p[2], "value": _num(p[3]),
+                            "positive": p[4] == "true",
+                            "scope": _key(p[5]) if len(p) > 5 else None})
+        elif p[0] == "P":
+            parents.append({"tech": p[1], "parent": p[2]})
+    return {"tech": sorted(techs.values(), key=lambda r: r["tech"]),
+            "tech_effect": effects, "tech_parent": parents}
+
+
+def _parse_ref_skills(raw):
+    skills, levels, effects = {}, {}, []
+    for row in str(raw or "").split(","):
+        p = row.split("~")
+        if len(p) < 3 or not p[1]:
+            continue
+        if p[0] == "S" and len(p) >= 7:
+            skills[p[1]] = {"skill": p[1], "tier": _num(p[2]), "indent": _num(p[3]),
+                            "total_levels": _num(p[4]), "background": p[5] == "true",
+                            "parents": [a for a in p[6].split("|") if a]}
+        elif p[0] == "L" and len(p) >= 4:
+            levels[(p[1], p[2])] = {"skill": p[1], "level": _num(p[2]),
+                                    "rank_required": _num(p[3])}
+        elif p[0] == "E" and len(p) >= 6:
+            effects.append({"skill": p[1], "level": _num(p[2]), "effect": p[3],
+                            "value": _num(p[4]), "positive": p[5] == "true"})
+    return {"skill": sorted(skills.values(), key=lambda r: r["skill"]),
+            "skill_level": sorted(levels.values(), key=lambda r: (r["skill"], r["level"])),
+            "skill_effect": effects}
+
+
+def game_reference(bus, characters=(), with_regions=True):
+    out = {"regions": [], "tech": [], "tech_effect": [], "tech_parent": [],
+           "skill": [], "skill_level": [], "skill_effect": [], "subtypes": {}}
+    if with_regions:
+        out["regions"] = _parse_ref_regions(
+            _ev(bus, _LUA_REF_REGIONS, timeout=60.0, allow_nil=True))
+    out.update(_parse_ref_tech(_ev(bus, _LUA_REF_TECH, timeout=45.0, allow_nil=True)))
+    seen = set()
+    for cqi, subtype in characters:
+        if not subtype or subtype in seen:
+            continue
+        seen.add(subtype)
+        s = _parse_ref_skills(_ev(bus, _LUA_REF_SKILLS % {"cqi": cqi},
+                                  timeout=45.0, allow_nil=True))
+        for r in s["skill"]:
+            r["subtype"] = subtype
+        for r in s["skill_level"]:
+            r["subtype"] = subtype
+        for r in s["skill_effect"]:
+            r["subtype"] = subtype
+        out["skill"] += s["skill"]
+        out["skill_level"] += s["skill_level"]
+        out["skill_effect"] += s["skill_effect"]
+        out["subtypes"][subtype] = str(cqi)
+    return out
+
+
 _LUA_ANCILLARY_POOL = (_G +
     "local f=cco('CcoCampaignFaction','%(fac)s') local l=g(f,'AncillaryList') "
     "if type(l)~='table' then return '' end local o={} "
@@ -1499,13 +1676,14 @@ def snapshot(bus, active=None):
                          ("eval", _LUA_STATIONED), ("eval", _LUA_DIPLO_TARGETS),
                          ("eval", _LUA_ENEMY_AGENTS), ("eval", _LUA_AP_ALL),
                          ("eval", _LUA_WAR_GRAPH), ("eval", _LUA_FACTION_BUNDLES),
-                         ("trait_progress", "")], timeout=40.0)
+                         ("trait_progress", ""), ("eval", _LUA_MISSIONS)], timeout=40.0)
     prof["wave_a_ms"] = int((time.time() - t0) * 1000)
     camp = _parse_campaign(_bres(ra[0], "campaign_state"))
     prof["campaign_state_engine_ms"] = camp.pop("_eval_ms", None)
     camp["resources"] = _parse_resources(_bres(ra[1], "faction_resources", allow_nil=True))
     camp["effect_bundles"] = _parse_bundles(_bres(ra[11], "faction_bundles", allow_nil=True))
     trait_progress = _parse_trait_progress(ra[12].get("chars") or [])
+    missions_now = _parse_missions(_bres(ra[13], "missions", allow_nil=True))
     camp["campaign_map"] = campaign_map(bus, camp.get("campaign_uuid"))
     camp["presave_radius"] = _presave_radius()
     camp["selector"] = _selector()
@@ -1672,7 +1850,7 @@ def snapshot(bus, active=None):
                      "state": prov_state[reg]})
     if want_camp:
         camp_state = dict(camp, anc_pool=anc_pool, equipped_all=equipped_all,
-                          lord_pools=pools)
+                          lord_pools=pools, missions=missions_now)
         camp_state.update(_parse_tech_rites(camp_raw))
         ents.append({"context_kind": "campaign", "context_id": camp["faction"],
                      "state": camp_state})
