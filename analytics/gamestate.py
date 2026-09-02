@@ -394,6 +394,12 @@ def step(src, an, lo, hi):
     todo = _pending(src, an, lo, hi)
     written = 0
     watermark = lo
+    if todo:
+        try:
+            from decisions import workspace
+            workspace.sync_starts()
+        except Exception:
+            pass
     for cid, turn, did in todo:
         rec = _load(src, did)
         if rec is None:
