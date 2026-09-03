@@ -15,7 +15,7 @@ from advisor.reference.build_reference import (decode_db_table, load_db_schema, 
 from decisions import pg
 
 GAME = common.GAME_DATA_DIR
-CAMPAIGN = "wh3_main_combi"
+CAMPAIGNS = ("wh3_main_combi", "wh3_main_chaos")
 MAX_POINTS = 120
 MIN_PART = 0.05
 TOLERANCES = (1.0, 1.4, 2.0, 2.8, 4.0, 5.6, 8.0, 11.0, 16.0, 22.0, 32.0)
@@ -249,15 +249,15 @@ def _centroid(rings):
     return ax / at, ay / at
 
 
-def extract():
+def extract(campaign):
     schema = _schema()
     dfiles, dd = parse_pack(GAME + "/db.pack")
     areas, ameta = decode_db_table(dfiles, dd, "campaign_map_playable_areas_tables", schema)
     if not ameta["ok"]:
         raise RuntimeError("campaign_map_playable_areas_tables: " + ameta["reason"])
-    hit = [a for a in areas if a["campaign_key"] == CAMPAIGN]
+    hit = [a for a in areas if a["campaign_key"] == campaign]
     if len(hit) != 1:
-        raise RuntimeError("expected one playable area for %s, got %d" % (CAMPAIGN, len(hit)))
+        raise RuntimeError("expected one playable area for %s, got %d" % (campaign, len(hit)))
     mapname, overlay = hit[0]["mapname"], hit[0]["overlay_file"]
 
     regs, rmeta = decode_db_table(dfiles, dd, "regions_tables", schema)
@@ -286,7 +286,7 @@ def extract():
                            % (len(missing), missing[:5]))
     extra = len(set(map(tuple, pal.tolist()))) - len({colour[k] for k in on_map})
     print("map %s (%s) overlay %s %dx%d desc=0x%02x palette=%d" % (
-        mapname, CAMPAIGN, overlay, w, h, desc, len(pal)))
+        mapname, campaign, overlay, w, h, desc, len(pal)))
     print("regions on map %d, land %d, water %d, palette colours unused by db %d" % (
         len(on_map), len(land), len(on_map) - len(land), extra))
 
@@ -337,18 +337,19 @@ def store(geo, w, h):
     live = {r[0] for r in con.execute("SELECT region FROM reference.ref_region").fetchall()}
     rows, total = [], 0
     for key, g in geo.items():
-        if key not in live:
-            continue
         blob = json.dumps([[c for p in ring for c in p] for ring in g["rings"]],
                           separators=(",", ":"))
         total += len(blob)
-        rows.append((blob, g["cx"], g["cy"], g["area_px"], w, h, key))
+        rows.append((key, blob, g["cx"], g["cy"], g["area_px"], w, h))
     con.cursor().executemany(
-        "UPDATE reference.ref_region SET outline=%s, cx=%s, cy=%s, area_px=%s,"
-        " map_w=%s, map_h=%s WHERE region=%s", rows)
-    print("ref_region rows %d, geometry regions %d, updated %d" % (len(live), len(geo), len(rows)))
-    print("geometry with no ref_region row: %s" % sorted(set(geo) - live))
-    print("ref_region rows with no geometry: %s" % sorted(live - set(geo)))
+        "INSERT INTO reference.ref_region(region, outline, cx, cy, area_px, map_w, map_h)"
+        " VALUES(%s,%s,%s,%s,%s,%s,%s)"
+        " ON CONFLICT (region) DO UPDATE SET outline=excluded.outline, cx=excluded.cx,"
+        " cy=excluded.cy, area_px=excluded.area_px, map_w=excluded.map_w,"
+        " map_h=excluded.map_h", rows)
+    print("ref_region rows before %d, geometry regions %d, written %d"
+          % (len(live), len(geo), len(rows)))
+    print("regions new to ref_region: %d" % len(set(geo) - live))
     print("outline payload %d bytes (%.2f MB) over %d rows, %d points"
           % (total, total / 1e6, len(rows),
              sum(len(r) for g in geo.values() for r in g["rings"])))
@@ -412,10 +413,11 @@ def report(con, geo, w, h):
 
 
 def main():
-    geo, w, h = extract()
-    con = store(geo, w, h)
-    report(con, geo, w, h)
-    con.close()
+    for campaign in CAMPAIGNS:
+        geo, w, h = extract(campaign)
+        con = store(geo, w, h)
+        report(con, geo, w, h)
+        con.close()
 
 
 if __name__ == "__main__":
