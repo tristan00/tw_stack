@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 import arms
 import common
-from advisor_api import dash, dashdev, db, ident, proc, queries as q
+from advisor_api import db, ident, proc, queries as q
 from advisor_api.models import (
     ActionsPage, AgreementBreakdownPage, AgreementPage, AgreementSeriesPage, AnalyticsPage,
     CampaignDecisions, CampaignDetail, CampaignsPage, ControlResult, Count,
@@ -82,8 +82,6 @@ async def _lifespan(_app):
 app = FastAPI(title="advisor", version="8", lifespan=_lifespan,
               description="Telemetry for the Total War campaign-advisor harness.")
 app.add_middleware(GZipMiddleware, minimum_size=2048)
-app.include_router(dash.router)
-app.include_router(dashdev.router)
 
 UNTIMED = ("/api/events", "/api/health")
 
