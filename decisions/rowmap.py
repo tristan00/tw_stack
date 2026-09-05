@@ -66,7 +66,7 @@ CHAR_STATE_EXT = {
     'xp': 'xp', 'xp_next_level': 'xp_next_level', 'subterfuge': 'subterfuge',
     'zeal': 'zeal', 'authority': 'authority',
     'resurrection_turns': 'resurrection_turns', 'upkeep': 'upkeep',
-    'background_skill_id': 'background_skill', 'armory_item_ids': 'armory_items',
+    'background_skill_id': 'background_skill', 'armory_item_ids': 'armory',
     'trait_set_id': SET + 'traits', 'trait_progress_set_id': SET + 'trait_progress',
     'hidden_skill_state_set_id': SET + 'hidden_skill_states',
     'effect_bundle_set_id': SET + 'effect_bundles',

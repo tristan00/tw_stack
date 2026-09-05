@@ -256,7 +256,8 @@ def open_segment(vals, note=None):
             "INSERT INTO ops.launch (ts, code_version, argv, note)"
             " VALUES (%s,%s,%s,%s) RETURNING launch_id",
             (time.time(), vals.get("code_version"),
-             json.dumps(dict(vals), default=str), note)).fetchone()[0]
+             [str(x) for x in (vals.get("argv") or sys.argv[1:])],
+             note or json.dumps(dict(vals), default=str))).fetchone()[0]
     finally:
         con.close()
     os.environ["TW_SEGMENT_ID"] = str(sid)

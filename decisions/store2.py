@@ -45,7 +45,7 @@ class Store:
         self.conn.close()
 
     def campaign_key(self, faction, uuid):
-        return '%s:%s' % (faction or '', uuid or '')
+        return str(uuid) if uuid else str(faction or '')
 
     def _version(self):
         if self.version_id is None:
