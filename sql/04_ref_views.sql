@@ -123,3 +123,155 @@ SELECT DISTINCT j.character_skill_key AS skill,
   JOIN ref.effect_bonus_value_agent_action_record_junctions b
     ON b.effect = j.effect_key
  WHERE b.bonus_value_id = 'active';
+
+CREATE OR REPLACE VIEW refc.ancillaries AS
+SELECT a."key" AS key, a.type AS type, a.category AS category,
+       COALESCE(a.subcategory, '') AS subcategory,
+       a.legendary_item::integer AS legendary,
+       a.transferrable::integer AS transferrable,
+       a.randomly_dropped::integer AS randomly_dropped,
+       a.uniqueness_score AS uniqueness_score
+  FROM ref.ancillaries a;
+
+CREATE OR REPLACE VIEW refc.agent_actions AS
+SELECT a.unique_id AS key, a.agent AS agent, a.ability AS ability,
+       a.attribute AS attribute, a.chance_of_success AS chance_of_success,
+       a.cannot_fail AS cannot_fail_result,
+       a.succeed_always_override::integer AS succeed_always,
+       a.critical_success_proportion_modifier AS crit_success_mod,
+       a.opportune_failure_proportion_modifier AS opportune_failure_mod,
+       a.critical_failure_proportion_modifier AS crit_failure_mod,
+       a.show_action_info_in_ui::integer AS show_in_ui,
+       a.subculture AS subculture,
+       a.localised_action_name AS loc_name
+  FROM ref.agent_actions a;
+
+CREATE OR REPLACE VIEW refc.action_results AS
+SELECT r."key" AS key, r.actor_effect_bundle AS actor_bundle,
+       r.target_effect_bundle AS target_bundle,
+       r.actor_effect_bundle_turns AS actor_bundle_turns,
+       r.target_effect_bundle_turns AS target_bundle_turns
+  FROM ref.action_results r;
+
+CREATE OR REPLACE VIEW refc.action_result_outcomes AS
+SELECT o."key" AS key, o.action_result_key AS action_result_key,
+       o.outcome AS outcome, o.effect_record AS effect,
+       o.effect_scope_record AS effect_scope, o.value AS value,
+       o.affects_target::integer AS affects_target,
+       o.advancement_stage AS advancement_stage
+  FROM ref.action_results_additional_outcomes o;
+
+CREATE OR REPLACE VIEW refc.trait_meta AS
+SELECT t."key" AS trait, t.icon AS category FROM ref.character_traits t;
+
+CREATE OR REPLACE VIEW refc.trait_levels AS
+SELECT l.trait AS trait, l.level AS level,
+       l.threshold_points AS threshold, l."key" AS level_key
+  FROM ref.character_trait_levels l;
+
+CREATE OR REPLACE VIEW refc.trait_effects AS
+SELECT e.trait_level AS level_key, e.effect AS effect,
+       e.effect_scope AS effect_scope, e.value AS value
+  FROM ref.trait_level_effects e;
+
+CREATE OR REPLACE VIEW refc.trait_antitraits AS
+SELECT a.trait AS trait, a.antitrait AS antitrait FROM ref.trait_to_antitraits a;
+
+CREATE OR REPLACE VIEW refc.tech_groups AS
+SELECT n."key" AS node_key, n.optional_ui_group AS ui_group
+  FROM ref.technology_nodes n
+ WHERE n.optional_ui_group IS NOT NULL AND n.optional_ui_group <> '';
+
+CREATE OR REPLACE VIEW refc.skill_categories AS
+SELECT c."key" AS key, c.min_indent AS min_indent, c.max_indent AS max_indent,
+       c."order" AS ord, COALESCE(c.agent_subtype_override, '') AS subtype_override
+  FROM ref.character_skill_categories c;
+
+CREATE OR REPLACE VIEW refc.skill_indents AS
+SELECT n.character_skill_key AS skill, n.indent AS indent, count(*)::integer AS n
+  FROM ref.character_skill_nodes n
+ GROUP BY n.character_skill_key, n.indent;
+
+CREATE OR REPLACE VIEW refc.skill_node_sets AS
+SELECT s."key" AS node_set, COALESCE(s.agent_subtype_key, '') AS subtype,
+       COALESCE(s.agent_key, '') AS agent
+  FROM ref.character_skill_node_sets s;
+
+CREATE OR REPLACE VIEW refc.skill_set_members AS
+SELECT DISTINCT ON (i."set", n.character_skill_key)
+       i."set" AS node_set, n.character_skill_key AS skill,
+       n.tier AS tier, n.indent AS indent
+  FROM ref.character_skill_node_set_items i
+  JOIN ref.character_skill_nodes n ON n."key" = i.item
+ ORDER BY i."set", n.character_skill_key, n.ctid;
+
+CREATE OR REPLACE VIEW refc.merc_units AS
+SELECT g.unit_record AS unit, j.pool AS pool,
+       COALESCE(p.ui_recruitment_info, '') AS flavor,
+       COALESCE(j.subculture_requirement, '') AS subculture,
+       COALESCE(j.faction_requirement, '') AS faction,
+       COALESCE(j.tech_requirement, '') AS tech,
+       j."group" AS group_key, j.initial_unit_count AS base_count,
+       g.max_count AS max_count, g.chance_to_replenish AS replenish_chance
+  FROM ref.mercenary_pool_to_groups_junctions j
+  JOIN ref.mercenary_unit_groups g ON g."key" = j."group"
+  JOIN ref.mercenary_pools p ON p."key" = j.pool;
+
+CREATE OR REPLACE VIEW refc.captive_options AS
+WITH RECURSIVE chase(record_key, txt, depth) AS (
+  SELECT o.id, l.text, 0
+    FROM ref.campaign_post_battle_captive_options o
+    LEFT JOIN ref.loc l ON l.tbl = 'campaign_post_battle_captive_options'
+         AND l.col = 'onscreen_name' AND l."key" = o.id
+  UNION ALL
+  SELECT c.record_key, l2.text, c.depth + 1
+    FROM chase c
+    JOIN ref.loc l2 ON l2.loc_key = substring(c.txt from '^\{\{tr:([\w.]+)\}\}')
+   WHERE c.depth < 5
+)
+SELECT DISTINCT ON (o.id) o.id AS record_key, o.campaign_group AS option_key,
+       o.captive_outcome AS outcome, c.txt AS onscreen_name
+  FROM ref.campaign_post_battle_captive_options o
+  JOIN chase c ON c.record_key = o.id
+ ORDER BY o.id, c.depth DESC;
+
+CREATE OR REPLACE VIEW refc.captive_binding AS
+WITH RECURSIVE walk(root, node, depth) AS (
+  SELECT DISTINCT campaign_group, campaign_group, 0
+    FROM ref.campaign_post_battle_captive_options
+  UNION
+  SELECT w.root, m.id, w.depth + 1
+    FROM walk w JOIN ref.campaign_group_members m ON m."group" = w.node
+   WHERE w.depth < 6
+), crit AS (
+  SELECT member, 'culture' AS entity_type, culture AS entity_key, context
+    FROM ref.campaign_group_member_criteria_cultures WHERE context ~ '^[A-Z][A-Z_]*$'
+  UNION ALL
+  SELECT member, 'faction', faction, context
+    FROM ref.campaign_group_member_criteria_factions WHERE context ~ '^[A-Z][A-Z_]*$'
+  UNION ALL
+  SELECT member, 'subculture', subculture, context
+    FROM ref.campaign_group_member_criteria_subcultures WHERE context ~ '^[A-Z][A-Z_]*$'
+), orig AS (
+  SELECT DISTINCT w.root, c.entity_type, c.entity_key,
+         EXISTS (SELECT 1 FROM crit c2
+                  WHERE c2.member = c.member AND c2.context <> 'ORIGINATOR') AS cond
+    FROM walk w JOIN crit c ON c.member = w.node
+   WHERE c.context = 'ORIGINATOR'
+), scored AS (
+  SELECT g.entity_type, g.entity_key, b.button, o.id AS record_key,
+         CASE WHEN o.captive_outcome = b.button THEN 0 ELSE 1 END AS r1,
+         CASE WHEN g.cond THEN 1 ELSE 0 END AS r2,
+         CASE WHEN position('_to_' in g.root) > 0 THEN 1 ELSE 0 END AS r3,
+         CASE WHEN o.id ~ '^\d+$' THEN o.id::bigint ELSE 0 END AS r4
+    FROM orig g
+    JOIN ref.campaign_post_battle_captive_options o ON o.campaign_group = g.root
+    JOIN (VALUES ('kill', 'kill'), ('release', 'release'), ('enslave', 'enslave'),
+                 ('enslave_slaves_only', 'enslave'),
+                 ('enslave_replenishment_only', 'enslave')) b(outcome, button)
+      ON b.outcome = o.captive_outcome
+)
+SELECT DISTINCT ON (entity_type, entity_key, button)
+       entity_type, entity_key, button, record_key
+  FROM scored
+ ORDER BY entity_type, entity_key, button, r1, r2, r3, r4, record_key;

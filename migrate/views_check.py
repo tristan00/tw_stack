@@ -10,7 +10,12 @@ from decisions import pg
 
 VIEWS = ['building_chains', 'buildings', 'tech', 'units', 'skills', 'rituals',
          'tech_links', 'skill_links', 'ancillary_effects', 'effects_meta',
-         'agent_abilities', 'agent_permitted_subtypes', 'skill_actions']
+         'agent_abilities', 'agent_permitted_subtypes', 'skill_actions',
+         'ancillaries', 'agent_actions', 'action_results',
+         'action_result_outcomes', 'captive_options', 'captive_binding',
+         'trait_meta', 'trait_levels', 'trait_effects', 'trait_antitraits',
+         'tech_groups', 'skill_categories', 'skill_indents', 'skill_node_sets',
+         'skill_set_members', 'merc_units']
 
 ROUNDED = {'background_weighting'}
 

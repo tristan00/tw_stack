@@ -115,5 +115,149 @@
     "extra_in_view": 0,
     "sample_missing": [],
     "sample_extra": []
+  },
+  "ancillaries": {
+    "status": "ok",
+    "legacy_rows": 2671,
+    "view_rows": 2671,
+    "missing_from_view": 0,
+    "extra_in_view": 0,
+    "sample_missing": [],
+    "sample_extra": []
+  },
+  "agent_actions": {
+    "status": "ok",
+    "legacy_rows": 176,
+    "view_rows": 176,
+    "missing_from_view": 0,
+    "extra_in_view": 0,
+    "sample_missing": [],
+    "sample_extra": []
+  },
+  "action_results": {
+    "status": "ok",
+    "legacy_rows": 74,
+    "view_rows": 74,
+    "missing_from_view": 0,
+    "extra_in_view": 0,
+    "sample_missing": [],
+    "sample_extra": []
+  },
+  "action_result_outcomes": {
+    "status": "ok",
+    "legacy_rows": 75,
+    "view_rows": 75,
+    "missing_from_view": 0,
+    "extra_in_view": 0,
+    "sample_missing": [],
+    "sample_extra": []
+  },
+  "captive_options": {
+    "status": "ok",
+    "legacy_rows": 95,
+    "view_rows": 95,
+    "missing_from_view": 0,
+    "extra_in_view": 0,
+    "sample_missing": [],
+    "sample_extra": []
+  },
+  "captive_binding": {
+    "status": "ok",
+    "legacy_rows": 92,
+    "view_rows": 92,
+    "missing_from_view": 0,
+    "extra_in_view": 0,
+    "sample_missing": [],
+    "sample_extra": []
+  },
+  "trait_meta": {
+    "status": "ok",
+    "legacy_rows": 744,
+    "view_rows": 744,
+    "missing_from_view": 0,
+    "extra_in_view": 0,
+    "sample_missing": [],
+    "sample_extra": []
+  },
+  "trait_levels": {
+    "status": "ok",
+    "legacy_rows": 979,
+    "view_rows": 979,
+    "missing_from_view": 0,
+    "extra_in_view": 0,
+    "sample_missing": [],
+    "sample_extra": []
+  },
+  "trait_effects": {
+    "status": "ok",
+    "legacy_rows": 1735,
+    "view_rows": 1735,
+    "missing_from_view": 0,
+    "extra_in_view": 0,
+    "sample_missing": [],
+    "sample_extra": []
+  },
+  "trait_antitraits": {
+    "status": "ok",
+    "legacy_rows": 46,
+    "view_rows": 46,
+    "missing_from_view": 0,
+    "extra_in_view": 0,
+    "sample_missing": [],
+    "sample_extra": []
+  },
+  "tech_groups": {
+    "status": "ok",
+    "legacy_rows": 772,
+    "view_rows": 772,
+    "missing_from_view": 0,
+    "extra_in_view": 0,
+    "sample_missing": [],
+    "sample_extra": []
+  },
+  "skill_categories": {
+    "status": "ok",
+    "legacy_rows": 42,
+    "view_rows": 42,
+    "missing_from_view": 0,
+    "extra_in_view": 0,
+    "sample_missing": [],
+    "sample_extra": []
+  },
+  "skill_indents": {
+    "status": "ok",
+    "legacy_rows": 6059,
+    "view_rows": 6059,
+    "missing_from_view": 0,
+    "extra_in_view": 0,
+    "sample_missing": [],
+    "sample_extra": []
+  },
+  "skill_node_sets": {
+    "status": "ok",
+    "legacy_rows": 547,
+    "view_rows": 547,
+    "missing_from_view": 0,
+    "extra_in_view": 0,
+    "sample_missing": [],
+    "sample_extra": []
+  },
+  "skill_set_members": {
+    "status": "ok",
+    "legacy_rows": 29366,
+    "view_rows": 29366,
+    "missing_from_view": 0,
+    "extra_in_view": 0,
+    "sample_missing": [],
+    "sample_extra": []
+  },
+  "merc_units": {
+    "status": "ok",
+    "legacy_rows": 884,
+    "view_rows": 884,
+    "missing_from_view": 0,
+    "extra_in_view": 0,
+    "sample_missing": [],
+    "sample_extra": []
   }
 }
