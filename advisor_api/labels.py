@@ -3,15 +3,13 @@ from __future__ import annotations
 import os
 import re
 import sys
-import threading
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from decisions import pg
+from advisor_api import db
 
-_lock = threading.Lock()
-_con = None
 _cache: dict = {}
+_build_id = None
 
 _TR_RE = re.compile(r"^\{\{tr:(.+)\}\}$")
 _GAME_PREFIX = re.compile(r"^wh\d?_(main|dlc\d+|pro\d+|twa\d+|cpl)_")
@@ -20,22 +18,30 @@ _CULT_PREFIX = re.compile(
     r"|sla|tze|nur|arc|ie)_")
 
 
-def _ref():
-    global _con
-    if _con is None or getattr(_con, "closed", True):
-        _con = pg.connect(autocommit=True, readonly=True, row_factory=pg.row_factory,
-                          search_path="refc,ref")
-    return _con
+def _one(sql, args=()):
+    return db.connect().execute(sql, args).fetchone()
 
 
-def _one(sql, args):
-    with _lock:
-        try:
-            return _ref().execute(sql, args).fetchone()
-        except Exception:
-            global _con
-            _con = None
-            return None
+def _rows(sql, args=()):
+    return db.connect().execute(sql, args).fetchall()
+
+
+def invalidate(current=None):
+    global _build_id
+    now = current
+    if now is None:
+        row = _one("SELECT build_id FROM ops.manifest WHERE status = 'live'")
+        now = row["build_id"] if row else None
+    if now != _build_id:
+        _cache.clear()
+        _effect_good.clear()
+        _item_res_cache.clear()
+        del _bname_rows[:]
+        _tech_key_cache.clear()
+        _skill_line_cache.clear()
+        _tech_groups_cache.clear()
+        _build_id = now
+    return now
 
 
 def _loc(key, depth=0):
@@ -116,30 +122,8 @@ _ITEM_CATS = (("_anc_weapon", "weapon"), ("_anc_armour", "armour"),
               ("_anc_magic", "magic"), ("_anc_rune", "rune"))
 
 
-def _rows(sql, args=()):
-    with _lock:
-        try:
-            return _ref().execute(sql, args).fetchall()
-        except Exception:
-            global _con
-            _con = None
-            return []
-
-
-_HAVE: dict = {}
-
-
-def _have(table: str) -> bool:
-    if table not in _HAVE:
-        row = _one("SELECT 1 FROM information_schema.tables"
-                   " WHERE table_schema = 'reference' AND table_name = %s", (table,))
-        _HAVE[table] = bool(row)
-    return _HAVE[table]
-
-
 def item_category(key: str) -> str | None:
-    row = _one("SELECT category FROM ancillaries WHERE key = %s",
-               (key,)) if _have("ancillaries") else None
+    row = _one("SELECT category FROM ancillaries WHERE key = %s", (key,))
     if row and row["category"] and row["category"] != "general":
         return str(row["category"]).replace("_", " ")
     k = str(key or "")
@@ -158,15 +142,13 @@ _SCOPES = (("character_to_character", "self"), ("character_to_force", "army"),
            ("faction_to_province", "province"))
 
 
-_effect_good: dict | None = None
+_effect_good: dict = {}
 
 
 def _effect_positive() -> dict:
-    global _effect_good
-    if _effect_good is None:
-        _effect_good = ({r["effect"]: bool(r["positive_good"]) for r in _rows(
-            "SELECT effect, positive_good FROM effects_meta")}
-            if _have("effects_meta") else {})
+    if not _effect_good:
+        for r in _rows("SELECT effect, positive_good FROM effects_meta"):
+            _effect_good[r["effect"]] = bool(r["positive_good"])
     return _effect_good
 
 
@@ -203,8 +185,6 @@ def _effect_row(effect, scope, v, good) -> dict:
 
 
 def item_effect_rows(key: str) -> list:
-    if not _have("ancillary_effects"):
-        return []
     good = _effect_positive()
     out = [_effect_row(r["effect"], r["effect_scope"], r["value"], good)
            for r in _rows("SELECT effect, effect_scope, value FROM ancillary_effects"
@@ -218,7 +198,7 @@ _RES_LEAD = ("character_stat_", "character_", "agent_", "force_all_", "force_",
              "faction_", "attribute_enable_", "enable_", "economy_", "mod_")
 _RES_TAIL = ("_mod_all", "_mod", "_add", "_characters", "_enemy", "_all")
 
-_item_res_cache: dict | None = None
+_item_res_cache: dict = {}
 
 
 def _resource_name(effect: str) -> str:
@@ -238,24 +218,19 @@ def _resource_name(effect: str) -> str:
 
 
 def item_resources() -> dict:
-    global _item_res_cache
-    if _item_res_cache is None:
-        out: dict = {}
-        if _have("ancillary_effects"):
-            for r in _rows("SELECT ancillary, effect, value FROM ancillary_effects"):
-                name = _resource_name(r["effect"])
-                e = out.setdefault(r["ancillary"], {})
-                e[name] = round(e.get(name, 0.0) + (r["value"] or 0.0), 2)
-        _item_res_cache = out
+    if not _item_res_cache:
+        for r in _rows("SELECT ancillary, effect, value FROM ancillary_effects"):
+            name = _resource_name(r["effect"])
+            e = _item_res_cache.setdefault(r["ancillary"], {})
+            e[name] = round(e.get(name, 0.0) + (r["value"] or 0.0), 2)
     return _item_res_cache
 
 
-_bname_rows: list | None = None
+_bname_rows: list = []
 
 
 def _building_name_rows() -> list:
-    global _bname_rows
-    if _bname_rows is None:
+    if not _bname_rows:
         got = []
         for r in _rows("SELECT key, text FROM loc WHERE tbl=%s AND col=%s"
                        " AND text <> ''", ("building_culture_variants", "name")):
@@ -267,9 +242,7 @@ def _building_name_rows() -> list:
                        or "")
             if txt:
                 got.append((r["key"], txt))
-        if not got:
-            return []
-        _bname_rows = sorted(got)
+        _bname_rows.extend(sorted(got))
     return _bname_rows
 
 
@@ -290,7 +263,7 @@ def building_names(keys) -> dict:
 
 def building_info(keys) -> dict:
     ks = [str(k) for k in keys if k]
-    if not (_have("buildings") and ks):
+    if not ks:
         return {}
     return {r["key"]: dict(r) for r in _rows(
         "SELECT b.key, b.building_chain, b.level, b.create_cost, b.upkeep_cost,"
@@ -300,7 +273,7 @@ def building_info(keys) -> dict:
 
 
 def building_chain_levels(chain: str) -> list:
-    if not (_have("buildings") and chain):
+    if not chain:
         return []
     return [dict(r) for r in _rows(
         "SELECT key, level, create_cost FROM buildings"
@@ -309,7 +282,7 @@ def building_chain_levels(chain: str) -> list:
 
 def skill_unlock_ranks(keys) -> dict:
     ks = [str(k) for k in keys if k]
-    if not (_have("skills") and ks):
+    if not ks:
         return {}
     return {r["key"]: r["unlocked_at_rank"] for r in _rows(
         "SELECT key, unlocked_at_rank FROM skills WHERE key = ANY(%s)", (ks,))}
@@ -317,7 +290,7 @@ def skill_unlock_ranks(keys) -> dict:
 
 def trait_levels_for(keys) -> dict:
     ks = [str(k) for k in keys if k]
-    if not (_have("trait_levels") and ks):
+    if not ks:
         return {}
     out: dict = {}
     for r in _rows(
@@ -339,7 +312,7 @@ def trait_name(key) -> str | None:
 
 def trait_categories(keys) -> dict:
     ks = [str(k) for k in keys if k]
-    if not (_have("trait_meta") and ks):
+    if not ks:
         return {}
     return {r["trait"]: (r["category"] or "").replace("_", " ") or None
             for r in _rows("SELECT trait, category FROM trait_meta"
@@ -359,7 +332,7 @@ def trait_flavour(key) -> str | None:
 
 def trait_antitraits(key) -> list:
     k = str(key or "")
-    if not (_have("trait_antitraits") and k):
+    if not k:
         return []
     return [r["antitrait"] for r in _rows(
         "SELECT antitrait FROM trait_antitraits WHERE trait = %s"
@@ -372,17 +345,14 @@ def trait_level_rows(key) -> list:
     if not lv:
         return []
     good = _effect_positive()
-    have_fx = _have("trait_effects")
     out = []
     for row in lv:
-        effs = []
-        if have_fx:
-            effs = [_effect_row(r["effect"], r["effect_scope"], r["value"], good)
-                    for r in _rows(
-                        "SELECT effect, effect_scope, value FROM trait_effects"
-                        " WHERE level_key = %s ORDER BY effect",
-                        (row["level_key"],))]
-            effs.sort(key=lambda e: e["name"])
+        effs = [_effect_row(r["effect"], r["effect_scope"], r["value"], good)
+                for r in _rows(
+                    "SELECT effect, effect_scope, value FROM trait_effects"
+                    " WHERE level_key = %s ORDER BY effect",
+                    (row["level_key"],))]
+        effs.sort(key=lambda e: e["name"])
         out.append({"level": row["level"], "threshold": row["threshold"],
                     "level_key": row["level_key"],
                     "name": _loc("character_trait_levels_onscreen_name_"
@@ -392,8 +362,6 @@ def trait_level_rows(key) -> list:
 
 
 def tech_parents() -> dict:
-    if not _have("tech_links"):
-        return {}
     out: dict = {}
     for r in _rows("SELECT child, parent FROM tech_links ORDER BY child, parent"):
         if r["parent"]:
@@ -403,7 +371,7 @@ def tech_parents() -> dict:
 
 def tech_rows_for(keys) -> list:
     ks = [str(k) for k in keys if k]
-    if not (_have("tech") and ks):
+    if not ks:
         return []
     return [dict(r) for r in _rows(
         "SELECT key, technology_key, tier, research_points_required"
@@ -413,7 +381,7 @@ def tech_rows_for(keys) -> list:
 
 def tech_universe(keys) -> list:
     ks = [str(k) for k in keys if k]
-    if not (_have("tech") and ks):
+    if not ks:
         return []
     return [dict(r) for r in _rows(
         "SELECT key, technology_key, tier, research_points_required"
@@ -430,8 +398,7 @@ def _tech_key(key: str) -> str | None:
     hit = _tech_key_cache.get(key, "?")
     if hit != "?":
         return hit
-    row = _one("SELECT technology_key FROM tech WHERE key = %s",
-               (key,)) if _have("tech") else None
+    row = _one("SELECT technology_key FROM tech WHERE key = %s", (key,))
     got = row["technology_key"] if row and row["technology_key"] else None
     _tech_key_cache[key] = got
     return got
@@ -473,9 +440,6 @@ def skill_lines(subtype: str | None) -> dict:
     key = str(subtype or "")
     if key in _skill_line_cache:
         return _skill_line_cache[key]
-    if not (_have("skill_categories") and _have("skill_indents")):
-        _skill_line_cache[key] = {}
-        return {}
     cats = [dict(r) for r in _rows(
         "SELECT key, min_indent, max_indent, ord, subtype_override"
         " FROM skill_categories")]
@@ -503,15 +467,13 @@ def skill_line_of(lines: dict, key: str) -> str | None:
     return "unique" if "_unique_" in str(key) else None
 
 
-_tech_groups_cache: dict | None = None
+_tech_groups_cache: dict = {}
 
 
 def tech_groups() -> dict:
-    global _tech_groups_cache
-    if _tech_groups_cache is None:
-        _tech_groups_cache = {r["node_key"]: r["ui_group"] for r in _rows(
-            "SELECT node_key, ui_group FROM tech_groups")} \
-            if _have("tech_groups") else {}
+    if not _tech_groups_cache:
+        for r in _rows("SELECT node_key, ui_group FROM tech_groups"):
+            _tech_groups_cache[r["node_key"]] = r["ui_group"]
     return _tech_groups_cache
 
 
@@ -524,7 +486,7 @@ def tech_group_name(group: str | None) -> str | None:
 
 
 def skill_parents_for(subtype) -> dict:
-    if not (_have("skill_links") and _have("skill_node_sets") and subtype):
+    if not subtype:
         return {}
     out: dict = {}
     for r in _rows(
@@ -537,7 +499,7 @@ def skill_parents_for(subtype) -> dict:
 
 def skill_neighbors(key, subtypes) -> tuple:
     subs = [str(s) for s in subtypes if s]
-    if not (_have("skill_links") and _have("skill_node_sets") and subs):
+    if not subs:
         return [], []
     parents = [r["parent"] for r in _rows(
         "SELECT DISTINCT l.parent FROM skill_links l"
@@ -553,8 +515,6 @@ def skill_neighbors(key, subtypes) -> tuple:
 
 
 def skill_forks() -> list:
-    if not (_have("skill_links") and _have("skill_node_sets")):
-        return []
     agg: dict = {}
     for r in _rows(
             "SELECT DISTINCT s.subtype, l.parent, l.child FROM skill_links l"

@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import contextvars
@@ -10,13 +9,12 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import psycopg
-
-import common
 from decisions import pg
 
 _local = threading.local()
 _trace = contextvars.ContextVar("api_trace", default=None)
+
+SEARCH_PATH = "corpus,dict,refc,ref,analytics2,ops"
 
 
 def trace_begin():
@@ -46,55 +44,15 @@ def timed(fn):
     return wrapper
 
 
-def run_dir() -> str:
-    return common.RUN_DIR
-
-
-def db_path(run: str | None = None) -> str:
-    return pg.dsn()
-
-
-SEARCH_PATH = "public, analytics, app, reference"
-
-
-def connect(run: str | None = None):
+def connect():
     con = getattr(_local, "con", None)
     if con is None or con.closed:
-        con = _local.con = pg.connect(autocommit=True, readonly=True,
-                                      row_factory=pg.row_factory,
+        con = _local.con = pg.connect(app_name="tw-api", autocommit=True,
+                                      readonly=True, row_factory=pg.row_factory,
                                       search_path=SEARCH_PATH)
     return con
 
 
-def write():
-    con = getattr(_local, "wcon", None)
-    if con is None or con.closed:
-        con = _local.wcon = pg.connect(autocommit=True, row_factory=pg.row_factory,
-                                       search_path=SEARCH_PATH)
-    return con
-
-
-_STAMP_SQL = (
-    "SELECT MAX(decision_id) m FROM decisions",
-    "SELECT MAX(decision_id) m FROM taken",
-    "SELECT MAX(interrupt_id) m FROM interrupts",
-)
-
-
-def stamp(run: str | None = None) -> tuple:
-    con = connect(run)
-    out = []
-    for sql in _STAMP_SQL:
-        try:
-            row = con.execute(sql).fetchone()
-            out.append((row["m"] if row else 0) or 0)
-        except psycopg.Error as e:
-            out.append("err:%s" % e)
-    return tuple(out)
-
-
-def columns(con, name: str) -> set:
-    try:
-        return {c.name for c in con.execute("SELECT * FROM %s LIMIT 0" % name).description}
-    except psycopg.Error:
-        return set()
+def stamp() -> int:
+    row = connect().execute("SELECT MAX(snapshot_id) m FROM corpus.snapshot").fetchone()
+    return row["m"] or 0
