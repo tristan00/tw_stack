@@ -452,7 +452,6 @@ def run_campaigns(n=3, turns=20, plan="all",
 
     launch_failures = 0
     stretch, generation, trained = [], 0, None
-    streams_thread = None
     ledger_reconciled = False
 
     for i in range(n):
@@ -578,7 +577,6 @@ def run_campaigns(n=3, turns=20, plan="all",
             entry["start_state"] = state
             run_dir = journal.current_run_dir(timeout=60.0)
             entry["run_dir"] = run_dir
-            entry["stream_watermark"] = L.stream_watermark(run_dir)
             ex.shots_dir = os.path.join(run_dir, "shots")
             log("run dir: %s" % run_dir)
             if not ledger_reconciled:
@@ -677,21 +675,6 @@ def run_campaigns(n=3, turns=20, plan="all",
         _postmortem(runs_root, entry, ex, log)
         _pm_s = time.time() - _t
         entry["seconds"] = round(time.time() - entry["started"], 1)
-        entry["streams"] = {"pending": True}
-
-        def _verify_streams_bg(_e=entry, _rd=entry.get("run_dir"), _t0=time.time()):
-            try:
-                _e["streams"] = (L.verify_streams(_rd, since=_e.get("stream_watermark") or 0,
-                                                  campaign=_e.get("campaign_uuid"))
-                                 if _rd else None)
-            except Exception as e:
-                _e["streams"] = {"error": repr(e)[:160]}
-            common.waitlog("verify_streams_bg", time.time() - _t0, True,
-                           "campaign %s" % _e.get("index"))
-
-        streams_thread = threading.Thread(target=_verify_streams_bg, name="verify-streams",
-                                          daemon=True)
-        streams_thread.start()
         report["campaigns"].append(entry)
         stretch.append(entry)
         log("campaign %d -> %s in %.0fs" % (i + 1, entry["outcome"], entry["seconds"]))
@@ -700,11 +683,9 @@ def run_campaigns(n=3, turns=20, plan="all",
         _wr_s = time.time() - _t
         _t = time.time()
         _checkpoint_trial(stretch, generation, report, trained, log)
-        log("   boundary bookkeeping: postmortem %.1fs, report %.1fs, trial_checkpoint %.1fs, "
-            "verify_streams backgrounded" % (_pm_s, _wr_s, time.time() - _t))
+        log("   boundary bookkeeping: postmortem %.1fs, report %.1fs, trial_checkpoint %.1fs"
+            % (_pm_s, _wr_s, time.time() - _t))
 
-    if streams_thread is not None and streams_thread.is_alive():
-        streams_thread.join(20.0)
     _flush_generation(stretch, generation, report, trained, log)
     report["seconds"] = round(time.time() - report["started"], 1)
     report["totals"] = _totals(report)

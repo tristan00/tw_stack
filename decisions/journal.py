@@ -49,14 +49,6 @@ def _con(run_dir, app_name='tw-advisor'):
     return con
 
 
-def _store(run_dir):
-    from decisions.store import DecisionStore
-    st = getattr(_local, "store", None)
-    if st is None:
-        st = _local.store = DecisionStore(run_dir, readonly=True)
-    return st
-
-
 def close(run_dir=None):
     con = getattr(_local, "con", None)
     if con is not None:
@@ -65,10 +57,6 @@ def close(run_dir=None):
             con.close()
         except Exception:
             pass
-    st = getattr(_local, "store", None)
-    if st is not None:
-        _local.store = None
-        st.close()
 
 
 def _new_id():
@@ -184,7 +172,8 @@ def _await(run_dir, req_id, timeout):
 
 
 def read_decision(run_dir, decision_id):
-    return _store(run_dir).read_decision(decision_id)
+    from decisions import hydrate
+    return hydrate.record(_con(run_dir), decision_id)
 
 
 def request_snapshot(run_dir, active=None, timeout=180.0):

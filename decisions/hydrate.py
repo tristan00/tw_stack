@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import struct
 import sys
 import time
+from collections import OrderedDict
 
 from decisions import canon
+from decisions import dicts as dicts_mod
+from decisions import rowmap, schema_map
 
 MISSING = object()
 
@@ -106,3 +111,283 @@ def hydrate_record(encoded):
 
 def roundtrip(record):
     return hydrate_record(encode_record(record))
+
+
+_LEGACY_TYPES = [None]
+
+
+def legacy_types():
+    if _LEGACY_TYPES[0] is None:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'legacy_types.json')
+        with open(path, encoding='utf-8') as fh:
+            _LEGACY_TYPES[0] = json.load(fh)
+    return _LEGACY_TYPES[0]
+
+
+_DICTS = {}
+
+
+def _dicts(con):
+    d = _DICTS.get(id(con))
+    if d is None:
+        d = _DICTS[id(con)] = dicts_mod.Dicts(con)
+    return d
+
+
+SET_CACHE_MAX = 50000
+_SET_CACHE = OrderedDict()
+
+
+def _copy_container(v):
+    if isinstance(v, list):
+        return list(v)
+    return dict(v)
+
+
+def _set_value(con, dc, key, set_id):
+    from decisions import sets
+    kind = schema_map.COLLECTIONS[key][0]
+    ck = (kind, set_id)
+    hit = _SET_CACHE.get(ck)
+    if hit is None:
+        hit = sets.read_collection(con, dc, key, set_id)
+        if isinstance(hit, dict):
+            hit = {k: hit[k] for k in sorted(hit)}
+        _SET_CACHE[ck] = hit
+        if len(_SET_CACHE) > SET_CACHE_MAX:
+            _SET_CACHE.popitem(last=False)
+    else:
+        _SET_CACHE.move_to_end(ck)
+    return _copy_container(hit)
+
+
+def _fetch_rows(con, table, where_sql, args):
+    cols = sorted(rowmap.TABLES[table])
+    rows = con.execute(
+        "SELECT %s FROM corpus.%s %s" % (', '.join(cols), table, where_sql),
+        args).fetchall()
+    return [dict(zip(cols, [r[i] for i in range(len(cols))])) for r in rows]
+
+
+def _invert(con, dc, table, colvals, out=None):
+    spec = rowmap.TABLES[table]
+    out = {} if out is None else out
+    set_ids = {}
+    for col, src in spec.items():
+        if src is None:
+            continue
+        v = colvals.get(col)
+        if src.startswith(rowmap.SET):
+            set_ids[src[len(rowmap.SET):]] = v
+            continue
+        if v is not None:
+            fam = dc.family_of(table, col)
+            if fam is not None:
+                v = dc.keys_for(table, col, [v]).get(v)
+            arr = dicts_mod.ARRAY_FAMILIES.get((table, col))
+            if arr is not None:
+                back = dc.keys_for_family(arr, v)
+                v = [back.get(i) for i in v]
+        out[src] = v
+    return out, set_ids
+
+
+def _attach_sets(con, dc, out, set_ids, always=()):
+    for key, sid in set_ids.items():
+        if sid is not None:
+            out[key] = _set_value(con, dc, key, sid)
+        elif key in always:
+            out[key] = None
+    return out
+
+
+def _read_failures_of(con, snapshot_id):
+    return {msg: n for msg, n in con.execute(
+        "SELECT message, n FROM corpus.snapshot_read_failure WHERE snapshot_id = %s"
+        " ORDER BY message", (snapshot_id,))}
+
+
+def _campaign_dict(con, dc, snapshot_id, campaign_key):
+    rows = _fetch_rows(con, 'snapshot_campaign', "WHERE snapshot_id = %s",
+                       (snapshot_id,))
+    if not rows:
+        return None
+    out, set_ids = _invert(con, dc, 'snapshot_campaign', rows[0])
+    _attach_sets(con, dc, out, set_ids)
+    for key in ('_eval_ms', 'difficulty', 'leader', 'selector'):
+        if out.get(key) is None:
+            out.pop(key, None)
+    out['campaign_uuid'] = campaign_key if campaign_key != out.get('faction') else None
+    out['read_failures'] = _read_failures_of(con, snapshot_id)
+    return out
+
+
+_HOSTILE_ARMY_KEYS = ('cqi', 'dist', 'faction', 'hp', 'is_armed_citizenry', 'kind',
+                      'province', 'stance', 'units', 'visible', 'x', 'y')
+_HOSTILE_HERO_KEYS = ('agent_type', 'cqi', 'dist', 'faction', 'kind', 'province',
+                      'subtype', 'visible', 'x', 'y')
+HOSTILE_KEYS = {
+    'settlement': ('dist', 'faction', 'kind', 'region', 'units', 'x', 'y'),
+    'army': _HOSTILE_ARMY_KEYS, 'neutral_army': _HOSTILE_ARMY_KEYS,
+    'hero': _HOSTILE_HERO_KEYS, 'neutral_hero': _HOSTILE_HERO_KEYS,
+}
+
+
+def _hostile(m):
+    keys = HOSTILE_KEYS.get(m.get('kind'))
+    if keys is None:
+        return m
+    return {k: m.get(k) for k in keys}
+
+
+def _world_dict(con, dc, snapshot_id):
+    rows = _fetch_rows(con, 'snapshot_world', "WHERE snapshot_id = %s", (snapshot_id,))
+    armies = [_invert(con, dc, 'world_army', r)[0] for r in _fetch_rows(
+        con, 'world_army', "WHERE snapshot_id = %s ORDER BY ord", (snapshot_id,))]
+    hostiles = [_hostile(_invert(con, dc, 'world_hostile', r)[0]) for r in _fetch_rows(
+        con, 'world_hostile', "WHERE snapshot_id = %s ORDER BY ord", (snapshot_id,))]
+    if not rows:
+        return {}
+    out, set_ids = _invert(con, dc, 'snapshot_world', rows[0])
+    if all(v is None for v in out.values()) and all(
+            v is None for v in set_ids.values()) and not armies and not hostiles:
+        return {}
+    _attach_sets(con, dc, out, set_ids)
+    out['armies'] = armies
+    out['hostiles'] = hostiles
+    return out
+
+
+CHAR_LORD_ONLY = ('horde_slots', 'merc_pools', 'recruitable', 'stances')
+CHAR_HERO_ONLY = ('agent_type', 'can_embed', 'is_agent')
+
+
+def _char_state(con, dc, snapshot_id, entity_seq, character_id, cqi, world):
+    rows = _fetch_rows(con, 'char_state',
+                       "WHERE snapshot_id = %s AND entity_seq = %s",
+                       (snapshot_id, entity_seq))
+    colvals = rows[0]
+    is_hero = bool(colvals.get('is_hero'))
+    out, set_ids = _invert(con, dc, 'char_state', colvals)
+    out['cqi'] = cqi
+    if is_hero:
+        for key in CHAR_LORD_ONLY:
+            set_ids.pop(key, None)
+    else:
+        for key in CHAR_HERO_ONLY:
+            out.pop(key, None)
+    _attach_sets(con, dc, out, set_ids,
+                 always=() if is_hero else ('horde_slots',))
+    xs, ys = colvals.get('move_x') or [], colvals.get('move_y') or []
+    tiles = []
+    for i, (x, y) in enumerate(zip(xs, ys)):
+        tile = {'x': x, 'y': y, 'sample_index': i}
+        if colvals.get('reach_rays') is not None:
+            tile['reach_rays'] = colvals['reach_rays']
+        if colvals.get('reach_max') is not None:
+            tile['reach_max'] = colvals['reach_max']
+        tiles.append(tile)
+    out['move_tiles'] = tiles
+    true_chars = set(colvals.get('reach_chars_true') or [])
+    char_cqis = ({a.get('cqi') for a in world.get('armies') or []}
+                 | {h.get('cqi') for h in world.get('hostiles') or []}) - {None}
+    out['reach_chars'] = {str(cqi): cqi in true_chars for cqi in sorted(char_cqis)}
+    rst = colvals.get('reach_setts_true') or []
+    true_setts = set(dc.keys_for_family('region', rst).get(i) for i in rst)
+    sett_keys = ({s.get('region') for s in world.get('settlements') or []}
+                 | {r.get('region') for r in world.get('ruins') or []}
+                 | {h.get('region') for h in world.get('hostiles') or []
+                    if h.get('kind') == 'settlement' and h.get('region')})
+    out['reach_setts'] = {k: k in true_setts for k in sorted(sett_keys - {None})}
+    ext = _fetch_rows(con, 'char_state_ext',
+                      "WHERE snapshot_id = %s AND character_id = %s",
+                      (snapshot_id, character_id))
+    if ext:
+        eout, eset_ids = _invert(con, dc, 'char_state_ext', ext[0])
+        out.update(eout)
+        _attach_sets(con, dc, out, eset_ids)
+    return out
+
+
+def _province_state(con, dc, snapshot_id, entity_seq):
+    rows = _fetch_rows(con, 'province_state',
+                       "WHERE snapshot_id = %s AND entity_seq = %s",
+                       (snapshot_id, entity_seq))
+    out, set_ids = _invert(con, dc, 'province_state', rows[0])
+    return _attach_sets(con, dc, out, set_ids)
+
+
+def _campaign_state(con, dc, snapshot_id, entity_seq, campaign):
+    rows = _fetch_rows(con, 'campaign_state',
+                       "WHERE snapshot_id = %s AND entity_seq = %s",
+                       (snapshot_id, entity_seq))
+    out = {k: v for k, v in campaign.items() if k != 'read_failures'}
+    sout, set_ids = _invert(con, dc, 'campaign_state', rows[0])
+    out.update(sout)
+    return _attach_sets(con, dc, out, set_ids)
+
+
+def _entities(con, dc, snapshot_id, campaign, world):
+    ents = con.execute(
+        "SELECT se.entity_seq, se.kind_id, se.character_id, se.region_id, ch.cqi"
+        " FROM corpus.snapshot_entity se"
+        " LEFT JOIN corpus.character ch ON ch.character_id = se.character_id"
+        " WHERE se.snapshot_id = %s ORDER BY se.entity_seq", (snapshot_id,)).fetchall()
+    kinds = dc.keys_for('snapshot_entity', 'kind_id', [e[1] for e in ents])
+    out = []
+    for seq, kind_id, character_id, region_id, cqi in ents:
+        kind = kinds[kind_id]
+        if kind in ('lord', 'hero'):
+            context_id = cqi
+            state = _char_state(con, dc, snapshot_id, seq, character_id, cqi, world)
+        elif kind == 'province':
+            state = _province_state(con, dc, snapshot_id, seq)
+            context_id = state.get('region')
+        else:
+            state = _campaign_state(con, dc, snapshot_id, seq, campaign)
+            context_id = state.get('faction')
+        out.append({'snapshot_id': snapshot_id * MAX_ENTITIES + seq,
+                    'context_kind': kind, 'context_id': context_id,
+                    'state': state, 'offers': []})
+    return out
+
+
+MAX_ENTITIES = 64
+
+
+def record(con, snapshot_id, legacy=True):
+    t0 = time.time()
+    dc = _dicts(con)
+    head = con.execute(
+        "SELECT s.turn, c.campaign_key FROM corpus.snapshot s"
+        " JOIN corpus.campaign c ON c.campaign_id = s.campaign_id"
+        " WHERE s.snapshot_id = %s", (snapshot_id,)).fetchone()
+    if head is None:
+        raise KeyError('snapshot %s not in the store' % snapshot_id)
+    turn, campaign_key = head[0], head[1]
+    campaign = _campaign_dict(con, dc, snapshot_id, campaign_key) or {}
+    world = _world_dict(con, dc, snapshot_id)
+    entities = _entities(con, dc, snapshot_id, campaign, world)
+    if legacy:
+        types = legacy_types()
+        campaign = canon.legacy_view(campaign, types['CB'])
+        world = canon.legacy_view(world, types['WB'])
+        for e in entities:
+            e['state'] = canon.legacy_view(e['state'], types['EB'])
+            if e['context_kind'] in ('lord', 'hero') and e['context_id'] is not None:
+                e['context_id'] = str(e['context_id'])
+    log('record exit %.1f ms snapshot_id=%s entities=%d'
+        % ((time.time() - t0) * 1000, snapshot_id, len(entities)))
+    return {'decision_id': snapshot_id, 'turn': turn, 'campaign_id': campaign_key,
+            'campaign': campaign, 'world': world, 'entities': entities}
+
+
+def records(con, lo, hi, kind='decision', legacy=True):
+    dc = _dicts(con)
+    kind_id = dc.resolve_enum('snapshot_kind', [kind])[kind]
+    ids = [r[0] for r in con.execute(
+        "SELECT snapshot_id FROM corpus.snapshot WHERE snapshot_id BETWEEN %s AND %s"
+        " AND kind_id = %s ORDER BY snapshot_id", (lo, hi, kind_id))]
+    for snapshot_id in ids:
+        yield record(con, snapshot_id, legacy=legacy)

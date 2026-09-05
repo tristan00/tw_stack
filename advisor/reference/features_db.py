@@ -30,6 +30,7 @@ def invalidate(current=None):
     now = current if current is not None else build_id()
     if now != _build_id:
         _lookup_cache.clear()
+        _action_keys[0] = None
         _build_id = now
     return now
 
@@ -160,24 +161,29 @@ def agent_action_label(action_key):
     return label(_TR_PREFIX + m.group(1))
 
 
+_action_keys = [None]
+
+
+def _all_action_keys():
+    if _action_keys[0] is None:
+        _action_keys[0] = [row["key"] for row in _connect().execute(
+            "SELECT key FROM agent_actions ORDER BY key").fetchall()]
+    return _action_keys[0]
+
+
 def agent_action_keys(name_suffix):
     sufs = [name_suffix] if isinstance(name_suffix, str) else list(name_suffix or ())
+    keys = _all_action_keys()
     out = []
-    con = _connect()
     for suf in sufs:
-        hit = 0
-        for row in con.execute(
-                "SELECT key FROM loc WHERE tbl='agent_actions'"
-                " AND col='localised_action_name' AND key LIKE %s",
-                ("%" + str(suf),)).fetchall():
-            out.append(row["key"])
-            hit += 1
+        hit = [k for k in keys if k.endswith(str(suf))]
+        out.extend(hit)
         if not hit and str(suf) not in _EMPTY_SUFFIX_WARNED:
             _EMPTY_SUFFIX_WARNED.add(str(suf))
             sys.stderr.write(
-                "features_db: agent_action_keys(%r) matched NOTHING in loc -- every hero action "
-                "on this suffix dies at method_name before touching the game. Either the suffix "
-                "is wrong or the reference schema was built without the agent-action rows.\n" % suf)
+                "features_db: agent_action_keys(%r) matched NOTHING in agent_actions -- every "
+                "hero action on this suffix dies at method_name before touching the game. Either "
+                "the suffix is wrong or the reference build has no agent-action rows.\n" % suf)
     return sorted(set(out))
 
 

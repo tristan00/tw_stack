@@ -4,8 +4,8 @@ SET = 'set:'
 
 SNAPSHOT_CAMPAIGN = {
     'faction_id': 'faction', 'faction_cqi': 'faction_cqi', 'turn': 'turn',
-    'income': 'income', 'settlements': None, 'treasury': 'treasury',
-    'is_researching': 'is_researching', 'armies': None, 'lord_level': 'lord_level',
+    'income': 'income', 'settlements': 'settlements', 'treasury': 'treasury',
+    'is_researching': 'is_researching', 'armies': 'armies', 'lord_level': 'lord_level',
     'allies': 'allies', 'vassals': 'vassals', 'power_rank': 'power_rank',
     'll_wounded': 'll_wounded', 'game_version_id': 'game_version',
     'defeated': 'defeated', 'difficulty': 'difficulty', 'leader': 'leader',

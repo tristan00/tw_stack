@@ -28,9 +28,12 @@ def prepare(record):
         kind = schema_map.COLLECTIONS[key][0]
         rows = schema_map.members(key, value)
         members = [tuple(r[c] for c in sorted(r)) for r in rows]
+        cand = schema_map.candidates(value) if key == 'lord_pools' else None
+        hashed = (members if cand is None
+                  else members + [tuple(c[k] for k in sorted(c)) for c in cand])
         out[key] = {'kind': kind, 'rows': rows, 'n': len(rows),
-                    'hash': hydrate.set_hash(kind, members),
-                    'candidates': schema_map.candidates(value) if key == 'lord_pools' else None}
+                    'hash': hydrate.set_hash(kind, hashed),
+                    'candidates': cand}
     return out
 
 

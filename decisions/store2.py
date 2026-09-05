@@ -196,6 +196,7 @@ class Store:
                 " VALUES (%s,%s,%s)", (snapshot_id, decision_uuid, len(ents)))
             self._row('snapshot_campaign', camp, ids['campaign'],
                       {'snapshot_id': snapshot_id})
+            self._read_failures(snapshot_id, camp)
             self._row('snapshot_world', world, ids['world'],
                       {'snapshot_id': snapshot_id})
             self._ord_rows('world_army', snapshot_id, world.get('armies') or [])
@@ -211,6 +212,16 @@ class Store:
         log('write_snapshot exit %.1f ms (hash %.1f ms) snapshot_id=%d'
             % ((time.time() - t0) * 1000, hashed_ms, snapshot_id))
         return snapshot_id
+
+    def _read_failures(self, snapshot_id, camp):
+        rows = [(snapshot_id, str(msg), int(n))
+                for msg, n in (camp.get('read_failures') or {}).items()]
+        if rows:
+            with self.conn.cursor().copy(
+                    "COPY corpus.snapshot_read_failure (snapshot_id, message, n)"
+                    " FROM STDIN") as cp:
+                for row in rows:
+                    cp.write_row(row)
 
     def _has_ext(self, state):
         for src in rowmap.CHAR_STATE_EXT.values():
@@ -448,6 +459,7 @@ class Store:
                  refusals.get(rec.get('refusal')), rec.get('latency_ms') or 0))
             self._row('snapshot_campaign', camp, ids['campaign'],
                       {'snapshot_id': snapshot_id})
+            self._read_failures(snapshot_id, camp)
             self._row('snapshot_world', world, ids['world'], {'snapshot_id': snapshot_id})
             panel = rec.get('panel') or {}
             if panel and rec['kind'] in self.BATTLE_PANEL_KINDS:
