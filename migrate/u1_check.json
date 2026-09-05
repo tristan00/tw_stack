@@ -1,0 +1,21 @@
+{
+  "n": 400,
+  "p50_ms": 8.9,
+  "p90_ms": 15.9,
+  "mean_ms": 10.0,
+  "rows": {
+    "snapshot": 401,
+    "decision": 401,
+    "snapshot_campaign": 401,
+    "snapshot_world": 401,
+    "world_army": 1548,
+    "world_hostile": 2531,
+    "snapshot_entity": 1900,
+    "char_state": 972,
+    "char_state_ext": 0,
+    "province_state": 527,
+    "campaign_state": 401,
+    "character": 965
+  },
+  "threshold_p50_ms": 45
+}

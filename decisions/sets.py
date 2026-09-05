@@ -16,7 +16,7 @@ def collections_of(record):
     for key, value in record.items():
         if key in schema_map.NOT_SETS or key not in schema_map.COLLECTIONS:
             continue
-        if not hydrate.is_collection(key, value):
+        if not isinstance(value, (list, dict)):
             continue
         out[key] = value
     return out

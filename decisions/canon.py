@@ -9,7 +9,7 @@ import time
 SEP = b'\x1e'
 
 ID_PATHS = {
-    'cqi', 'context_id', 'faction_cqi', 'index', 'slot_index',
+    'cqi', 'faction_cqi', 'index', 'slot_index',
     'stationed', 'citizenry', 'locked_slots', 'reach_chars', 'cqis',
 }
 WILD_DICTS = {'resources', 'hero_type_counts', 'read_failures', 'stationed', 'reach_chars',
