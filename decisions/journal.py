@@ -6,6 +6,7 @@ import os
 import sys
 import threading
 import time
+import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import common
@@ -15,6 +16,10 @@ DB_NAME = common.DECISIONS_DB
 RUNS_ROOT = common.RUNS_ROOT
 RUN_DIR = common.RUN_DIR
 
+KINDS = ('snapshot', 'decide', 'verification', 'interrupt',
+         'diplomacy', 'postmortem', 'ucb_pick')
+READ_KINDS = ('turn', 'hash')
+
 
 def current_run_dir(runs_root=RUNS_ROOT, timeout=0.0):
     return RUN_DIR
@@ -23,17 +28,20 @@ def current_run_dir(runs_root=RUNS_ROOT, timeout=0.0):
 _local = threading.local()
 
 
-def _con(run_dir):
+def log(msg):
+    sys.stderr.write("%.3f  journal %s\n" % (time.time(), msg))
+
+
+def _con(run_dir, app_name='tw-advisor'):
     con = getattr(_local, "con", None)
     if con is not None:
         return con
-    con = pg.connect(autocommit=True)
-    if con.execute("SELECT to_regclass('public.rpc_requests')").fetchone()[0] is None:
+    con = pg.connect(app_name=app_name, autocommit=True, search_path=pg.CORPUS_PATH)
+    if con.execute("SELECT to_regclass('corpus.rpc_request')").fetchone()[0] is None:
         con.close()
         raise RuntimeError(
-            "database %s has no rpc_requests table -- the recorder owns the schema and "
-            "creates it when it opens the store. Start the decisions stream before the "
-            "advisor." % pg.DB)
+            "database %s has no corpus.rpc_request -- apply sql/03_tables.sql with "
+            "db-init before starting the advisor." % pg.DB)
     con.execute("SET synchronous_commit = off")
     con.execute("LISTEN rpc_requests")
     con.execute("LISTEN rpc_responses")
@@ -63,35 +71,29 @@ def close(run_dir=None):
         st.close()
 
 
-_req_seq = [0]
-_seq_lock = threading.Lock()
-
-
-def _new_id(kind):
-    with _seq_lock:
-        _req_seq[0] += 1
-        seq = _req_seq[0]
-    return "%s-%d-%d" % (kind, int(time.time() * 1000), seq)
+def _new_id():
+    return str(uuid.uuid4())
 
 
 def _ask(run_dir, kind, payload=None, req_id=None):
+    req_id = req_id or _new_id()
     con = _con(run_dir)
-    con.execute("INSERT INTO rpc_requests(req_id,kind,ts,payload) VALUES(%s,%s,%s,%s)",
-                (req_id, kind, time.time(),
-                 json.dumps(payload or {}, default=str)))
-    con.execute("SELECT pg_notify('rpc_requests', %s)", (req_id or kind,))
+    con.execute("INSERT INTO corpus.rpc_request(req_id,kind,ts,payload)"
+                " VALUES(%s,%s,%s,%s) ON CONFLICT (req_id) DO NOTHING",
+                (req_id, kind, time.time(), json.dumps(payload or {}, default=str)))
+    con.execute("SELECT pg_notify('rpc_requests', %s)", (req_id,))
+    return req_id
 
 
 def respond(run_dir, req_id, **payload):
     con = _con(run_dir)
-    did = payload.pop("decision_id", None)
+    sid = payload.pop("snapshot_id", None)
+    if sid is None:
+        sid = payload.pop("decision_id", None)
     err = payload.pop("error", None)
-    con.execute("INSERT INTO rpc_responses(req_id,ts,decision_id,payload,error)"
-                " VALUES(%s,%s,%s,%s,%s)"
-                " ON CONFLICT (req_id) DO UPDATE SET ts=excluded.ts,"
-                " decision_id=excluded.decision_id, payload=excluded.payload,"
-                " error=excluded.error",
-                (req_id, time.time(), did, json.dumps(payload, default=str), err))
+    con.execute("INSERT INTO corpus.rpc_response(req_id,ts,snapshot_id,payload,error)"
+                " VALUES(%s,%s,%s,%s,%s) ON CONFLICT (req_id) DO NOTHING",
+                (req_id, time.time(), sid, json.dumps(payload, default=str), err))
     con.execute("SELECT pg_notify('rpc_responses', %s)", (req_id,))
 
 
@@ -99,13 +101,16 @@ def read_requests(run_dir, after_id=0):
     con = _con(run_dir)
     rows, last = [], after_id
     for rpc_id, req_id, kind, ts, payload in con.execute(
-            "SELECT rpc_id,req_id,kind,ts,payload FROM rpc_requests"
+            "SELECT rpc_id,req_id,kind,ts,payload FROM corpus.rpc_request"
             " WHERE rpc_id>%s ORDER BY rpc_id", (after_id,)):
         try:
             body = json.loads(payload or "{}")
         except json.JSONDecodeError:
             body = {"malformed": payload}
-        body.update(kind=kind, req_id=req_id, ts=ts, rpc_id=rpc_id)
+        body["rpc_kind"] = kind
+        body["rpc_ts"] = ts
+        body["rpc_id"] = rpc_id
+        body["req_id"] = str(req_id)
         rows.append(body)
         last = rpc_id
     return rows, last
@@ -117,13 +122,24 @@ def wait_requests(run_dir, timeout):
         pass
 
 
+def cursor(run_dir):
+    con = _con(run_dir)
+    row = con.execute(
+        "SELECT COALESCE(MIN(r.rpc_id), 0) FROM corpus.rpc_request r"
+        " WHERE NOT EXISTS (SELECT 1 FROM corpus.rpc_response s WHERE s.req_id = r.req_id)"
+    ).fetchone()
+    first_open = row[0] if row else 0
+    if first_open:
+        return first_open - 1
+    row = con.execute("SELECT COALESCE(MAX(rpc_id),0) FROM corpus.rpc_request").fetchone()
+    return row[0] if row else 0
+
+
 def last_request_id(run_dir):
     try:
-        con = _con(run_dir)
+        return cursor(run_dir)
     except RuntimeError:
         return 0
-    row = con.execute("SELECT COALESCE(MAX(rpc_id),0) FROM rpc_requests").fetchone()
-    return row[0] if row else 0
 
 
 PRUNE_AFTER_S = 900.0
@@ -132,9 +148,9 @@ PRUNE_AFTER_S = 900.0
 def prune(run_dir, before_id, older_than=PRUNE_AFTER_S):
     con = _con(run_dir)
     cutoff = time.time() - float(older_than)
-    a = con.execute("DELETE FROM rpc_requests WHERE rpc_id<=%s AND ts<%s",
+    a = con.execute("DELETE FROM corpus.rpc_request WHERE rpc_id<=%s AND ts<%s",
                     (before_id, cutoff)).rowcount
-    b = con.execute("DELETE FROM rpc_responses WHERE ts<%s", (cutoff,)).rowcount
+    b = con.execute("DELETE FROM corpus.rpc_response WHERE ts<%s", (cutoff,)).rowcount
     return max(0, a), max(0, b)
 
 
@@ -143,10 +159,10 @@ def _await(run_dir, req_id, timeout):
     t0 = time.time()
     deadline = t0 + timeout
     while True:
-        row = con.execute("SELECT decision_id,payload,error FROM rpc_responses"
+        row = con.execute("SELECT snapshot_id,payload,error FROM corpus.rpc_response"
                           " WHERE req_id=%s", (req_id,)).fetchone()
         if row is not None:
-            did, payload, err = row
+            sid, payload, err = row
             common.waitlog("recorder_rpc", time.time() - t0, not err, req_id)
             if err:
                 raise RuntimeError("recorder failed request %s: %s" % (req_id, err))
@@ -154,7 +170,8 @@ def _await(run_dir, req_id, timeout):
                 body = json.loads(payload or "{}")
             except json.JSONDecodeError:
                 body = {}
-            body["decision_id"] = did
+            body["decision_id"] = sid
+            body["snapshot_id"] = sid
             return body
         remaining = deadline - time.time()
         if remaining <= 0:
@@ -171,13 +188,12 @@ def read_decision(run_dir, decision_id):
 
 
 def request_snapshot(run_dir, active=None, timeout=180.0):
-    rid = _new_id("snapshot")
     t_request = time.time()
-    _ask(run_dir, "snapshot", {"active": active}, req_id=rid)
+    rid = _ask(run_dir, "snapshot", {"active": active})
     reply = _await(run_dir, rid, timeout)
-    did = reply.get("decision_id")
+    did = reply.get("snapshot_id")
     if did is None:
-        raise RuntimeError("recorder answered snapshot %s without a decision_id" % rid)
+        raise RuntimeError("recorder answered snapshot %s without a snapshot_id" % rid)
     rec = read_decision(run_dir, did)
     rec["_t_request"] = t_request
     rec["_t_received"] = time.time()
@@ -188,45 +204,38 @@ def request_snapshot(run_dir, active=None, timeout=180.0):
 
 
 def request_turn(run_dir, timeout=60.0):
-    rid = _new_id("turn")
-    _ask(run_dir, "turn", req_id=rid)
+    rid = _ask(run_dir, "turn")
     r = _await(run_dir, rid, timeout)
     return r.get("turn"), r.get("campaign_uuid")
 
 
 def request_hash(run_dir, timeout=45.0):
-    rid = _new_id("hash")
-    _ask(run_dir, "hash", req_id=rid)
+    rid = _ask(run_dir, "hash")
     r = _await(run_dir, rid, timeout)
     return r.get("hash"), r.get("roots") or []
 
 
 def log_interrupt(run_dir, payload):
-    body = dict(payload)
-    body["screen"] = body.pop("kind", None)
-    _ask(run_dir, "interrupt", body)
+    return _ask(run_dir, "interrupt", dict(payload or {}))
 
 
-def log_options(run_dir, decision_id, options):
-    _ask(run_dir, "options", {"decision_id": decision_id, "options": options})
-
-
-def log_pick(run_dir, decision_id, pick, scores=None, timings=None):
-    _ask(run_dir, "pick", {"decision_id": decision_id, "pick": pick,
-                           "scores": scores, "timings": timings})
+def log_decide(run_dir, decision_id, offers, pick, scores=None, timings=None):
+    return _ask(run_dir, "decide", {"decision_id": decision_id, "offers": offers,
+                                    "pick": pick, "scores": scores, "timings": timings})
 
 
 def log_verification(run_dir, decision_id, result):
-    _ask(run_dir, "verification", {"decision_id": decision_id, "result": result})
+    return _ask(run_dir, "verification",
+                {"decision_id": decision_id, "result": result})
 
 
 def log_postmortem(run_dir, rec):
-    _ask(run_dir, "postmortem", dict(rec or {}))
+    return _ask(run_dir, "postmortem", dict(rec or {}))
 
 
 def log_ucb_pick(run_dir, rec):
-    _ask(run_dir, "ucb_pick", dict(rec or {}))
+    return _ask(run_dir, "ucb_pick", dict(rec or {}))
 
 
 def log_diplomacy(run_dir, row):
-    _ask(run_dir, "diplomacy", dict(row or {}))
+    return _ask(run_dir, "diplomacy", dict(row or {}))
