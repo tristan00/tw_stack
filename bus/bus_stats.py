@@ -76,34 +76,20 @@ def make_key(channel: str, payload: str) -> str:
     return s
 
 
-_SCHEMA = """
-CREATE SCHEMA IF NOT EXISTS bus;
-CREATE TABLE IF NOT EXISTS bus.call_stats (
-    channel  TEXT NOT NULL,
-    key      TEXT NOT NULL,
-    calls    BIGINT NOT NULL DEFAULT 0,
-    hits     BIGINT NOT NULL DEFAULT 0,
-    empties  BIGINT NOT NULL DEFAULT 0,
-    timeouts BIGINT NOT NULL DEFAULT 0,
-    errors   BIGINT NOT NULL DEFAULT 0,
-    total_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
-    last_ts  DOUBLE PRECISION,
-    PRIMARY KEY (channel, key)
-);
-"""
+_SCHEMA = ""
 
 _UPSERT = """
-INSERT INTO call_stats (channel, key, calls, hits, empties, timeouts, errors, total_ms, last_ts)
-VALUES (%(channel)s, %(key)s, %(calls)s, %(hits)s, %(empties)s, %(timeouts)s, %(errors)s,
-        %(total_ms)s, %(last_ts)s)
-ON CONFLICT(channel, key) DO UPDATE SET
-    calls    = call_stats.calls    + excluded.calls,
-    hits     = call_stats.hits     + excluded.hits,
-    empties  = call_stats.empties  + excluded.empties,
-    timeouts = call_stats.timeouts + excluded.timeouts,
-    errors   = call_stats.errors   + excluded.errors,
-    total_ms = call_stats.total_ms + excluded.total_ms,
-    last_ts  = excluded.last_ts;
+INSERT INTO ops.bus_call_stat (channel, key, calls, hits, empties, timeouts, errors,
+                               total_ms, last_ts)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+ON CONFLICT (channel, key) DO UPDATE SET
+  calls = ops.bus_call_stat.calls + EXCLUDED.calls,
+  hits = ops.bus_call_stat.hits + EXCLUDED.hits,
+  empties = ops.bus_call_stat.empties + EXCLUDED.empties,
+  timeouts = ops.bus_call_stat.timeouts + EXCLUDED.timeouts,
+  errors = ops.bus_call_stat.errors + EXCLUDED.errors,
+  total_ms = ops.bus_call_stat.total_ms + EXCLUDED.total_ms,
+  last_ts = GREATEST(ops.bus_call_stat.last_ts, EXCLUDED.last_ts)
 """
 
 
@@ -165,20 +151,17 @@ class StatsTracker:
             sys.stderr.write("bus_stats: flush write failed (%d keys dropped) -> %s\n"
                              % (len(snapshot), repr(e)[:100]))
 
+    def bind(self, conn) -> None:
+        self._conn = conn
+
     def _write(self, snapshot: dict) -> None:
-        conn = pg.connect(autocommit=True, search_path="bus")
-        try:
-            conn.execute("SET synchronous_commit = off")
-            conn.execute(_SCHEMA)
-            rows = [{
-                "channel": ch, "key": ky,
-                "calls": v[0], "hits": v[1], "empties": v[2],
-                "timeouts": v[3], "errors": v[4], "total_ms": v[5], "last_ts": v[6],
-            } for (ch, ky), v in snapshot.items()]
-            with conn.cursor() as cur:
-                cur.executemany(_UPSERT, rows)
-        finally:
-            conn.close()
+        conn = getattr(self, "_conn", None)
+        if conn is None:
+            return
+        rows = [(ch, ky, v[0], v[1], v[2], v[3], v[4], v[5], v[6])
+                for (ch, ky), v in snapshot.items()]
+        with conn.cursor() as cur:
+            cur.executemany(_UPSERT, rows)
 
     def close(self) -> None:
         self.flush()

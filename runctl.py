@@ -248,17 +248,19 @@ def experiment_name(vals):
 
 
 def open_segment(vals, note=None):
+    from decisions import pg
+    con = pg.connect(app_name="tw-runctl", autocommit=True,
+                     search_path=pg.CORPUS_PATH)
     try:
-        from decisions import workspace
-        eid = workspace.experiment(experiment_name(vals), config=dict(vals))
-        sid, seq = workspace.open_segment(
-            eid, code_version=vals.get("code_version"), note=note, params=dict(vals))
-        os.environ["TW_EXPERIMENT_ID"] = str(eid)
-        os.environ["TW_SEGMENT_ID"] = str(sid)
-        return {"experiment_id": eid, "segment_id": sid, "seq": seq}
-    except Exception as e:
-        sys.stderr.write("runctl: could not open a segment -> %s\n" % repr(e)[:110])
-        return None
+        sid = con.execute(
+            "INSERT INTO ops.launch (ts, code_version, argv, note)"
+            " VALUES (%s,%s,%s,%s) RETURNING launch_id",
+            (time.time(), vals.get("code_version"),
+             json.dumps(dict(vals), default=str), note)).fetchone()[0]
+    finally:
+        con.close()
+    os.environ["TW_SEGMENT_ID"] = str(sid)
+    return {"segment_id": sid}
 
 
 def version_unbumped(info):

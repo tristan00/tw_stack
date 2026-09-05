@@ -13,35 +13,11 @@ sys.path.insert(0, _HERE)
 
 import cco_queries as CQ
 from bus import Bus
-from decisions import pg
 
 POLL = 2.0
 BUS_BACKOFF = 10.0
 REQ_FILE = "actions_requests.jsonl"
 _TAIL_BYTES = 512 * 1024
-
-
-def _db(out_dir):
-    con = pg.connect(autocommit=True, search_path="capture")
-    con.execute("CREATE SCHEMA IF NOT EXISTS capture")
-    con.execute("CREATE TABLE IF NOT EXISTS snapshots("
-                "ts DOUBLE PRECISION, turn INTEGER, entity_kind TEXT, entity_id TEXT, "
-                "action_type TEXT, payload TEXT)")
-    con.execute("CREATE TABLE IF NOT EXISTS latest("
-                "entity_kind TEXT, entity_id TEXT, action_type TEXT, "
-                "ts DOUBLE PRECISION, turn INTEGER, payload TEXT, "
-                "PRIMARY KEY(entity_kind, entity_id, action_type))")
-    return con
-
-
-def _write(con, ts, turn, kind, eid, atype, payload):
-    p = json.dumps(payload, separators=(",", ":"))
-    con.execute("INSERT INTO snapshots VALUES(%s,%s,%s,%s,%s,%s)",
-                (ts, turn, kind, str(eid), atype, p))
-    con.execute("INSERT INTO latest VALUES(%s,%s,%s,%s,%s,%s)"
-                " ON CONFLICT (entity_kind, entity_id, action_type) DO UPDATE SET"
-                " ts=excluded.ts, turn=excluded.turn, payload=excluded.payload",
-                (kind, str(eid), atype, ts, turn, p))
 
 
 def _mtime(p):
@@ -76,30 +52,31 @@ def _current_turn(out_dir):
     return (None, None)
 
 
-def _sweep_entity(bus, con, ts, turn, kind, eid):
+def _sweep_entity(bus, ctx, ts, turn, kind, eid):
     if kind == "settlement":
         sa = CQ.settlement_actions(bus, eid)
-        _write(con, ts, turn, "settlement", eid, "building_slots",
-               {"region": sa["region"], "slots": sa["slots"]})
-        _write(con, ts, turn, "settlement", eid, "edicts", sa["edicts"] or {})
+        ctx.emit({"kind": "actions_settlement", "ts": ts, "turn": turn, "entity": eid,
+                  "region": sa["region"], "slots": sa["slots"],
+                  "edicts": sa["edicts"] or {}})
     elif kind == "lord":
         la = CQ.lord_actions(bus, eid)
-        _write(con, ts, turn, "lord", eid, "stances", {"stances": la["stances"]})
-        _write(con, ts, turn, "lord", eid, "force",
-               {"unit_count": la["unit_count"], "pending_recruits": la["pending_recruits"],
-                "action_point_pct": la["action_point_pct"], "no_force": la.get("no_force", False)})
+        ctx.emit({"kind": "actions_lord", "ts": ts, "turn": turn, "entity": eid,
+                  "stances": la["stances"], "unit_count": la["unit_count"],
+                  "pending_recruits": la["pending_recruits"],
+                  "action_point_pct": la["action_point_pct"],
+                  "no_force": la.get("no_force", False)})
     else:
         raise CQ.CcoQueryError("unknown entity kind %r" % kind)
 
 
-def _full_sweep(bus, con, ctx, turn):
+def _full_sweep(bus, ctx, turn):
     ts = ctx.now()
     ents = CQ.list_entities(bus)
-    _write(con, ts, turn, "campaign", "entities", "entities", ents)
+    ctx.emit({"kind": "actions_entities", "ts": ts, "turn": turn, "entities": ents})
     n_ok = n_err = 0
     for region in ents["regions"]:
         try:
-            _sweep_entity(bus, con, ctx.now(), turn, "settlement", region)
+            _sweep_entity(bus, ctx, ctx.now(), turn, "settlement", region)
             n_ok += 1
         except CQ.CcoQueryError as e:
             n_err += 1
@@ -107,7 +84,7 @@ def _full_sweep(bus, con, ctx, turn):
             ctx.emit({"kind": "actions_error", "entity": region, "err": str(e)[:200]})
     for lord in ents["lords"]:
         try:
-            _sweep_entity(bus, con, ctx.now(), turn, "lord", lord["cqi"])
+            _sweep_entity(bus, ctx, ctx.now(), turn, "lord", lord["cqi"])
             n_ok += 1
         except CQ.CcoQueryError as e:
             n_err += 1
@@ -120,15 +97,11 @@ def run(ctx, bus=None):
     bus = bus or Bus()
     swept_turn = None
     cur_dir = None
-    con = None
     req_off = 0
     while ctx.is_running():
         try:
             out_dir = ctx.out_dir
             if out_dir != cur_dir:
-                if con is not None:
-                    con.close()
-                con = _db(out_dir)
                 cur_dir = out_dir
                 swept_turn = None
                 req_off = 0
@@ -137,7 +110,7 @@ def run(ctx, bus=None):
                 turn = int(CQ._ev(bus, "return cm:model():turn_number()"))
             if turn is not None and turn != swept_turn:
                 t0 = time.time()
-                n_ok, n_err = _full_sweep(bus, con, ctx, turn)
+                n_ok, n_err = _full_sweep(bus, ctx, turn)
                 ctx.emit({"kind": "actions_sweep", "turn": turn, "faction": faction,
                           "ok": n_ok, "err": n_err, "secs": round(time.time() - t0, 2)})
                 swept_turn = turn
@@ -159,11 +132,11 @@ def run(ctx, bus=None):
                     kind, eid = req.get("entity_kind"), req.get("entity_id")
                     try:
                         if kind == "all" or eid == "all":
-                            n_ok, n_err = _full_sweep(bus, con, ctx, swept_turn)
+                            n_ok, n_err = _full_sweep(bus, ctx, swept_turn)
                             ctx.emit({"kind": "actions_refresh", "entity": "all",
                                       "ok": n_ok, "err": n_err})
                         else:
-                            _sweep_entity(bus, con, ctx.now(), swept_turn, kind, eid)
+                            _sweep_entity(bus, ctx, ctx.now(), swept_turn, kind, eid)
                             ctx.emit({"kind": "actions_refresh", "entity": "%s:%s" % (kind, eid)})
                     except CQ.CcoQueryError as e:
                         ctx.on_error("actions-refresh %s:%s" % (kind, eid), e)
@@ -179,5 +152,3 @@ def run(ctx, bus=None):
             time.sleep(BUS_BACKOFF)
             continue
         time.sleep(POLL)
-    if con is not None:
-        con.close()
