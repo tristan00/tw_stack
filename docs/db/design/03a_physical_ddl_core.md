@@ -7,7 +7,7 @@ CREATE SCHEMA dict;
 CREATE SCHEMA corpus;
 CREATE SCHEMA ref;
 CREATE SCHEMA ops;
-CREATE SCHEMA analytics;
+CREATE SCHEMA analytics2;
 ```
 
 ## 3.1 Dictionaries (C1)
@@ -58,7 +58,7 @@ BEGIN
   FOR f IN SELECT family FROM dict.family LOOP
     EXECUTE format($q$
       CREATE TABLE dict.%I (
-        id            SMALLINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        id            INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
         key           TEXT NOT NULL UNIQUE,
         is_reference  BOOLEAN NOT NULL,
         ref_build_id  INTEGER,
@@ -80,7 +80,7 @@ Non-game enumerations captured by the collector or the advisor (bounded, human-a
 
 ```sql
 CREATE TABLE dict.enum (
-  enum_id   SMALLINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  enum_id   INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   domain    TEXT NOT NULL,
   key       TEXT NOT NULL,
   UNIQUE (domain, key)
@@ -107,19 +107,20 @@ INSERT INTO dict.enum (domain, key) VALUES
 Open-vocabulary but bounded text values that today are stored as strings on millions of rows get their own small dictionaries (each is `id, key`): `dict.action_type` (32 values, M2 A.3), `dict.action` (`action_id INTEGER`, `(action_type_id, action_key)` UNIQUE; ≈ 700k rows incl. 626k move coordinates, M2 B), `dict.confirm_signal` (24), `dict.rite_reason` (44 distinct loc/markup strings incl. '', M1 A.6), `dict.game_version` (1), `dict.selector` (7), `dict.hostile_faction_name`? — no: hostile factions are `dict.faction`.
 
 ```sql
-CREATE TABLE dict.action_type (id SMALLINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, key TEXT NOT NULL UNIQUE);
+CREATE TABLE dict.action_type (id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY, key TEXT NOT NULL UNIQUE);
 CREATE TABLE dict.action (
   action_id      INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  action_type_id SMALLINT NOT NULL REFERENCES dict.action_type,
+  action_type_id INTEGER NOT NULL REFERENCES dict.action_type,
   action_key     TEXT NOT NULL,
   UNIQUE (action_type_id, action_key)
 );
-CREATE TABLE dict.confirm_signal (id SMALLINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, key TEXT NOT NULL UNIQUE);
-CREATE TABLE dict.rite_reason   (id SMALLINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, key TEXT NOT NULL UNIQUE);
-CREATE TABLE dict.game_version  (id SMALLINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, key TEXT NOT NULL UNIQUE);
-CREATE TABLE dict.selector      (id SMALLINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, key TEXT NOT NULL UNIQUE);
-CREATE TABLE dict.occupation_option (id SMALLINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, key TEXT NOT NULL UNIQUE);
+CREATE TABLE dict.confirm_signal (id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY, key TEXT NOT NULL UNIQUE);
+CREATE TABLE dict.rite_reason   (id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY, key TEXT NOT NULL UNIQUE);
+CREATE TABLE dict.game_version  (id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY, key TEXT NOT NULL UNIQUE);
+CREATE TABLE dict.selector      (id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY, key TEXT NOT NULL UNIQUE);
+CREATE TABLE dict.occupation_option (id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY, key TEXT NOT NULL UNIQUE);
 INSERT INTO dict.rite_reason (key) VALUES ('');
+INSERT INTO dict.stance (key, is_reference, note) VALUES ('none', false, 'm8: engine literal, not a campaign_stances row');
 ```
 
 ## 3.2 Spine: state_set, campaign, collector version, snapshot, decision, interrupt
@@ -156,10 +157,10 @@ INSERT INTO corpus.collector_version (collector_sha, note, emits_campaign_meta, 
 CREATE TABLE corpus.campaign (
   campaign_id        INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   campaign_key       TEXT NOT NULL UNIQUE,
-  faction_id         SMALLINT NOT NULL REFERENCES dict.faction,
-  campaign_map_id    SMALLINT REFERENCES dict.campaign_map,
+  faction_id         INTEGER NOT NULL REFERENCES dict.faction,
+  campaign_map_id    INTEGER REFERENCES dict.campaign_map,
   presave_radius     SMALLINT,
-  selector_id        SMALLINT REFERENCES dict.selector,
+  selector_id        INTEGER REFERENCES dict.selector,
   difficulty         SMALLINT,
   leader             TEXT,
   picked_ts          DOUBLE PRECISION,
@@ -180,7 +181,7 @@ CREATE TABLE corpus.campaign (
   peak_lord_level    SMALLINT,
   allies_max         SMALLINT,
   vassals_max        SMALLINT,
-  outcome_id         SMALLINT REFERENCES dict.enum,
+  outcome_id         INTEGER REFERENCES dict.enum,
   defeated           BOOLEAN,
   CHECK (presave_radius IS NULL OR presave_radius > 0)
 ) WITH (fillfactor = 80);
@@ -191,7 +192,7 @@ CREATE INDEX campaign_first_snapshot ON corpus.campaign (first_snapshot_id DESC 
 CREATE TABLE corpus.snapshot (
   snapshot_id   BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   campaign_id   INTEGER NOT NULL REFERENCES corpus.campaign,
-  kind_id       SMALLINT NOT NULL REFERENCES dict.enum,
+  kind_id       INTEGER NOT NULL REFERENCES dict.enum,
   ts            DOUBLE PRECISION NOT NULL,
   turn          SMALLINT NOT NULL,
   version_id    SMALLINT NOT NULL REFERENCES corpus.collector_version,
@@ -234,20 +235,20 @@ CREATE TABLE corpus.interrupt (
   interrupt_id        BIGINT PRIMARY KEY REFERENCES corpus.snapshot,
   prev_decision_id    BIGINT REFERENCES corpus.decision,
   ts_recorded         DOUBLE PRECISION NOT NULL,
-  state_at_id         SMALLINT NOT NULL REFERENCES dict.enum,
-  kind_id             SMALLINT NOT NULL REFERENCES dict.enum,
+  state_at_id         INTEGER NOT NULL REFERENCES dict.enum,
+  kind_id             INTEGER NOT NULL REFERENCES dict.enum,
   root                TEXT NOT NULL,
-  dilemma_id          SMALLINT REFERENCES dict.dilemma,
-  incident_id         SMALLINT REFERENCES dict.incident,
+  dilemma_id          INTEGER REFERENCES dict.dilemma,
+  incident_id         INTEGER REFERENCES dict.incident,
   root_context        TEXT,
-  region_id           SMALLINT REFERENCES dict.region,
+  region_id           INTEGER REFERENCES dict.region,
   chosen              TEXT NOT NULL,
   answer              TEXT,
-  policy_id           SMALLINT REFERENCES dict.enum,
+  policy_id           INTEGER REFERENCES dict.enum,
   executed            BOOLEAN,
   confirmed           BOOLEAN,
   counted             BOOLEAN,
-  refusal_id          SMALLINT REFERENCES dict.enum,
+  refusal_id          INTEGER REFERENCES dict.enum,
   latency_ms          INTEGER NOT NULL,
   legacy_interrupt_id INTEGER UNIQUE,
   CHECK (counted IS NULL OR counted = (executed AND confirmed))
@@ -263,7 +264,7 @@ CREATE INDEX interrupt_kind ON corpus.interrupt (kind_id, interrupt_id);
 ```sql
 CREATE TABLE corpus.snapshot_campaign (
   snapshot_id        BIGINT PRIMARY KEY REFERENCES corpus.snapshot,
-  faction_id         SMALLINT NOT NULL REFERENCES dict.faction,
+  faction_id         INTEGER NOT NULL REFERENCES dict.faction,
   faction_cqi        SMALLINT NOT NULL,
   turn               SMALLINT NOT NULL,
   income             INTEGER,
@@ -276,20 +277,19 @@ CREATE TABLE corpus.snapshot_campaign (
   vassals            SMALLINT,
   power_rank         SMALLINT,
   ll_wounded         BOOLEAN,
-  game_version_id    SMALLINT REFERENCES dict.game_version,
+  game_version_id    INTEGER REFERENCES dict.game_version,
   defeated           BOOLEAN,
   difficulty         SMALLINT,
   leader             TEXT,
-  selector_id        SMALLINT REFERENCES dict.selector,
+  selector_id        INTEGER REFERENCES dict.selector,
   presave_radius     SMALLINT,
-  campaign_map_id    SMALLINT REFERENCES dict.campaign_map,
+  campaign_map_id    INTEGER REFERENCES dict.campaign_map,
   eval_ms            SMALLINT,
   resource_set_id    BIGINT REFERENCES corpus.state_set,
   hero_count_set_id  BIGINT REFERENCES corpus.state_set,
   effect_bundle_set_id BIGINT REFERENCES corpus.state_set,
   CHECK (power_rank <= 0)
 );
-CREATE INDEX snapshot_campaign_scalars ON corpus.snapshot_campaign (snapshot_id) INCLUDE (turn, settlements, lord_level, allies, vassals, income, power_rank);
 
 CREATE TABLE corpus.snapshot_read_failure (
   snapshot_id  BIGINT NOT NULL REFERENCES corpus.snapshot,
@@ -318,9 +318,9 @@ CREATE TABLE corpus.snapshot_world (
 CREATE TABLE corpus.world_army (
   snapshot_id       BIGINT NOT NULL REFERENCES corpus.snapshot,
   ord               SMALLINT NOT NULL,
-  cqi               INTEGER NOT NULL,
-  subtype_id        SMALLINT REFERENCES dict.agent_subtype,
-  agent_type_id     SMALLINT REFERENCES dict.agent_type,
+  cqi               INTEGER,
+  subtype_id        INTEGER REFERENCES dict.agent_subtype,
+  agent_type_id     INTEGER REFERENCES dict.agent_type,
   is_leader         BOOLEAN,
   has_army          BOOLEAN,
   is_general        BOOLEAN,
@@ -328,12 +328,12 @@ CREATE TABLE corpus.world_army (
   x                 INTEGER,
   y                 INTEGER,
   ap_pct            DOUBLE PRECISION,
-  stance_id         SMALLINT REFERENCES dict.stance,
+  stance_id         INTEGER REFERENCES dict.stance,
   hp                DOUBLE PRECISION,
   units             SMALLINT,
-  region_owner_id   SMALLINT REFERENCES dict.faction,
-  region_id         SMALLINT REFERENCES dict.region,
-  province_id       SMALLINT REFERENCES dict.province,
+  region_owner_id   INTEGER REFERENCES dict.faction,
+  region_id         INTEGER REFERENCES dict.region,
+  province_id       INTEGER REFERENCES dict.province,
   in_own_territory  BOOLEAN NOT NULL,
   ap_remaining      INTEGER,
   ap_per_turn       INTEGER,
@@ -345,21 +345,21 @@ CREATE TABLE corpus.world_army (
 CREATE TABLE corpus.world_hostile (
   snapshot_id         BIGINT NOT NULL REFERENCES corpus.snapshot,
   ord                 SMALLINT NOT NULL,
-  kind_id             SMALLINT NOT NULL REFERENCES dict.enum,
-  faction_id          SMALLINT NOT NULL REFERENCES dict.faction,
+  kind_id             INTEGER NOT NULL REFERENCES dict.enum,
+  faction_id          INTEGER NOT NULL REFERENCES dict.faction,
   visible             BOOLEAN,
   cqi                 INTEGER,
-  subtype_id          SMALLINT REFERENCES dict.agent_subtype,
-  agent_type_id       SMALLINT REFERENCES dict.agent_type,
-  province_id         SMALLINT REFERENCES dict.province,
-  region_id           SMALLINT REFERENCES dict.region,
+  subtype_id          INTEGER REFERENCES dict.agent_subtype,
+  agent_type_id       INTEGER REFERENCES dict.agent_type,
+  province_id         INTEGER REFERENCES dict.province,
+  region_id           INTEGER REFERENCES dict.region,
   x                   INTEGER NOT NULL,
   y                   INTEGER NOT NULL,
   dist                INTEGER NOT NULL,
   is_armed_citizenry  BOOLEAN,
   units               SMALLINT,
   hp                  DOUBLE PRECISION,
-  stance_id           SMALLINT REFERENCES dict.stance,
+  stance_id           INTEGER REFERENCES dict.stance,
   PRIMARY KEY (snapshot_id, ord)
 );
 ```
@@ -381,9 +381,9 @@ CREATE TABLE corpus.character (
 CREATE TABLE corpus.snapshot_entity (
   snapshot_id   BIGINT NOT NULL REFERENCES corpus.snapshot,
   entity_seq    SMALLINT NOT NULL,
-  kind_id       SMALLINT NOT NULL REFERENCES dict.enum,
+  kind_id       INTEGER NOT NULL REFERENCES dict.enum,
   character_id  INTEGER REFERENCES corpus.character,
-  region_id     SMALLINT REFERENCES dict.region,
+  region_id     INTEGER REFERENCES dict.region,
   PRIMARY KEY (snapshot_id, entity_seq),
   CHECK ((character_id IS NOT NULL)::int + (region_id IS NOT NULL)::int <= 1)
 );
@@ -404,9 +404,9 @@ CREATE TABLE corpus.char_state (
   ap_per_turn             INTEGER,
   hp                      DOUBLE PRECISION,
   loyalty                 SMALLINT,
-  stance_id               SMALLINT NOT NULL REFERENCES dict.stance,
-  subtype_id              SMALLINT REFERENCES dict.agent_subtype,
-  region_id               SMALLINT REFERENCES dict.region,
+  stance_id               INTEGER NOT NULL REFERENCES dict.stance,
+  subtype_id              INTEGER REFERENCES dict.agent_subtype,
+  region_id               INTEGER REFERENCES dict.region,
   x                       INTEGER,
   y                       INTEGER,
   garrisoned              BOOLEAN NOT NULL,
@@ -416,10 +416,9 @@ CREATE TABLE corpus.char_state (
   wounded                 BOOLEAN,
   is_agent                BOOLEAN,
   can_embed               BOOLEAN,
-  agent_type_id           SMALLINT REFERENCES dict.agent_type,
+  agent_type_id           INTEGER REFERENCES dict.agent_type,
   skill_set_id            BIGINT NOT NULL REFERENCES corpus.state_set,
   hidden_skill_ids        SMALLINT[] NOT NULL,
-  trait_set_id            BIGINT NOT NULL REFERENCES corpus.state_set,
   stance_set_id           BIGINT REFERENCES corpus.state_set,
   recruitable_set_id      BIGINT REFERENCES corpus.state_set,
   unit_card_set_id        BIGINT NOT NULL REFERENCES corpus.state_set,
@@ -428,7 +427,6 @@ CREATE TABLE corpus.char_state (
   equipped_set_id         BIGINT NOT NULL REFERENCES corpus.state_set,
   horde_slot_set_id       BIGINT REFERENCES corpus.state_set,
   merc_pool_set_id        BIGINT REFERENCES corpus.state_set,
-  trait_progress_set_id   BIGINT NOT NULL REFERENCES corpus.state_set,
   reach_chars_true        INTEGER[] NOT NULL,
   reach_setts_true        SMALLINT[] NOT NULL,
   move_x                  INTEGER[] NOT NULL,
@@ -448,6 +446,8 @@ CREATE INDEX char_state_character ON corpus.char_state (character_id, snapshot_i
 CREATE TABLE corpus.char_state_ext (
   snapshot_id                 BIGINT NOT NULL,
   character_id                INTEGER NOT NULL,
+  trait_set_id                BIGINT REFERENCES corpus.state_set,
+  trait_progress_set_id       BIGINT REFERENCES corpus.state_set,
   xp                          INTEGER NOT NULL,
   xp_next_level               INTEGER NOT NULL,
   subterfuge                  SMALLINT NOT NULL,
@@ -455,7 +455,7 @@ CREATE TABLE corpus.char_state_ext (
   authority                   SMALLINT NOT NULL,
   resurrection_turns          SMALLINT NOT NULL,
   upkeep                      INTEGER NOT NULL,
-  background_skill_id         SMALLINT REFERENCES dict.skill,
+  background_skill_id         INTEGER REFERENCES dict.skill,
   hidden_skill_state_set_id   BIGINT NOT NULL REFERENCES corpus.state_set,
   effect_bundle_set_id        BIGINT NOT NULL REFERENCES corpus.state_set,
   force_effect_bundle_set_id  BIGINT NOT NULL REFERENCES corpus.state_set,
@@ -466,16 +466,16 @@ CREATE TABLE corpus.char_state_ext (
 
 CREATE TABLE corpus.province_state (
   snapshot_id           BIGINT NOT NULL REFERENCES corpus.snapshot,
-  region_id             SMALLINT NOT NULL REFERENCES dict.region,
+  region_id             INTEGER NOT NULL REFERENCES dict.region,
   entity_seq            SMALLINT NOT NULL,
   settlement_present    BOOLEAN NOT NULL,
-  province_id           SMALLINT REFERENCES dict.province,
+  province_id           INTEGER REFERENCES dict.province,
   complete_owner        BOOLEAN,
   max_slots             SMALLINT,
   free_slots            SMALLINT,
   can_set_edict         BOOLEAN,
-  selected_edict_id     SMALLINT REFERENCES dict.edict,
-  active_edict_id       SMALLINT REFERENCES dict.edict,
+  selected_edict_id     INTEGER REFERENCES dict.edict,
+  active_edict_id       INTEGER REFERENCES dict.edict,
   public_order          SMALLINT,
   buildings             SMALLINT,
   is_capital            BOOLEAN,
@@ -510,7 +510,7 @@ CREATE TABLE corpus.campaign_state (
   anc_pool_set_id      BIGINT NOT NULL REFERENCES corpus.state_set,
   equipped_all_set_id  BIGINT NOT NULL REFERENCES corpus.state_set,
   mission_set_id       BIGINT REFERENCES corpus.state_set,
-  current_research_id  SMALLINT REFERENCES dict.tech_node,
+  current_research_id  INTEGER REFERENCES dict.tech_node,
   research_points      SMALLINT
 );
 ```

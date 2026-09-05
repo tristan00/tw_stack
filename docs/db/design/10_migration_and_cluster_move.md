@@ -14,7 +14,7 @@ data_directory = 'D:/pg17/data'
 shared_buffers = 8GB                 # today 128 MB, hit ratio 66.7%, 2.07 G evictions
 effective_cache_size = 32GB          # 63.5 GB RAM box, 34 GB free
 work_mem = 64MB
-maintenance_work_mem = 2GB
+maintenance_work_mem = 2047MB
 max_wal_size = 8GB                   # today 1 GB: 38% of checkpoints forced, 72 "too frequently" warnings
 min_wal_size = 1GB
 checkpoint_timeout = 15min
@@ -22,7 +22,7 @@ checkpoint_completion_target = 0.9
 wal_compression = zstd
 wal_buffers = 64MB
 random_page_cost = 1.1               # NVMe
-effective_io_concurrency = 200
+effective_io_concurrency = 0
 max_parallel_workers_per_gather = 4
 max_parallel_maintenance_workers = 8
 max_worker_processes = 24
@@ -51,7 +51,7 @@ Every step is idempotent (re-running a completed step is a no-op keyed on `migra
 
 ```
 S1  initdb + service (owner runs once, needs an elevated shell):
-    "C:\Program Files\PostgreSQL\17\bin\initdb.exe" -D D:\pg17\data -U postgres --data-checksums -E UTF8 --locale=English_United_States.1252
+    "C:\Program Files\PostgreSQL\17\bin\initdb.exe" -D D:\pg17\data -U postgres --data-checksums -E UTF8 --locale="English_United States.1252"
     copy migrate\postgresql.conf D:\pg17\data\postgresql.conf   (10.2, merged over the generated file)
     "C:\Program Files\PostgreSQL\17\bin\pg_ctl.exe" register -N postgresql-x64-17-d -D D:\pg17\data -S auto
     net start postgresql-x64-17-d

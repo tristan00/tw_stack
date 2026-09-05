@@ -67,142 +67,140 @@ SELECT k, sha256(('\x' || lpad(to_hex(k), 4, '0'))::bytea || '\x00000000'::bytea
 
 CREATE TABLE corpus.skill_set_member (
   set_id BIGINT NOT NULL REFERENCES corpus.state_set, ord SMALLINT NOT NULL,
-  skill_id SMALLINT NOT NULL REFERENCES dict.skill, status_id SMALLINT NOT NULL REFERENCES dict.enum,
+  skill_id INTEGER NOT NULL REFERENCES dict.skill, status_id INTEGER NOT NULL REFERENCES dict.enum,
   level SMALLINT NOT NULL, total_levels SMALLINT NOT NULL, tier SMALLINT NOT NULL,
   PRIMARY KEY (set_id, ord), UNIQUE (set_id, skill_id));
 CREATE TABLE corpus.stance_set_member (
   set_id BIGINT NOT NULL REFERENCES corpus.state_set, ord SMALLINT NOT NULL,
-  stance_id SMALLINT NOT NULL REFERENCES dict.stance, active BOOLEAN NOT NULL, can_activate BOOLEAN NOT NULL, can_afford BOOLEAN NOT NULL,
+  stance_id INTEGER NOT NULL REFERENCES dict.stance, active BOOLEAN NOT NULL, can_activate BOOLEAN NOT NULL, can_afford BOOLEAN NOT NULL,
   PRIMARY KEY (set_id, ord), UNIQUE (set_id, stance_id));
 CREATE TABLE corpus.recruitable_set_member (
   set_id BIGINT NOT NULL REFERENCES corpus.state_set, ord SMALLINT NOT NULL,
-  unit_id SMALLINT NOT NULL REFERENCES dict.unit, state TEXT NOT NULL, cost INTEGER NOT NULL, disabled BOOLEAN NOT NULL,
+  unit_id INTEGER NOT NULL REFERENCES dict.unit, state TEXT NOT NULL, cost INTEGER NOT NULL, disabled BOOLEAN NOT NULL,
   PRIMARY KEY (set_id, ord), UNIQUE (set_id, unit_id));
 CREATE TABLE corpus.hidden_skill_state_set_member (
   set_id BIGINT NOT NULL REFERENCES corpus.state_set, ord SMALLINT NOT NULL,
-  skill_id SMALLINT NOT NULL REFERENCES dict.skill, level SMALLINT NOT NULL, total_levels SMALLINT NOT NULL,
+  skill_id INTEGER NOT NULL REFERENCES dict.skill, level SMALLINT NOT NULL, total_levels SMALLINT NOT NULL,
   PRIMARY KEY (set_id, ord));
 CREATE TABLE corpus.trait_set_member (
   set_id BIGINT NOT NULL REFERENCES corpus.state_set, ord SMALLINT NOT NULL,
-  trait_id SMALLINT NOT NULL REFERENCES dict.trait, level SMALLINT NOT NULL, threshold_points SMALLINT NOT NULL,
-  points SMALLINT NOT NULL, chaos_realm BOOLEAN NOT NULL, level_key_id SMALLINT NOT NULL REFERENCES dict.trait_level,
+  trait_id INTEGER NOT NULL REFERENCES dict.trait, level SMALLINT NOT NULL, threshold_points SMALLINT NOT NULL,
+  points SMALLINT NOT NULL, chaos_realm BOOLEAN NOT NULL, level_key_id INTEGER NOT NULL REFERENCES dict.trait_level,
   PRIMARY KEY (set_id, ord));
 CREATE TABLE corpus.trait_progress_set_member (
   set_id BIGINT NOT NULL REFERENCES corpus.state_set, ord SMALLINT NOT NULL,
-  trait_id SMALLINT NOT NULL REFERENCES dict.trait, points SMALLINT NOT NULL,
+  trait_id INTEGER NOT NULL REFERENCES dict.trait, points SMALLINT NOT NULL,
   PRIMARY KEY (set_id, ord), UNIQUE (set_id, trait_id));
 CREATE TABLE corpus.item_slot_set_member (
   set_id BIGINT NOT NULL REFERENCES corpus.state_set, ord SMALLINT NOT NULL,
-  index SMALLINT NOT NULL, ancillary_id SMALLINT REFERENCES dict.ancillary, name TEXT NOT NULL,
+  index SMALLINT NOT NULL, ancillary_id INTEGER REFERENCES dict.ancillary, name TEXT NOT NULL,
   PRIMARY KEY (set_id, ord));
 CREATE TABLE corpus.horde_slot_set_member (
   set_id BIGINT NOT NULL REFERENCES corpus.state_set, ord SMALLINT NOT NULL,
-  slot_index SMALLINT NOT NULL, slot_id TEXT NOT NULL, building_id SMALLINT NOT NULL REFERENCES dict.building,
+  slot_index SMALLINT NOT NULL, slot_id TEXT NOT NULL, building_id INTEGER NOT NULL REFERENCES dict.building,
   empty BOOLEAN NOT NULL, available BOOLEAN NOT NULL,
   PRIMARY KEY (set_id, ord), UNIQUE (set_id, slot_index, building_id));
 CREATE TABLE corpus.merc_pool_set_member (
   set_id BIGINT NOT NULL REFERENCES corpus.state_set, ord SMALLINT NOT NULL,
-  action_id SMALLINT NOT NULL REFERENCES dict.enum, unit_id SMALLINT NOT NULL REFERENCES dict.unit,
+  action_id INTEGER NOT NULL REFERENCES dict.enum, unit_id INTEGER NOT NULL REFERENCES dict.unit,
   avail SMALLINT NOT NULL, cost INTEGER NOT NULL, can BOOLEAN,
   PRIMARY KEY (set_id, ord), UNIQUE (set_id, action_id, unit_id));
 CREATE TABLE corpus.pending_queue_set_member (
   set_id BIGINT NOT NULL REFERENCES corpus.state_set, ord SMALLINT NOT NULL,
-  unit_id SMALLINT NOT NULL REFERENCES dict.unit, turns_left SMALLINT NOT NULL,
+  unit_id INTEGER NOT NULL REFERENCES dict.unit, turns_left SMALLINT NOT NULL,
   PRIMARY KEY (set_id, ord));
 CREATE TABLE corpus.effect_bundle_set_member (
   set_id BIGINT NOT NULL REFERENCES corpus.state_set, ord SMALLINT NOT NULL,
-  effect_bundle_id SMALLINT NOT NULL REFERENCES dict.effect_bundle, turns_remaining SMALLINT,
+  effect_bundle_id INTEGER NOT NULL REFERENCES dict.effect_bundle, turns_remaining SMALLINT,
   PRIMARY KEY (set_id, ord));
 CREATE TABLE corpus.unit_card_set_member (
   set_id BIGINT NOT NULL REFERENCES corpus.state_set, ord SMALLINT NOT NULL,
-  unit_id SMALLINT NOT NULL REFERENCES dict.unit, strength_pct DOUBLE PRECISION NOT NULL,
-  category_id SMALLINT NOT NULL REFERENCES dict.unit_category, xp SMALLINT NOT NULL,
+  unit_id INTEGER NOT NULL REFERENCES dict.unit, strength_pct DOUBLE PRECISION NOT NULL,
+  category_id INTEGER NOT NULL REFERENCES dict.unit_category, xp SMALLINT NOT NULL,
   PRIMARY KEY (set_id, ord));
 CREATE TABLE corpus.buildable_set_member (
   set_id BIGINT NOT NULL REFERENCES corpus.state_set, ord SMALLINT NOT NULL,
-  slot_index SMALLINT, building_id SMALLINT NOT NULL REFERENCES dict.building, active BOOLEAN NOT NULL, empty BOOLEAN NOT NULL,
+  slot_index SMALLINT, building_id INTEGER NOT NULL REFERENCES dict.building, active BOOLEAN NOT NULL, empty BOOLEAN NOT NULL,
   can_upgrade BOOLEAN NOT NULL, cost INTEGER NOT NULL, upkeep INTEGER NOT NULL, level SMALLINT NOT NULL, can_afford_resources BOOLEAN NOT NULL,
   PRIMARY KEY (set_id, ord));
 CREATE TABLE corpus.slot_state_set_member (
   set_id BIGINT NOT NULL REFERENCES corpus.state_set, ord SMALLINT NOT NULL,
   index SMALLINT NOT NULL, damaged BOOLEAN NOT NULL, can_repair BOOLEAN NOT NULL, repairing BOOLEAN NOT NULL,
-  can_dismantle BOOLEAN NOT NULL, refund INTEGER, queued BOOLEAN NOT NULL, queued_building_id SMALLINT REFERENCES dict.building,
-  empty BOOLEAN NOT NULL, building_id SMALLINT REFERENCES dict.building, health SMALLINT, max_health SMALLINT,
+  can_dismantle BOOLEAN NOT NULL, refund INTEGER, queued BOOLEAN NOT NULL, queued_building_id INTEGER REFERENCES dict.building,
+  empty BOOLEAN NOT NULL, building_id INTEGER REFERENCES dict.building, health SMALLINT, max_health SMALLINT,
   ruined BOOLEAN NOT NULL, repair_cost INTEGER NOT NULL, upgrading BOOLEAN NOT NULL, dismantling BOOLEAN NOT NULL,
   PRIMARY KEY (set_id, ord), UNIQUE (set_id, index));
 CREATE TABLE corpus.built_set_member (
   set_id BIGINT NOT NULL REFERENCES corpus.state_set, ord SMALLINT NOT NULL,
-  slot_index SMALLINT NOT NULL, building_id SMALLINT NOT NULL REFERENCES dict.building,
+  slot_index SMALLINT NOT NULL, building_id INTEGER NOT NULL REFERENCES dict.building,
   PRIMARY KEY (set_id, ord), UNIQUE (set_id, slot_index));
 CREATE TABLE corpus.building_now_set_member (
   set_id BIGINT NOT NULL REFERENCES corpus.state_set, ord SMALLINT NOT NULL,
-  slot_index SMALLINT NOT NULL, building_id SMALLINT NOT NULL REFERENCES dict.building, turns_left SMALLINT NOT NULL, paused BOOLEAN NOT NULL,
+  slot_index SMALLINT NOT NULL, building_id INTEGER NOT NULL REFERENCES dict.building, turns_left SMALLINT NOT NULL, paused BOOLEAN NOT NULL,
   PRIMARY KEY (set_id, ord), UNIQUE (set_id, slot_index));
 CREATE TABLE corpus.resource_set_member (
   set_id BIGINT NOT NULL REFERENCES corpus.state_set, ord SMALLINT NOT NULL,
-  resource_id SMALLINT NOT NULL REFERENCES dict.pooled_resource, value INTEGER,
+  resource_id INTEGER NOT NULL REFERENCES dict.pooled_resource, value INTEGER,
   PRIMARY KEY (set_id, ord), UNIQUE (set_id, resource_id));
 CREATE TABLE corpus.hero_count_set_member (
   set_id BIGINT NOT NULL REFERENCES corpus.state_set, ord SMALLINT NOT NULL,
-  agent_type_id SMALLINT NOT NULL REFERENCES dict.agent_type, n SMALLINT NOT NULL,
+  agent_type_id INTEGER NOT NULL REFERENCES dict.agent_type, n SMALLINT NOT NULL,
   PRIMARY KEY (set_id, ord), UNIQUE (set_id, agent_type_id));
 CREATE TABLE corpus.tech_set_member (
   set_id BIGINT NOT NULL REFERENCES corpus.state_set, ord SMALLINT NOT NULL,
-  tech_node_id SMALLINT NOT NULL REFERENCES dict.tech_node, researched BOOLEAN NOT NULL, can_research BOOLEAN NOT NULL, cost INTEGER NOT NULL,
+  tech_node_id INTEGER NOT NULL REFERENCES dict.tech_node, researched BOOLEAN NOT NULL, can_research BOOLEAN NOT NULL, cost INTEGER NOT NULL,
   PRIMARY KEY (set_id, ord), UNIQUE (set_id, tech_node_id));
 CREATE TABLE corpus.rite_set_member (
   set_id BIGINT NOT NULL REFERENCES corpus.state_set, ord SMALLINT NOT NULL,
-  index SMALLINT NOT NULL, ritual_id SMALLINT NOT NULL REFERENCES dict.ritual, can_perform BOOLEAN NOT NULL,
-  reason_id SMALLINT REFERENCES dict.rite_reason,
+  index SMALLINT NOT NULL, ritual_id INTEGER NOT NULL REFERENCES dict.ritual, can_perform BOOLEAN NOT NULL,
+  reason_id INTEGER REFERENCES dict.rite_reason,
   PRIMARY KEY (set_id, ord), UNIQUE (set_id, index));
 CREATE TABLE corpus.lord_pool_set_member (
   set_id BIGINT NOT NULL REFERENCES corpus.state_set, ord SMALLINT NOT NULL,
-  subtype_id SMALLINT NOT NULL REFERENCES dict.agent_subtype, n SMALLINT NOT NULL,
+  subtype_id INTEGER NOT NULL REFERENCES dict.agent_subtype, n SMALLINT NOT NULL,
   PRIMARY KEY (set_id, ord), UNIQUE (set_id, subtype_id));
 CREATE TABLE corpus.lord_pool_candidate (
   set_id BIGINT NOT NULL, subtype_id SMALLINT NOT NULL, ord SMALLINT NOT NULL,
-  can BOOLEAN NOT NULL, agent BOOLEAN, bg_skill_id SMALLINT REFERENCES dict.skill, cqi INTEGER NOT NULL,
-  cand_subtype_id SMALLINT NOT NULL REFERENCES dict.agent_subtype, unit_id SMALLINT REFERENCES dict.unit, rank SMALLINT,
-  trait_ids SMALLINT[], trait_levels SMALLINT[],
+  can BOOLEAN NOT NULL, agent BOOLEAN, bg_skill_id INTEGER REFERENCES dict.skill,
+  cand_subtype_id INTEGER NOT NULL REFERENCES dict.agent_subtype, trait_ids INTEGER[],
   PRIMARY KEY (set_id, subtype_id, ord),
-  FOREIGN KEY (set_id, subtype_id) REFERENCES corpus.lord_pool_set_member (set_id, subtype_id),
-  CHECK (trait_ids IS NULL OR cardinality(trait_ids) = cardinality(trait_levels)));
+  FOREIGN KEY (set_id, subtype_id) REFERENCES corpus.lord_pool_set_member (set_id, subtype_id));
 CREATE TABLE corpus.mission_set_member (
   set_id BIGINT NOT NULL REFERENCES corpus.state_set, ord SMALLINT NOT NULL,
-  mission_id SMALLINT NOT NULL REFERENCES dict.mission, status_id SMALLINT NOT NULL REFERENCES dict.enum, turns_remaining SMALLINT,
+  mission_id INTEGER NOT NULL REFERENCES dict.mission, status_id INTEGER NOT NULL REFERENCES dict.enum, turns_remaining SMALLINT,
   is_quest BOOLEAN NOT NULL, is_victory BOOLEAN NOT NULL, completed BOOLEAN NOT NULL, cancelled BOOLEAN NOT NULL, pending BOOLEAN NOT NULL,
-  category TEXT, issuer_id SMALLINT REFERENCES dict.mission_issuer,
+  category TEXT, issuer_id INTEGER REFERENCES dict.mission_issuer,
   PRIMARY KEY (set_id, ord));
 CREATE TABLE corpus.region_set_member (
   set_id BIGINT NOT NULL REFERENCES corpus.state_set, ord SMALLINT NOT NULL,
-  region_id SMALLINT NOT NULL REFERENCES dict.region, x INTEGER, y INTEGER, province_id SMALLINT REFERENCES dict.province,
-  owner_id SMALLINT REFERENCES dict.faction, capital BOOLEAN NOT NULL, abandoned BOOLEAN NOT NULL, adjacent SMALLINT[] NOT NULL,
+  region_id INTEGER NOT NULL REFERENCES dict.region, x INTEGER, y INTEGER, province_id INTEGER REFERENCES dict.province,
+  owner_id INTEGER REFERENCES dict.faction, capital BOOLEAN NOT NULL, abandoned BOOLEAN NOT NULL, adjacent SMALLINT[] NOT NULL,
   PRIMARY KEY (set_id, ord), UNIQUE (set_id, region_id));
 CREATE TABLE corpus.settlement_set_member (
   set_id BIGINT NOT NULL REFERENCES corpus.state_set, ord SMALLINT NOT NULL,
-  region_id SMALLINT REFERENCES dict.region, capital BOOLEAN, units SMALLINT, x INTEGER, y INTEGER,
+  region_id INTEGER REFERENCES dict.region, capital BOOLEAN, units SMALLINT, x INTEGER, y INTEGER,
   PRIMARY KEY (set_id, ord));
 CREATE TABLE corpus.ruin_set_member (
   set_id BIGINT NOT NULL REFERENCES corpus.state_set, ord SMALLINT NOT NULL,
-  region_id SMALLINT NOT NULL REFERENCES dict.region, x INTEGER, y INTEGER,
+  region_id INTEGER NOT NULL REFERENCES dict.region, x INTEGER, y INTEGER,
   PRIMARY KEY (set_id, ord), UNIQUE (set_id, region_id));
 CREATE TABLE corpus.enemy_agent_set_member (
   set_id BIGINT NOT NULL REFERENCES corpus.state_set, ord SMALLINT NOT NULL,
-  cqi INTEGER NOT NULL, x INTEGER, y INTEGER, faction_id SMALLINT NOT NULL REFERENCES dict.faction, at_war BOOLEAN NOT NULL,
+  cqi INTEGER NOT NULL, x INTEGER, y INTEGER, faction_id INTEGER NOT NULL REFERENCES dict.faction, at_war BOOLEAN NOT NULL,
   PRIMARY KEY (set_id, ord));
 CREATE TABLE corpus.war_graph_set_member (
   set_id BIGINT NOT NULL REFERENCES corpus.state_set, ord SMALLINT NOT NULL,
-  faction_id SMALLINT NOT NULL REFERENCES dict.faction, at_war_with SMALLINT[] NOT NULL,
+  faction_id INTEGER NOT NULL REFERENCES dict.faction, at_war_with SMALLINT[] NOT NULL,
   PRIMARY KEY (set_id, ord), UNIQUE (set_id, faction_id));
 CREATE TABLE corpus.relation_set_member (
   set_id BIGINT NOT NULL REFERENCES corpus.state_set, ord SMALLINT NOT NULL,
-  faction_id SMALLINT NOT NULL REFERENCES dict.faction, at_war BOOLEAN NOT NULL, allied BOOLEAN NOT NULL, trade BOOLEAN NOT NULL,
+  faction_id INTEGER NOT NULL REFERENCES dict.faction, at_war BOOLEAN NOT NULL, allied BOOLEAN NOT NULL, trade BOOLEAN NOT NULL,
   their_vassal BOOLEAN NOT NULL, standing SMALLINT NOT NULL, excluded BOOLEAN NOT NULL, mil_ally BOOLEAN NOT NULL,
   def_ally BOOLEAN NOT NULL, nap BOOLEAN NOT NULL, mil_access BOOLEAN NOT NULL, our_master BOOLEAN NOT NULL,
   PRIMARY KEY (set_id, ord), UNIQUE (set_id, faction_id));
 CREATE TABLE corpus.stationed_set_member (
   set_id BIGINT NOT NULL REFERENCES corpus.state_set, ord SMALLINT NOT NULL,
-  region_id SMALLINT NOT NULL REFERENCES dict.region, cqi INTEGER,
+  region_id INTEGER NOT NULL REFERENCES dict.region, cqi INTEGER,
   PRIMARY KEY (set_id, ord), UNIQUE (set_id, region_id));
 ```
 
@@ -238,13 +236,13 @@ CREATE TABLE corpus.taken (
   offer_seq          SMALLINT,
   entity_seq         SMALLINT,
   action_id          INTEGER NOT NULL REFERENCES dict.action,
-  policy_id          SMALLINT NOT NULL REFERENCES dict.enum,
+  policy_id          INTEGER NOT NULL REFERENCES dict.enum,
   ts                 DOUBLE PRECISION NOT NULL,
   executed           BOOLEAN NOT NULL,
   confirmed          BOOLEAN NOT NULL,
   counted            BOOLEAN NOT NULL,
-  refusal_id         SMALLINT REFERENCES dict.enum,
-  confirm_signal_id  SMALLINT REFERENCES dict.confirm_signal,
+  refusal_id         INTEGER REFERENCES dict.enum,
+  confirm_signal_id  INTEGER REFERENCES dict.confirm_signal,
   latency_ms         INTEGER,
   snapshot_ms        INTEGER,
   gates_ms           INTEGER,
@@ -254,14 +252,14 @@ CREATE TABLE corpus.taken (
   polls              SMALLINT,
   total_ms           INTEGER,
   prechecks_passed   BOOLEAN,
-  failed_precheck_id SMALLINT REFERENCES dict.enum,
+  failed_precheck_id INTEGER REFERENCES dict.enum,
   doomed             TEXT,
   stderr             TEXT,
   CHECK (counted = (executed AND confirmed) OR refusal_id IS NOT NULL)
 ) WITH (fillfactor = 80);
-CREATE INDEX taken_campaign ON corpus.taken (campaign_id, decision_id) INCLUDE (action_id, counted, refusal_id, policy_id, latency_ms);
+CREATE INDEX taken_campaign ON corpus.taken (campaign_id, decision_id) INCLUDE (action_id, policy_id, latency_ms);
 CREATE INDEX taken_ts ON corpus.taken (ts);
-CREATE INDEX taken_action ON corpus.taken (action_id) INCLUDE (counted, refusal_id);
+CREATE INDEX taken_action ON corpus.taken (action_id);
 ```
 
 `offer.score` etc. are `REAL`: the model outputs are float32 predictions and rank shares in [0,1] (M2 A.2); `REAL` halves the score bytes against today's 8 `DOUBLE PRECISION` columns while `pct_global` at 4-byte precision still distinguishes 1/572 ranks. `taken.stderr` is the executor's captured stderr text — opaque, read only by `debugging/timeline.py` (R3 D) — a value, not a structure (C2). `confirm_before`/`confirm_after`, `diagnostics.params`, `execute_error` (NULL on 3,025/3,025, M2 C) are dropped: no reader (R2, R3). `taken.policy` is NOT NULL (never NULL today, M2 A.3); the placeholder row written at pick time has `refusal = awaiting_execution`, `executed = confirmed = counted = false`.
@@ -274,7 +272,6 @@ CREATE TABLE corpus.interrupt_option (
   ord           SMALLINT NOT NULL,
   option_key    TEXT NOT NULL,
   text          TEXT,
-  context       TEXT,
   option_id     TEXT,
   answer        TEXT,
   payload       TEXT[],
@@ -294,10 +291,7 @@ CREATE TABLE corpus.interrupt_battle_panel (
   result_state       TEXT,
   result_text        TEXT,
   casualties_state   TEXT,
-  casualties_text    TEXT,
-  outcome            TEXT,
-  result_flag        TEXT,
-  settlement_captured BOOLEAN
+  casualties_text    TEXT
 );
 
 CREATE TABLE corpus.interrupt_diplo_panel (
@@ -327,11 +321,11 @@ CREATE TABLE corpus.diplomacy_event (
   turn            SMALLINT NOT NULL,
   ts              DOUBLE PRECISION NOT NULL,
   ts_recorded     DOUBLE PRECISION NOT NULL,
-  kind_id         SMALLINT NOT NULL REFERENCES dict.enum,
-  channel_id      SMALLINT REFERENCES dict.enum,
-  faction_id      SMALLINT REFERENCES dict.faction,
+  kind_id         INTEGER NOT NULL REFERENCES dict.enum,
+  channel_id      INTEGER REFERENCES dict.enum,
+  faction_id      INTEGER REFERENCES dict.faction,
   term_ids        SMALLINT[],
-  gift_id         SMALLINT REFERENCES dict.enum,
+  gift_id         INTEGER REFERENCES dict.enum,
   ok              BOOLEAN,
   failed_at       TEXT,
   success_chance  REAL,
@@ -340,7 +334,7 @@ CREATE TABLE corpus.diplomacy_event (
   answer          TEXT,
   executed        BOOLEAN,
   confirmed       BOOLEAN,
-  policy_id       SMALLINT REFERENCES dict.enum,
+  policy_id       INTEGER REFERENCES dict.enum,
   proposer        TEXT,
   speech          TEXT,
   attitude        TEXT,
@@ -363,10 +357,10 @@ CREATE TABLE corpus.postmortem (
   ts                  DOUBLE PRECISION NOT NULL,
   when_text           TEXT,
   run_dir             TEXT NOT NULL,
-  faction_id          SMALLINT REFERENCES dict.faction,
+  faction_id          INTEGER REFERENCES dict.faction,
   turns_played        SMALLINT,
   turn_at_death       SMALLINT,
-  outcome_id          SMALLINT NOT NULL REFERENCES dict.enum,
+  outcome_id          INTEGER NOT NULL REFERENCES dict.enum,
   defeated            BOOLEAN NOT NULL,
   error               TEXT,
   ended_by            TEXT[],
@@ -391,7 +385,7 @@ CREATE TABLE corpus.postmortem_growth_metric (
   label          TEXT NOT NULL,
   then_value     REAL,
   now_value      REAL,
-  window         SMALLINT,
+  window_turns   SMALLINT,
   PRIMARY KEY (postmortem_id, label)
 );
 
@@ -402,8 +396,8 @@ CREATE TABLE corpus.ucb_pick (
   k                REAL,
   scale            REAL,
   total_plays      INTEGER NOT NULL,
-  campaign_map_id  SMALLINT NOT NULL REFERENCES dict.campaign_map,
-  faction_id       SMALLINT NOT NULL REFERENCES dict.faction,
+  campaign_map_id  INTEGER NOT NULL REFERENCES dict.campaign_map,
+  faction_id       INTEGER NOT NULL REFERENCES dict.faction,
   n                INTEGER NOT NULL,
   mean             REAL,
   explore          REAL,
@@ -418,8 +412,8 @@ CREATE INDEX ucb_pick_ts ON corpus.ucb_pick (ts);
 CREATE TABLE corpus.ucb_pick_row (
   pick_id          INTEGER NOT NULL REFERENCES corpus.ucb_pick,
   rank             SMALLINT NOT NULL,
-  campaign_map_id  SMALLINT NOT NULL REFERENCES dict.campaign_map,
-  faction_id       SMALLINT NOT NULL REFERENCES dict.faction,
+  campaign_map_id  INTEGER NOT NULL REFERENCES dict.campaign_map,
+  faction_id       INTEGER NOT NULL REFERENCES dict.faction,
   n                INTEGER,
   mean             REAL,
   explore          REAL,
@@ -493,8 +487,8 @@ CREATE TABLE ops.trial (
   archived            BOOLEAN NOT NULL DEFAULT false
 );
 CREATE TABLE ops.trial_campaign (trial TEXT NOT NULL REFERENCES ops.trial, campaign_id INTEGER NOT NULL REFERENCES corpus.campaign, PRIMARY KEY (trial, campaign_id));
-CREATE TABLE ops.trial_policy   (trial TEXT NOT NULL REFERENCES ops.trial, scope TEXT NOT NULL, policy_id SMALLINT NOT NULL REFERENCES dict.enum, weight REAL NOT NULL, PRIMARY KEY (trial, scope, policy_id));
-CREATE TABLE ops.trial_outcome  (trial TEXT NOT NULL REFERENCES ops.trial, outcome_id SMALLINT NOT NULL REFERENCES dict.enum, n INTEGER NOT NULL, PRIMARY KEY (trial, outcome_id));
+CREATE TABLE ops.trial_policy   (trial TEXT NOT NULL REFERENCES ops.trial, scope TEXT NOT NULL, policy_id INTEGER NOT NULL REFERENCES dict.enum, weight REAL NOT NULL, PRIMARY KEY (trial, scope, policy_id));
+CREATE TABLE ops.trial_outcome  (trial TEXT NOT NULL REFERENCES ops.trial, outcome_id INTEGER NOT NULL REFERENCES dict.enum, n INTEGER NOT NULL, PRIMARY KEY (trial, outcome_id));
 
 CREATE TABLE ops.bus_call_stat (
   channel    TEXT NOT NULL,

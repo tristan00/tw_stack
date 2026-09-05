@@ -3,7 +3,7 @@
 ## 3.11 Reference schema (static part; the 1,520 pack tables are generated, 04 §4.2)
 
 ```sql
-CREATE TABLE ref.manifest (
+CREATE TABLE ops.manifest (
   build_id        INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   started_ts      DOUBLE PRECISION NOT NULL,
   finished_ts     DOUBLE PRECISION,
@@ -21,10 +21,10 @@ CREATE TABLE ref.manifest (
   CHECK (status IN ('building', 'live', 'failed', 'superseded')),
   CHECK (octet_length(schema_sha256) = 32 AND octet_length(fingerprint) = 32)
 );
-CREATE UNIQUE INDEX manifest_live ON ref.manifest (status) WHERE status = 'live';
+CREATE UNIQUE INDEX manifest_live ON ops.manifest (status) WHERE status = 'live';
 
-CREATE TABLE ref.manifest_pack (
-  build_id   INTEGER NOT NULL REFERENCES ref.manifest,
+CREATE TABLE ops.manifest_pack (
+  build_id   INTEGER NOT NULL REFERENCES ops.manifest,
   pack       TEXT NOT NULL,
   sha256     BYTEA NOT NULL,
   size       BIGINT NOT NULL,
@@ -36,7 +36,7 @@ CREATE TABLE ref.manifest_pack (
   PRIMARY KEY (build_id, pack)
 );
 
-CREATE TABLE ref.table_meta (
+CREATE TABLE ops.table_meta (
   tbl            TEXT PRIMARY KEY,
   pack_table     TEXT NOT NULL UNIQUE,
   version        SMALLINT NOT NULL,
@@ -48,8 +48,8 @@ CREATE TABLE ref.table_meta (
   raw_bytes      INTEGER NOT NULL
 );
 
-CREATE TABLE ref.column_meta (
-  tbl            TEXT NOT NULL REFERENCES ref.table_meta,
+CREATE TABLE ops.column_meta (
+  tbl            TEXT NOT NULL REFERENCES ops.table_meta,
   col            TEXT NOT NULL,
   ca_order       SMALLINT NOT NULL,
   ron_type       TEXT NOT NULL,
@@ -119,7 +119,7 @@ CREATE TABLE migrate.id_map (
 ## 3.13 Analytics (surviving tenants; 08 §8.6 for the dissolved ones)
 
 ```sql
-CREATE TABLE analytics.state (
+CREATE TABLE analytics2.state (
   tenant           TEXT PRIMARY KEY,
   formula_version  SMALLINT NOT NULL,
   watermark        BIGINT NOT NULL,
@@ -129,7 +129,7 @@ CREATE TABLE analytics.state (
   last_error       TEXT
 );
 
-CREATE TABLE analytics.model_agreement (
+CREATE TABLE analytics2.model_agreement (
   decision_id   BIGINT NOT NULL REFERENCES corpus.decision,
   pair          TEXT NOT NULL,
   status        TEXT NOT NULL,
@@ -149,14 +149,14 @@ CREATE TABLE analytics.model_agreement (
   entity_kind_id SMALLINT,
   PRIMARY KEY (decision_id, pair)
 );
-CREATE INDEX model_agreement_pair_ts ON analytics.model_agreement (pair, ts) WHERE status = 'ok';
+CREATE INDEX model_agreement_pair_ts ON analytics2.model_agreement (pair, ts) WHERE status = 'ok';
 
-CREATE TABLE analytics.agreement_summary   (pair TEXT NOT NULL, scope TEXT NOT NULL, comparable INTEGER, rho_median REAL, rho_mean REAL, tau_median REAL, rbo_median REAL, top1_rate REAL, missing_b INTEGER, no_scores INTEGER, PRIMARY KEY (pair, scope));
-CREATE TABLE analytics.agreement_hist      (pair TEXT NOT NULL, bucket SMALLINT NOT NULL, lo REAL, hi REAL, n INTEGER, PRIMARY KEY (pair, bucket));
-CREATE TABLE analytics.agreement_series    (pair TEXT NOT NULL, axis TEXT NOT NULL, seq INTEGER NOT NULL, from_decision BIGINT, to_decision BIGINT, from_ts DOUBLE PRECISION, decisions INTEGER, rho_median REAL, gate TEXT, trial TEXT, generation INTEGER, retrained BOOLEAN, bucket_size INTEGER, PRIMARY KEY (pair, axis, seq));
-CREATE TABLE analytics.agreement_breakdown (pair TEXT NOT NULL, dim TEXT NOT NULL, key TEXT NOT NULL, decisions INTEGER, rho_median REAL, top1_rate REAL, PRIMARY KEY (pair, dim, key));
+CREATE TABLE analytics2.agreement_summary   (pair TEXT NOT NULL, scope TEXT NOT NULL, comparable INTEGER, rho_median REAL, rho_mean REAL, tau_median REAL, rbo_median REAL, top1_rate REAL, missing_b INTEGER, no_scores INTEGER, PRIMARY KEY (pair, scope));
+CREATE TABLE analytics2.agreement_hist      (pair TEXT NOT NULL, bucket SMALLINT NOT NULL, lo REAL, hi REAL, n INTEGER, PRIMARY KEY (pair, bucket));
+CREATE TABLE analytics2.agreement_series    (pair TEXT NOT NULL, axis TEXT NOT NULL, seq INTEGER NOT NULL, from_decision BIGINT, to_decision BIGINT, from_ts DOUBLE PRECISION, decisions INTEGER, rho_median REAL, gate TEXT, trial TEXT, generation INTEGER, retrained BOOLEAN, bucket_size INTEGER, PRIMARY KEY (pair, axis, seq));
+CREATE TABLE analytics2.agreement_breakdown (pair TEXT NOT NULL, dim TEXT NOT NULL, key TEXT NOT NULL, decisions INTEGER, rho_median REAL, top1_rate REAL, PRIMARY KEY (pair, dim, key));
 
-CREATE TABLE analytics.acquisition (
+CREATE TABLE analytics2.acquisition (
   campaign_id           INTEGER NOT NULL REFERENCES corpus.campaign,
   family                TEXT NOT NULL,
   key_id                INTEGER NOT NULL,
@@ -170,20 +170,20 @@ CREATE TABLE analytics.acquisition (
   ranks                 SMALLINT,
   PRIMARY KEY (campaign_id, family, key_id, ctx)
 );
-CREATE INDEX acquisition_family_key ON analytics.acquisition (family, key_id) INCLUDE (campaign_id, acquired_turn, ranks);
+CREATE INDEX acquisition_family_key ON analytics2.acquisition (family, key_id) INCLUDE (campaign_id, acquired_turn, ranks);
 
-CREATE TABLE analytics.item_event (
+CREATE TABLE analytics2.item_event (
   event_id     BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   campaign_id  INTEGER NOT NULL REFERENCES corpus.campaign,
   character_id INTEGER NOT NULL REFERENCES corpus.character,
-  ancillary_id SMALLINT NOT NULL REFERENCES dict.ancillary,
+  ancillary_id INTEGER NOT NULL REFERENCES dict.ancillary,
   kind         TEXT NOT NULL,
   snapshot_id  BIGINT NOT NULL,
   turn         SMALLINT NOT NULL,
   CHECK (kind IN ('on', 'off'))
 );
-CREATE INDEX item_event_campaign ON analytics.item_event (campaign_id, character_id, snapshot_id);
-CREATE INDEX item_event_ancillary ON analytics.item_event (ancillary_id, kind);
+CREATE INDEX item_event_campaign ON analytics2.item_event (campaign_id, character_id, snapshot_id);
+CREATE INDEX item_event_ancillary ON analytics2.item_event (ancillary_id, kind);
 ```
 
 `acquisition.key_id` is the family's dictionary id (`family` ∈ research → `dict.tech_node`, building → `dict.building`, skills → `dict.skill`, traits → `dict.trait`, items → `dict.ancillary`, settlement → `dict.region`); `sub_id` = character subtype (`dict.agent_subtype`) for skills/traits. Both tenants are incremental by `snapshot_id` watermark and read member tables only (08 §8.6). `decision_features/resources/heroes`, all `game_turn*`, `campaign_growth`, `model_generations`, `campaign_endings`, `growth_summary`, `item_event_state` are not created (C12; R3 C.1/F: no consumer, or replaced by the views below).
@@ -218,7 +218,7 @@ CREATE VIEW corpus.campaign_ending AS
   FROM corpus.postmortem p JOIN corpus.campaign c USING (campaign_id)
   WHERE p.postmortem_id = (SELECT MAX(postmortem_id) FROM corpus.postmortem q WHERE q.campaign_id = p.campaign_id);
 
-CREATE VIEW analytics.model_generation AS
+CREATE VIEW analytics2.model_generation AS
   SELECT trial, generation, ts AS seg_from_ts,
          LEAD(ts) OVER (ORDER BY ts) AS seg_to_ts, campaigns, corpus_n_decisions AS corpus_decisions
   FROM ops.trial WHERE NOT archived;
