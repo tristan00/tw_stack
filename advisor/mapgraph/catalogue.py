@@ -8,19 +8,12 @@ _CACHE = {}
 
 def _open():
     con = pg.connect(autocommit=True, readonly=True, row_factory=pg.row_factory,
-                     search_path="reference")
-    if con.execute("SELECT to_regclass('reference.buildings')").fetchone()[0] is None:
+                     search_path="refc,ref")
+    if con.execute("SELECT to_regclass('refc.buildings')").fetchone()[0] is None:
         con.close()
-        raise RuntimeError("mapgraph.catalogue: the reference schema is missing -- it is a "
-                           "hard dependency; rebuild it (advisor/reference/"
+        raise RuntimeError("mapgraph.catalogue: the refc views are missing -- they are a "
+                           "hard dependency; rebuild the reference (advisor/reference/"
                            "build_reference.py) before training or ranking")
-    if con.execute(
-            "SELECT to_regclass('reference.ancillary_effects')").fetchone()[0] is None:
-        con.close()
-        raise RuntimeError("mapgraph.catalogue: the reference extra tables are missing "
-                           "(tech_links/skill_links/ancillaries/ancillary_effects/"
-                           "effects_meta) -- run advisor/reference/build_reference.py "
-                           "extra before training or ranking")
     return con
 
 
@@ -74,7 +67,7 @@ def _load():
 _KIND_TABLE = {"building": "buildings", "chain": "building_chains", "unit": "units",
                "tech": "tech", "skill": "skills", "ritual": "rituals",
                "agent_action": "agent_actions", "item": "ancillaries"}
-_KIND_COLUMN = {"agent_subtype": ("agent_permitted_subtypes", "subtype"),
+_KIND_COLUMN = {"agent_subtype": ("agent_subtypes", "key"),
                 "effect": ("effects_meta", "effect")}
 _DENSE = {}
 

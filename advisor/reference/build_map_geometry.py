@@ -4,50 +4,25 @@ import json
 import os
 import struct
 import sys
+import time
 
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-import common
-from advisor.reference.build_reference import (decode_db_table, load_db_schema, parse_pack,
-                                               read_file)
+from advisor.reference import packs
 from decisions import pg
 
-GAME = common.GAME_DATA_DIR
 CAMPAIGNS = ("wh3_main_combi", "wh3_main_chaos")
 MAX_POINTS = 120
 MIN_PART = 0.05
 TOLERANCES = (1.0, 1.4, 2.0, 2.8, 4.0, 5.6, 8.0, 11.0, 16.0, 22.0, 32.0)
 SPOT = ("hag_graef", "altdorf", "naggarond", "lothern", "karaz_a_karak", "couronne")
 
-PLAYABLE_AREAS = {"12": [
-    ["index", "StringU8"], ["sea_trade", "Boolean"], ["map_file", "OptionalStringU8"],
-    ["overlay_file", "OptionalStringU8"], ["radar_file", "OptionalStringU8"],
-    ["meaningful_id", "StringU8"], ["preview_width", "I32"], ["preview_height", "I32"],
-    ["minx", "F32"], ["maxx", "F32"], ["mapname", "StringU8"],
-    ["minimap_lookup_file", "OptionalStringU8"], ["is_available_in_custom_battle", "Boolean"],
-    ["terrain_folder", "StringU8"], ["campaign_key", "StringU8"],
-    ["frontend_image", "OptionalStringU8"], ["video", "StringU8"],
-    ["is_mpc_available", "Boolean"], ["campaign_overlay_lookup", "StringU8"],
-    ["campaign_overlay_map", "StringU8"], ["quadtree_margin", "F32"], ["sort_order", "I32"],
-    ["campaign_overlay_map_text", "StringU8"]]}
-
-DDL = ("ALTER TABLE reference.ref_region"
-       " ADD COLUMN IF NOT EXISTS outline TEXT,"
-       " ADD COLUMN IF NOT EXISTS cx DOUBLE PRECISION,"
-       " ADD COLUMN IF NOT EXISTS cy DOUBLE PRECISION,"
-       " ADD COLUMN IF NOT EXISTS area_px INTEGER,"
-       " ADD COLUMN IF NOT EXISTS map_w INTEGER,"
-       " ADD COLUMN IF NOT EXISTS map_h INTEGER")
-
-
-def _schema():
-    s = dict(load_db_schema())
-    v = dict(s.get("campaign_map_playable_areas_tables") or {})
-    v.update(PLAYABLE_AREAS)
-    s["campaign_map_playable_areas_tables"] = v
-    return s
+DDL = ("CREATE TABLE IF NOT EXISTS ref.region_geometry ("
+       " region_id INTEGER PRIMARY KEY, cx DOUBLE PRECISION NOT NULL,"
+       " cy DOUBLE PRECISION NOT NULL, area_px INTEGER NOT NULL,"
+       " map_w INTEGER NOT NULL, map_h INTEGER NOT NULL, outline TEXT NOT NULL)")
 
 
 def _decode_tga(b):
@@ -249,32 +224,27 @@ def _centroid(rings):
     return ax / at, ay / at
 
 
-def extract(campaign):
-    schema = _schema()
-    dfiles, dd = parse_pack(GAME + "/db.pack")
-    areas, ameta = decode_db_table(dfiles, dd, "campaign_map_playable_areas_tables", schema)
-    if not ameta["ok"]:
-        raise RuntimeError("campaign_map_playable_areas_tables: " + ameta["reason"])
-    hit = [a for a in areas if a["campaign_key"] == campaign]
+def extract(con, campaign):
+    hit = con.execute(
+        "SELECT mapname, overlay_file FROM ref.campaign_map_playable_areas"
+        " WHERE campaign_key = %s", (campaign,)).fetchall()
     if len(hit) != 1:
         raise RuntimeError("expected one playable area for %s, got %d" % (campaign, len(hit)))
-    mapname, overlay = hit[0]["mapname"], hit[0]["overlay_file"]
+    mapname, overlay = hit[0]
 
-    regs, rmeta = decode_db_table(dfiles, dd, "regions_tables", schema)
-    if not rmeta["ok"]:
-        raise RuntimeError("regions_tables: " + rmeta["reason"])
-    cmr, cmeta = decode_db_table(dfiles, dd, "campaign_map_regions_tables", schema)
-    if not cmeta["ok"]:
-        raise RuntimeError("campaign_map_regions_tables: " + cmeta["reason"])
-    colour = {r["key"]: (r["r"], r["g"], r["b"]) for r in regs}
-    on_map = [r["region"] for r in cmr if r["campaign_map"] == mapname]
+    colour = {r[0]: (r[1], r[2], r[3]) for r in con.execute(
+        "SELECT key, r, g, b FROM ref.regions")}
+    on_map = [r[0] for r in con.execute(
+        "SELECT region FROM ref.campaign_map_regions WHERE campaign_map = %s",
+        (mapname,))]
 
-    mfiles, md = parse_pack(GAME + "/data_maps.pack")
+    pack_path = os.path.join(packs.DATA_DIR, "data_maps.pack")
+    _ptype, ents = packs.read_index(pack_path)
     want = ("campaign_maps/%s/%s" % (mapname, overlay)).lower()
-    path = next((n for n, _o, _s, _c in mfiles if n.replace("\\", "/").lower() == want), None)
-    if path is None:
+    entry = next((e for e in ents if e[0].lower() == want), None)
+    if entry is None:
         raise RuntimeError("no %s in data_maps.pack" % want)
-    idx, pal, w, h, desc = _decode_tga(read_file(mfiles, md, path))
+    idx, pal, w, h, desc = _decode_tga(packs.extract(pack_path, entry))
 
     slot = {}
     for i, c in enumerate(pal.tolist()):
@@ -331,93 +301,61 @@ def extract(campaign):
     return out, w, h
 
 
-def store(geo, w, h):
-    con = pg.connect(autocommit=True)
+def store(con, geo, w, h):
     con.execute(DDL)
-    live = {r[0] for r in con.execute("SELECT region FROM reference.ref_region").fetchall()}
+    from decisions import dicts
+    ids = dicts.Dicts(con).resolve("region", sorted(geo))
+    missing = sorted(set(geo) - set(ids))
+    if missing:
+        raise RuntimeError("%d traced regions failed dict.region resolution: %s"
+                           % (len(missing), missing[:5]))
     rows, total = [], 0
     for key, g in geo.items():
         blob = json.dumps([[c for p in ring for c in p] for ring in g["rings"]],
                           separators=(",", ":"))
         total += len(blob)
-        rows.append((key, blob, g["cx"], g["cy"], g["area_px"], w, h))
+        rows.append((ids[key], g["cx"], g["cy"], g["area_px"], w, h, blob))
     con.cursor().executemany(
-        "INSERT INTO reference.ref_region(region, outline, cx, cy, area_px, map_w, map_h)"
+        "INSERT INTO ref.region_geometry(region_id, cx, cy, area_px, map_w, map_h, outline)"
         " VALUES(%s,%s,%s,%s,%s,%s,%s)"
-        " ON CONFLICT (region) DO UPDATE SET outline=excluded.outline, cx=excluded.cx,"
-        " cy=excluded.cy, area_px=excluded.area_px, map_w=excluded.map_w,"
-        " map_h=excluded.map_h", rows)
-    print("ref_region rows before %d, geometry regions %d, written %d"
-          % (len(live), len(geo), len(rows)))
-    print("regions new to ref_region: %d" % len(set(geo) - live))
+        " ON CONFLICT (region_id) DO UPDATE SET cx=excluded.cx, cy=excluded.cy,"
+        " area_px=excluded.area_px, map_w=excluded.map_w, map_h=excluded.map_h,"
+        " outline=excluded.outline", rows)
+    print("geometry regions %d written to ref.region_geometry" % len(rows))
     print("outline payload %d bytes (%.2f MB) over %d rows, %d points"
           % (total, total / 1e6, len(rows),
              sum(len(r) for g in geo.values() for r in g["rings"])))
-    return con
-
-
-def _near(a, b):
-    best = None
-    for ring in a:
-        p = np.asarray(ring, np.float64)
-        for other in b:
-            q = np.asarray(other, np.float64)
-            s, e = q, np.roll(q, -1, axis=0)
-            d = e - s
-            ll = (d * d).sum(1)
-            ll[ll == 0] = 1.0
-            t = np.clip(((p[:, None, 0] - s[None, :, 0]) * d[None, :, 0]
-                         + (p[:, None, 1] - s[None, :, 1]) * d[None, :, 1]) / ll[None, :], 0, 1)
-            dx = p[:, None, 0] - (s[None, :, 0] + t * d[None, :, 0])
-            dy = p[:, None, 1] - (s[None, :, 1] + t * d[None, :, 1])
-            m = float(np.sqrt(dx * dx + dy * dy).min())
-            best = m if best is None else min(best, m)
-    return best
 
 
 def report(con, geo, w, h):
     print("\n== map %d x %d, origin top-left, y increases southward ==" % (w, h))
-    cur = con.cursor()
     for name in SPOT:
         key = next((k for k in geo if k.endswith("_region_" + name)), None)
         if key is None:
             print("  %-16s MISSING" % name)
             continue
         g = geo[key]
-        row = cur.execute("SELECT cx, cy, area_px, province, adjacent"
-                          " FROM reference.ref_region WHERE region=%s", (key,)).fetchone()
+        row = con.execute(
+            "SELECT g.cx, g.cy, g.area_px FROM ref.region_geometry g"
+            " JOIN dict.region d ON d.id = g.region_id WHERE d.key = %s",
+            (key,)).fetchone()
         print("  %-16s %-46s centroid=(%7.1f,%7.1f) area=%6d px rings=%d points=%3d db=%s"
               % (name, key, g["cx"], g["cy"], g["area_px"], len(g["rings"]),
                  sum(len(r) for r in g["rings"]),
-                 "-" if row is None else "(%.1f,%.1f) %d px %s" % (row[0], row[1], row[2], row[3])))
-        if row is not None and row[4]:
-            for nb in row[4].split(",")[:4]:
-                if nb in geo:
-                    print("      touches %-44s gap %.1f px" % (nb, _near(g["rings"], geo[nb]["rings"])))
-
-    pairs, gaps = 0, []
-    for r in cur.execute("SELECT region, adjacent FROM reference.ref_region"
-                         " WHERE adjacent <> ''").fetchall():
-        if r[0] not in geo:
-            continue
-        for nb in r[1].split(","):
-            if nb in geo and nb > r[0]:
-                pairs += 1
-                gaps.append(_near(geo[r[0]]["rings"], geo[nb]["rings"]))
-    if gaps:
-        a = np.asarray(gaps)
-        print("\nadjacency: %d declared neighbour pairs, gap median %.2f px, p90 %.2f px,"
-              " max %.2f px, within 5 px %.1f%%"
-              % (pairs, float(np.median(a)), float(np.percentile(a, 90)), float(a.max()),
-                 100.0 * float((a <= 5.0).mean())))
+                 "-" if row is None else "(%.1f,%.1f) %d px" % (row[0], row[1], row[2])))
 
 
 def main():
-    for campaign in CAMPAIGNS:
-        geo, w, h = extract(campaign)
-        con = store(geo, w, h)
-        report(con, geo, w, h)
+    t0 = time.time()
+    con = pg.connect(app_name="tw-mapgeom", autocommit=True)
+    try:
+        for campaign in CAMPAIGNS:
+            geo, w, h = extract(con, campaign)
+            store(con, geo, w, h)
+            report(con, geo, w, h)
+    finally:
         con.close()
+    print("map geometry exit %.1f s" % (time.time() - t0))
 
 
 if __name__ == "__main__":

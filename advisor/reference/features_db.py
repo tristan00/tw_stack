@@ -47,7 +47,9 @@ def _lookup(table, key_col, key):
         row = _connect().execute(
             "SELECT * FROM %s WHERE %s=%%s" % (table, key_col), (key,)
         ).fetchone()
-        hit = dict(row) if row is not None else {}
+        if row is None:
+            return {}
+        hit = dict(row)
         _lookup_cache[ck] = hit
     return dict(hit)
 
@@ -139,7 +141,7 @@ def ancillary_resources(key):
 
 
 def label(key):
-    row = _connect().execute("SELECT text FROM loc WHERE key=%s", (key,)).fetchone()
+    row = _connect().execute("SELECT text FROM loc WHERE loc_key=%s", (key,)).fetchone()
     return row["text"] if row else None
 
 
@@ -164,9 +166,11 @@ def agent_action_keys(name_suffix):
     con = _connect()
     for suf in sufs:
         hit = 0
-        for row in con.execute("SELECT key FROM loc WHERE key LIKE %s",
-                               (_AGENT_ACTION_NAME_PREFIX + "%" + str(suf),)).fetchall():
-            out.append(row["key"][len(_AGENT_ACTION_NAME_PREFIX):])
+        for row in con.execute(
+                "SELECT key FROM loc WHERE tbl='agent_actions'"
+                " AND col='localised_action_name' AND key LIKE %s",
+                ("%" + str(suf),)).fetchall():
+            out.append(row["key"])
             hit += 1
         if not hit and str(suf) not in _EMPTY_SUFFIX_WARNED:
             _EMPTY_SUFFIX_WARNED.add(str(suf))
@@ -309,7 +313,6 @@ if __name__ == "__main__":
     print("ritual   :", ritual_features("wh2_dlc09_ritual_crafting_tmb_arcane_item_blue_khepra"))
 
 
-_SUBTYPE_PREFIX = "agent_subtypes_onscreen_name_override_"
 _SUBTYPE_RE = re.compile(r"^wh\d?_[a-z0-9]+_([a-z]+)_")
 _subtype_cache = None
 
@@ -318,9 +321,10 @@ def agent_subtypes(race_tokens):
     global _subtype_cache
     if _subtype_cache is None:
         _subtype_cache = []
-        for row in _connect().execute("SELECT key,text FROM loc WHERE key LIKE %s",
-                                      (_SUBTYPE_PREFIX + "%",)).fetchall():
-            sub = row["key"][len(_SUBTYPE_PREFIX):]
+        for row in _connect().execute(
+                "SELECT key,text FROM loc WHERE tbl='agent_subtypes'"
+                " AND col='onscreen_name_override'").fetchall():
+            sub = row["key"]
             m = _SUBTYPE_RE.match(sub)
             _subtype_cache.append((m.group(1) if m else None, sub, row["text"]))
     toks = set(race_tokens or ())

@@ -51,18 +51,13 @@ def fingerprint():
         with open(p, "rb") as fh:
             h.update(hashlib.sha1(fh.read()).digest())
     from decisions import pg
+    con = pg.connect(autocommit=True, readonly=True)
     try:
-        con = pg.connect(autocommit=True, readonly=True, search_path="reference")
-        try:
-            built = con.execute("SELECT v FROM meta WHERE k='built'").fetchone()
-            n = con.execute("SELECT (SELECT COUNT(*) FROM buildings)"
-                            " + (SELECT COUNT(*) FROM units)"
-                            " + (SELECT COUNT(*) FROM agent_actions)").fetchone()[0]
-        finally:
-            con.close()
-        h.update(("reference|%s|%s" % (built[0] if built else 0, n)).encode())
-    except Exception:
-        h.update(b"reference|absent")
+        row = con.execute(
+            "SELECT build_id FROM ops.manifest WHERE status='live'").fetchone()
+    finally:
+        con.close()
+    h.update(("reference|%s" % (row[0] if row else 0)).encode())
     return h.hexdigest()[:16]
 
 

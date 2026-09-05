@@ -24,7 +24,7 @@ def _ref():
     global _con
     if _con is None or getattr(_con, "closed", True):
         _con = pg.connect(autocommit=True, readonly=True, row_factory=pg.row_factory,
-                          search_path="reference")
+                          search_path="refc,ref")
     return _con
 
 
@@ -42,7 +42,7 @@ def _loc(key, depth=0):
     hit = _cache.get(key, "?")
     if hit != "?":
         return hit
-    row = _one("SELECT text FROM loc WHERE key=%s", (key,))
+    row = _one("SELECT text FROM loc WHERE loc_key=%s", (key,))
     txt = (row["text"] or "").strip() if row else ""
     m = _TR_RE.match(txt)
     if m and depth < 2:
@@ -257,8 +257,8 @@ def _building_name_rows() -> list:
     global _bname_rows
     if _bname_rows is None:
         got = []
-        for r in _rows("SELECT key, text FROM loc WHERE key LIKE %s"
-                       " AND text <> ''", ("building\\_culture\\_variants\\_name\\_%",)):
+        for r in _rows("SELECT key, text FROM loc WHERE tbl=%s AND col=%s"
+                       " AND text <> ''", ("building_culture_variants", "name")):
             txt = r["text"].strip()
             m = _TR_RE.match(txt)
             if m:
@@ -266,7 +266,7 @@ def _building_name_rows() -> list:
                        or _loc("ui_text_replacements_localised_text_" + m.group(1))
                        or "")
             if txt:
-                got.append((r["key"][len("building_culture_variants_name_"):], txt))
+                got.append((r["key"], txt))
         if not got:
             return []
         _bname_rows = sorted(got)

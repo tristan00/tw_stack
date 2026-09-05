@@ -532,7 +532,7 @@ def _merc_flavors():
     global _merc_flavor_map
     if _merc_flavor_map is None:
         from decisions import pg
-        con = pg.connect(autocommit=True, readonly=True, search_path="reference")
+        con = pg.connect(autocommit=True, readonly=True, search_path="refc,ref")
         try:
             rows = con.execute("SELECT DISTINCT unit, flavor FROM merc_units").fetchall()
         finally:
