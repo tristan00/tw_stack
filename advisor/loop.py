@@ -505,7 +505,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
         decision_id, record = journal.request_snapshot(run_dir, active=active)
         _t_gen = time.time()
         options = pol.gate.apply(record, actions_taken=actions)
-        journal.log_options(run_dir, decision_id, options)
+        _offers_for_store = options
         O.attach(record, options)
         _hk_parts[0]["generate_ms"] = int((time.time() - _t_gen) * 1000)
         (record.setdefault("campaign", {}))["act_index"] = actions + 1
@@ -568,7 +568,8 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
                 mem.note_pick("faction", "*", "end_turn", None, True)
             break
         _t = time.time()
-        journal.log_pick(run_dir, decision_id, pick, P.scores_for_store(ranked), timings=timing)
+        journal.log_decide(run_dir, decision_id, _offers_for_store, pick,
+                           P.scores_for_store(ranked), timings=timing)
         _hk_parts[0] = {"pick_log": int((time.time() - _t) * 1000)}
         picks.append({"action": pick["action_type"], "key": pick["key"],
                       "context": "%s:%s" % (pick["context_kind"], pick["context_id"]),
