@@ -93,4 +93,4 @@ D: has 1,771 GB free (R6 §0). At 336 MB/day the disk lasts > 13 years; the trai
 
 ## 6.5 Migration disk headroom (10)
 
-Peak during migration on D:: old database dump/restore copy (16.3 GB) + new tables (5.1 GB) + indexes built after load (1.3 GB) + WAL during COPY (bounded by `max_wal_size` 8 GB with `wal_level = minimal` during the bulk phase) ≈ **31 GB**, against 1,771 GB free. C: is not written at all after the base copy (its cluster keeps running until cutover).
+Peak during migration on D:: old database dump/restore copy (16.3 GB) + new tables (5.1 GB) + indexes built after load (1.3 GB) + WAL during COPY (bounded by `max_wal_size` 8 GB; no `wal_level = minimal` toggle, m5) ≈ **46 GB**, against 1,771 GB free. C: is not written at all after the base copy (its cluster keeps running until cutover).

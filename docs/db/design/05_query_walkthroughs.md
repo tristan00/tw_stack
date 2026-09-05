@@ -112,7 +112,7 @@ SELECT DISTINCT ON (cs.character_id) cs.character_id, ch.cqi, cs.is_leader, cs.r
 FROM corpus.character ch JOIN corpus.char_state cs USING (character_id)
 WHERE ch.campaign_id = $1 AND NOT cs.is_hero ORDER BY cs.character_id, cs.snapshot_id DESC;
 ```
-Plan: `snapshot_campaign_ts` backward scan for the first (≤ 1.2 rows skipped); second: `character (campaign_id, cqi)` unique index → ≈ 3 characters, each an `Index Scan` on `char_state_character (character_id, snapshot_id DESC)` stopping at the first row. Expected **≈ 1 ms**; today one DISTINCT ON over the campaign's entities with blob decode (R3 A.2).
+Plan: `snapshot_campaign_ts` backward scan for the first (≤ 1.2 rows skipped); second: `character (campaign_id, cqi)` unique index → ≈ 3 characters, each an `Index Scan` on `char_state_character (character_id, snapshot_id DESC)` whose group is read in full by `DISTINCT ON` (m4). Expected **≈ 1 ms**; today one DISTINCT ON over the campaign's entities with blob decode (R3 A.2).
 
 ## Q-A6 `_start_snapshots` (latest lord/hero per character for a start, 283 campaigns)
 

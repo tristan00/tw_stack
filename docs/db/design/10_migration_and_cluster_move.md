@@ -40,7 +40,7 @@ Data checksums are enabled at `initdb --data-checksums` (a new cluster is the on
 ## 10.3 Preconditions (checked by `migrate/run.py --preflight`, all must pass)
 
 1. Code for 07/08/09 committed on `main` (C11: code committed before cutover); `git status` clean; VERSION bumped.
-2. D: free ≥ 100 GB (need ≈ 31 GB, 06 §6.5); `D:\pg17` absent or empty.
+2. D: free ≥ 100 GB (need ≈ 46 GB peak, 06 §6.5, m5); `D:\pg17` absent or empty.
 3. C: cluster reachable; `pgpass.conf` present (R6 H); `postgres` superuser usable for `pg_dump` of `tw_stack` and `optuna` only (the forbidden databases are not dumped: `-d tw_stack`, `-d optuna` explicitly).
 4. Stack down: `python runctl.py down`; `HARNESS_OFF=1` exported in the shell that will run the harness later; `pg_stat_activity` on C: shows no `tw` client backends (`application_name` is empty today, so the check is "0 client backends of user tw").
 5. Reference inputs present: `db.pack`, `local_en.pack`, `schema_wh3.ron`, `Warhammer3.exe` (04).
@@ -75,6 +75,7 @@ S7  migrate stage M2 offers+taken: same ranges, 4 workers:
       read offers ⋈ actions ⋈ offer_scores ⋈ offer_model_scores by decision range; dict.action upsert per range (type, key); COPY offer; taken ⋈ actions (+ json.loads of timing/diagnostics for the retained columns) → COPY taken; decisions.timings → COPY decision_timing
       M2 depends on M1 done for the range (FK to snapshot_entity holds by construction; validated at S9)
 S8  migrate stage M4 interrupts (ranges of 2,000 interrupt_ids, 4 workers; 9 §9.4), M5 side tables (diplomacy_events → diplomacy_event with kind inferred from payload shape per R4 D: pair_checkpoint ⇔ 'pair' key without 'channel'; campaign_end ⇔ 'turns_played'; deal ⇔ 'channel'; postmortems; ucb_picks/rows with ids preserved; campaign.ucb_pick_id by the 600-s same-map/faction match that R4 F verified for 3,657/3,853 picks, else NULL)
+S8b migrate stage M6 campaign aggregates (M9): one `UPDATE corpus.campaign ... FROM (SELECT ... GROUP BY campaign_id)` per aggregate family, own `migrate.checkpoint` row; runs before S9 and V5
 S9  constraints and indexes: psql -1 -f sql/03_constraints.sql   (every FK validates; every secondary index builds with max_parallel_maintenance_workers = 8) ; ANALYZE
 S10 validation (10.5) — must pass 100% before S11
 S11 analytics: python -m analytics.runner --rebuild --once   (model_agreement from offer, acquisition/item_event folds, rollups; 5 §Q-U3)
