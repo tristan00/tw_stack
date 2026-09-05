@@ -38,9 +38,6 @@ def norm(row):
                  for v in row)
 
 
-DOCUMENTED_SUPERSET = {'skill_actions'}
-
-
 def compare(con, name):
     legacy_cols = columns(con, 'reference', name)
     view_cols = columns(con, 'refc', name)
@@ -52,16 +49,11 @@ def compare(con, name):
     b = collections.Counter(norm(r) for r in rows_of(con, 'refc', name, view_cols))
     missing = a - b
     extra = b - a
-    documented = 0
-    if name in DOCUMENTED_SUPERSET and not missing:
-        documented = sum(extra.values())
-        extra = collections.Counter()
     status = 'ok' if not missing and not extra else 'differs'
     return {'status': status, 'legacy_rows': sum(a.values()),
             'view_rows': sum(b.values()),
             'missing_from_view': sum(missing.values()),
             'extra_in_view': sum(extra.values()),
-            'documented_superset': documented,
             'sample_missing': [str(r)[:90] for r in list(missing)[:2]],
             'sample_extra': [str(r)[:90] for r in list(extra)[:2]]}
 
@@ -74,10 +66,9 @@ def main():
         for name in VIEWS:
             out[name] = compare(con, name)
             r = out[name]
-            log('%-26s %-8s legacy=%s view=%s missing=%s extra=%s documented=%s'
+            log('%-26s %-8s legacy=%s view=%s missing=%s extra=%s'
                 % (name, r['status'], r.get('legacy_rows'), r.get('view_rows'),
-                   r.get('missing_from_view'), r.get('extra_in_view'),
-                   r.get('documented_superset')))
+                   r.get('missing_from_view'), r.get('extra_in_view')))
             for s in (r.get('sample_missing') or [])[:1]:
                 log('    only in legacy: %s' % s)
             for s in (r.get('sample_extra') or [])[:1]:

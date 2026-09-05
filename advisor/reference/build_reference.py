@@ -171,6 +171,20 @@ def drop_schema_batched(con, schema, batch=200):
     con.commit()
 
 
+VIEWS_SQL = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))), 'sql', '04_ref_views.sql')
+
+
+def apply_views(con):
+    t0 = time.time()
+    with open(VIEWS_SQL, encoding='utf-8') as fh:
+        con.execute(fh.read())
+    con.commit()
+    n = con.execute("SELECT count(*) FROM information_schema.views"
+                    " WHERE table_schema='refc'").fetchone()[0]
+    log('views applied %d in refc %.0f ms' % (n, (time.time() - t0) * 1000))
+
+
 def create_and_copy(con, tables, meta):
     t0 = time.time()
     log('create+copy enter')
@@ -464,6 +478,7 @@ def build(con, defs, schema_version, found, fp):
     log('swap done, build %d live' % build_id)
     resolve_dictionaries(con, build_id)
     drop_schema_batched(con, 'ref_prev')
+    apply_views(con)
     log('build %d exit %.1f s  %d tables  %d rows  %d loc  %d fks'
         % (build_id, seconds, len(meta), n_rows, len(loc_rows), declared))
     return build_id, seconds

@@ -5,7 +5,6 @@
     "view_rows": 1943,
     "missing_from_view": 0,
     "extra_in_view": 0,
-    "documented_superset": 0,
     "sample_missing": [],
     "sample_extra": []
   },
@@ -15,7 +14,6 @@
     "view_rows": 5259,
     "missing_from_view": 0,
     "extra_in_view": 0,
-    "documented_superset": 0,
     "sample_missing": [],
     "sample_extra": []
   },
@@ -25,7 +23,6 @@
     "view_rows": 2056,
     "missing_from_view": 0,
     "extra_in_view": 0,
-    "documented_superset": 0,
     "sample_missing": [],
     "sample_extra": []
   },
@@ -35,7 +32,6 @@
     "view_rows": 2609,
     "missing_from_view": 0,
     "extra_in_view": 0,
-    "documented_superset": 0,
     "sample_missing": [],
     "sample_extra": []
   },
@@ -45,7 +41,6 @@
     "view_rows": 5944,
     "missing_from_view": 0,
     "extra_in_view": 0,
-    "documented_superset": 0,
     "sample_missing": [],
     "sample_extra": []
   },
@@ -55,41 +50,26 @@
     "view_rows": 1326,
     "missing_from_view": 0,
     "extra_in_view": 0,
-    "documented_superset": 0,
     "sample_missing": [],
     "sample_extra": []
   },
   "tech_links": {
-    "status": "differs",
+    "status": "ok",
     "legacy_rows": 1792,
     "view_rows": 1792,
-    "missing_from_view": 237,
-    "extra_in_view": 237,
-    "documented_superset": 0,
-    "sample_missing": [
-      "('dlc20_chs_kho_final', 'dlc20_chs_kho_0', 0)",
-      "('dlc20_chs_kho_final', 'dlc20_chs_kho_1', 0)"
-    ],
-    "sample_extra": [
-      "('wh3_dlc27_tech_sla_end_2', 'wh3_dlc27_tech_sla_top_3', 1)",
-      "('wh3_main_tech_kho_1_5', 'wh3_main_tech_kho_4_6', 1)"
-    ]
+    "missing_from_view": 0,
+    "extra_in_view": 0,
+    "sample_missing": [],
+    "sample_extra": []
   },
   "skill_links": {
-    "status": "differs",
+    "status": "ok",
     "legacy_rows": 23361,
-    "view_rows": 20590,
-    "missing_from_view": 23361,
-    "extra_in_view": 20590,
-    "documented_superset": 0,
-    "sample_missing": [
-      "('wh2_dlc04_skill_vmp_lord_unique_helman_ghorst_battle_2', 'wh2_dlc04_skill_vmp_lord_uniqu",
-      "('wh2_dlc04_skill_vmp_lord_unique_helman_ghorst_battle_3', 'wh2_dlc04_skill_vmp_lord_uniqu"
-    ],
-    "sample_extra": [
-      "('wh2_dlc04_skill_node_vmp_helman_ghorst_battle_2', 'wh2_dlc04_skill_node_vmp_helman_ghors",
-      "('wh2_dlc04_skill_node_vmp_helman_ghorst_battle_3', 'wh2_dlc04_skill_node_vmp_helman_ghors"
-    ]
+    "view_rows": 23361,
+    "missing_from_view": 0,
+    "extra_in_view": 0,
+    "sample_missing": [],
+    "sample_extra": []
   },
   "ancillary_effects": {
     "status": "ok",
@@ -97,7 +77,6 @@
     "view_rows": 4386,
     "missing_from_view": 0,
     "extra_in_view": 0,
-    "documented_superset": 0,
     "sample_missing": [],
     "sample_extra": []
   },
@@ -107,7 +86,6 @@
     "view_rows": 15064,
     "missing_from_view": 0,
     "extra_in_view": 0,
-    "documented_superset": 0,
     "sample_missing": [],
     "sample_extra": []
   },
@@ -117,7 +95,6 @@
     "view_rows": 9,
     "missing_from_view": 0,
     "extra_in_view": 0,
-    "documented_superset": 0,
     "sample_missing": [],
     "sample_extra": []
   },
@@ -127,24 +104,16 @@
     "view_rows": 9187,
     "missing_from_view": 0,
     "extra_in_view": 0,
-    "documented_superset": 0,
     "sample_missing": [],
     "sample_extra": []
   },
   "skill_actions": {
-    "status": "differs",
+    "status": "ok",
     "legacy_rows": 775,
-    "view_rows": 1335,
-    "missing_from_view": 775,
-    "extra_in_view": 1335,
-    "documented_superset": 0,
-    "sample_missing": [
-      "('wh2_dlc09_skill_all_dummy_agent_actions_tmb_liche_priest', 'wh2_main_agent_action_wizard",
-      "('wh2_dlc09_skill_all_dummy_agent_actions_tmb_liche_priest', 'wh2_main_agent_action_wizard"
-    ],
-    "sample_extra": [
-      "('wh3_dlc26_skill_all_dummy_agent_actions_kho_scyla_anfingrimm', 'passive_spread_public_or",
-      "('wh2_main_skill_all_dummy_agent_actions_hef_mage', 'enable_wizard_passive_spread_corrupti"
-    ]
+    "view_rows": 775,
+    "missing_from_view": 0,
+    "extra_in_view": 0,
+    "sample_missing": [],
+    "sample_extra": []
   }
 }

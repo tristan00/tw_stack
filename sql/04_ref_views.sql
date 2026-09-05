@@ -81,13 +81,23 @@ SELECT r."key" AS key,
   FROM ref.rituals r;
 
 CREATE OR REPLACE VIEW refc.tech_links AS
-SELECT DISTINCT l.child_key AS child, l.parent_key AS parent, true AS visible
+SELECT l.child_key AS child, l.parent_key AS parent,
+       l.visible_in_ui::integer AS visible
   FROM ref.technology_node_links l;
 
 CREATE OR REPLACE VIEW refc.skill_links AS
-SELECT l.child_key AS child, l.parent_key AS parent,
-       NULL::text AS link_type, NULL::text AS node_set
-  FROM ref.character_skill_node_links l;
+SELECT DISTINCT cn.character_skill_key AS child,
+       pn.character_skill_key AS parent,
+       l.link_type AS link_type,
+       COALESCE(s."set", '') AS node_set
+  FROM ref.character_skill_node_links l
+  JOIN ref.character_skill_nodes cn ON cn."key" = l.child_key
+  JOIN ref.character_skill_nodes pn ON pn."key" = l.parent_key
+  LEFT JOIN (SELECT a."set", a.item AS child_item, b.item AS parent_item
+               FROM ref.character_skill_node_set_items a
+               JOIN ref.character_skill_node_set_items b ON b."set" = a."set") s
+         ON s.child_item = l.child_key AND s.parent_item = l.parent_key
+ WHERE cn.character_skill_key <> pn.character_skill_key;
 
 CREATE OR REPLACE VIEW refc.ancillary_effects AS
 SELECT a.ancillary AS ancillary, a.effect AS effect,
@@ -108,6 +118,8 @@ SELECT p.faction AS faction, p.agent AS agent, p.subtype AS subtype
 
 CREATE OR REPLACE VIEW refc.skill_actions AS
 SELECT DISTINCT j.character_skill_key AS skill,
-       substring(j.effect_key from 'agent_action_(.*)$') AS agent_action
+       b.agent_action_record AS agent_action
   FROM ref.character_skill_level_to_effects_junctions j
- WHERE j.effect_key LIKE '%agent_action%';
+  JOIN ref.effect_bonus_value_agent_action_record_junctions b
+    ON b.effect = j.effect_key
+ WHERE b.bonus_value_id = 'active';
