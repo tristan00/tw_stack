@@ -9,6 +9,13 @@ from decisions import canon, dicts, pg, rowmap, schema_map, sets
 MAX_ENTITIES = 64
 
 
+def _num(v):
+    try:
+        return int(float(str(v).replace(',', '').strip()))
+    except (TypeError, ValueError):
+        return None
+
+
 def log(msg):
     sys.stderr.write('%.3f  store.%s\n' % (time.time(), msg))
 
@@ -356,11 +363,54 @@ class Store:
         log('write_verification exit %.1f ms' % ((time.time() - t0) * 1000))
 
 
+    def _screen_ids(self, kind, rec):
+        if kind != 'dilemma':
+            return None, None
+        ctx = str(rec.get('dilemma_id') or rec.get('root_context') or '')
+        if not ctx:
+            return None, None
+        head = ctx.split(':', 1)[0]
+        key = ctx.split(':', 1)[1] if ctx.startswith('Cco') and ':' in ctx else ctx
+        if ctx.startswith('Cco') and 'Incident' in head:
+            return None, self.dicts.resolve('incident', [key]).get(key)
+        return self.dicts.resolve('dilemma', [key]).get(key), None
+
+    def _battle_panel(self, snapshot_id, panel):
+        res = panel.get('result') or {}
+        cas = panel.get('casualties') or {}
+        self.conn.execute(
+            "INSERT INTO corpus.interrupt_battle_panel (interrupt_id, ally_cqi,"
+            " enemy_cqi, n_ally_armies, n_enemy_armies, result_state, result_text,"
+            " casualties_state, casualties_text) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (snapshot_id, _num(panel.get('ally_cqi')), _num(panel.get('enemy_cqi')),
+             panel.get('n_ally_armies'), panel.get('n_enemy_armies'),
+             res.get('state') or panel.get('result_flag'),
+             res.get('text') or panel.get('outcome'),
+             cas.get('state'), cas.get('text')))
+
+    def _diplo_panel(self, snapshot_id, panel):
+        self.conn.execute(
+            "INSERT INTO corpus.interrupt_diplo_panel (interrupt_id, attitude,"
+            " attitude_label, race, reliability, strength_ranks, settlements,"
+            " demands, offers, treaties, amount_demanded, amount_offered)"
+            " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (snapshot_id, _num(panel.get('attitude')), panel.get('attitude_label'),
+             panel.get('race'), panel.get('reliability'),
+             [_num(x) for x in panel.get('strength_ranks') or []],
+             _num(panel.get('settlements')), panel.get('demands'),
+             panel.get('offers'), panel.get('treaties'),
+             _num(panel.get('amount_demanded')), _num(panel.get('amount_offered'))))
+
+    BATTLE_PANEL_KINDS = ('pre_battle', 'battle_results')
+    DIPLO_PANEL_KINDS = ('diplomacy_proposal', 'diplomacy_notice', 'war_declared',
+                         'declare_war_cancel', 'ally_attacked')
+
     def write_interrupt(self, rec, req_id=None):
         t0 = time.time()
         log('write_interrupt enter kind=%s' % rec.get('kind'))
         camp = canon.normalise(rec.get('campaign') or {})
         world = canon.normalise(rec.get('world') or {})
+        ts = rec.get('ts') or time.time()
         with self.conn.unit('U4'):
             campaign_id = self._campaign(camp)
             ids = {'campaign': self.setw.ensure(sets.prepare(camp)),
@@ -368,22 +418,30 @@ class Store:
             snapshot_id = self.conn.execute(
                 "INSERT INTO corpus.snapshot (campaign_id, kind_id, ts, turn, version_id)"
                 " VALUES (%s,%s,%s,%s,%s) RETURNING snapshot_id",
-                (campaign_id, self.kind_ids['interrupt'], rec.get('ts') or time.time(),
+                (campaign_id, self.kind_ids['interrupt'], ts,
                  camp.get('turn') or 0, self._version())).fetchone()[0]
+            prev = self.conn.execute(
+                "SELECT snapshot_id FROM corpus.snapshot WHERE campaign_id = %s"
+                " AND kind_id = %s AND ts <= %s ORDER BY ts DESC, snapshot_id DESC"
+                " LIMIT 1", (campaign_id, self.kind_ids['decision'], ts)).fetchone()
             kinds = self.dicts.resolve_enum('interrupt_kind', [rec.get('kind')])
             states = self.dicts.resolve_enum('state_at', [rec.get('state_at') or 'panel'])
             policies = self.dicts.resolve_enum('policy', [rec.get('policy')])
             refusals = self.dicts.resolve_enum('refusal', [rec.get('refusal')])
             region = (rec.get('panel') or {}).get('region')
             regions = self.dicts.resolve('region', [region]) if region else {}
+            dilemma_id, incident_id = self._screen_ids(rec['kind'], rec)
             self.conn.execute(
                 "INSERT INTO corpus.interrupt (interrupt_id, prev_decision_id,"
-                " ts_recorded, state_at_id, kind_id, root, root_context, region_id,"
-                " chosen, answer, policy_id, executed, confirmed, counted, refusal_id,"
-                " latency_ms) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                (snapshot_id, rec.get('prev_decision_id'), rec.get('ts') or time.time(),
+                " ts_recorded, state_at_id, kind_id, root, dilemma_id, incident_id,"
+                " root_context, region_id, chosen, answer, policy_id, executed,"
+                " confirmed, counted, refusal_id, latency_ms)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (snapshot_id, prev[0] if prev else None,
+                 rec.get('rpc_ts') or ts,
                  states.get(rec.get('state_at') or 'panel'), kinds[rec['kind']],
-                 rec.get('root') or '', rec.get('root_context'),
+                 rec.get('root') or '', dilemma_id, incident_id,
+                 rec.get('root_context'),
                  regions.get(region), rec.get('chosen') or '', rec.get('answer'),
                  policies.get(rec.get('policy')), rec.get('executed'),
                  rec.get('confirmed'), rec.get('counted'),
@@ -391,6 +449,11 @@ class Store:
             self._row('snapshot_campaign', camp, ids['campaign'],
                       {'snapshot_id': snapshot_id})
             self._row('snapshot_world', world, ids['world'], {'snapshot_id': snapshot_id})
+            panel = rec.get('panel') or {}
+            if panel and rec['kind'] in self.BATTLE_PANEL_KINDS:
+                self._battle_panel(snapshot_id, panel)
+            elif panel and rec['kind'] in self.DIPLO_PANEL_KINDS:
+                self._diplo_panel(snapshot_id, panel)
             rows = []
             for ord_, o in enumerate(rec.get('options') or []):
                 rows.append((snapshot_id, ord_, o.get('key') or str(ord_), o.get('text'),

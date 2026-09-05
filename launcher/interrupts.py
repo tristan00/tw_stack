@@ -11,7 +11,9 @@ import common
 
 sys.path.insert(0, common.BUS)
 sys.path.insert(0, common.LAUNCHER)
+sys.path.insert(0, common.DECISIONS)
 
+import collect
 import nav
 
 BATTLE_ROOTS = ("popup_pre_battle", "popup_battle_results", "settlement_captured")
@@ -90,8 +92,6 @@ def _unknown_controls(ctrls, known):
 _CHOOSER = [None]
 _CAMPAIGN = [None]
 _RECORD = [None]
-_LAST_POLICY = [None]
-_LAST_SCORES = [None]
 
 
 def set_chooser(fn):
@@ -114,7 +114,7 @@ def _record_hint():
 def _choose(screen, options, campaign=None, panel=None, meta=None, live=None):
     opts = sorted(options)
     if not opts:
-        return None
+        return None, None, {}
     fn = _CHOOSER[0]
     if fn is None:
         raise RuntimeError(
@@ -140,11 +140,42 @@ def _choose(screen, options, campaign=None, panel=None, meta=None, live=None):
             "the screen currently up, so the pick, the click and the recorded outcome would all be "
             "fiction. Refusing to click it or record it."
             % (screen, got, opts, sorted(present)))
-    _LAST_POLICY[0] = policy
-    _LAST_SCORES[0] = dict(scores or {})
     sys.stderr.write("interrupts: SCREEN %s offered=%s -> %r (%s) scores=%s\n"
                      % (screen, opts, got, policy, _fmt_scores(scores)))
-    return got
+    return got, policy, dict(scores or {})
+
+
+def _capture(bus):
+    t0 = time.time()
+    cs = collect.campaign_state(bus)
+    try:
+        ws = collect.world_state(bus)
+    except Exception as e:
+        ws = None
+        sys.stderr.write("interrupts: world capture failed -> %s\n" % repr(e)[:90])
+    common.waitlog("panel_state_capture", time.time() - t0, ws is not None)
+    return {"ts_choice": time.time(), "campaign": cs, "world": ws,
+            "campaign_uuid": cs.get("campaign_uuid")}
+
+
+def _confirm_closed(bus, root, offset, probe=None, timeout=3.0):
+    t0 = time.time()
+    row, _ = bus.wait_row(("panel",), timeout=timeout, offset=offset,
+                          pred=lambda r: r.get("opened") is False
+                          and root in str(r.get("name") or ""))
+    if row is not None:
+        common.waitlog("panel_close_row", time.time() - t0, True, root)
+        return True
+    if probe is not None:
+        gone = probe()
+    else:
+        try:
+            gone = root not in nav.visible_roots(bus)
+        except Exception:
+            common.waitlog("panel_close_row", time.time() - t0, False, root)
+            return None
+    common.waitlog("panel_close_row", time.time() - t0, bool(gone), root)
+    return gone
 
 
 def _fmt_scores(scores):
@@ -229,8 +260,6 @@ class PhantomOption(UnhandledScreen):
     pass
 ACCEPT_TOKENS = ("accept", "confirm", "button_ok", "button_yes")
 DECLINE_TOKENS = ("decline", "reject", "refuse", "cancel", "close", "no_deal")
-DIPLOMACY_NEVER_CLICK_PREFIXES = ("diplomatic_option",)
-DIPLOMACY_NEVER_CLICK_IDS = frozenset(("button_send",))
 _CLICKABLE = ("active", "hover", "selected")
 DIPLOMACY_HUD_ROOTS = frozenset(("diplomacy_dropdown", "diplomacy_attitude_tooltip"))
 WAR_DECLARED_MARKER = "declared war on you"
@@ -430,18 +459,27 @@ def _cancel_declare_root(bus, root, tree):
         return []
     labels = _control_labels(tree, targets)
     opts = {k: {"context": None, "text": labels.get(k) or k,
-                "dilemma_id": root, "option_id": k, "payload": [], "subtree": []}
+                "dilemma_id": root, "option_id": k, "payload": []}
             for k in targets}
-    key = _choose("declare_war_cancel", sorted(opts), _campaign_hint(), meta=opts,
-                  live=lambda: live_control_ids(bus, root))
+    st = _capture(bus)
+    m = _sticky_choice("declare_war_cancel", root, sorted(opts),
+                       _campaign_hint() or st["campaign"], meta=opts,
+                       live=lambda: live_control_ids(bus, root), ctx=root)
+    key = m["want"]
     t0 = time.time()
+    off = bus.out_offset()
     clicked = _click(bus, targets[key], settle=2.0)
-    gone = _root_gone(bus, root)
-    _record_choice("declare_war_cancel", root, opts, key,
-                   extra={"tree": tree, "root_context": root},
-                   executed=clicked, confirmed=gone,
-                   refusal=_refusal(gone, clicked),
-                   latency_ms=int((time.time() - t0) * 1000))
+    gone = _confirm_closed(bus, root, off)
+    if not m.get("recorded"):
+        _record_choice("declare_war_cancel", root, opts, key, st,
+                       extra={"root_context": root},
+                       executed=clicked, confirmed=gone,
+                       refusal=_refusal(gone, clicked),
+                       latency_ms=int((time.time() - t0) * 1000),
+                       policy=m["policy"], scores=m["scores"])
+        m["recorded"] = True
+    if gone:
+        _ANSWER_MEMO.pop((root, root), None)
     return ["declare_war_cancelled:%s" % root] if clicked else []
 
 
@@ -451,18 +489,29 @@ def cancel_declare_war_panel(bus):
         return []
     opts = {"button_cancel_declare": {
         "context": None, "text": hit["label"], "dilemma_id": nav.DECLARE_WAR_ROOT,
-        "option_id": "button_cancel_declare", "payload": [], "subtree": []}}
-    key = _choose("declare_war_cancel", sorted(opts), _campaign_hint(), meta=opts,
-                  live=lambda: ({"button_cancel_declare"} if nav.declare_war_panel(bus)
-                                else set()))
+        "option_id": "button_cancel_declare", "payload": []}}
+    st = _capture(bus)
+    m = _sticky_choice("declare_war_cancel", nav.DECLARE_WAR_ROOT, sorted(opts),
+                       _campaign_hint() or st["campaign"], meta=opts,
+                       live=lambda: ({"button_cancel_declare"} if nav.declare_war_panel(bus)
+                                     else set()),
+                       ctx=nav.DECLARE_WAR_ROOT)
+    key = m["want"]
     t0 = time.time()
+    off = bus.out_offset()
     clicked = _click(bus, hit["cancel"], settle=1.0)
-    gone = nav.declare_war_panel(bus) is None
-    _record_choice("declare_war_cancel", nav.DECLARE_WAR_ROOT, opts, key,
-                   extra={"tree": hit["nodes"], "root_context": nav.DECLARE_WAR_ROOT},
-                   executed=clicked, confirmed=gone,
-                   refusal=_refusal(gone, clicked),
-                   latency_ms=int((time.time() - t0) * 1000))
+    gone = _confirm_closed(bus, nav.DECLARE_WAR_ROOT, off,
+                           probe=lambda: nav.declare_war_panel(bus) is None)
+    if not m.get("recorded"):
+        _record_choice("declare_war_cancel", nav.DECLARE_WAR_ROOT, opts, key, st,
+                       extra={"root_context": nav.DECLARE_WAR_ROOT},
+                       executed=clicked, confirmed=gone,
+                       refusal=_refusal(gone, clicked),
+                       latency_ms=int((time.time() - t0) * 1000),
+                       policy=m["policy"], scores=m["scores"])
+        m["recorded"] = True
+    if gone:
+        _ANSWER_MEMO.pop((nav.DECLARE_WAR_ROOT, nav.DECLARE_WAR_ROOT), None)
     sys.stderr.write("interrupts: %r panel CANCELLED (clicked=%s gone=%s) -- it sits under "
                      "panel_manager, never among the visible roots, and leaves the engine on "
                      "PENDING_ATTACK; war is declared through diplomacy or not at all\n"
@@ -611,18 +660,17 @@ def resolve_prebattle(bus):
         return False
     tree = _tree(bus, "popup_pre_battle", 30, 40000)
     forecast = dict(prebattle_forecast(tree), **combatant_identity(tree))
-    m = _sticky_choice("pre_battle", "popup_pre_battle", legal, forecast,
+    st = _capture(bus)
+    m = _sticky_choice("pre_battle", "popup_pre_battle", legal,
+                       _campaign_hint() or st["campaign"], panel=forecast,
                        live=lambda: live_control_ids(bus, "popup_pre_battle"))
     if m["tries"] > _ANSWER_TRIES:
         sys.stderr.write("interrupts: pre_battle held pick %r already failed %d tries -- "
                          "leaving the screen to the watchdog\n" % (m["want"], _ANSWER_TRIES))
         return False
     target = m["want"]
-    _LAST_POLICY[0], _LAST_SCORES[0] = m["policy"], dict(m["scores"] or {})
     final_try = m["tries"] >= _ANSWER_TRIES
     opts = _options_of(bus, "popup_pre_battle", legal)
-    offered_all = sorted({str(n.get("id")) for n in tree
-                          if str(n.get("id") or "").startswith("button_") and n.get("visible")})
     t0 = time.time()
     off = bus.out_offset()
     clicked = _click(bus, ctrls[target], settle=1.5)
@@ -630,10 +678,11 @@ def resolve_prebattle(bus):
         common.trylog("prebattle_answer", m["tries"], _ANSWER_TRIES, False,
                       "%s click failed" % target)
         if final_try:
-            _record_choice("pre_battle", "popup_pre_battle", opts, target,
-                           extra={"panel": forecast, "tree": tree, "controls": offered_all},
+            _record_choice("pre_battle", "popup_pre_battle", opts, target, st,
+                           extra={"panel": forecast},
                            executed=False, confirmed=False, refusal="execute_failed",
-                           latency_ms=int((time.time() - t0) * 1000))
+                           latency_ms=int((time.time() - t0) * 1000),
+                           policy=m["policy"], scores=m["scores"])
         return False
     if target in ("button_continue_siege", "button_surround", "button_retreat",
                   "button_sally_forth", "button_maintain_blockade", "button_demand_surrender"):
@@ -657,13 +706,14 @@ def resolve_prebattle(bus):
         sys.stderr.write("interrupts: %s did NOT resolve the battle (pre_battle still open=%s)\n"
                          % (target, still_up))
     if ok:
-        _ANSWER_MEMO.pop("popup_pre_battle", None)
+        _ANSWER_MEMO.pop(("popup_pre_battle", ""), None)
     if ok or final_try:
-        _record_choice("pre_battle", "popup_pre_battle", opts, target,
-                       extra={"panel": forecast, "tree": tree, "controls": offered_all},
+        _record_choice("pre_battle", "popup_pre_battle", opts, target, st,
+                       extra={"panel": forecast},
                        executed=clicked, confirmed=bool(ok),
                        refusal=None if ok else "command_silently_refused",
-                       latency_ms=int((time.time() - t0) * 1000))
+                       latency_ms=int((time.time() - t0) * 1000),
+                       policy=m["policy"], scores=m["scores"])
     return outcome
 
 
@@ -730,9 +780,14 @@ def handle_results(bus):
                 "clickable=%s" % (unknown, sorted(ctrls)))
         fates = sorted(i for i in ctrls if is_captive_option(i))
         facts = battle_result_facts(bus)
-        target = (_choose("battle_results", fates, _campaign_hint(), panel=facts,
-                          live=lambda: live_control_ids(bus, "popup_battle_results")) if fates
-                  else next((i for i in ADVANCE_PREFERENCE if i in ctrls), None))
+        st, policy, scores = None, None, {}
+        if fates:
+            st = _capture(bus)
+            target, policy, scores = _choose(
+                "battle_results", fates, _campaign_hint() or st["campaign"], panel=facts,
+                live=lambda: live_control_ids(bus, "popup_battle_results"))
+        else:
+            target = next((i for i in ADVANCE_PREFERENCE if i in ctrls), None)
         if target is None:
             idle_waits += 1
             if idle_waits > 1:
@@ -747,13 +802,16 @@ def handle_results(bus):
         decisions = sorted([i for i in ctrls if is_captive_option(i)]
                            + [i for i in ADVANCE_PREFERENCE if i in ctrls])
         opts_before = _options_of(bus, "popup_battle_results", decisions)
+        if st is None:
+            st = _capture(bus)
         repeats = repeats + 1 if target == last else 0
         if repeats >= 2:
             sys.stderr.write("interrupts: %s clicked twice with no effect -- not hammering it\n"
                              % target)
-            _record_choice("battle_results", "popup_battle_results", opts_before, target,
-                       extra={"panel": facts} if facts else None,
-                           executed=True, confirmed=False, refusal="command_silently_refused")
+            _record_choice("battle_results", "popup_battle_results", opts_before, target, st,
+                           extra={"panel": facts} if facts else None,
+                           executed=True, confirmed=False, refusal="command_silently_refused",
+                           policy=policy, scores=scores)
             break
         last = target
         t0 = time.time()
@@ -778,12 +836,13 @@ def handle_results(bus):
             sys.stderr.write("interrupts: %s did not resolve at click time (results panel "
                              "mid-transition) -- re-reading before recording anything\n" % target)
             continue
-        _record_choice("battle_results", "popup_battle_results", opts_before, target,
+        _record_choice("battle_results", "popup_battle_results", opts_before, target, st,
                        extra={"panel": facts} if facts else None,
                        executed=clicked, confirmed=bool(moved),
                        refusal=None if moved else ("command_silently_refused" if clicked
                                                    else "execute_failed"),
-                       latency_ms=int((time.time() - t0) * 1000))
+                       latency_ms=int((time.time() - t0) * 1000),
+                       policy=policy, scores=scores)
         steps.append("%s:%s" % (target, clicked))
     if "settlement_captured" in roots(bus):
         steps.append("occupation:%s" % (occupy(bus) or "none"))
@@ -798,25 +857,29 @@ def occupy(bus):
         return None
     panel = occupation_panel(nodes)
     detail = {k: {"context": None, "text": k} for k in opts}
-    want = _choose("occupation", sorted(opts), _campaign_hint(), panel=panel,
-                   live=lambda: live_option_texts(bus, "settlement_captured"))
+    st = _capture(bus)
+    want, policy, scores = _choose("occupation", sorted(opts),
+                                   _campaign_hint() or st["campaign"], panel=panel,
+                                   live=lambda: live_option_texts(bus, "settlement_captured"))
     t0 = time.time()
     clicked = _click(bus, opts[want], settle=2.5)
     if not clicked:
-        _record_choice("occupation", "settlement_captured", detail, want,
+        _record_choice("occupation", "settlement_captured", detail, want, st,
                        extra={"panel": panel} if panel else None,
                        executed=False, confirmed=False, refusal="execute_failed",
-                       latency_ms=int((time.time() - t0) * 1000))
+                       latency_ms=int((time.time() - t0) * 1000),
+                       policy=policy, scores=scores)
         return None
     gone = "settlement_captured" not in roots(bus)
     if not gone:
         sys.stderr.write("interrupts: occupation %r clicked but settlement_captured is still open\n"
                          % want)
-    _record_choice("occupation", "settlement_captured", detail, want,
+    _record_choice("occupation", "settlement_captured", detail, want, st,
                    extra={"panel": panel} if panel else None,
                    executed=clicked, confirmed=gone,
                    refusal=None if gone else "command_silently_refused",
-                   latency_ms=int((time.time() - t0) * 1000))
+                   latency_ms=int((time.time() - t0) * 1000),
+                   policy=policy, scores=scores)
     return want if gone else None
 
 
@@ -888,83 +951,29 @@ def acknowledge_war_declared(bus, open_roots):
                 % (root, sorted(_clickable_controls(bus, root))))
         labels = _control_labels(tree, {k: v for k, v in targets.items()})
         opts = {k: {"context": None, "text": labels.get(k) or k,
-                    "dilemma_id": root, "option_id": k, "payload": [], "subtree": []}
+                    "dilemma_id": root, "option_id": k, "payload": []}
                 for k in targets}
-        key = _choose("war_declared", sorted(opts), _campaign_hint(), meta=opts,
-                      live=lambda: live_control_ids(bus, root))
+        st = _capture(bus)
+        m = _sticky_choice("war_declared", root, sorted(opts),
+                           _campaign_hint() or st["campaign"], meta=opts,
+                           live=lambda: live_control_ids(bus, root), ctx=root)
+        key = m["want"]
         t0 = time.time()
+        off = bus.out_offset()
         clicked = _click(bus, targets[key], settle=2.0)
-        gone = _root_gone(bus, root)
-        _record_choice("war_declared", root, opts, key,
-                       extra={"tree": tree, "root_context": root},
-                       executed=clicked, confirmed=gone,
-                       refusal=_refusal(gone, clicked),
-                       latency_ms=int((time.time() - t0) * 1000))
+        gone = _confirm_closed(bus, root, off)
+        if not m.get("recorded"):
+            _record_choice("war_declared", root, opts, key, st,
+                           extra={"root_context": root},
+                           executed=clicked, confirmed=gone,
+                           refusal=_refusal(gone, clicked),
+                           latency_ms=int((time.time() - t0) * 1000),
+                           policy=m["policy"], scores=m["scores"])
+            m["recorded"] = True
+        if gone:
+            _ANSWER_MEMO.pop((root, root), None)
         if clicked:
             steps.append("war_declared_acknowledged:%s" % root)
-    return steps
-
-
-def answer_diplomacy(bus):
-    steps = []
-    for root in diplomacy_roots(bus):
-        answers = {}
-        tree = _tree(bus, root)
-        for n in tree:
-            nid = str(n.get("id") or "")
-            low = nid.lower()
-            if not n.get("visible") or str(n.get("state")) not in _CLICKABLE:
-                continue
-            if low.startswith(DIPLOMACY_NEVER_CLICK_PREFIXES) or nid in DIPLOMACY_NEVER_CLICK_IDS:
-                continue
-            if nid in FORBIDDEN_CLICK_IDS:
-                continue
-            kind = ("accept" if any(t in low for t in ACCEPT_TOKENS)
-                    else "decline" if any(t in low for t in DECLINE_TOKENS)
-                    else None)
-            if kind and nid not in answers:
-                answers[nid] = (n.get("path"), kind)
-        if not answers:
-            offered = sorted(_clickable_controls(bus, root))
-            _report_unhandled(bus, "diplomacy", ["no clickable answer control"],
-                              offered, root=root)
-            raise UnhandledScreen(
-                "diplomacy screen %s offers no clickable answer control -- refusing to leave "
-                "a diplomatic event unhandled. clickable=%s" % (root, offered))
-        detail = _options_of(bus, root, sorted(answers))
-        panel = _diplo_panel(tree)
-        for k, (_path, kind) in answers.items():
-            detail[k] = dict(detail.get(k) or {}, answer=kind, dilemma_id=root, option_id=k)
-        want = _choose("diplomacy", sorted(answers), _campaign_hint(), panel, meta=detail,
-                       live=lambda: live_control_ids(bus, root))
-        target, kind = answers[want]
-        sys.stderr.write("interrupts: diplomacy %s -- %d answer(s) %s -> %r (%s)\n"
-                         % (root, len(answers), sorted(answers), want, kind))
-        t0 = time.time()
-        clicked = _click(bus, target, settle=2.0)
-        gone = root not in roots(bus)
-        if clicked:
-            steps.append("diplomacy_%s:%s" % (kind, want))
-        if not gone:
-            sys.stderr.write("interrupts: diplomacy root %s still open after %s\n" % (root, kind))
-        if not clicked or not gone:
-            steps.append("diplomacy_stuck:%s" % root)
-        _record_choice("diplomacy", root, detail, want,
-                       extra={"answer": kind, "tree": tree, "panel": panel},
-                       executed=clicked, confirmed=gone,
-                       refusal=_refusal(gone, clicked),
-                       latency_ms=int((time.time() - t0) * 1000))
-        try:
-            import diplo_stream as DS
-            keys = DS.faction_keys_in(tree)
-            for k in keys:
-                DS.track(k)
-            DS.emit("deal", channel="diplomacy_hud", root=root, chosen=want, answer=kind,
-                    options=sorted(answers), executed=clicked, confirmed=gone,
-                    faction_keys=keys)
-        except Exception as e:
-            sys.stderr.write("interrupts: diplo_stream emit (diplomacy_hud) -> %s\n"
-                             % repr(e)[:80])
     return steps
 
 
@@ -982,15 +991,17 @@ def reset_answers():
     _ANSWER_MEMO.clear()
 
 
-def _sticky_choice(screen, root, options, panel=None, live=None, meta=None):
-    m = _ANSWER_MEMO.get(root)
+def _sticky_choice(screen, root, options, campaign, panel=None, live=None, meta=None,
+                   ctx=None):
+    key = (root, ctx or "")
+    m = _ANSWER_MEMO.get(key)
     if m and m.get("want") in options and time.time() - m.get("ts", 0) <= _ANSWER_TTL:
         m["tries"] += 1
         return m
-    m = {"want": _choose(screen, sorted(options), _campaign_hint(), panel, meta, live=live),
-         "policy": _LAST_POLICY[0], "scores": dict(_LAST_SCORES[0] or {}),
-         "tries": 1, "ts": time.time()}
-    _ANSWER_MEMO[root] = m
+    want, policy, scores = _choose(screen, sorted(options), campaign, panel, meta,
+                                   live=live)
+    m = {"want": want, "policy": policy, "scores": scores, "tries": 1, "ts": time.time()}
+    _ANSWER_MEMO[key] = m
     return m
 
 
@@ -1089,30 +1100,30 @@ def _diplo_panel(tree):
     return p
 
 
-def _emit_deal(bus, kind, want, detail, extra, options, clicked, gone):
+def _emit_deal(bus, kind, want, detail, tree, extra, options, clicked, gone, policy):
     try:
         import diplo_stream as DS
-        tree = extra.get("tree") or []
-        keys = DS.faction_keys_in(tree)
+        keys = DS.faction_keys_in(tree or [])
         for k in keys:
             DS.track(k)
         DS.emit("deal", channel=kind, chosen=want, answer=detail[want]["answer"],
                 options=sorted(options), executed=clicked, confirmed=gone,
-                policy=_LAST_POLICY[0],
+                policy=policy,
                 proposer=extra.get("proposer"), speech=extra.get("speech"),
                 attitude=extra.get("attitude"), variant=extra.get("variant"),
-                facts=_screen_facts(tree), faction_keys=keys,
+                facts=_screen_facts(tree or []), faction_keys=keys,
                 pair=({k: DS.pair_relations(bus, k) for k in keys[:4]}
                       if gone else None))
     except Exception as e:
         sys.stderr.write("interrupts: diplo_stream emit failed -> %s\n" % repr(e)[:90])
 
 
-def _drive_decision(bus, root, kind, opts, detail, extra, panel=None):
+def _drive_decision(bus, root, kind, opts, detail, extra, tree=None, panel=None):
     steps = []
-    m = _sticky_choice(kind, root, opts, panel,
+    st = _capture(bus)
+    m = _sticky_choice(kind, root, opts, _campaign_hint() or st["campaign"], panel,
                        live=lambda: live_control_ids(bus, root), meta=detail)
-    m.update(kind=kind, opts=dict(opts), detail=detail, extra=extra)
+    m.update(kind=kind, opts=dict(opts), detail=detail, extra=extra, tree=tree)
     if m["tries"] > _ANSWER_TRIES:
         common.trylog("%s_answer" % kind, m["tries"], _ANSWER_TRIES, False,
                       "%s gave up" % root)
@@ -1129,28 +1140,30 @@ def _drive_decision(bus, root, kind, opts, detail, extra, panel=None):
         steps.append("%s_%s:%s" % (kind, detail[want]["answer"], want))
     if not clicked or not gone:
         steps.append("%s_stuck:%s" % (kind, root))
-    if gone or m["tries"] >= _ANSWER_TRIES:
-        _LAST_POLICY[0], _LAST_SCORES[0] = m["policy"], dict(m["scores"] or {})
-        _record_choice(kind, root, detail, want,
+    if (gone or m["tries"] >= _ANSWER_TRIES) and not m.get("recorded"):
+        _record_choice(kind, root, detail, want, st,
                        extra=dict(extra, answer=detail[want]["answer"]),
                        executed=clicked, confirmed=gone,
                        refusal=_refusal(gone, clicked),
-                       latency_ms=int((time.time() - t0) * 1000))
+                       latency_ms=int((time.time() - t0) * 1000),
+                       policy=m["policy"], scores=m["scores"])
         m["recorded"] = True
-        _emit_deal(bus, kind, want, detail, extra, opts, clicked, gone)
+        _emit_deal(bus, kind, want, detail, tree, extra, opts, clicked, gone,
+                   m["policy"])
     if gone:
-        _ANSWER_MEMO.pop(root, None)
+        _ANSWER_MEMO.pop((root, ""), None)
     return steps
 
 
 def _settle_answered(bus, root, tree):
-    m = _ANSWER_MEMO.get(root)
+    m = _ANSWER_MEMO.get((root, ""))
     kind, want = m["kind"], m["want"]
     detail = m.get("detail") or {}
     clicked = bool(m.get("clicked"))
     closer = next((str(n.get("path") or "") for n in tree
                    if str(n.get("id") or "") in ("button_cancel", "button_close")
                    and n.get("visible") and str(n.get("state")) in _CLICKABLE), None)
+    st = _capture(bus)
     if closer:
         _click(bus, closer, settle=2.0)
     else:
@@ -1158,18 +1171,17 @@ def _settle_answered(bus, root, tree):
     gone = _await_root_gone(bus, root)
     steps = ["%s_settled:%s" % (kind, root) if gone else "%s_stuck:%s" % (kind, root)]
     if not m.get("recorded"):
-        _LAST_POLICY[0], _LAST_SCORES[0] = m["policy"], dict(m["scores"] or {})
-        _record_choice(kind, root, detail, want,
+        _record_choice(kind, root, detail, want, st,
                        extra=dict(m.get("extra") or {},
-                                  answer=(detail.get(want) or {}).get("answer"),
-                                  settled_shell=True),
+                                  answer=(detail.get(want) or {}).get("answer")),
                        executed=clicked, confirmed=gone,
-                       refusal=_refusal(gone, clicked))
+                       refusal=_refusal(gone, clicked),
+                       policy=m["policy"], scores=m["scores"])
         m["recorded"] = True
-        _emit_deal(bus, kind, want, detail, m.get("extra") or {},
-                   m.get("opts") or {want: None}, clicked, gone)
+        _emit_deal(bus, kind, want, detail, m.get("tree"), m.get("extra") or {},
+                   m.get("opts") or {want: None}, clicked, gone, m["policy"])
     if gone:
-        _ANSWER_MEMO.pop(root, None)
+        _ANSWER_MEMO.pop((root, ""), None)
     return steps
 
 
@@ -1221,18 +1233,28 @@ def _acknowledge_war_on_proposal(bus, tree, clickable):
     labels = _control_labels(tree, targets)
     panel = _diplo_panel(tree)
     opts = {k: {"context": None, "text": labels.get(k) or k,
-                "dilemma_id": PROPOSAL_ROOT, "option_id": k, "payload": [], "subtree": []}
+                "dilemma_id": PROPOSAL_ROOT, "option_id": k, "payload": []}
             for k in targets}
-    key = _choose("war_declared", sorted(opts), _campaign_hint(), panel, meta=opts,
-                  live=lambda: live_control_ids(bus, PROPOSAL_ROOT))
+    st = _capture(bus)
+    m = _sticky_choice("war_declared", PROPOSAL_ROOT, sorted(opts),
+                       _campaign_hint() or st["campaign"], panel, meta=opts,
+                       live=lambda: live_control_ids(bus, PROPOSAL_ROOT),
+                       ctx=PROPOSAL_ROOT)
+    key = m["want"]
     t0 = time.time()
+    off = bus.out_offset()
     clicked = _click(bus, targets[key], settle=0.6)
-    gone = _await_root_gone(bus, PROPOSAL_ROOT)
-    _record_choice("war_declared", PROPOSAL_ROOT, opts, key,
-                   extra={"tree": tree, "root_context": PROPOSAL_ROOT, "panel": panel},
-                   executed=clicked, confirmed=gone,
-                   refusal=_refusal(gone, clicked),
-                   latency_ms=int((time.time() - t0) * 1000))
+    gone = _confirm_closed(bus, PROPOSAL_ROOT, off)
+    if not m.get("recorded"):
+        _record_choice("war_declared", PROPOSAL_ROOT, opts, key, st,
+                       extra={"root_context": PROPOSAL_ROOT, "panel": panel},
+                       executed=clicked, confirmed=gone,
+                       refusal=_refusal(gone, clicked),
+                       latency_ms=int((time.time() - t0) * 1000),
+                       policy=m["policy"], scores=m["scores"])
+        m["recorded"] = True
+    if gone:
+        _ANSWER_MEMO.pop((PROPOSAL_ROOT, PROPOSAL_ROOT), None)
     return (["war_declared_acknowledged:%s" % PROPOSAL_ROOT] if clicked
             else ["war_declared_stuck:%s" % PROPOSAL_ROOT])
 
@@ -1252,15 +1274,28 @@ def _cancel_declare_on_proposal(bus, tree, clickable):
     opts = {"button_cancel_declare": {
         "context": None, "text": labels.get("button_cancel_declare") or "cancel",
         "dilemma_id": PROPOSAL_ROOT, "option_id": "button_cancel_declare",
-        "payload": [], "subtree": []}}
+        "payload": []}}
+    key = (PROPOSAL_ROOT, "declare_war_confirm")
+    m = _ANSWER_MEMO.get(key)
+    if not (m and time.time() - m.get("ts", 0) <= _ANSWER_TTL):
+        m = _ANSWER_MEMO[key] = {"want": "button_cancel_declare", "policy": None,
+                                 "scores": {}, "tries": 0, "ts": time.time()}
+    m["tries"] += 1
+    st = _capture(bus)
     t0 = time.time()
+    off = bus.out_offset()
     clicked = _click(bus, target, settle=2.0)
-    gone = _await_root_gone(bus, PROPOSAL_ROOT)
-    _record_choice("declare_war_cancel", PROPOSAL_ROOT, opts, "button_cancel_declare",
-                   extra={"tree": tree, "root_context": PROPOSAL_ROOT, "panel": panel},
-                   executed=clicked, confirmed=gone,
-                   refusal=_refusal(gone, clicked),
-                   latency_ms=int((time.time() - t0) * 1000))
+    gone = _confirm_closed(bus, PROPOSAL_ROOT, off)
+    if not m.get("recorded"):
+        _record_choice("declare_war_cancel", PROPOSAL_ROOT, opts,
+                       "button_cancel_declare", st,
+                       extra={"root_context": PROPOSAL_ROOT, "panel": panel},
+                       executed=clicked, confirmed=gone,
+                       refusal=_refusal(gone, clicked),
+                       latency_ms=int((time.time() - t0) * 1000))
+        m["recorded"] = True
+    if gone:
+        _ANSWER_MEMO.pop(key, None)
     sys.stderr.write("interrupts: declare-war confirmation CANCELLED on %s (clicked=%s "
                      "gone=%s) -- war is declared through diplomacy or not at all\n"
                      % (PROPOSAL_ROOT, clicked, gone))
@@ -1319,7 +1354,7 @@ def answer_incoming_proposal(bus):
                           sorted(PROPOSAL_ANSWER_IDS), root=PROPOSAL_ROOT)
         raise
     if not opts:
-        m = _ANSWER_MEMO.get(PROPOSAL_ROOT)
+        m = _ANSWER_MEMO.get((PROPOSAL_ROOT, ""))
         if m and m.get("kind"):
             return steps + _settle_answered(bus, PROPOSAL_ROOT, tree)
         tree = _read_tree_or_die(bus, PROPOSAL_ROOT)
@@ -1346,11 +1381,12 @@ def answer_incoming_proposal(bus):
                          answer=("decline" if k == "button_cancel"
                                  else "accept" if kind == "diplomacy_proposal"
                                  else "acknowledge"))
-    extra = {"tree": tree, "panel": panel,
+    extra = {"panel": panel,
              "proposer": _first_text(tree, "faction_title", "faction_right_status_panel"),
              "speech": _first_text(tree, "dy_text", "speech_bubble"),
              "attitude": _first_text(tree, "dy_value")}
-    return steps + _drive_decision(bus, PROPOSAL_ROOT, kind, opts, detail, extra, panel=panel)
+    return steps + _drive_decision(bus, PROPOSAL_ROOT, kind, opts, detail, extra,
+                                   tree=tree, panel=panel)
 
 
 ALLY_ATTACKED_ROOT = "ally_attacked"
@@ -1399,8 +1435,9 @@ def answer_ally_attacked(bus):
     detail = _options_of(bus, ALLY_ATTACKED_ROOT, sorted(opts))
     for k in detail:
         detail[k] = dict(detail[k], answer=("decline" if k == "decline_button" else "join"))
-    extra = {"tree": tree, "variant": _first_text(tree, "dy_subtitle")}
-    return _drive_decision(bus, ALLY_ATTACKED_ROOT, "ally_attacked", opts, detail, extra)
+    extra = {"variant": _first_text(tree, "dy_subtitle")}
+    return _drive_decision(bus, ALLY_ATTACKED_ROOT, "ally_attacked", opts, detail, extra,
+                           tree=tree)
 
 
 _stuck_sig = [None]
@@ -1482,17 +1519,26 @@ def choose_dilemma(bus, open_roots):
                 labels = _control_labels(tree, actionable)
                 opts = {i: {"context": None, "text": labels.get(i) or i,
                             "dilemma_id": root, "option_id": i,
-                            "payload": [], "subtree": []} for i in ack}
-                key = _choose("event_ack", sorted(opts), _campaign_hint(), meta=opts,
-                              live=lambda: live_control_ids(bus, root))
+                            "payload": []} for i in ack}
+                st = _capture(bus)
+                m = _sticky_choice("event_ack", root, sorted(opts),
+                                   _campaign_hint() or st["campaign"], meta=opts,
+                                   live=lambda: live_control_ids(bus, root), ctx=root)
+                key = m["want"]
                 t0 = time.time()
+                off = bus.out_offset()
                 clicked = _click(bus, actionable[key], settle=2.0)
-                gone = _root_gone(bus, root)
-                _record_choice("event_ack", root, opts, key,
-                               extra={"tree": tree, "root_context": root, "dilemma_id": root},
-                               executed=clicked, confirmed=gone,
-                               refusal=_refusal(gone, clicked),
-                               latency_ms=int((time.time() - t0) * 1000))
+                gone = _confirm_closed(bus, root, off)
+                if not m.get("recorded"):
+                    _record_choice("event_ack", root, opts, key, st,
+                                   extra={"root_context": root, "dilemma_id": root},
+                                   executed=clicked, confirmed=gone,
+                                   refusal=_refusal(gone, clicked),
+                                   latency_ms=int((time.time() - t0) * 1000),
+                                   policy=m["policy"], scores=m["scores"])
+                    m["recorded"] = True
+                if gone:
+                    _ANSWER_MEMO.pop((root, root), None)
                 if clicked:
                     steps.append("event_ack:%s:%s" % (root, key))
                 break
@@ -1502,16 +1548,16 @@ def choose_dilemma(bus, open_roots):
                 "dilemma %s is open but no choice records were found under %s -- refusing to click "
                 "anything. clickable=%s" % (root, DILEMMA_LIST, sorted(ctrls)))
         opts = {k: v["path"] for k, v in found.items()}
-        before_tree = _tree(bus, root)
         _require_choice_data(bus, root, found)
         dilemma_id = sorted({v["dilemma_id"] for v in found.values()})[0]
-        detail = {"root": root, "root_context": dilemma_id,
-                  "options": {k: {"context": v["context"], "text": v["text"],
-                                  "dilemma_id": v["dilemma_id"], "option_id": v["option_id"],
-                                  "payload": v["payload"], "subtree": v["subtree"]}
-                              for k, v in found.items()}}
-        key = _choose("dilemma", sorted(opts), _campaign_hint(), meta=found,
-                      live=lambda: set(_dilemma_options(bus, root) or {}))
+        detail = {k: {"context": v["context"], "text": v["text"],
+                      "dilemma_id": v["dilemma_id"], "option_id": v["option_id"],
+                      "payload": v["payload"]}
+                  for k, v in found.items()}
+        st = _capture(bus)
+        key, policy, scores = _choose("dilemma", sorted(opts),
+                                      _campaign_hint() or st["campaign"], meta=found,
+                                      live=lambda: set(_dilemma_options(bus, root) or {}))
         sys.stderr.write("interrupts: dilemma %s (%s) -- %d options -> %r\n"
                          % (root, dilemma_id, len(opts), key))
         t0 = time.time()
@@ -1522,12 +1568,12 @@ def choose_dilemma(bus, open_roots):
             gone = _dilemma_answered(bus, root)
         if clicked:
             steps.append("dilemma:%s:%s" % (root, key))
-        _record_choice("dilemma", root, detail["options"], key,
-                       extra={"root_context": detail.get("root_context"),
-                              "dilemma_id": dilemma_id, "tree": before_tree},
+        _record_choice("dilemma", root, detail, key, st,
+                       extra={"root_context": dilemma_id, "dilemma_id": dilemma_id},
                        executed=clicked, confirmed=gone,
                        refusal=_refusal(gone, clicked),
-                       latency_ms=int((time.time() - t0) * 1000))
+                       latency_ms=int((time.time() - t0) * 1000),
+                       policy=policy, scores=scores)
         break
     return steps
 
@@ -1571,22 +1617,31 @@ def _require_choice_data(bus, root, found):
 _INTERRUPT_LOG = []
 
 
-def _record_choice(kind, root, options, chosen, extra=None,
-                   executed=None, confirmed=None, refusal=None, latency_ms=None):
+def _record_choice(kind, root, options, chosen, state, extra=None,
+                   executed=None, confirmed=None, refusal=None, latency_ms=None,
+                   policy=None, scores=None):
     confirmed_b = None if confirmed is None else bool(confirmed)
     executed_b = None if executed is None else bool(executed)
     counted = None if confirmed_b is None else bool(executed_b and confirmed_b)
-    scores = _LAST_SCORES[0] or {}
-    if scores:
-        options = {k: (dict(v or {}, **scores[k]) if isinstance(scores.get(k), dict)
-                       else dict(v or {}, score=scores.get(k)))
-                   for k, v in options.items()}
-    _INTERRUPT_LOG.append(dict(extra or {}, kind=kind, root=root, options=options,
-                               chosen=chosen,
-                               chosen_context=(options.get(chosen) or {}).get("context"),
-                               executed=executed_b, confirmed=confirmed_b, counted=counted,
-                               refusal=refusal, latency_ms=latency_ms,
-                               policy=_LAST_POLICY[0], ts=time.time()))
+    rows = []
+    for key in sorted(options):
+        v = options.get(key) or {}
+        row = {"key": key, "text": v.get("text"), "option_id": v.get("option_id"),
+               "answer": v.get("answer"), "payload": v.get("payload") or None}
+        s = (scores or {}).get(key)
+        if isinstance(s, dict):
+            row.update({f: s.get(f) for f in ("exploit", "score", "gnn") if f in s})
+        elif s is not None:
+            row["score"] = s
+        rows.append(row)
+    _INTERRUPT_LOG.append(dict(extra or {}, kind=kind, root=root, options=rows,
+                               chosen=chosen, executed=executed_b,
+                               confirmed=confirmed_b, counted=counted,
+                               refusal=refusal, latency_ms=latency_ms, policy=policy,
+                               ts=state["ts_choice"], ts_choice=state["ts_choice"],
+                               campaign_uuid=state.get("campaign_uuid"),
+                               state_at="panel", campaign=state["campaign"],
+                               world=state.get("world")))
 
 
 def drain_interrupt_records():
@@ -1819,11 +1874,6 @@ def resolve(bus, max_rounds=4):
                 if tuple(roots(bus)) == before:
                     break
                 continue
-        if "diplomacy" in kinds:
-            steps.extend(answer_diplomacy(bus))
-            if tuple(roots(bus)) == before:
-                break
-            continue
         s = choose_dilemma(bus, list(before))
         if s:
             steps.extend(s)
