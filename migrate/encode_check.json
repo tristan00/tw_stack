@@ -1,0 +1,26 @@
+{
+  "CB": {
+    "n": 2070,
+    "identity": 2070,
+    "sets": 6638,
+    "distinct_sets": 1358,
+    "encode_ms_per_record": 0.0113,
+    "failures": {}
+  },
+  "WB": {
+    "n": 2070,
+    "identity": 2070,
+    "sets": 16305,
+    "distinct_sets": 10114,
+    "encode_ms_per_record": 0.1319,
+    "failures": {}
+  },
+  "EB": {
+    "n": 11250,
+    "identity": 11250,
+    "sets": 71078,
+    "distinct_sets": 29419,
+    "encode_ms_per_record": 0.1298,
+    "failures": {}
+  }
+}

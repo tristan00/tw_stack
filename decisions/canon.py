@@ -135,6 +135,10 @@ def _tag(value):
         return b's' + struct.pack('>I', len(raw)) + raw
     if isinstance(value, (list, tuple)):
         return b'a' + struct.pack('>I', len(value)) + b''.join(_tag(v) for v in value)
+    if isinstance(value, dict):
+        items = sorted(value.items())
+        return b'o' + struct.pack('>I', len(items)) + b''.join(
+            _tag(k) + _tag(v) for k, v in items)
     raise CollectError('unencodable value %r' % (type(value),))
 
 

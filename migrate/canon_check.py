@@ -98,4 +98,5 @@ def main():
         % ((time.time() - t0) * 1000, total, exact, 100.0 * exact / max(total, 1)))
 
 
-main()
+if __name__ == '__main__':
+    main()
