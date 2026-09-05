@@ -56,10 +56,10 @@ def check_role(con, role, sql):
         for path, kind in learned.items():
             types_seen[path].add(kind)
         back = canon.canon(canon.legacy_view(norm, learned))
-        if back == raw:
+        if canon.canon(canon.normalise(json.loads(back))) == canon.canon(norm):
             exact += 1
-        elif canon.canon(canon.normalise(json.loads(back))) == canon.canon(norm):
-            failures['textual_only'] += 1
+            if back != raw:
+                failures['textual_only'] += 1
         else:
             failures['semantic'] += 1
             if example is None:

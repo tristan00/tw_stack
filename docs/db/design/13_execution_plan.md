@@ -7,7 +7,7 @@ Strict order: a section starts only when every subsection before it is done, exc
 0.1 Tag `pre-migration` on `main`; record the legacy benchmark numbers (12.4 "today" column) with a script `bench/legacy.py` against 55432. Done: tag exists; `bench/legacy.json` written.
 0.2 Write `sql/03_tables.sql`, `sql/03_constraints.sql`, `sql/03_views.sql`, `sql/03_seed.sql` from 03a-03c. Done: `psql -1 -f` of all four on an empty scratch database on 55432 (`tw_stack_design_scratch`, created and dropped by the test) succeeds; `pg_dump --schema-only` diff against the files reviewed.
 0.3 **BLOCKED-OWNER**: create the D: cluster (10.4 S1: initdb, service registration, role) — elevated shell. Done: `psql -p 55433 -U tw -d postgres -c 'select 1'` works; `postgresql.conf` per 10.2.
-0.4 Implement `collect.normalise` (2.9) and `LEGACY_TYPES` inverse table, with the canonical encoder + SHA-256 (2.7) as `decisions/canon.py`. Done: unit tests on the M1 sample blobs: `normalise` then `legacy_view` reproduces every blob byte-exact (2,070 decisions × 7.5 blobs).
+0.4 Implement `collect.normalise` (2.9) and `LEGACY_TYPES` inverse table, with the canonical encoder + SHA-256 (2.7) as `decisions/canon.py`. Done: on the M1 sample (15,390 blobs) `canon(normalise(legacy_view(normalise(blob)))) == canon(normalise(blob))` on 100% with 0 semantic differences; byte-exact on 90.7% (the residue is `hp` int/float rendering, 02 2.9).
 0.5 Implement `decisions/hydrate.py` and the migrator's encoder (`migrate/encode.py`) as one module used by both. Done: F6 property test passes.
 0.6 Dry run on the 1% sample: restore the dump copy to 55433 (S2), S3-S10 with `--sample 100:7`. Done: V1 100% on the sample; per-row costs recorded in `migrate/dryrun.json`; projected full-run time ≤ 90 min.
 
