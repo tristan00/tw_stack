@@ -142,7 +142,7 @@ def main(argv):
     graphs_with_bad = 0
     pairs = collections.Counter()
     for did in dids:
-        rec = st.read_decision(did)
+        rec = st.attach_offers(st.read_decision(did))
         bad, n_act = violations(rec)
         if not n_act:
             continue

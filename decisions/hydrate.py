@@ -383,6 +383,95 @@ def record(con, snapshot_id, legacy=True):
             'campaign': campaign, 'world': world, 'entities': entities}
 
 
+class OfferDriftError(RuntimeError):
+
+    def __init__(self, decision_id, offer_seq, identity):
+        super().__init__('stored offer %s of decision %s has no generated match: %s'
+                         % (offer_seq, decision_id, identity))
+        self.decision_id = decision_id
+        self.offer_seq = offer_seq
+
+
+SYNTHETIC_ACTIONS = ('noop', 'end_turn')
+
+MAX_OFFERS = 1048576
+
+
+def _options_mod():
+    import common
+    if common.ADVISOR not in sys.path:
+        sys.path.insert(0, common.ADVISOR)
+    import options
+    return options
+
+
+def _generated_index(record):
+    idx = {}
+    for ck, cid, o in _options_mod().generate(record):
+        idx.setdefault((ck, str(cid), o.get('action_type'), str(o.get('key'))),
+                       []).append(o)
+    return idx
+
+
+def _pick_generated(cands, slot_index):
+    if slot_index is None:
+        return cands[0] if cands else None
+    for o in cands:
+        if (o.get('params') or {}).get('slot_index') == slot_index:
+            return o
+    return None
+
+
+def _stored_offer_rows(con, decision_id):
+    return con.execute(
+        "SELECT o.offer_seq, o.entity_seq, ty.key, a.action_key, o.slot_index,"
+        " o.score, o.exploit, o.rank FROM corpus.offer o"
+        " JOIN dict.action a ON a.action_id = o.action_id"
+        " JOIN dict.action_type ty ON ty.id = a.action_type_id"
+        " WHERE o.decision_id = %s ORDER BY o.offer_seq", (decision_id,)).fetchall()
+
+
+def offers(con, record):
+    did = record['decision_id']
+    rows = _stored_offer_rows(con, did)
+    if not rows:
+        return record
+    ents = record.get('entities') or []
+    idx = _generated_index(record)
+    for seq, eseq, at, ak, slot, score, exploit, rank in rows:
+        if eseq is None or eseq >= len(ents):
+            raise OfferDriftError(did, seq, (eseq, at, ak))
+        e = ents[eseq]
+        entry = {'offer_id': did * MAX_OFFERS + seq, 'action_type': at, 'key': ak,
+                 'params': {}, 'score': score, 'exploit': exploit, 'rank': rank}
+        if at not in SYNTHETIC_ACTIONS:
+            got = _pick_generated(
+                idx.get((e['context_kind'], str(e['context_id']), at, str(ak))), slot)
+            if got is None:
+                raise OfferDriftError(did, seq, (e['context_kind'],
+                                                 e['context_id'], at, ak))
+            entry['params'] = got.get('params') or {}
+        e['offers'].append(entry)
+    return record
+
+
+def attach_taken(con, record, entity_seq, action_type, key):
+    ents = record.get('entities') or []
+    if entity_seq is None or entity_seq >= len(ents):
+        return record
+    e = ents[entity_seq]
+    entry = {'action_type': action_type, 'key': key, 'params': {}}
+    if action_type not in SYNTHETIC_ACTIONS:
+        for ck, cid, o in _options_mod().generate(record):
+            if (ck == e['context_kind'] and cid == str(e['context_id'])
+                    and o.get('action_type') == action_type
+                    and str(o.get('key')) == str(key)):
+                entry['params'] = o.get('params') or {}
+                break
+    e['offers'].append(entry)
+    return record
+
+
 def records(con, lo, hi, kind='decision', legacy=True):
     dc = _dicts(con)
     kind_id = dc.resolve_enum('snapshot_kind', [kind])[kind]

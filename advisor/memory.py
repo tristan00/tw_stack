@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import time
 
 PB_ATTACK_TYPES = ("attack_army", "attack_settlement")
@@ -224,52 +223,114 @@ def prebattle_option_feats(campaign, atype, key, params, world, self_cqi):
     return out
 
 
+def _log(msg):
+    import sys
+    sys.stderr.write("%.3f  memory %s\n" % (time.time(), msg))
+
+
+def _enum_ids(con, domain, keys):
+    return {k: i for k, i in con.execute(
+        "SELECT key, enum_id FROM dict.enum WHERE domain = %s AND key = ANY(%s)",
+        (domain, list(keys)))}
+
+
 _PB_ATTRIB_SQL = (
-    "SELECT t.decision_id, i.chosen, bp.z, a.action_type, a.action_key, a.params,"
-    " CASE WHEN a.action_type='attack_settlement' THEN"
-    " COALESCE((SELECT r->>'province'"
-    " FROM jsonb_array_elements(bw.z::jsonb->'regions') r"
-    " WHERE r->>'region'=a.action_key LIMIT 1), a.action_key)"
-    " ELSE"
-    " (SELECT h->>'province'"
-    " FROM jsonb_array_elements(bw.z::jsonb->'hostiles') h"
-    " WHERE h->>'cqi'=(a.params::jsonb->>'target_cqi') LIMIT 1)"
-    " END"
-    " FROM interrupts i"
-    " LEFT JOIN blobs bp ON bp.blob_id=i.panel_blob"
-    " JOIN LATERAL (SELECT t2.decision_id, t2.action_id, t2.ts FROM taken t2"
-    " WHERE t2.campaign_id=i.campaign_id AND t2.ts<=i.ts"
-    " AND (t2.refusal IS NULL OR"
-    " t2.refusal NOT IN ('awaiting_execution','campaign_died'))"
-    " ORDER BY t2.ts DESC LIMIT 1) t ON TRUE"
-    " JOIN actions a ON a.action_id=t.action_id"
-    " JOIN decisions d2 ON d2.decision_id=t.decision_id"
-    " LEFT JOIN blobs bw ON bw.blob_id=d2.world_blob"
-    " WHERE i.kind='pre_battle' AND i.counted=1"
-    " AND a.action_type IN ('attack_army','attack_settlement')"
-    " AND i.ts - t.ts <= %s")
+    "SELECT t.decision_id, ty.key, a.action_key, i.chosen,"
+    " ib.result_state, ib.casualties_text"
+    " FROM corpus.interrupt i"
+    " JOIN corpus.snapshot s ON s.snapshot_id = i.interrupt_id"
+    " JOIN LATERAL (SELECT t2.decision_id, t2.action_id FROM corpus.taken t2"
+    " JOIN corpus.snapshot ds ON ds.snapshot_id = t2.decision_id"
+    " WHERE t2.campaign_id = s.campaign_id AND ds.ts <= s.ts"
+    " AND (t2.refusal_id IS NULL OR t2.refusal_id != ALL(%(skip)s))"
+    " ORDER BY t2.decision_id DESC LIMIT 1) t ON TRUE"
+    " JOIN dict.action a ON a.action_id = t.action_id"
+    " JOIN dict.action_type ty ON ty.id = a.action_type_id"
+    " LEFT JOIN corpus.interrupt_battle_panel ib ON ib.interrupt_id = i.interrupt_id"
+    " WHERE i.kind_id = %(kind)s AND i.counted"
+    " AND ty.key IN ('attack_army','attack_settlement')"
+    " AND s.ts - (SELECT ts FROM corpus.snapshot WHERE snapshot_id = t.decision_id)"
+    " <= %(win)s")
+
+
+def _army_targets(con, pairs):
+    if not pairs:
+        return {}
+    return {(sid, cqi): (x, y, prov) for sid, cqi, x, y, prov in con.execute(
+        "SELECT w.snapshot_id, w.cqi, w.x, w.y, dp.key FROM corpus.world_hostile w"
+        " LEFT JOIN dict.province dp ON dp.id = w.province_id"
+        " JOIN unnest(%s::bigint[], %s::int[]) AS u(sid, cqi)"
+        " ON u.sid = w.snapshot_id AND u.cqi = w.cqi",
+        ([p[0] for p in pairs], [p[1] for p in pairs]))}
+
+
+def _settlement_targets(con, pairs):
+    if not pairs:
+        return {}, {}
+    sids = [p[0] for p in pairs]
+    keys = [p[1] for p in pairs]
+    coords = {}
+    for table in ("settlement_set_member", "ruin_set_member"):
+        col = "settlement_set_id" if table.startswith("settlement") else "ruin_set_id"
+        for sid, rkey, x, y in con.execute(
+                "SELECT sw.snapshot_id, dr.key, sm.x, sm.y FROM corpus.snapshot_world sw"
+                " JOIN corpus.%s sm ON sm.set_id = sw.%s"
+                " JOIN dict.region dr ON dr.id = sm.region_id"
+                " JOIN unnest(%%s::bigint[], %%s::text[]) AS u(sid, rkey)"
+                " ON u.sid = sw.snapshot_id AND u.rkey = dr.key" % (table, col),
+                (sids, keys)):
+            coords.setdefault((sid, rkey), (x, y))
+    zones = {(sid, rkey): prov for sid, rkey, prov in con.execute(
+        "SELECT sw.snapshot_id, dr.key, dp.key FROM corpus.snapshot_world sw"
+        " JOIN corpus.region_set_member rm ON rm.set_id = sw.region_set_id"
+        " JOIN dict.region dr ON dr.id = rm.region_id"
+        " LEFT JOIN dict.province dp ON dp.id = rm.province_id"
+        " JOIN unnest(%s::bigint[], %s::text[]) AS u(sid, rkey)"
+        " ON u.sid = sw.snapshot_id AND u.rkey = dr.key", (sids, keys))}
+    return coords, zones
 
 
 def prebattle_attributions(con, camps=None):
-    out = {}
-    sql, args = _PB_ATTRIB_SQL, [PB_WINDOW_S]
+    t0 = time.time()
+    skip = list(_enum_ids(con, "refusal",
+                          ["awaiting_execution", "campaign_died"]).values())
+    kind = _enum_ids(con, "interrupt_kind", ["pre_battle"])["pre_battle"]
+    sql = _PB_ATTRIB_SQL
+    params = {"skip": skip, "kind": kind, "win": PB_WINDOW_S}
     if camps is not None:
-        sql += " AND i.campaign_id = ANY(%s)"
-        args.append(sorted(camps))
-    for did, chosen, pz, at, akey, params, zone in con.execute(sql, tuple(args)):
-        try:
-            panel = json.loads(pz or "{}")
-        except ValueError:
-            panel = {}
-        try:
-            p = json.loads(params or "{}")
-        except ValueError:
-            p = {}
+        sql += " AND s.campaign_id = ANY(%(camps)s)"
+        params["camps"] = sorted(camps)
+    rows = con.execute(sql, params).fetchall()
+    army_pairs, sett_pairs = [], []
+    for did, at, akey, chosen, result, casualties in rows:
+        if at == "attack_army" and str(akey).startswith("cqi:"):
+            army_pairs.append((did, int(str(akey).split(":", 1)[1])))
+        elif at == "attack_settlement":
+            sett_pairs.append((did, str(akey)))
+    army = _army_targets(con, army_pairs)
+    coords, zones = _settlement_targets(con, sett_pairs)
+    out = {}
+    for did, at, akey, chosen, result, casualties in rows:
+        p, zone = {}, None
+        if at == "attack_army" and str(akey).startswith("cqi:"):
+            cqi = int(str(akey).split(":", 1)[1])
+            hit = army.get((did, cqi))
+            p = {"target_cqi": cqi}
+            if hit:
+                p["x"], p["y"] = hit[0], hit[1]
+                zone = hit[2]
+        else:
+            rkey = str(akey)
+            hit = coords.get((did, rkey))
+            if hit:
+                p = {"x": hit[0], "y": hit[1]}
+            zone = zones.get((did, rkey)) or rkey
         out[int(did)] = {
             "chosen": chosen, "action_type": at, "key": akey, "params": p,
             "zone": str(zone) if zone is not None else None,
-            "result": (panel.get("result") or {}).get("state"),
-            "casualties": (panel.get("casualties") or {}).get("text")}
+            "result": result, "casualties": casualties}
+    _log("prebattle_attributions exit %.1f ms n=%d"
+         % ((time.time() - t0) * 1000, len(out)))
     return out
 
 
@@ -278,55 +339,86 @@ def replay_stamps(store, want):
         return _replay_stamps(store, want)
 
 
+_REPLAY_SQL = (
+    "SELECT t.decision_id, s.turn, s.campaign_id, ek.key, ch.cqi, dr.key, df.key,"
+    " ty.key, t.counted, cs.pending_recruit_unit_ids, cs.x, cs.y,"
+    " cs.pending_queue_set_id"
+    " FROM corpus.taken t"
+    " JOIN corpus.snapshot s ON s.snapshot_id = t.decision_id"
+    " JOIN corpus.campaign c ON c.campaign_id = s.campaign_id"
+    " JOIN dict.faction df ON df.id = c.faction_id"
+    " JOIN dict.action a ON a.action_id = t.action_id"
+    " JOIN dict.action_type ty ON ty.id = a.action_type_id"
+    " LEFT JOIN corpus.snapshot_entity se ON se.snapshot_id = t.decision_id"
+    " AND se.entity_seq = t.entity_seq"
+    " LEFT JOIN dict.enum ek ON ek.enum_id = se.kind_id"
+    " LEFT JOIN corpus.character ch ON ch.character_id = se.character_id"
+    " LEFT JOIN dict.region dr ON dr.id = se.region_id"
+    " LEFT JOIN corpus.char_state cs ON cs.snapshot_id = t.decision_id"
+    " AND cs.entity_seq = t.entity_seq"
+    " WHERE (t.refusal_id IS NULL OR t.refusal_id != ALL(%s))"
+    " AND s.campaign_id = ANY(%s) ORDER BY t.decision_id")
+
+
+def _queue_members(con, set_ids):
+    want = sorted({s for s in set_ids if s is not None})
+    if not want:
+        return {}
+    out = {}
+    for sid, key, left in con.execute(
+            "SELECT m.set_id, du.key, m.turns_left"
+            " FROM corpus.pending_queue_set_member m"
+            " JOIN dict.unit du ON du.id = m.unit_id"
+            " WHERE m.set_id = ANY(%s) ORDER BY m.set_id, m.ord", (want,)):
+        out.setdefault(sid, []).append({"key": key, "turns_left": left})
+    return out
+
+
 def _replay_stamps(store, want):
+    t0 = time.time()
     want = {int(d) for d in (want or ())}
     if not want:
         return {}
-    camps = sorted(r[0] for r in store.con.execute(
-        "SELECT DISTINCT campaign_id FROM decisions WHERE decision_id = ANY(%s)",
+    con = store.con
+    camps = sorted(r[0] for r in con.execute(
+        "SELECT DISTINCT campaign_id FROM corpus.snapshot WHERE snapshot_id = ANY(%s)",
         (sorted(want),)))
-    pb = prebattle_attributions(store.con, camps)
-    mems = {}
-    out = {}
-    cur = store.con.cursor(name="memory_replay_stream")
-    cur.itersize = 500
-    try:
-        cur.execute(
-            "SELECT t.decision_id, d.turn, d.campaign_id,"
-            " a.context_kind, a.context_id, a.action_type, t.counted,"
-            " (be.z::jsonb)->'pending_recruit_keys',"
-            " (be.z::jsonb)->>'x', (be.z::jsonb)->>'y',"
-            " (be.z::jsonb)->'pending_queue'"
-            " FROM taken t"
-            " JOIN decisions d ON d.decision_id=t.decision_id"
-            " LEFT JOIN actions a ON a.action_id=t.action_id"
-            " LEFT JOIN entities e ON e.decision_id=t.decision_id"
-            " AND e.entity_seq=t.entity_seq"
-            " LEFT JOIN blobs be ON be.blob_id=e.features_blob"
-            " WHERE (t.refusal IS NULL OR"
-            " t.refusal NOT IN ('awaiting_execution','campaign_died'))"
-            " AND d.campaign_id = ANY(%s)"
-            " ORDER BY t.decision_id", (camps,))
-        for did, turn, camp, ck, cid, at, counted, pend, sx, sy, pq in cur:
-            mem = mems.get(camp)
-            if mem is None:
-                mem = mems[camp] = CampaignMemory()
-            mem.begin_turn(turn)
-            if did in want:
-                out[did] = mem.stamp({})
-            state = None
-            if ck in ("lord", "hero"):
-                state = {"pending_recruit_keys": pend or [],
-                         "x": float(sx) if sx is not None else None,
-                         "y": float(sy) if sy is not None else None,
-                         "pending_queue": pq if isinstance(pq, list) else None}
-            mem.note_pick(ck, cid, at, state, bool(counted))
-            hit = pb.get(did)
-            if hit is not None:
-                mem.note_prebattle(ck, cid, hit["action_type"], hit["key"],
-                                   hit["params"], None, hit["chosen"],
-                                   hit["result"], hit["casualties"],
-                                   zone=hit["zone"])
-    finally:
-        cur.close()
+    pb = prebattle_attributions(con, camps)
+    skip = list(_enum_ids(con, "refusal",
+                          ["awaiting_execution", "campaign_died"]).values())
+    rows = con.execute(_REPLAY_SQL, (skip, camps)).fetchall()
+    queues = _queue_members(con, [r[12] for r in rows])
+    unit_ids = sorted({u for r in rows for u in (r[9] or [])})
+    unit_keys = {i: k for i, k in con.execute(
+        "SELECT id, key FROM dict.unit WHERE id = ANY(%s)", (unit_ids,))} \
+        if unit_ids else {}
+    mems, out = {}, {}
+    for (did, turn, camp, kind, cqi, region, faction, at, counted, pend, sx, sy,
+         qset) in rows:
+        mem = mems.get(camp)
+        if mem is None:
+            mem = mems[camp] = CampaignMemory()
+        mem.begin_turn(turn)
+        if did in want:
+            out[did] = mem.stamp({})
+        state = None
+        if kind in ("lord", "hero"):
+            state = {"pending_recruit_keys": [unit_keys.get(u) for u in (pend or [])],
+                     "x": float(sx) if sx is not None else None,
+                     "y": float(sy) if sy is not None else None,
+                     "pending_queue": queues.get(qset) if qset is not None else None}
+        if kind in ("lord", "hero"):
+            cid = str(cqi)
+        elif kind == "province":
+            cid = region
+        else:
+            kind, cid = "campaign", faction
+        mem.note_pick(kind, cid, at, state, bool(counted))
+        hit = pb.get(did)
+        if hit is not None:
+            mem.note_prebattle(kind, cid, hit["action_type"], hit["key"],
+                               hit["params"], None, hit["chosen"],
+                               hit["result"], hit["casualties"], zone=hit["zone"])
+    _log("replay_stamps exit %.1f ms decisions=%d stamped=%d"
+         % ((time.time() - t0) * 1000, len(rows), len(out)))
     return out

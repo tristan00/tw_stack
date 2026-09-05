@@ -1,20 +1,32 @@
 from __future__ import annotations
 
-
-import hashlib
-import json
-import os
 import sys
 import time
 
 import psycopg
 
-from decisions import pg
-from decisions import pg_schema as S
+from decisions import hydrate, pg
 
 
 class IncompatibleStore(RuntimeError):
     pass
+
+
+def log(msg):
+    sys.stderr.write('%.3f  store.%s\n' % (time.time(), msg))
+
+
+def timed(name):
+    def wrap(fn):
+        def call(self, *a, **kw):
+            t0 = time.time()
+            log('%s enter' % name)
+            try:
+                return fn(self, *a, **kw)
+            finally:
+                log('%s exit %.1f ms' % (name, (time.time() - t0) * 1000))
+        return call
+    return wrap
 
 
 class _SnapshotRead:
@@ -28,8 +40,8 @@ class _SnapshotRead:
             self.con.execute("BEGIN ISOLATION LEVEL REPEATABLE READ")
             self.entered = True
         except psycopg.Error as e:
-            sys.stderr.write("store: could not open a read snapshot (%s) -- reads may be torn\n"
-                             % repr(e)[:100])
+            sys.stderr.write("store: could not open a read snapshot (%s) -- reads may "
+                             "be torn\n" % repr(e)[:100])
         return self
 
     def __exit__(self, *exc):
@@ -41,64 +53,25 @@ class _SnapshotRead:
         return False
 
 
-def _int_or_none(v):
-    try:
-        return int(float(v))
-    except (TypeError, ValueError):
-        return None
-
-
-def _real_or_none(v):
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return None
-
-
-def _dumps(o):
-    return json.dumps(o, default=str, sort_keys=True, separators=(",", ":"))
+_SKIP_REFUSALS = ('awaiting_execution', 'campaign_died')
 
 
 class DecisionStore:
 
-    def __init__(self, run_dir, readonly=False):
-        self.run_id = os.path.basename(str(run_dir).rstrip("/\\"))
-        self.readonly = bool(readonly)
-        self._blob_cache = {}
-        self._action_cache = {}
-        self._campaign_cache = {}
-        if self.readonly:
-            self.con = pg.connect(autocommit=True, readonly=True)
-            self._assert_compatible()
-            return
-        self.con = pg.connect()
-        self.con.execute("SET synchronous_commit = off")
-        self.con.execute(S.DDL)
-        self.con.execute(S.VIEWS)
-        self.con.execute("INSERT INTO meta(k,v) VALUES('schema_version',%s)"
-                         " ON CONFLICT (k) DO NOTHING", (S.SCHEMA_VERSION,))
-        self.con.commit()
-        self._assert_compatible()
-
-    def _assert_compatible(self):
+    def __init__(self, run_dir=None, readonly=True):
         try:
-            row = self.con.execute(
-                "SELECT v FROM meta WHERE k='schema_version'").fetchone()
-        except psycopg.errors.UndefinedTable:
-            raise IncompatibleStore(
-                "database %s has no decision store schema. The recorder owns the schema "
-                "and creates it; start the decisions stream first." % pg.DB)
-        if row and row[0] != S.SCHEMA_VERSION:
-            raise IncompatibleStore(
-                "database %s holds schema_version %s, this code expects %s"
-                % (pg.DB, row[0], S.SCHEMA_VERSION))
+            self.con = pg.connect(app_name='tw-facade', autocommit=True,
+                                  readonly=readonly, search_path=pg.CORPUS_PATH)
+        except psycopg.OperationalError as e:
+            raise IncompatibleStore('database unreachable: %s' % repr(e)[:120])
+        if self.con.execute(
+                "SELECT to_regclass('corpus.snapshot')").fetchone()[0] is None:
+            self.con.close()
+            raise IncompatibleStore('database %s has no corpus schema' % pg.DB)
+        self.readonly = readonly
 
     def snapshot_read(self):
         return _SnapshotRead(self.con)
-
-    def _assert_writable(self, what):
-        if self.readonly:
-            raise IncompatibleStore("%s called on a read-only store" % what)
 
     def close(self):
         try:
@@ -106,669 +79,161 @@ class DecisionStore:
         except Exception:
             pass
 
+    def _kind_id(self, domain, key):
+        return self.con.execute(
+            "SELECT enum_id FROM dict.enum WHERE domain = %s AND key = %s",
+            (domain, key)).fetchone()[0]
 
-    def _blob(self, text):
-        if text is None:
-            return None
-        sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
-        hit = self._blob_cache.get(sha)
-        if hit is not None:
-            return hit
-        row = self.con.execute("SELECT blob_id FROM blobs WHERE sha=%s", (sha,)).fetchone()
-        if row is None:
-            bid = self.con.execute(
-                "INSERT INTO blobs(sha,n,z) VALUES(%s,%s,%s) RETURNING blob_id",
-                (sha, len(text), text)).fetchone()[0]
-        else:
-            bid = row[0]
-        if len(self._blob_cache) > 4096:
-            self._blob_cache.clear()
-        self._blob_cache[sha] = bid
-        return bid
-
-    def _action_id(self, ck, cid, atype, akey, params_text):
-        k = (ck, cid, atype, akey, params_text)
-        hit = self._action_cache.get(k)
-        if hit is not None:
-            return hit
-        self.con.execute(
-            "INSERT INTO actions(context_kind,context_id,action_type,action_key,"
-            "params) VALUES(%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING", k)
-        aid = self.con.execute(
-            "SELECT action_id FROM actions WHERE context_kind=%s AND context_id=%s AND "
-            "action_type=%s AND action_key=%s AND params=%s", k).fetchone()[0]
-        if len(self._action_cache) > 200000:
-            self._action_cache.clear()
-        self._action_cache[k] = aid
-        return aid
-
-    def campaign_key(self, faction, uuid=None):
-        return str(uuid) if uuid else "%s@%s" % (faction, self.run_id)
-
-    def _campaign_id(self, key, faction=None, campaign_map=None, presave_radius=None,
-                     selector=None, difficulty=None, leader=None):
-        hit = self._campaign_cache.get(key)
-        if hit is not None:
-            if campaign_map:
-                self.con.execute(
-                    "UPDATE campaigns SET campaign_map=%s "
-                    "WHERE campaign_id=%s AND (campaign_map IS NULL OR campaign_map='')",
-                    (campaign_map, hit))
-            if presave_radius is not None:
-                self.con.execute(
-                    "UPDATE campaigns SET presave_radius=%s "
-                    "WHERE campaign_id=%s AND presave_radius IS NULL",
-                    (presave_radius, hit))
-            if selector:
-                self.con.execute(
-                    "UPDATE campaigns SET selector=%s "
-                    "WHERE campaign_id=%s AND selector IS NULL",
-                    (selector, hit))
-            if difficulty is not None:
-                self.con.execute(
-                    "UPDATE campaigns SET difficulty=%s "
-                    "WHERE campaign_id=%s AND difficulty IS NULL",
-                    (difficulty, hit))
-            if leader:
-                self.con.execute(
-                    "UPDATE campaigns SET leader=%s "
-                    "WHERE campaign_id=%s AND leader IS NULL",
-                    (leader, hit))
-            return hit
-        self.con.execute(
-            "INSERT INTO campaigns"
-            "(campaign_key,faction,campaign_map,presave_radius,selector,difficulty,leader) "
-            "VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (campaign_key) DO NOTHING",
-            (key, faction, campaign_map, presave_radius, selector, difficulty, leader))
-        cid = self.con.execute("SELECT campaign_id FROM campaigns WHERE campaign_key=%s",
-                               (key,)).fetchone()[0]
-        self._campaign_cache[key] = cid
-        return cid
-
-    def register_collector(self, collector_sha, git_sha=None, note=None):
-        self._assert_writable("register_collector")
-        self.con.execute(
-            "INSERT INTO collector_versions(collector_sha,git_sha,started_ts,note)"
-            " VALUES(%s,%s,%s,%s) ON CONFLICT (collector_sha) DO NOTHING",
-            (collector_sha, git_sha, time.time(), note))
-        row = self.con.execute(
-            "SELECT version_id FROM collector_versions WHERE collector_sha=%s",
-            (collector_sha,)).fetchone()
-        self.con.commit()
-        self._version_id = row[0]
-        return row[0]
-
-    _version_id = None
-
-
-    def write_decision(self, snapshot, decision_seq=0, policy=None):
-        self._assert_writable("write_decision")
-        camp = snapshot.get("campaign") or {}
-        ents = snapshot.get("entities") or []
-        if any(e.get("offers") for e in ents):
-            raise ValueError(
-                "write_decision was handed offers. The recorder stores STATE; the advisor "
-                "generates and gates the options and hands the survivors back through "
-                "attach_options. An offer arriving here means inference has leaked back "
-                "into the collector.")
-        if len(ents) >= S.MAX_ENTITIES_PER_DECISION:
-            raise ValueError("decision has %d entities; the view id packing allows %d"
-                             % (len(ents), S.MAX_ENTITIES_PER_DECISION - 1))
-        cid = self._campaign_id(self.campaign_key(camp.get("faction"),
-                                                  camp.get("campaign_uuid")),
-                                camp.get("faction"), camp.get("campaign_map"),
-                                camp.get("presave_radius"), camp.get("selector"),
-                                _int_or_none(camp.get("difficulty")), camp.get("leader"))
-        did = self.con.execute(
-            "INSERT INTO decisions(campaign_id,ts,turn,decision_seq,policy,version_id,"
-            "n_entities,n_offers,campaign_blob,world_blob,"
-            "income,settlements,allies,vassals,power_rank,lord_level)"
-            " VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
-            " RETURNING decision_id",
-            (cid, snapshot.get("ts") or time.time(), int(camp.get("turn") or 0),
-             int(decision_seq), policy, self._version_id, len(ents), 0,
-             self._blob(_dumps(camp)), self._blob(_dumps(snapshot.get("world") or {})))
-            + tuple(_real_or_none(camp.get(k)) for k in S.CAMPAIGN_SCALARS)).fetchone()[0]
-
-        with self.con.cursor() as cur:
-            cur.executemany(
-                "INSERT INTO entities(decision_id,entity_seq,context_kind,context_id,"
-                "features_blob) VALUES(%s,%s,%s,%s,%s)",
-                [(did, ei, e.get("context_kind"), str(e.get("context_id")),
-                  self._blob(_dumps(e.get("state") or {})))
-                 for ei, e in enumerate(ents)])
-
-        self.con.execute(
-            "UPDATE campaigns SET first_decision_id=COALESCE(first_decision_id,%s),"
-            "last_decision_id=%s, turns=GREATEST(COALESCE(turns,0),%s) WHERE campaign_id=%s",
-            (did, did, int(camp.get("turn") or 0), cid))
-        self.con.commit()
-        return did
-
-    def attach_options(self, decision_id, options):
-        self._assert_writable("attach_options")
-        ents = {(k, str(i)): seq for seq, (k, i) in enumerate(
-            self.con.execute("SELECT context_kind,context_id FROM entities"
-                             " WHERE decision_id=%s ORDER BY entity_seq", (decision_id,)))}
-        rows = []
-        for o in options or []:
-            ei = ents.get((o.get("context_kind"), str(o.get("context_id"))))
-            if ei is None:
-                raise ValueError("option %s:%s names an entity the decision does not have"
-                                 % (o.get("context_kind"), o.get("context_id")))
-            rows.append((decision_id, len(rows), ei,
-                         self._action_id(o.get("context_kind"), str(o.get("context_id")),
-                                         o.get("action_type"), str(o.get("key")),
-                                         _dumps(o.get("params") or {}))))
-        if len(rows) >= S.MAX_OFFERS_PER_DECISION:
-            raise ValueError("decision has %d options; the view id packing allows %d"
-                             % (len(rows), S.MAX_OFFERS_PER_DECISION - 1))
-        with self.con.cursor() as cur:
-            cur.executemany(
-                "INSERT INTO offers(decision_id,offer_seq,entity_seq,action_id)"
-                " VALUES(%s,%s,%s,%s)", rows)
-        self.con.execute("UPDATE decisions SET n_offers=%s WHERE decision_id=%s",
-                         (len(rows), decision_id))
-        self.con.commit()
-        return len(rows)
-
-    def attach_timings(self, decision_id, timings):
-        if not timings:
-            return 0
-        self._assert_writable("attach_timings")
-        self.con.execute("UPDATE decisions SET timings=%s WHERE decision_id=%s",
-                         (_dumps(timings), decision_id))
-        self.con.commit()
-        return 1
-
-    def _seq_by_identity(self, decision_id):
-        out = {}
-        for seq, ck, cid, at, ak in self.con.execute(
-                "SELECT o.offer_seq,a.context_kind,a.context_id,a.action_type,a.action_key"
-                " FROM offers o JOIN actions a ON a.action_id=o.action_id"
-                " WHERE o.decision_id=%s", (decision_id,)):
-            out.setdefault((ck, str(cid), at, str(ak)), seq)
-        return out
-
-    def attach_scores(self, decision_id, scores):
-        if not scores:
-            return 0
-        self._assert_writable("attach_scores")
-        seqs = self._seq_by_identity(decision_id)
-        rows, model_rows = [], []
-        n = 0
-        for s in scores:
-            seq = seqs.get((s.get("context_kind"), str(s.get("context_id")),
-                            s.get("action_type"), str(s.get("key"))))
-            if seq is None:
-                continue
-            rows.append((decision_id, seq)
-                        + tuple(_real_or_none(s.get(f)) for f in S.SCORE_FIELDS))
-            for model, vals in (s.get("models") or {}).items():
-                model_rows.append((decision_id, seq, str(model))
-                                  + tuple(_real_or_none((vals or {}).get(f))
-                                          for f in S.MODEL_SCORE_FIELDS))
-            n += 1
-        with self.con.cursor() as cur:
-            if rows:
-                cur.executemany(
-                    "INSERT INTO offer_scores(decision_id,offer_seq,score,exploit,rank,"
-                    "pct_global,gnn_impact,gnn_rank)"
-                    " VALUES(%s,%s,%s,%s,%s,%s,%s,%s)"
-                    " ON CONFLICT (decision_id,offer_seq) DO UPDATE SET"
-                    " score=excluded.score, exploit=excluded.exploit, rank=excluded.rank,"
-                    " pct_global=excluded.pct_global,"
-                    " gnn_impact=excluded.gnn_impact, gnn_rank=excluded.gnn_rank", rows)
-            if model_rows:
-                cur.executemany(
-                    "INSERT INTO offer_model_scores(decision_id,offer_seq,model,score,rank)"
-                    " VALUES(%s,%s,%s,%s,%s)"
-                    " ON CONFLICT (decision_id,offer_seq,model) DO UPDATE SET"
-                    " score=excluded.score, rank=excluded.rank", model_rows)
-        self.con.commit()
-        return n
-
-    def attach_taken(self, decision_id, taken, policy=None):
-        self._assert_writable("attach_taken")
-        ck, cid = taken.get("context_kind"), str(taken.get("context_id"))
-        atype, akey = taken.get("action_type"), str(taken.get("key"))
-        row = self.con.execute(
-            "SELECT o.offer_seq,o.entity_seq,o.action_id FROM offers o"
-            " JOIN actions a ON a.action_id=o.action_id WHERE o.decision_id=%s"
-            " AND a.context_kind=%s AND a.context_id=%s AND a.action_type=%s"
-            " AND a.action_key=%s ORDER BY o.offer_seq LIMIT 1",
-            (decision_id, ck, cid, atype, akey)).fetchone()
-        seq, ent_seq, action_id = row if row else (None, None, None)
-        if action_id is None:
-            action_id = self._action_id(ck, cid, atype, akey,
-                                        _dumps(taken.get("params") or {}))
-        conf = taken.get("confirm") or {}
-        self.con.execute(
-            "INSERT INTO taken(decision_id,offer_seq,entity_seq,action_id,ts,"
-            "executed,confirmed,counted,refusal,confirm_signal,confirm_before,confirm_after,"
-            "latency_ms,policy,timing,diagnostics,campaign_id)"
-            " VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
-            "(SELECT campaign_id FROM decisions WHERE decision_id=%s))"
-            " ON CONFLICT (decision_id) DO UPDATE SET"
-            " offer_seq=excluded.offer_seq, entity_seq=excluded.entity_seq,"
-            " action_id=excluded.action_id, ts=excluded.ts, executed=excluded.executed,"
-            " confirmed=excluded.confirmed, counted=excluded.counted,"
-            " refusal=excluded.refusal, confirm_signal=excluded.confirm_signal,"
-            " confirm_before=excluded.confirm_before, confirm_after=excluded.confirm_after,"
-            " latency_ms=excluded.latency_ms, policy=excluded.policy,"
-            " timing=excluded.timing, diagnostics=excluded.diagnostics,"
-            " campaign_id=excluded.campaign_id",
-            (decision_id, seq, ent_seq, action_id, taken.get("ts") or time.time(),
-             1 if taken.get("executed") else 0, 1 if taken.get("confirmed") else 0,
-             1 if taken.get("counted") else 0, taken.get("refusal"), conf.get("signal"),
-             _dumps(conf.get("before")), _dumps(conf.get("after")),
-             conf.get("latency_ms"), policy or taken.get("policy"),
-             _dumps(taken.get("timing")),
-             _dumps({"stderr": taken.get("stderr"), "prechecks": taken.get("prechecks"),
-                     "execute_error": taken.get("execute_error"),
-                     "doomed": taken.get("doomed"), "params": taken.get("params")}),
-             decision_id))
-        self.con.commit()
-        return seq is not None
-
-    def write_ucb_pick(self, rec):
-        self._assert_writable("write_ucb_pick")
-        rec = dict(rec or {})
-        rows = rec.get("rows") or []
-        chosen = rec.get("chosen") or {}
-        pid = self.con.execute(
-            "INSERT INTO ucb_picks(ts,c,total_plays,campaign_map,faction,n,mean,explore,"
-            "score,tied,blend,entropy,std,adjust)"
-            " VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
-            " RETURNING pick_id",
-            (rec.get("ts") or time.time(), rec.get("c"), _int_or_none(rec.get("total_plays")),
-             chosen.get("campaign_map"), chosen.get("faction"),
-             _int_or_none(chosen.get("n")), chosen.get("mean"), chosen.get("explore"),
-             chosen.get("score"), _int_or_none(rec.get("tied")),
-             chosen.get("blend"), chosen.get("entropy"), chosen.get("std"),
-             _real_or_none(chosen.get("adjust")))).fetchone()[0]
-        with self.con.cursor() as cur:
-            cur.executemany(
-                "INSERT INTO ucb_pick_rows(pick_id,rank,campaign_map,faction,n,mean,explore,"
-                "score,chosen,blend,entropy,std,adjust)"
-                " VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                [(pid, i + 1, r.get("campaign_map"), r.get("faction"),
-                  _int_or_none(r.get("n")), r.get("mean"), r.get("explore"), r.get("score"),
-                  1 if r.get("chosen") else 0, r.get("blend"), r.get("entropy"), r.get("std"),
-                  _real_or_none(r.get("adjust")))
-                 for i, r in enumerate(rows)])
-        self.con.commit()
-        return pid
-
-    def write_postmortem(self, rec):
-        self._assert_writable("write_postmortem")
-        rec = dict(rec or {})
-        key = rec.get("campaign_key") or rec.get("campaign_uuid") or None
-        outcome = rec.get("outcome")
-        defeated = 1 if outcome == "defeated" else (0 if outcome else None)
-        self.con.execute(
-            "INSERT INTO postmortems(campaign_key,ts,run_dir,faction,turn,outcome,"
-            "defeated,reason,payload) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-            (key, rec.get("ts") or time.time(), rec.get("run_dir"), rec.get("faction"),
-             _int_or_none(rec.get("turn_at_death") or rec.get("turns_played")),
-             outcome, defeated, rec.get("ended_by") if isinstance(rec.get("ended_by"), str)
-             else _dumps(rec.get("ended_by")) if rec.get("ended_by") else rec.get("error"),
-             _dumps(rec)))
-        if key:
-            self.con.execute(
-                "UPDATE campaigns SET outcome=%s, defeated=%s WHERE campaign_key=%s",
-                (outcome, defeated, key))
-            if rec.get("picked_ts") is not None:
-                self.con.execute(
-                    "UPDATE campaigns SET picked_ts=%s "
-                    "WHERE campaign_key=%s AND picked_ts IS NULL",
-                    (rec["picked_ts"], key))
-        self.con.commit()
-        return True
-
-    def postmortems(self, limit=2000):
-        out = []
-        for payload, key in self.con.execute(
-                "SELECT payload,campaign_key FROM postmortems"
-                " ORDER BY postmortem_id DESC LIMIT %s", (int(limit),)):
-            try:
-                d = json.loads(payload or "{}")
-            except ValueError:
-                continue
-            if key and not d.get("campaign_key"):
-                d["campaign_key"] = key
-            out.append(d)
-        out.reverse()
-        return out
-
-    def write_diplomacy_event(self, row):
-        self._assert_writable("write_diplomacy_event")
-        body = {k: v for k, v in (row or {}).items()
-                if k not in ("kind", "turn", "campaign_key", "campaign_id", "ts")}
-        self.con.execute(
-            "INSERT INTO diplomacy_events(ts,campaign_key,turn,kind,payload)"
-            " VALUES(%s,%s,%s,%s,%s)",
-            (row.get("ts") or time.time(),
-             row.get("campaign_key") or row.get("campaign_id"),
-             _int_or_none(row.get("turn")), row.get("kind"), _dumps(body)))
-        self.con.commit()
-        return True
-
-    def diplomacy_events(self, limit=200, campaign_key=None):
-        if campaign_key:
-            rows = self.con.execute(
-                "SELECT ts,campaign_key,turn,kind,payload FROM diplomacy_events"
-                " WHERE campaign_key=%s ORDER BY event_id DESC LIMIT %s",
-                (campaign_key, int(limit))).fetchall()
-        else:
-            rows = self.con.execute(
-                "SELECT ts,campaign_key,turn,kind,payload FROM diplomacy_events"
-                " ORDER BY event_id DESC LIMIT %s", (int(limit),)).fetchall()
-        out = []
-        for ts, ckey, turn, kind, payload in rows:
-            try:
-                body = json.loads(payload or "{}")
-            except ValueError:
-                body = {}
-            body.update(ts=ts, campaign_id=ckey, turn=turn, kind=kind)
-            out.append(body)
-        out.reverse()
-        return out
-
-    @staticmethod
-    def _flag(v):
-        return None if v is None else (1 if v else 0)
-
-    def write_interrupt(self, row):
-        self._assert_writable("write_interrupt")
-        camp = row.get("campaign") or {}
-        opts = row.get("options") or {}
-        counted = row.get("counted")
-        if counted is None and row.get("confirmed") is not None:
-            counted = bool(row.get("executed")) and bool(row.get("confirmed"))
-        self.con.execute(
-            "INSERT INTO interrupts(ts,campaign_id,turn,kind,root,root_context,n_options,"
-            "options_json,chosen,chosen_context,executed,confirmed,counted,refusal,"
-            "latency_ms,campaign_blob,world_blob,panel_blob,policy)"
-            " VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-            (row.get("ts") or time.time(),
-             self._campaign_id(self.campaign_key(camp.get("faction"),
-                                                 camp.get("campaign_uuid")),
-                               camp.get("faction")),
-             int(camp.get("turn") or 0),
-             row.get("screen"), row.get("root"), row.get("root_context"),
-             len(opts), _dumps(opts), row.get("chosen"), row.get("chosen_context"),
-             self._flag(row.get("executed")), self._flag(row.get("confirmed")),
-             self._flag(counted), row.get("refusal"), row.get("latency_ms"),
-             self._blob(_dumps(camp)),
-             self._blob(_dumps(row["world"])) if row.get("world") else None,
-             self._blob(_dumps(row["panel"])) if row.get("panel") else None,
-             row.get("policy")))
-        self.con.commit()
-
-
-    def finalize_stale_awaiting(self):
-        self._assert_writable("finalize_stale_awaiting")
-        n = self.con.execute(
-            "UPDATE taken SET refusal='campaign_died'"
-            " WHERE refusal='awaiting_execution'").rowcount
-        self.con.commit()
-        return int(n or 0)
-
-    def summary(self):
-        q = lambda s: self.con.execute(s).fetchone()[0]
-        return {"turns": q("SELECT COUNT(*) FROM turn_bounds"),
-                "decisions": q("SELECT COUNT(*) FROM decisions"),
-                "snapshots": q("SELECT COUNT(*) FROM entities"),
-                "offers": q("SELECT COUNT(*) FROM offers"),
-                "taken": q("SELECT COUNT(*) FROM taken"),
-                "counted": q("SELECT COUNT(*) FROM taken WHERE counted=1"),
-                "unconfirmed": q("SELECT COUNT(*) FROM taken WHERE executed=1 AND confirmed=0")}
+    def _skip_refusal_ids(self):
+        return [r[0] for r in self.con.execute(
+            "SELECT enum_id FROM dict.enum WHERE domain = 'refusal' AND key = ANY(%s)",
+            (list(_SKIP_REFUSALS),))]
 
     def max_decision_id(self):
-        r = self.con.execute("SELECT MAX(decision_id) FROM decisions").fetchone()
+        r = self.con.execute(
+            "SELECT MAX(decision_id) FROM corpus.decision").fetchone()
         return int(r[0]) if r and r[0] is not None else 0
 
     def window_floor(self, n):
         if not n or int(n) <= 0:
             return None
         r = self.con.execute(
-            "SELECT MIN(first_decision_id) FROM"
-            " (SELECT first_decision_id FROM campaigns"
-            " WHERE first_decision_id IS NOT NULL"
-            " ORDER BY first_decision_id DESC LIMIT %s) w", (int(n),)).fetchone()
+            "SELECT MIN(first_snapshot_id) FROM"
+            " (SELECT first_snapshot_id FROM corpus.campaign"
+            " WHERE first_snapshot_id IS NOT NULL"
+            " ORDER BY first_snapshot_id DESC LIMIT %s) w", (int(n),)).fetchone()
         return int(r[0]) if r and r[0] is not None else None
 
     def window_keys(self, n):
         if not n or int(n) <= 0:
             return None
         return {row[0] for row in self.con.execute(
-            "SELECT campaign_key FROM campaigns WHERE first_decision_id IS NOT NULL"
-            " ORDER BY first_decision_id DESC LIMIT %s", (int(n),))}
-
-    def _entities_and_offers(self, where="", args=()):
-        ents_by_dec = {}
-        for did, ei, ck, cid, feats in self.con.execute(
-                "SELECT e.decision_id,e.entity_seq,e.context_kind,e.context_id,b.z"
-                " FROM entities e JOIN blobs b ON b.blob_id=e.features_blob" + where +
-                " ORDER BY e.decision_id,e.entity_seq", args):
-            ents_by_dec.setdefault(did, []).append(
-                {"snapshot_id": did * S.MAX_ENTITIES_PER_DECISION + ei,
-                 "context_kind": ck, "context_id": cid,
-                 "state": json.loads(feats or "{}"), "offers": []})
-        w = where.replace("e.decision_id", "o.decision_id") if where else ""
-        for did, seq, ei, at, ak, params in self.con.execute(
-                "SELECT o.decision_id,o.offer_seq,o.entity_seq,a.action_type,a.action_key,"
-                "a.params FROM offers o"
-                " JOIN actions a ON a.action_id=o.action_id" + w +
-                " ORDER BY o.decision_id,o.offer_seq", args):
-            ents = ents_by_dec.get(did)
-            if ents is None or ei >= len(ents):
-                continue
-            ents[ei]["offers"].append(
-                {"offer_id": did * S.MAX_OFFERS_PER_DECISION + seq,
-                 "action_type": at, "key": ak,
-                 "params": json.loads(params or "{}")})
-        return ents_by_dec
+            "SELECT campaign_key FROM corpus.campaign"
+            " WHERE first_snapshot_id IS NOT NULL"
+            " ORDER BY first_snapshot_id DESC LIMIT %s", (int(n),))}
 
     def read_decision(self, decision_id):
-        row = self.con.execute(
-            "SELECT d.turn,c.campaign_key,bc.z,bw.z FROM decisions d"
-            " JOIN campaigns c ON c.campaign_id=d.campaign_id"
-            " LEFT JOIN blobs bc ON bc.blob_id=d.campaign_blob"
-            " LEFT JOIN blobs bw ON bw.blob_id=d.world_blob"
-            " WHERE d.decision_id=%s", (decision_id,)).fetchone()
-        if row is None:
-            raise KeyError("decision %s not in the store" % decision_id)
-        turn, ckey, cjson, wjson = row
-        ents = self._entities_and_offers(" WHERE e.decision_id=%s", (decision_id,))
-        return {"decision_id": decision_id, "turn": turn, "campaign_id": ckey,
-                "campaign": json.loads(cjson or "{}"), "world": json.loads(wjson or "{}"),
-                "entities": ents.get(decision_id, [])}
+        return hydrate.record(self.con, decision_id)
 
-    def decision_index(self):
-        return [(int(did), ck, ts or 0.0) for did, ck, ts in self.con.execute(
-            "SELECT d.decision_id,c.campaign_key,d.ts FROM decisions d"
-            " JOIN campaigns c ON c.campaign_id=d.campaign_id"
-            " ORDER BY d.decision_id")]
+    def stored_offers(self, decision_id):
+        return [{'offer_seq': seq, 'entity_seq': eseq, 'action_type': at, 'key': ak,
+                 'slot_index': slot, 'score': score, 'exploit': exploit}
+                for seq, eseq, at, ak, slot, score, exploit in self.con.execute(
+                    "SELECT o.offer_seq, o.entity_seq, ty.key, a.action_key,"
+                    " o.slot_index, o.score, o.exploit FROM corpus.offer o"
+                    " JOIN dict.action a ON a.action_id = o.action_id"
+                    " JOIN dict.action_type ty ON ty.id = a.action_type_id"
+                    " WHERE o.decision_id = %s ORDER BY o.offer_seq", (decision_id,))]
 
-    def taken_map(self, confirmed_only=False):
+    def attach_offers(self, record):
+        return hydrate.offers(self.con, record)
+
+    def _taken_sql(self, extra_where, args):
+        skip = self._skip_refusal_ids()
+        return ("SELECT t.decision_id, ek.key, ch.cqi, dr.key, df.key,"
+                " ty.key, a.action_key, t.counted, t.ts, t.entity_seq, c.campaign_key"
+                " FROM corpus.taken t"
+                " JOIN corpus.campaign c ON c.campaign_id = t.campaign_id"
+                " JOIN dict.faction df ON df.id = c.faction_id"
+                " JOIN dict.action a ON a.action_id = t.action_id"
+                " JOIN dict.action_type ty ON ty.id = a.action_type_id"
+                " LEFT JOIN corpus.snapshot_entity se ON se.snapshot_id = t.decision_id"
+                " AND se.entity_seq = t.entity_seq"
+                " LEFT JOIN dict.enum ek ON ek.enum_id = se.kind_id"
+                " LEFT JOIN corpus.character ch ON ch.character_id = se.character_id"
+                " LEFT JOIN dict.region dr ON dr.id = se.region_id"
+                " WHERE (t.refusal_id IS NULL OR t.refusal_id != ALL(%s))"
+                + extra_where + " ORDER BY t.decision_id"), [skip] + args
+
+    @staticmethod
+    def _identity(kind, cqi, region, faction, at, ak):
+        if kind in ('lord', 'hero'):
+            cid = str(cqi)
+        elif kind == 'province':
+            cid = region
+        elif kind == 'campaign':
+            cid = faction
+        else:
+            kind, cid = 'campaign', 'campaign'
+        return (kind, str(cid), at, str(ak))
+
+    @timed('taken_map')
+    def taken_map(self, confirmed_only=False, min_decision=None):
+        sql, args = self._taken_sql(" AND t.decision_id >= %s",
+                                    [int(min_decision or 0)])
         out = {}
-        for did, ck, cid, at, ak, counted, refusal in self.con.execute(
-                "SELECT t.decision_id,a.context_kind,a.context_id,a.action_type,a.action_key,"
-                "t.counted,t.refusal FROM taken t LEFT JOIN actions a ON a.action_id=t.action_id"):
-            if refusal in ("awaiting_execution", "campaign_died"):
-                continue
+        for did, kind, cqi, region, faction, at, ak, counted, ts, eseq, ckey \
+                in self.con.execute(sql, tuple(args)):
             if confirmed_only and not counted:
                 continue
-            out[did] = ((ck, str(cid), at, str(ak)), bool(counted))
+            out[did] = (self._identity(kind, cqi, region, faction, at, ak),
+                        bool(counted))
         return out
 
+    @timed('action_sequence')
+    def action_sequence(self, min_decision=None):
+        sql, args = self._taken_sql(
+            " AND ty.key != 'noop' AND t.decision_id >= %s", [int(min_decision or 0)])
+        return [(ckey, ts, at) for did, kind, cqi, region, faction, at, ak, counted,
+                ts, eseq, ckey in self.con.execute(sql, tuple(args))]
+
+    @timed('labelled_decisions')
     def labelled_decisions(self, confirmed_only=False, after=None, before=None):
         rng, args = "", []
         if after is not None:
-            rng += " AND decision_id>%s"
+            rng += " AND t.decision_id > %s"
             args.append(int(after))
         if before is not None:
-            rng += " AND decision_id<=%s"
+            rng += " AND t.decision_id <= %s"
             args.append(int(before))
-
-        taken = {}
-        for did, ck, cid, at, ak, counted, refusal in self.con.execute(
-                "SELECT t.decision_id,a.context_kind,a.context_id,a.action_type,a.action_key,"
-                "t.counted,t.refusal FROM taken t"
-                " LEFT JOIN actions a ON a.action_id=t.action_id"
-                + ((" WHERE 1=1" + rng.replace("decision_id", "t.decision_id")) if rng else ""),
-                args):
-            if refusal in ("awaiting_execution", "campaign_died"):
-                continue
+        sql, args = self._taken_sql(rng, args)
+        out = []
+        for did, kind, cqi, region, faction, at, ak, counted, ts, eseq, ckey \
+                in self.con.execute(sql, tuple(args)):
             if confirmed_only and not counted:
                 continue
-            taken[did] = ((ck, str(cid), at, str(ak)), bool(counted))
-        if not taken:
-            return []
-
-        w = (" WHERE 1=1" + rng.replace("decision_id", "e.decision_id")) if rng else ""
-        ents_by_dec = self._entities_and_offers(w, args)
-
-        out = []
-        for did, turn, ckey, cjson, wjson in self.con.execute(
-                "SELECT d.decision_id,d.turn,c.campaign_key,bc.z,bw.z"
-                " FROM decisions d JOIN campaigns c ON c.campaign_id=d.campaign_id"
-                " LEFT JOIN blobs bc ON bc.blob_id=d.campaign_blob"
-                " LEFT JOIN blobs bw ON bw.blob_id=d.world_blob"
-                + ((" WHERE 1=1" + rng.replace("decision_id", "d.decision_id")) if rng else "")
-                + " ORDER BY d.decision_id", args):
-            hit = taken.get(did)
-            if hit is None:
-                continue
-            out.append(({"decision_id": did, "turn": turn, "campaign_id": ckey,
-                         "campaign": json.loads(cjson or "{}"),
-                         "world": json.loads(wjson or "{}"),
-                         "entities": ents_by_dec.get(did, [])}, hit[0], hit[1]))
+            rec = hydrate.record(self.con, did)
+            hydrate.offers(self.con, rec)
+            out.append((rec, self._identity(kind, cqi, region, faction, at, ak),
+                        bool(counted)))
         return out
 
+    @timed('taken_rows')
     def taken_rows(self, min_decision=None):
-        cur = self.con.cursor(name="taken_rows_stream")
-        cur.itersize = 50
-        try:
-            cur.execute(
-                "SELECT t.decision_id,d.turn,c.campaign_key,bc.z,bw.z,"
-                "a.context_kind,a.context_id,a.action_type,a.action_key,a.params,"
-                "t.counted,t.entity_seq,be.z,pv.ids,pv.states"
-                " FROM taken t"
-                " JOIN decisions d ON d.decision_id=t.decision_id"
-                " JOIN campaigns c ON c.campaign_id=d.campaign_id"
-                " LEFT JOIN actions a ON a.action_id=t.action_id"
-                " LEFT JOIN blobs bc ON bc.blob_id=d.campaign_blob"
-                " LEFT JOIN blobs bw ON bw.blob_id=d.world_blob"
-                " LEFT JOIN entities e ON e.decision_id=t.decision_id"
-                " AND e.entity_seq=t.entity_seq"
-                " LEFT JOIN blobs be ON be.blob_id=e.features_blob"
-                " LEFT JOIN LATERAL ("
-                "SELECT array_agg(e2.context_id ORDER BY e2.entity_seq) AS ids,"
-                " array_agg(b2.z ORDER BY e2.entity_seq) AS states"
-                " FROM entities e2 JOIN blobs b2 ON b2.blob_id=e2.features_blob"
-                " WHERE e2.decision_id=t.decision_id"
-                " AND e2.context_kind='province') pv ON TRUE"
-                " WHERE (t.refusal IS NULL OR"
-                " t.refusal NOT IN ('awaiting_execution','campaign_died'))"
-                " AND t.decision_id >= %s"
-                " ORDER BY t.decision_id",
-                (int(min_decision) if min_decision is not None else 0,))
-            for (did, turn, ckey, cjson, wjson, ck, cid, at, ak, params, counted,
-                 ent_seq, ejson, prov_ids, prov_states) in cur:
-                ents = [{"context_kind": "province", "context_id": pid,
-                         "state": json.loads(pz or "{}"), "offers": []}
-                        for pid, pz in zip(prov_ids or (), prov_states or ())]
-                if ent_seq is not None and at is not None:
-                    hit = None
-                    if ck == "province":
-                        for e in ents:
-                            if e["context_id"] == str(cid):
-                                hit = e
-                                break
-                    if hit is None:
-                        hit = {"context_kind": ck, "context_id": str(cid),
-                               "state": json.loads(ejson or "{}"), "offers": []}
-                        ents.append(hit)
-                    hit["offers"].append({"action_type": at, "key": ak,
-                                          "params": json.loads(params or "{}")})
-                yield ({"decision_id": did, "turn": turn, "campaign_id": ckey,
-                        "campaign": json.loads(cjson or "{}"),
-                        "world": json.loads(wjson or "{}"),
-                        "entities": ents},
-                       (ck, str(cid), at, str(ak)), bool(counted))
-        finally:
-            cur.close()
+        sql, args = self._taken_sql(" AND t.decision_id >= %s",
+                                    [int(min_decision or 0)])
+        rows = self.con.execute(sql, tuple(args)).fetchall()
+        for did, kind, cqi, region, faction, at, ak, counted, ts, eseq, ckey in rows:
+            rec = hydrate.record(self.con, did)
+            hydrate.attach_taken(self.con, rec, eseq, at, ak)
+            yield (rec, self._identity(kind, cqi, region, faction, at, ak),
+                   bool(counted))
 
+    @timed('campaign_snapshots')
     def campaign_snapshots(self, min_decision=None):
+        dc = hydrate._dicts(self.con)
+        types = hydrate.legacy_types()
         out = []
-        for ckey, ts, cjson, wjson in self.con.execute(
-                "SELECT c.campaign_key,d.ts,bc.z,bw.z FROM decisions d"
-                " JOIN campaigns c ON c.campaign_id=d.campaign_id"
-                " LEFT JOIN blobs bc ON bc.blob_id=d.campaign_blob"
-                " LEFT JOIN blobs bw ON bw.blob_id=d.world_blob"
-                " WHERE d.decision_id >= %s"
-                " ORDER BY d.decision_id",
-                (int(min_decision) if min_decision is not None else 0,)):
-            try:
-                c = json.loads(cjson) if cjson else {}
-            except Exception:
-                c = {}
-            try:
-                w = json.loads(wjson) if wjson else {}
-            except Exception:
-                w = {}
-            out.append((ckey, ts or 0.0, c, w))
+        for did, ts, ckey in self.con.execute(
+                "SELECT d.decision_id, s.ts, c.campaign_key FROM corpus.decision d"
+                " JOIN corpus.snapshot s ON s.snapshot_id = d.decision_id"
+                " JOIN corpus.campaign c ON c.campaign_id = s.campaign_id"
+                " WHERE d.decision_id >= %s ORDER BY d.decision_id",
+                (int(min_decision or 0),)).fetchall():
+            camp = hydrate._campaign_dict(self.con, dc, did, ckey) or {}
+            world = hydrate._world_dict(self.con, dc, did)
+            out.append((ckey, ts or 0.0,
+                        hydrate.canon.legacy_view(camp, types['CB']),
+                        hydrate.canon.legacy_view(world, types['WB'])))
         return out
 
-    def action_sequence(self, min_decision=None):
-        return self.con.execute(
-            "SELECT c.campaign_key,t.ts,a.action_type FROM taken t"
-            " JOIN decisions d ON d.decision_id=t.decision_id"
-            " JOIN campaigns c ON c.campaign_id=d.campaign_id"
-            " LEFT JOIN actions a ON a.action_id=t.action_id"
-            " WHERE a.action_type != 'noop'"
-            " AND (t.refusal IS NULL OR"
-            " t.refusal NOT IN ('awaiting_execution','campaign_died'))"
-            " AND t.decision_id >= %s"
-            " ORDER BY t.decision_id",
-            (int(min_decision) if min_decision is not None else 0,)).fetchall()
-
-    def interrupt_rows(self):
-        out = []
-        for (iid, ts, camp, turn, kind, opts, chosen, executed, confirmed, counted, refusal,
-             cjson, wjson, pjson) in self.con.execute(
-                "SELECT i.interrupt_id,i.ts,c.campaign_key,i.turn,i.kind,i.options_json,"
-                "i.chosen,i.executed,i.confirmed,i.counted,i.refusal,bc.z,bw.z,"
-                "bp.z FROM interrupts i"
-                " LEFT JOIN campaigns c ON c.campaign_id=i.campaign_id"
-                " LEFT JOIN blobs bc ON bc.blob_id=i.campaign_blob"
-                " LEFT JOIN blobs bw ON bw.blob_id=i.world_blob"
-                " LEFT JOIN blobs bp ON bp.blob_id=i.panel_blob"
-                " ORDER BY i.interrupt_id"):
-            try:
-                options = json.loads(opts) if opts else {}
-            except Exception:
-                options = {}
-            try:
-                campaign = json.loads(cjson) if cjson else {}
-            except Exception:
-                campaign = {}
-            out.append({"interrupt_id": iid, "ts": ts, "campaign_id": camp, "turn": turn,
-                        "screen": kind, "options": options, "chosen": chosen,
-                        "executed": executed, "confirmed": confirmed, "counted": counted,
-                        "refusal": refusal, "campaign": campaign,
-                        "world": (json.loads(wjson) if wjson else {}),
-                        "panel": (json.loads(pjson) if pjson else {})})
-        return out
-
+    @timed('target_series')
     def target_series(self):
         out = {}
         for camp, turn, inc, setl, allies, vass, rank, lvl in self.con.execute(
-                "SELECT campaign_id,turn,income,settlements,allies,vassals,power_rank,lord_level"
-                " FROM turn_open"):
+                "SELECT c.campaign_key, o.turn, o.income, o.settlements, o.allies,"
+                " o.vassals, o.power_rank, o.lord_level FROM corpus.turn_open o"
+                " JOIN corpus.campaign c USING (campaign_id)"):
             out.setdefault(camp, {})[int(turn)] = {
                 "income": inc or 0.0, "settlements": setl or 0.0,
                 "power_rank": (rank if rank is not None else -50.0),
@@ -776,30 +241,81 @@ class DecisionStore:
                 "lord_level": lvl or 0.0}
         return out
 
-    def entity_series(self):
-        out = {}
-        for camp, turn, kind, cid, feats in self.con.execute(
-                "SELECT c.campaign_key,d.turn,e.context_kind,e.context_id,b.z"
-                " FROM turn_bounds tb"
-                " JOIN decisions d ON d.decision_id=tb.open_id"
-                " JOIN entities e ON e.decision_id=d.decision_id"
-                " JOIN blobs b ON b.blob_id=e.features_blob"
-                " LEFT JOIN campaigns c ON c.campaign_id=d.campaign_id"):
-            if kind in ("lord", "hero"):
-                key = "rank"
-            elif kind == "province":
-                key = "settlement_level"
-            else:
-                continue
-            try:
-                val = (json.loads(feats or "{}")).get(key)
-            except ValueError:
-                continue
-            if val is None:
-                continue
-            out.setdefault(camp, {}).setdefault((kind, str(cid)), {})[int(turn)] = float(val)
+    @timed('interrupt_rows')
+    def interrupt_rows(self, campaign_keys=None):
+        where, args = "", []
+        if campaign_keys is not None:
+            where = " AND c.campaign_key = ANY(%s)"
+            args.append(sorted(campaign_keys))
+        heads = self.con.execute(
+            "SELECT i.interrupt_id, s.ts, c.campaign_key, s.turn, ik.key, sa.key,"
+            " i.chosen, i.answer, i.executed, i.confirmed, i.counted, rf.key,"
+            " dd.key, di.key, i.root_context, ps.turn"
+            " FROM corpus.interrupt i"
+            " JOIN corpus.snapshot s ON s.snapshot_id = i.interrupt_id"
+            " JOIN corpus.campaign c ON c.campaign_id = s.campaign_id"
+            " JOIN dict.enum ik ON ik.enum_id = i.kind_id"
+            " JOIN dict.enum sa ON sa.enum_id = i.state_at_id"
+            " LEFT JOIN dict.enum rf ON rf.enum_id = i.refusal_id"
+            " LEFT JOIN dict.dilemma dd ON dd.id = i.dilemma_id"
+            " LEFT JOIN dict.incident di ON di.id = i.incident_id"
+            " LEFT JOIN corpus.snapshot ps ON ps.snapshot_id = i.prev_decision_id"
+            " WHERE TRUE" + where + " ORDER BY i.interrupt_id",
+            tuple(args)).fetchall()
+        ids = [h[0] for h in heads]
+        opts = {}
+        for iid, key, text, oid, answer, payload, exploit, score, gnn \
+                in self.con.execute(
+                    "SELECT interrupt_id, option_key, text, option_id, answer,"
+                    " payload, exploit, score, gnn FROM corpus.interrupt_option"
+                    " WHERE interrupt_id = ANY(%s) ORDER BY interrupt_id, ord",
+                    (ids,)):
+            opts.setdefault(iid, {})[key] = {
+                'text': text, 'option_id': oid, 'answer': answer,
+                'payload': list(payload or []), 'exploit': exploit, 'score': score,
+                'gnn': gnn}
+        panels = {}
+        for iid, ally, enemy, na, ne, rs, rt, cs, ct in self.con.execute(
+                "SELECT interrupt_id, ally_cqi, enemy_cqi, n_ally_armies,"
+                " n_enemy_armies, result_state, result_text, casualties_state,"
+                " casualties_text FROM corpus.interrupt_battle_panel"
+                " WHERE interrupt_id = ANY(%s)", (ids,)):
+            p = {'result': {'state': rs, 'text': rt},
+                 'casualties': {'state': cs, 'text': ct}}
+            if ally is not None:
+                p['ally_cqi'] = str(ally)
+            if enemy is not None:
+                p['enemy_cqi'] = str(enemy)
+            if na is not None:
+                p['n_ally_armies'] = na
+            if ne is not None:
+                p['n_enemy_armies'] = ne
+            panels[iid] = p
+        for (iid, att, attl, race, rel, ranks, setts, dem, off, tre, amtd, amto) \
+                in self.con.execute(
+                    "SELECT interrupt_id, attitude, attitude_label, race,"
+                    " reliability, strength_ranks, settlements, demands, offers,"
+                    " treaties, amount_demanded, amount_offered"
+                    " FROM corpus.interrupt_diplo_panel WHERE interrupt_id = ANY(%s)",
+                    (ids,)):
+            panels[iid] = {
+                'attitude': att, 'attitude_label': attl, 'race': race,
+                'reliability': list(rel or []), 'strength_ranks': list(ranks or []),
+                'settlements': setts, 'demands': list(dem or []),
+                'offers': list(off or []), 'treaties': list(tre or []),
+                'amount_demanded': amtd, 'amount_offered': amto}
+        out = []
+        for (iid, ts, ckey, turn, kind, state_at, chosen, answer, executed,
+             confirmed, counted, refusal, dkey, ikey, root_context, prev_turn) \
+                in heads:
+            screen_id = dkey or ikey or root_context
+            options = opts.get(iid) or {}
+            for m in options.values():
+                m.setdefault('dilemma_id', screen_id)
+            out.append({'interrupt_id': iid, 'ts': ts, 'campaign_id': ckey,
+                        'turn': turn, 'prev_turn': prev_turn, 'state_at': state_at,
+                        'screen': kind, 'options': options, 'chosen': chosen,
+                        'answer': answer, 'executed': executed,
+                        'confirmed': confirmed, 'counted': counted,
+                        'refusal': refusal, 'panel': panels.get(iid) or {}})
         return out
-
-
-    def layout_violations(self):
-        return self.con.execute(S.LAYOUT_INVARIANT).fetchone()[0]

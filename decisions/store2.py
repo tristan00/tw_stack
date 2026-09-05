@@ -296,21 +296,45 @@ class Store:
                 extra.update(self._char_derived(state))
             self._row(table, state, set_ids, extra)
 
+    def _entity_seqs(self, decision_id):
+        seqs = {}
+        for seq, kind, cqi, region in self.conn.execute(
+                "SELECT se.entity_seq, ek.key, ch.cqi, dr.key"
+                " FROM corpus.snapshot_entity se"
+                " JOIN dict.enum ek ON ek.enum_id = se.kind_id"
+                " LEFT JOIN corpus.character ch ON ch.character_id = se.character_id"
+                " LEFT JOIN dict.region dr ON dr.id = se.region_id"
+                " WHERE se.snapshot_id = %s ORDER BY se.entity_seq", (decision_id,)):
+            if kind in ('lord', 'hero'):
+                seqs[(kind, str(cqi))] = seq
+            elif kind == 'province':
+                seqs[(kind, region)] = seq
+            else:
+                seqs['campaign'] = seq
+        return seqs
+
+    def _seq_of(self, seqs, o):
+        ck = o.get('context_kind')
+        if ck == 'campaign':
+            return seqs.get('campaign')
+        return seqs.get((ck, str(o.get('context_id'))))
+
     def write_decide(self, decision_id, offers, pick, scores=None, timings=None,
                      req_id=None):
         t0 = time.time()
         log('write_decide enter decision_id=%s offers=%d' % (decision_id, len(offers or [])))
-        seqs = {(k, str(i)): s for s, (k, i) in enumerate(self.conn.execute(
-            "SELECT se.kind_id, COALESCE(ch.cqi::text, se.region_id::text)"
-            " FROM corpus.snapshot_entity se"
-            " LEFT JOIN corpus.character ch ON ch.character_id = se.character_id"
-            " WHERE se.snapshot_id = %s ORDER BY se.entity_seq", (decision_id,)))}
+        seqs = self._entity_seqs(decision_id)
         with self.conn.unit('U2'):
             rows = []
             for seq, o in enumerate(offers or []):
                 action = self._action(o.get('action_type'), o.get('key'))
-                rows.append((decision_id, seq, o.get('entity_seq') or 0, action,
-                             o.get('slot_index'), o.get('score'), o.get('exploit'),
+                slot = o.get('slot_index')
+                if slot is None:
+                    slot = (o.get('params') or {}).get('slot_index')
+                rows.append((decision_id, seq,
+                             (o.get('entity_seq') if o.get('entity_seq') is not None
+                              else self._seq_of(seqs, o)), action,
+                             slot, o.get('score'), o.get('exploit'),
                              o.get('rank'), o.get('pct_global'), o.get('gnn_impact'),
                              o.get('gnn_rank'), o.get('ggnn_score'), o.get('ggnn_rank')))
             if rows:
@@ -326,7 +350,15 @@ class Store:
             if timings:
                 self._timings(decision_id, timings)
             if pick:
-                self._taken(decision_id, pick)
+                if pick.get('offer_seq') is None:
+                    ident = (pick.get('context_kind'), str(pick.get('context_id')),
+                             pick.get('action_type'), str(pick.get('key')))
+                    for seq, o in enumerate(offers or []):
+                        if (o.get('context_kind'), str(o.get('context_id')),
+                                o.get('action_type'), str(o.get('key'))) == ident:
+                            pick = dict(pick, offer_seq=seq)
+                            break
+                self._taken(decision_id, pick, seqs)
             if req_id is not None:
                 self._respond(req_id, decision_id)
         log('write_decide exit %.1f ms' % ((time.time() - t0) * 1000))
@@ -361,18 +393,21 @@ class Store:
              hk.get('verify_log'), hk.get('active_from'), hk.get('post_attack'),
              hk.get('drain'), hk.get('resolve')))
 
-    def _taken(self, decision_id, pick):
+    def _taken(self, decision_id, pick, seqs=None):
         camp = self.conn.execute(
             "SELECT campaign_id FROM corpus.snapshot WHERE snapshot_id = %s",
             (decision_id,)).fetchone()[0]
         policy = self.dicts.resolve_enum('policy', [pick.get('policy')])
         awaiting = self.dicts.resolve_enum('refusal', ['awaiting_execution'])
+        eseq = pick.get('entity_seq')
+        if eseq is None and seqs is not None:
+            eseq = self._seq_of(seqs, pick)
         self.conn.execute(
             "INSERT INTO corpus.taken (decision_id, campaign_id, offer_seq, entity_seq,"
             " action_id, policy_id, ts, executed, confirmed, counted, refusal_id,"
             " latency_ms) VALUES (%s,%s,%s,%s,%s,%s,%s,false,false,false,%s,0)"
             " ON CONFLICT (decision_id) DO NOTHING",
-            (decision_id, camp, pick.get('offer_seq') or 0, pick.get('entity_seq') or 0,
+            (decision_id, camp, pick.get('offer_seq'), eseq,
              self._action(pick.get('action_type'), pick.get('key')),
              policy.get(pick.get('policy')), time.time(),
              awaiting['awaiting_execution']))

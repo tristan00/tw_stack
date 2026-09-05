@@ -149,15 +149,16 @@ def gather(runs_root=RUNS_ROOT, window=TRAIN_WINDOW_CAMPAIGNS):
                 seq.setdefault(camp_id, []).append((ts or 0.0, atype))
             for camp_id, ts, camp, world in s.campaign_snapshots(min_decision=floor):
                 snaps.setdefault(camp_id, []).append((ts, camp, world))
-            for r in s.interrupt_rows():
+            for r in s.interrupt_rows(campaign_keys=keys):
                 if not r.get("chosen"):
-                    continue
-                if keys is not None and r.get("campaign_id") not in keys:
                     continue
                 rts = r.get("ts") or 0.0
                 pre = [(c, w) for t, c, w in snaps.get(r.get("campaign_id")) or [] if rts >= t]
                 base, base_world = pre[-1] if pre else ({}, {})
-                d = decision_deltas(base, series.get(r.get("campaign_id")) or {}, r.get("turn"))
+                turn = (r.get("turn") if r.get("state_at") == "panel"
+                        else (r.get("prev_turn") if r.get("prev_turn") is not None
+                              else r.get("turn")))
+                d = decision_deltas(base, series.get(r.get("campaign_id")) or {}, turn)
                 if all(v is None for v in d.values()):
                     continue
                 past = [a for t, a in seq.get(r.get("campaign_id")) or [] if rts > t]

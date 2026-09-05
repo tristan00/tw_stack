@@ -35,10 +35,15 @@ def main(argv):
                 rec = st.read_decision(did)
             except KeyError:
                 continue
-            have = {(ck, cid, o["action_type"], str(o["key"]))
-                    for ck, cid, o in [(e["context_kind"], str(e["context_id"]), o)
-                                       for e in rec["entities"]
-                                       for o in e.get("offers") or []]}
+            ents = rec["entities"]
+            have = set()
+            for row in st.stored_offers(did):
+                eseq = row["entity_seq"]
+                if eseq is None or eseq >= len(ents):
+                    continue
+                e = ents[eseq]
+                have.add((e["context_kind"], str(e["context_id"]),
+                          row["action_type"], str(row["key"])))
             if not have:
                 continue
             checked += 1

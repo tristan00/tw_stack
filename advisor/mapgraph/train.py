@@ -128,8 +128,9 @@ def walk(runs_root=None, limit=None, log=print, workers=None, window=None):
         try:
             for camp, turns in st.target_series().items():
                 series.setdefault(camp, {}).update(turns)
-            live.append((db, st.max_decision_id(), st.taken_map(),
-                         st.window_floor(window)))
+            floor = st.window_floor(window)
+            live.append((db, st.max_decision_id(), st.taken_map(min_decision=floor),
+                         floor))
         finally:
             st.close()
 
