@@ -1,0 +1,27 @@
+{
+  "sample": "100:7",
+  "ts": 1788633740.010095,
+  "S3_schema_ms": 263.25201988220215,
+  "read_ms": 329.2877674102783,
+  "A1_encode_ms_per_record": 0.2878,
+  "records": 15390,
+  "copy": {
+    "ms": 1475.7091999053955,
+    "rows": 507590,
+    "rows_per_s": 343963,
+    "sets": 39533,
+    "members": 452667,
+    "synchronous_commit": "off"
+  },
+  "V1": {
+    "ok": 15390,
+    "bad": 0,
+    "ms": 5999.180793762207,
+    "mismatches": [],
+    "hydrate_ms_per_record": 0.1292
+  },
+  "A2_hydrate_ms_per_record": 0.1292,
+  "A5_copy_rows_per_s": 343963,
+  "total_ms": 12726.32122039795,
+  "projected_full_run_min": 21.2
+}
