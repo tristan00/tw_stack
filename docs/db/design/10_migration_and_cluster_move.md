@@ -43,7 +43,7 @@ Data checksums are enabled at `initdb --data-checksums` (a new cluster is the on
 2. D: free ≥ 100 GB (need ≈ 46 GB peak, 06 §6.5, m5); `D:\pg17` absent or empty.
 3. C: cluster reachable; `pgpass.conf` present (R6 H); `postgres` superuser usable for `pg_dump` of `tw_stack` and `optuna` only (the forbidden databases are not dumped: `-d tw_stack`, `-d optuna` explicitly).
 4. Stack down: `python runctl.py down`; `HARNESS_OFF=1` exported in the shell that will run the harness later; `pg_stat_activity` on C: shows no `tw` client backends (`application_name` is empty today, so the check is "0 client backends of user tw").
-5. Reference inputs present: `db.pack`, `local_en.pack`, `schema_wh3.ron`, `Warhammer3.exe` (04).
+5. Reference inputs present (paths verified 2026-09-05): `<game>\data\db.pack`, `<game>\data\local_en.pack`, `D:\twdata\reference\ui3_extraction\schema_wh3.ron` (04 §1; not beside the packs), `<game>\Warhammer3.exe`, where `<game>` = `D:\SteamLibrary\steamapps\common\Total War WARHAMMER III` (04).
 
 ## 10.4 Ordered steps with commands
 
