@@ -1,0 +1,43 @@
+{
+  "CB": {
+    "n": 2070,
+    "exact": 2070,
+    "textual_only": 0,
+    "semantic": 0,
+    "paths": 13,
+    "conflicting_paths": {},
+    "failures": {},
+    "first_diff": null
+  },
+  "WB": {
+    "n": 2070,
+    "exact": 633,
+    "textual_only": 1437,
+    "semantic": 0,
+    "paths": 28,
+    "conflicting_paths": {
+      "armies[].hp": [
+        "float",
+        "int"
+      ],
+      "hostiles[].hp": [
+        "float",
+        "int"
+      ]
+    },
+    "failures": {
+      "textual_only": 1437
+    },
+    "first_diff": null
+  },
+  "EB": {
+    "n": 11250,
+    "exact": 11250,
+    "textual_only": 0,
+    "semantic": 0,
+    "paths": 77,
+    "conflicting_paths": {},
+    "failures": {},
+    "first_diff": null
+  }
+}
