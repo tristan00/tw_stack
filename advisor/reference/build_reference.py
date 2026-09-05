@@ -1,901 +1,500 @@
-import json
+from __future__ import annotations
+
+import argparse
+import hashlib
 import os
-import re
-import struct
 import sys
 import time
 
-import zstandard as zstd
-
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-import common
+
+from advisor.reference import decode, packs, ron_schema
 from decisions import pg
 
-GAME = common.GAME_DATA_DIR
-HAS_INDEX_WITH_TIMESTAMPS = 0x40
+PG_TYPE = {
+    'StringU8': 'TEXT', 'OptionalStringU8': 'TEXT', 'StringU16': 'TEXT',
+    'OptionalStringU16': 'TEXT', 'I16': 'SMALLINT', 'I32': 'INTEGER',
+    'I64': 'BIGINT', 'OptionalI32': 'INTEGER', 'F32': 'REAL',
+    'F64': 'DOUBLE PRECISION', 'Boolean': 'BOOLEAN', 'ColourRGB': 'INTEGER',
+}
 
-_KEYS = {"captive_options": ("record_key",),
-         "captive_binding": ("entity_type", "entity_key", "button"),
-         "agent_permitted_subtypes": ("faction", "agent", "subtype"),
-         "meta": ("k",)}
+NULLABLE = {'OptionalStringU8', 'OptionalStringU16', 'OptionalI32'}
 
-
-def _rep(cur, table, row):
-    keys = _KEYS.get(table, ("key",))
-    cur.execute("DELETE FROM %s WHERE %s"
-                % (table, " AND ".join("%s=%%s" % k for k in keys)),
-                tuple(row[:len(keys)]))
-    cur.execute("INSERT INTO %s VALUES (%s)" % (table, ", ".join(["%s"] * len(row))),
-                tuple(row))
-
-HERE = os.path.dirname(os.path.abspath(__file__))
-SCHEMA_JSON = os.path.join(HERE, "schema_db.json")
-
-GUID_MARKER = b"\xfd\xfe\xfc\xff"
-VERSION_MARKER = b"\xfc\xfd\xfe\xff"
+FK_MIN_RESOLVED = 0.999
+FK_INDEX_MIN_ROWS = 1000
+LOC_PACK_PREFIX = 'local_en'
 
 
-def parse_pack(path):
-    d = open(path, "rb").read()
-    assert d[:4] == b"PFH5", d[:4]
-    bitmask, _pack_count, pidx, fcount, fidx = struct.unpack_from("<5I", d, 4)
-    flags = bitmask & ~15
-    fp = 28 + pidx
-    ents = []
-    for _ in range(fcount):
-        size = struct.unpack_from("<I", d, fp)[0]; fp += 4
-        if flags & HAS_INDEX_WITH_TIMESTAMPS:
-            fp += 4
-        comp = d[fp]; fp += 1
-        end = d.index(b"\x00", fp); name = d[fp:end].decode("latin-1"); fp = end + 1
-        ents.append((name, size, comp))
-    off = 28 + pidx + fidx
+def log(msg):
+    sys.stderr.write('%.3f  refbuild %s\n' % (time.time(), msg))
+
+
+def table_name(stem):
+    return stem[:-7] if stem.endswith('_tables') else stem
+
+
+MAX_IDENT = 63
+
+
+def db_column(name):
+    if len(name.encode('utf-8')) <= MAX_IDENT:
+        return name
+    digest = hashlib.sha1(name.encode('utf-8')).hexdigest()[:6]
+    return name[:MAX_IDENT - 7] + '_' + digest
+
+
+def quote(name):
+    return '"%s"' % db_column(name).replace('"', '""')
+
+
+def column_sql(field, in_key):
+    ft = field['field_type']
+    pg_type = PG_TYPE[ft]
+    if ft in NULLABLE and not in_key:
+        return '%s %s' % (quote(field['name']), pg_type)
+    if ft in NULLABLE and in_key:
+        return "%s %s NOT NULL DEFAULT ''" % (quote(field['name']), pg_type)
+    return '%s %s NOT NULL' % (quote(field['name']), pg_type)
+
+
+def load_packs_and_schema():
+    defs, schema_version = ron_schema.load(packs.SCHEMA_RON)
+    found = packs.discover()
+    return defs, schema_version, found
+
+
+def collect_tables(defs, found):
+    t0 = time.time()
+    log('decode enter')
+    tables, meta, missing = {}, {}, []
+    for pack in found:
+        for entry in pack['index']:
+            name = entry[0]
+            if not name.startswith('db/'):
+                continue
+            parts = name.split('/')
+            if len(parts) < 3:
+                continue
+            stem = parts[1]
+            blob = packs.extract(pack['path'], entry)
+            if stem not in defs:
+                missing.append(stem)
+                meta[stem] = {'pack_table': stem, 'version': 0, 'source_pack': pack['name'],
+                              'n_rows': 0, 'n_cols': 0, 'key_cols': [], 'key_unique': True,
+                              'raw_bytes': entry[2], 'fields': []}
+                continue
+            guid, version, n, p = decode.parse_header(blob)
+            if version not in defs[stem]:
+                version = max(v for v in defs[stem] if isinstance(v, int))
+            decl = defs[stem][version]
+            _v, raw = decode.decode_table(blob, decl)
+            order = sorted(range(len(decl)), key=lambda i: decl[i]['ca_order'])
+            fields = [decl[i] for i in order]
+            rows = [tuple(row[i] for i in order) for row in raw]
+            key_cols = [f['name'] for f in fields if f['is_key']]
+            tables[stem] = rows
+            meta[stem] = {'pack_table': stem, 'version': version,
+                          'source_pack': pack['name'], 'n_rows': len(rows),
+                          'n_cols': len(fields), 'key_cols': key_cols,
+                          'key_unique': True, 'raw_bytes': entry[2], 'fields': fields}
+    log('decode exit %.0f ms  %d tables  %d rows  %d without a definition'
+        % ((time.time() - t0) * 1000, len(tables),
+           sum(len(v) for v in tables.values()), len(missing)))
+    return tables, meta, missing
+
+
+def collect_loc(found, defs):
+    t0 = time.time()
+    log('loc enter')
+    prefixes = {}
+    for stem, versions in defs.items():
+        tbl = table_name(stem)
+        for vkey, fields in versions.items():
+            if isinstance(vkey, tuple):
+                for f in fields:
+                    name = f['name'] if isinstance(f, dict) else f
+                    prefixes['%s_%s_' % (tbl, name)] = (tbl, name)
+                continue
+            for f in fields:
+                if f['field_type'] in ('StringU8', 'OptionalStringU8'):
+                    prefixes.setdefault('%s_%s_' % (tbl, f['name']), (tbl, f['name']))
+    log('loc prefix map %d entries' % len(prefixes))
+    rows, seen = [], set()
+    packs_used = []
+    for pack in found:
+        if not pack['name'].startswith(LOC_PACK_PREFIX):
+            continue
+        used = 0
+        for entry in pack['index']:
+            name = entry[0]
+            if not name.endswith('.loc'):
+                continue
+            blob = packs.extract(pack['path'], entry)
+            if blob[0:2] != bytes([0xFF, 0xFE]) or blob[2:5] != b'LOC':
+                continue
+            stem = table_name(os.path.basename(name)[:-4].rstrip('_'))
+            for key, text in decode.decode_loc(blob):
+                if key in seen:
+                    continue
+                seen.add(key)
+                best = None
+                cut = 0
+                pos = key.find('_')
+                while pos != -1:
+                    cand = prefixes.get(key[:pos + 1])
+                    if cand is not None:
+                        best, cut = cand, pos + 1
+                    pos = key.find('_', pos + 1)
+                if best is not None:
+                    rows.append((best[0], best[1], key[cut:], key, text))
+                else:
+                    rows.append((stem, '', key, key, text))
+            used += 1
+        if used:
+            packs_used.append('%s(%d)' % (pack['name'], used))
+    matched = sum(1 for r in rows if r[1])
+    log('loc exit %.0f ms  %d entries from %s  %d matched a <tbl>_<col>_ prefix (%.1f%%)'
+        % ((time.time() - t0) * 1000, len(rows), ','.join(packs_used), matched,
+           100.0 * matched / max(len(rows), 1)))
+    return rows
+
+
+def drop_schema_batched(con, schema, batch=200):
+    rows = [r[0] for r in con.execute(
+        "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace"
+        " WHERE n.nspname = %s AND c.relkind = 'r'", (schema,))]
+    for i in range(0, len(rows), batch):
+        con.execute('DROP TABLE IF EXISTS %s CASCADE'
+                    % ', '.join('%s.%s' % (schema, quote(r)) for r in rows[i:i + batch]))
+        con.commit()
+    con.execute('DROP SCHEMA IF EXISTS %s CASCADE' % schema)
+    con.commit()
+
+
+def create_and_copy(con, tables, meta):
+    t0 = time.time()
+    log('create+copy enter')
+    total = 0
+    done = 0
+    for stem, rows in tables.items():
+        info = meta[stem]
+        fields = info['fields']
+        keys = set(info['key_cols'])
+        cols = ', '.join(column_sql(f, f['name'] in keys) for f in fields)
+        tbl = table_name(stem)
+        con.execute('CREATE TABLE ref_build.%s (%s)' % (quote(tbl), cols))
+        if not rows:
+            continue
+        names = ', '.join(quote(f['name']) for f in fields)
+        nullable_key = [i for i, f in enumerate(fields)
+                        if f['field_type'] in NULLABLE and f['name'] in keys]
+        with con.cursor().copy(
+                'COPY ref_build.%s (%s) FROM STDIN (FORMAT binary)' % (quote(tbl), names)) as cp:
+            cp.set_types([sql_copy_type(f) for f in fields])
+            for row in rows:
+                if nullable_key:
+                    row = list(row)
+                    for i in nullable_key:
+                        if row[i] is None:
+                            row[i] = ''
+                cp.write_row(row)
+        total += len(rows)
+        done += 1
+        if done % 200 == 0:
+            con.commit()
+    con.commit()
+    log('create+copy exit %.0f ms  %d tables  %d rows'
+        % ((time.time() - t0) * 1000, len(tables), total))
+    return total
+
+
+COPY_TYPE = {
+    'StringU8': 'text', 'OptionalStringU8': 'text', 'StringU16': 'text',
+    'OptionalStringU16': 'text', 'I16': 'int2', 'I32': 'int4', 'I64': 'int8',
+    'OptionalI32': 'int4', 'F32': 'float4', 'F64': 'float8',
+    'Boolean': 'bool', 'ColourRGB': 'int4',
+}
+
+
+def sql_copy_type(field):
+    return COPY_TYPE[field['field_type']]
+
+
+def add_primary_keys(con, meta):
+    t0 = time.time()
+    log('primary keys enter')
+    n = dup = 0
+    for stem, info in meta.items():
+        if not info['key_cols'] or not info['fields']:
+            continue
+        tbl = table_name(stem)
+        cols = ', '.join(quote(c) for c in info['key_cols'])
+        try:
+            con.execute('ALTER TABLE ref_build.%s ADD PRIMARY KEY (%s)' % (quote(tbl), cols))
+            n += 1
+            if n % 200 == 0:
+                con.commit()
+        except Exception as exc:
+            con.rollback()
+            info['key_unique'] = False
+            dup += 1
+            if dup <= 3:
+                log('duplicate key on %s: %s' % (tbl, str(exc)[:90]))
+    log('primary keys exit %.0f ms  %d declared  %d tables with duplicate keys'
+        % ((time.time() - t0) * 1000, n, dup))
+    return dup
+
+
+def relations(defs, meta):
     out = []
-    for name, size, comp in ents:
-        out.append((name, off, size, comp)); off += size
-    return out, d
-
-
-def read_file(files, d, name):
-    for n, off, size, comp in files:
-        if n == name:
-            b = d[off:off + size]
-            if comp:
-                dsz = struct.unpack_from("<I", b, 0)[0]
-                return zstd.ZstdDecompressor().decompress(b[4:], max_output_size=dsz)
-            return b
-    return None
-
-
-def decode_loc(b):
-    assert b[0:2] == b"\xff\xfe" and b[2:5] == b"LOC"
-    count = struct.unpack_from("<I", b, 10)[0]
-    p = 14
-    out = {}
-    for _ in range(count):
-        kl = struct.unpack_from("<H", b, p)[0]; p += 2
-        k = b[p:p + kl * 2].decode("utf-16-le"); p += kl * 2
-        vl = struct.unpack_from("<H", b, p)[0]; p += 2
-        v = b[p:p + vl * 2].decode("utf-16-le", errors="replace"); p += vl * 2
-        p += 1
-        out[k] = v
+    present = {table_name(s) for s in meta}
+    for stem, info in meta.items():
+        for f in info.get('fields') or []:
+            ref = f.get('is_reference')
+            if not ref:
+                continue
+            if isinstance(ref, dict):
+                ref = ref.get('_positional') or ref.get('_args') or []
+            if isinstance(ref, (list, tuple)) and len(ref) >= 2:
+                tgt_tbl, tgt_col = table_name(str(ref[0])), str(ref[1])
+            elif isinstance(ref, str) and '.' in ref:
+                a, b = ref.split('.', 1)
+                tgt_tbl, tgt_col = table_name(a), b
+            else:
+                continue
+            if tgt_tbl not in present:
+                out.append((table_name(stem), f['name'], tgt_tbl, tgt_col, False, None))
+                continue
+            out.append((table_name(stem), f['name'], tgt_tbl, tgt_col, True, None))
     return out
 
 
-class _Reader:
-
-    def __init__(self, b, p=0):
-        self.b = b
-        self.p = p
-
-    def u16(self):
-        v = struct.unpack_from("<H", self.b, self.p)[0]; self.p += 2; return v
-
-    def i16(self):
-        v = struct.unpack_from("<h", self.b, self.p)[0]; self.p += 2; return v
-
-    def i32(self):
-        v = struct.unpack_from("<i", self.b, self.p)[0]; self.p += 4; return v
-
-    def i64(self):
-        v = struct.unpack_from("<q", self.b, self.p)[0]; self.p += 8; return v
-
-    def u32(self):
-        v = struct.unpack_from("<I", self.b, self.p)[0]; self.p += 4; return v
-
-    def f32(self):
-        v = struct.unpack_from("<f", self.b, self.p)[0]; self.p += 4; return v
-
-    def f64(self):
-        v = struct.unpack_from("<d", self.b, self.p)[0]; self.p += 8; return v
-
-    def boolean(self):
-        v = self.b[self.p]; self.p += 1; return bool(v)
-
-    def s_u8(self):
-        n = self.u16(); s = self.b[self.p:self.p + n].decode("utf-8", "replace"); self.p += n; return s
-
-    def opt_s_u8(self):
-        flag = self.b[self.p]; self.p += 1
-        return self.s_u8() if flag else ""
-
-    def s_u16(self):
-        n = self.u16(); s = self.b[self.p:self.p + n * 2].decode("utf-16-le", "replace"); self.p += n * 2; return s
-
-    def opt_s_u16(self):
-        flag = self.b[self.p]; self.p += 1
-        return self.s_u16() if flag else ""
-
-
-def _read_field(r, ft):
-    if ft == "StringU8": return r.s_u8()
-    if ft == "OptionalStringU8": return r.opt_s_u8()
-    if ft == "StringU16": return r.s_u16()
-    if ft == "OptionalStringU16": return r.opt_s_u16()
-    if ft == "Boolean": return r.boolean()
-    if ft == "I16": return r.i16()
-    if ft == "I32": return r.i32()
-    if ft == "I64": return r.i64()
-    if ft == "F32": return round(r.f32(), 4)
-    if ft == "F64": return round(r.f64(), 4)
-    if ft == "ColourRGB":
-        v = r.u32(); return "#%06X" % (v & 0xFFFFFF)
-    if ft == "OptionalI32":
-        flag = r.b[r.p]; r.p += 1; return r.i32() if flag else None
-    raise ValueError("unknown field_type " + ft)
-
-
-def parse_db_header(b):
-    p = 0
-    guid = None
-    if b[0:4] == GUID_MARKER:
-        p = 4
-        n = struct.unpack_from("<H", b, p)[0]; p += 2
-        guid = b[p:p + n * 2].decode("utf-16-le", "replace"); p += n * 2
-    version = 0
-    if b[p:p + 4] == VERSION_MARKER:
-        p += 4
-        version = struct.unpack_from("<I", b, p)[0]; p += 4
-    p += 1
-    row_count = struct.unpack_from("<I", b, p)[0]; p += 4
-    return guid, version, row_count, p
-
-
-def load_db_schema(path=SCHEMA_JSON):
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
-
-
-def decode_db_table(files, d, table, schema):
-    entries = [(n, off, sz, c) for (n, off, sz, c) in files
-               if n.replace("\\", "/").startswith("db/%s/" % table)]
-    meta = {"files": len(entries), "rows": 0, "version": None, "ok": False, "reason": ""}
-    if not entries:
-        meta["reason"] = "no files in pack"
-        return [], meta
-    versions = schema.get(table)
-    if not versions:
-        meta["reason"] = "no schema for table"
-        return [], meta
-
-    out = []
-    for (n, off, sz, c) in entries:
-        b = read_file(files, d, n)
-        guid, version, row_count, p = parse_db_header(b)
-        meta["version"] = version
-        fields = versions.get(str(version))
-        if fields is None:
-            meta["reason"] = "pack version %d not in schema %s" % (version, sorted(int(k) for k in versions))
-            return [], meta
-        r = _Reader(b, p)
-        start = len(out)
+def add_foreign_keys(con, rels, meta):
+    t0 = time.time()
+    log('foreign keys enter %d candidate relations' % len(rels))
+    rows = {table_name(s): i['n_rows'] for s, i in meta.items()}
+    unique = set()
+    for tbl, col, ucol in con.execute(
+            "SELECT c.relname, a.attname, a.attname FROM pg_class c"
+            " JOIN pg_namespace n ON n.oid=c.relnamespace"
+            " JOIN pg_index x ON x.indrelid=c.oid AND x.indisunique"
+            " JOIN pg_attribute a ON a.attrelid=c.oid AND a.attnum=x.indkey[0]"
+            " WHERE n.nspname='ref_build' AND array_length(x.indkey,1)=1"):
+        unique.add((tbl, col))
+    types = {}
+    for tbl, col, typ in con.execute(
+            "SELECT table_name, column_name, data_type FROM information_schema.columns"
+            " WHERE table_schema = 'ref_build'"):
+        types[(tbl, col)] = typ
+    declared = skipped = mismatched = 0
+    resolved = {}
+    for src, col, tgt, tcol, target_present, _ in rels:
+        if not target_present or (tgt, tcol) not in unique:
+            skipped += 1
+            continue
+        st = types.get((src, db_column(col)))
+        tt = types.get((tgt, db_column(tcol)))
+        if st is None or tt is None:
+            skipped += 1
+            continue
+        same_type = st == tt
+        lhs = 't.%s' % quote(tcol) if same_type else 't.%s::text' % quote(tcol)
+        rhs = 's.%s' % quote(col) if same_type else 's.%s::text' % quote(col)
+        row = con.execute(
+            'SELECT count(*), count(*) FILTER (WHERE t.%s IS NOT NULL)'
+            ' FROM ref_build.%s s LEFT JOIN ref_build.%s t ON %s = %s'
+            ' WHERE s.%s IS NOT NULL%s'
+            % (quote(tcol), quote(src), quote(tgt), lhs, rhs, quote(col),
+               (" AND s.%s <> ''" % quote(col)) if st == 'text' else '')).fetchone()
+        total, hit = row
+        ratio = 1.0 if total == 0 else hit / float(total)
+        resolved[(src, col)] = ratio
+        if ratio < FK_MIN_RESOLVED:
+            skipped += 1
+            continue
+        if not same_type:
+            mismatched += 1
+            continue
         try:
-            for _ in range(row_count):
-                out.append({nm: _read_field(r, ft) for nm, ft in fields})
-        except Exception as e:
-            meta["reason"] = "decode fail at row %d: %s" % (len(out) - start, e)
-            return [], meta
-        if r.p != len(b):
-            meta["reason"] = "not CLEAN-EOF (consumed %d/%d)" % (r.p, len(b))
-            return [], meta
-
-    meta["rows"] = len(out)
-    meta["ok"] = True
-    meta["reason"] = "CLEAN-EOF"
-    return out, meta
-
-
-_CAPTIVE_BUTTON = {"kill": "kill", "release": "release", "enslave": "enslave",
-                   "enslave_slaves_only": "enslave", "enslave_replenishment_only": "enslave"}
-_CAPTIVE_ROLE = re.compile(r"^[A-Z][A-Z_]*$")
-_CAPTIVE_CRIT = {"campaign_group_member_criteria_cultures_tables": ("culture", 0, 1),
-                 "campaign_group_member_criteria_factions_tables": ("faction", 0, 1),
-                 "campaign_group_member_criteria_subcultures_tables": ("subculture", 1, 0)}
+            con.execute('ALTER TABLE ref_build.%s ADD FOREIGN KEY (%s)'
+                        ' REFERENCES ref_build.%s (%s)'
+                        % (quote(src), quote(col), quote(tgt), quote(tcol)))
+            declared += 1
+            if rows.get(src, 0) > FK_INDEX_MIN_ROWS:
+                con.execute('CREATE INDEX ON ref_build.%s (%s)' % (quote(src), quote(col)))
+            if declared % 200 == 0:
+                con.commit()
+        except Exception as exc:
+            con.rollback()
+            skipped += 1
+            if skipped <= 3:
+                log('fk %s.%s -> %s.%s failed: %s' % (src, col, tgt, tcol, str(exc)[:80]))
+    log('foreign keys exit %.0f ms  %d declared  %d skipped  %d resolve but the'
+        ' referencing type differs (4.4 d)'
+        % ((time.time() - t0) * 1000, declared, skipped, mismatched))
+    return declared, resolved
 
 
-def _agent_reference(cur, files, d, schema, report):
-    def bail(table, rows, expect):
-        if rows and not any(k in rows[0] for k in expect):
-            print("  !! %s decoded with UNEXPECTED columns %s -- expected one of %s"
-                  % (table, sorted(rows[0].keys()), expect))
-            return True
-        return False
-
-    acts, ameta = decode_db_table(files, d, "agent_actions_tables", schema)
-    report["agent_actions_tables"] = ameta
-    if ameta["ok"] and not bail("agent_actions_tables", acts, ("unique_id",)):
-        cur.execute("DROP TABLE IF EXISTS agent_actions")
-        cur.execute("CREATE TABLE agent_actions (key TEXT PRIMARY KEY, agent TEXT, ability TEXT, "
-                    "attribute TEXT, chance_of_success INTEGER, cannot_fail_result TEXT, "
-                    "succeed_always INTEGER, crit_success_mod REAL, opportune_failure_mod REAL, "
-                    "crit_failure_mod REAL, show_in_ui INTEGER, subculture TEXT, "
-                    "loc_name TEXT)")
-        for r in acts:
-            _rep(cur, "agent_actions", (
-                r.get("unique_id"), r.get("agent"), r.get("ability"), r.get("attribute"),
-                r.get("chance_of_success"), r.get("cannot_fail"),
-                int(bool(r.get("succeed_always_override"))),
-                r.get("critical_success_proportion_modifier"),
-                r.get("opportune_failure_proportion_modifier"),
-                r.get("critical_failure_proportion_modifier"),
-                int(bool(r.get("show_action_info_in_ui"))), r.get("subculture"),
-                r.get("localised_action_name")))
-        report["_written"]["agent_actions"] = len(acts)
-
-    types, tmeta = decode_db_table(files, d, "agents_tables", schema)
-    report["agents_tables"] = tmeta
-    if tmeta["ok"] and not bail("agents_tables", types, ("key",)):
-        cur.execute("DROP TABLE IF EXISTS agent_types")
-        cur.execute("CREATE TABLE agent_types (key TEXT PRIMARY KEY, move_points INTEGER, "
-                    "faction_total_cap INTEGER, playable INTEGER)")
-        for r in types:
-            _rep(cur, "agent_types", (
-                r.get("key"), r.get("move_points"), r.get("faction_total_cap"),
-                int(bool(r.get("playable")))))
-        report["_written"]["agent_types"] = len(types)
-
-    abil, bmeta = decode_db_table(files, d, "abilities_tables", schema)
-    report["abilities_tables"] = bmeta
-    if bmeta["ok"] and not bail("abilities_tables", abil, ("ability", "key")):
-        cur.execute("DROP TABLE IF EXISTS agent_abilities")
-        cur.execute("CREATE TABLE agent_abilities (key TEXT PRIMARY KEY, category TEXT)")
-        for r in abil:
-            _rep(cur, "agent_abilities", (r.get("ability") or r.get("key"), r.get("category")))
-        report["_written"]["agent_abilities"] = len(abil)
-
-    res, rmeta = decode_db_table(files, d, "action_results_tables", schema)
-    report["action_results_tables"] = rmeta
-    if rmeta["ok"] and not bail("action_results_tables", res, ("key",)):
-        cur.execute("DROP TABLE IF EXISTS action_results")
-        cur.execute("CREATE TABLE action_results (key TEXT PRIMARY KEY, actor_bundle TEXT, "
-                    "target_bundle TEXT, actor_bundle_turns INTEGER, target_bundle_turns INTEGER)")
-        for r in res:
-            _rep(cur, "action_results", (
-                r.get("key"), r.get("actor_effect_bundle"), r.get("target_effect_bundle"),
-                r.get("actor_effect_bundle_turns"), r.get("target_effect_bundle_turns")))
-        report["_written"]["action_results"] = len(res)
-
-    outc, ometa = decode_db_table(files, d, "action_results_additional_outcomes_tables", schema)
-    report["action_results_additional_outcomes_tables"] = ometa
-    if ometa["ok"] and not bail("action_results_additional_outcomes_tables", outc,
-                                ("action_result_key",)):
-        cur.execute("DROP TABLE IF EXISTS action_result_outcomes")
-        cur.execute("CREATE TABLE action_result_outcomes (key TEXT PRIMARY KEY, "
-                    "action_result_key TEXT, outcome TEXT, effect TEXT, effect_scope TEXT, "
-                    "value REAL, affects_target INTEGER, advancement_stage TEXT)")
-        for r in outc:
-            _rep(cur, "action_result_outcomes", (
-                r.get("key"), r.get("action_result_key"), r.get("outcome"),
-                r.get("effect_record"), r.get("effect_scope_record"), r.get("value"),
-                int(bool(r.get("affects_target"))), r.get("advancement_stage")))
-        report["_written"]["action_result_outcomes"] = len(outc)
-
-    perm, pmeta = decode_db_table(files, d, "faction_agent_permitted_subtypes_tables", schema)
-    report["faction_agent_permitted_subtypes_tables"] = pmeta
-    if pmeta["ok"] and not bail("faction_agent_permitted_subtypes_tables", perm,
-                                ("faction", "subtype")):
-        cur.execute("DROP TABLE IF EXISTS agent_permitted_subtypes")
-        cur.execute("CREATE TABLE agent_permitted_subtypes (faction TEXT, agent TEXT, "
-                    "subtype TEXT, PRIMARY KEY (faction, agent, subtype))")
-        for r in perm:
-            _rep(cur, "agent_permitted_subtypes", (r.get("faction"), r.get("agent"), r.get("subtype")))
-        report["_written"]["agent_permitted_subtypes"] = len(perm)
+def write_metadata(con, build_id, meta, rels, resolved, loc_rows, found):
+    t0 = time.time()
+    con.execute('TRUNCATE ops.table_meta, ops.column_meta')
+    with con.cursor().copy(
+            'COPY ops.table_meta (tbl, pack_table, version, source_pack, n_rows,'
+            ' n_cols, key_cols, key_unique, raw_bytes) FROM STDIN') as cp:
+        for stem, info in meta.items():
+            cp.write_row((table_name(stem), info['pack_table'], info['version'],
+                          info['source_pack'], info['n_rows'], info['n_cols'],
+                          info['key_cols'], info['key_unique'], info['raw_bytes']))
+    rel_by = {(s, c): (t, tc, present) for s, c, t, tc, present, _ in rels}
+    with con.cursor().copy(
+            'COPY ops.column_meta (tbl, col, ca_order, ron_type, pg_type, is_key,'
+            ' is_reference, ref_tbl, ref_col, ref_resolved, fk_declared,'
+            ' default_value, description) FROM STDIN') as cp:
+        for stem, info in meta.items():
+            tbl = table_name(stem)
+            keys = set(info['key_cols'])
+            for f in info.get('fields') or []:
+                rel = rel_by.get((tbl, f['name']))
+                ratio = resolved.get((tbl, f['name']))
+                cp.write_row((
+                    tbl, db_column(f['name']), int(f['ca_order']), f['field_type'],
+                    PG_TYPE[f['field_type']], f['name'] in keys, rel is not None,
+                    rel[0] if rel else None, rel[1] if rel else None, ratio,
+                    bool(ratio is not None and ratio >= FK_MIN_RESOLVED),
+                    "''" if (f['field_type'] in NULLABLE and f['name'] in keys) else None,
+                    ((('ron_name=' + f['name'] + ' ')
+                      if db_column(f['name']) != f['name'] else '')
+                     + (f.get('description') or ''))[:400]))
+    con.execute('CREATE TABLE ref_build.loc (tbl TEXT NOT NULL, col TEXT NOT NULL,'
+                ' key TEXT NOT NULL, loc_key TEXT NOT NULL PRIMARY KEY, text TEXT NOT NULL)')
+    with con.cursor().copy(
+            'COPY ref_build.loc (tbl, col, key, loc_key, text) FROM STDIN') as cp:
+        for row in loc_rows:
+            cp.write_row(row)
+    con.execute('CREATE INDEX ON ref_build.loc (tbl, col, key)')
+    con.execute('DELETE FROM ops.manifest_pack WHERE build_id = %s', (build_id,))
+    with con.cursor().copy(
+            'COPY ops.manifest_pack (build_id, pack, sha256, size, mtime,'
+            ' load_order, pack_type, n_db_files, n_loc_files) FROM STDIN') as cp:
+        for i, p in enumerate(found):
+            cp.write_row((build_id, p['name'],
+                          hashlib.sha256(p['name'].encode()).digest(), p['size'],
+                          p['mtime'], i, p['type'],
+                          sum(1 for e in p['index'] if e[0].startswith('db/')),
+                          sum(1 for e in p['index'] if e[0].endswith('.loc'))))
+    log('metadata written %.0f ms' % ((time.time() - t0) * 1000))
 
 
-def _captive_reference(cur, files, d, schema, report):
-    def loc(rk):
-        row = cur.execute("SELECT text FROM loc WHERE key=%s",
-                          ("campaign_post_battle_captive_options_onscreen_name_%s" % rk,)).fetchone()
-        v = row[0] if row else None
-        for _ in range(5):
-            if not v or not v.startswith("{{tr:"):
-                break
-            m = re.match(r"\{\{tr:([\w.]+)\}\}", v)
-            if not m:
-                break
-            row = cur.execute("SELECT text FROM loc WHERE key=%s", (m.group(1),)).fetchone()
-            v = row[0] if row else None
-        return v
-
-    opts, ometa = decode_db_table(files, d, "campaign_post_battle_captive_options_tables", schema)
-    report["campaign_post_battle_captive_options_tables"] = ometa
-    if not ometa["ok"]:
-        return
-    key2recs = {}
-    cur.execute("DROP TABLE IF EXISTS captive_options")
-    cur.execute("CREATE TABLE captive_options (record_key TEXT PRIMARY KEY, option_key TEXT, "
-                "outcome TEXT, onscreen_name TEXT)")
-    for r in opts:
-        rk = r["record_key"]
-        key2recs.setdefault(r["key"], []).append((rk, r["outcome"]))
-        _rep(cur, "captive_options", (rk, r["key"], r["outcome"], loc(rk)))
-    option_keys = set(key2recs)
-
-    mem, mmeta = decode_db_table(files, d, "campaign_group_members_tables", schema)
-    report["campaign_group_members_tables"] = mmeta
-    grp2mem, member_universe = {}, set()
-    for r in mem:
-        g, m = r["campaign_group"], r["campaign_group_member"]
-        grp2mem.setdefault(g, set()).add(m)
-        member_universe.add(g); member_universe.add(m)
-
-    member_crit = {}
-    for t, (typ, vi, mi) in _CAPTIVE_CRIT.items():
-        rows, cmeta = decode_db_table(files, d, t, schema)
-        report[t] = cmeta
-        for r in rows:
-            vals = (r["col0"], r["col1"], r["col2"])
-            if not _CAPTIVE_ROLE.match(vals[2]):
-                continue
-            member_crit.setdefault(vals[mi], []).append((typ, vals[vi], vals[2]))
-
-    def originators(g, maxdepth=6):
-        seen, res, stack = set(), [], [(g, 0)]
-        while stack:
-            node, dep = stack.pop()
-            if node in seen or dep > maxdepth:
-                continue
-            seen.add(node)
-            crits = member_crit.get(node, ())
-            has_other = any(role != "ORIGINATOR" for (_, _, role) in crits)
-            for (etype, val, role) in crits:
-                if role == "ORIGINATOR":
-                    res.append((etype, val, has_other))
-            for m in grp2mem.get(node, ()):
-                stack.append((m, dep + 1))
-        return res
-
-    best = {}
-    for g in option_keys:
-        for (etype, ekey, cond) in originators(g):
-            for (rk, outcome) in key2recs[g]:
-                button = _CAPTIVE_BUTTON.get(outcome)
-                if button is None:
-                    continue
-                try:
-                    rk_int = int(rk)
-                except (TypeError, ValueError):
-                    rk_int = 0
-                rank = (0 if outcome == button else 1, 1 if cond else 0,
-                        1 if "_to_" in g else 0, rk_int)
-                k = (etype, ekey, button)
-                if k not in best or rank < best[k][0]:
-                    best[k] = (rank, rk)
-
-    cur.execute("DROP TABLE IF EXISTS captive_binding")
-    cur.execute("CREATE TABLE captive_binding (entity_type TEXT, entity_key TEXT, button TEXT, "
-                "record_key TEXT, PRIMARY KEY (entity_type, entity_key, button))")
-    for (etype, ekey, button), (rank, rk) in best.items():
-        _rep(cur, "captive_binding", (etype, ekey, button, rk))
-    report["_written"]["captive_options"] = len(opts)
-    report["_written"]["captive_binding"] = len(best)
+def live_manifest(con):
+    row = con.execute(
+        "SELECT build_id, encode(fingerprint,'hex'), encode(schema_sha256,'hex'),"
+        " encode(fingerprint_cheap,'hex') FROM ops.manifest"
+        " WHERE status = 'live'").fetchone()
+    if not row:
+        return None
+    return {'build_id': row[0], 'full': row[1], 'schema': row[2],
+            'cheap': row[3] or None}
 
 
-def decode_db_tables(con, files, d, schema, report):
-    cur = con.cursor()
-
-    def src(table):
-        rows, meta = decode_db_table(files, d, table, schema)
-        report[table] = meta
-        return rows, meta
-
-    chains, _ = src("building_chains_tables")
-    cur.execute("DROP TABLE IF EXISTS building_chains")
-    cur.execute("CREATE TABLE building_chains (key TEXT PRIMARY KEY, superchain TEXT, "
-                "chain_category TEXT, sort_order INTEGER)")
-    for r in chains:
-        _rep(cur, "building_chains", (r["key"], r.get("building_superchain"), r.get("chain_category"),
-                     r.get("optional_sort_order")))
-    report["_written"] = report.get("_written", {})
-    report["_written"]["building_chains"] = len(chains)
-
-    blevels, _ = src("building_levels_tables")
-    cur.execute("DROP TABLE IF EXISTS buildings")
-    cur.execute("CREATE TABLE buildings (key TEXT PRIMARY KEY, building_chain TEXT, level INTEGER, "
-                "create_cost INTEGER, create_time INTEGER, upkeep_cost INTEGER, food_cost INTEGER, "
-                "dev_point_cost INTEGER, building_instance_key TEXT)")
-    for r in blevels:
-        _rep(cur, "buildings", (
-            r["level_name"], r.get("chain"), r.get("level"),
-            r.get("create_cost"), r.get("create_time"), r.get("upkeep_cost"),
-            r.get("food_cost"), r.get("development_point_cost"), r.get("building_instance_key")))
-    report["_written"]["buildings"] = len(blevels)
-
-    nodes, nmeta = src("technology_nodes_tables")
-    techs, tmeta = src("technologies_tables")
-    tech_by_key = {t["key"]: t for t in techs}
-    cur.execute("DROP TABLE IF EXISTS tech")
-    cur.execute("CREATE TABLE tech (key TEXT PRIMARY KEY, technology_key TEXT, node_set TEXT, "
-                "tier INTEGER, research_points_required INTEGER, cost_per_round INTEGER, "
-                "food_cost INTEGER, required_parents INTEGER, building_level TEXT, "
-                "is_civil INTEGER, is_engineering INTEGER, is_military INTEGER, is_hidden INTEGER)")
-    written = set()
-    for r in nodes:
-        tk = r.get("technology_key")
-        t = tech_by_key.get(tk, {})
-        _rep(cur, "tech", (
-            r["key"], tk, r.get("technology_node_set"), r.get("tier"),
-            r.get("research_points_required"), r.get("cost_per_round"), r.get("food_cost"),
-            r.get("required_parents"), t.get("building_level"),
-            int(bool(t.get("is_civil"))), int(bool(t.get("is_engineering"))),
-            int(bool(t.get("is_military"))), int(bool(t.get("is_hidden")))))
-        written.add(r["key"])
-    node_tks = {r.get("technology_key") for r in nodes} | written
-    for tk, t in tech_by_key.items():
-        if tk in node_tks:
+def resolve_dictionaries(con, build_id):
+    t0 = time.time()
+    flips = 0
+    for family, ref_tbl, ref_col in con.execute(
+            'SELECT family, ref_tbl, ref_col FROM dict.family'):
+        tbl = table_name(ref_tbl)
+        exists = con.execute(
+            "SELECT to_regclass('ref.%s')" % tbl).fetchone()[0]
+        if exists is None:
             continue
-        _rep(cur, "tech", (
-            tk, tk, None, None, None, None, None, None, t.get("building_level"),
-            int(bool(t.get("is_civil"))), int(bool(t.get("is_engineering"))),
-            int(bool(t.get("is_military"))), int(bool(t.get("is_hidden")))))
-    report["_written"]["tech"] = cur.execute("SELECT COUNT(*) FROM tech").fetchone()[0]
+        n = con.execute(
+            'UPDATE dict.%s d SET is_reference = e.hit,'
+            ' ref_build_id = CASE WHEN e.hit THEN %%s ELSE NULL END'
+            ' FROM (SELECT d2.id, EXISTS (SELECT 1 FROM ref.%s r WHERE r.%s = d2.key) AS hit'
+            '         FROM dict.%s d2) e'
+            ' WHERE e.id = d.id AND d.is_reference IS DISTINCT FROM e.hit'
+            % (family, tbl, quote(ref_col), family), (build_id,)).rowcount
+        flips += max(0, n)
+    log('dict.resolve exit %.0f ms  %d flips' % ((time.time() - t0) * 1000, flips))
+    return flips
 
-    mains, mmeta = src("main_units_tables")
-    lands, lmeta = src("land_units_tables")
-    land_by_key = {r["key"]: r for r in lands}
-    cur.execute("DROP TABLE IF EXISTS units")
-    cur.execute("CREATE TABLE units (key TEXT PRIMARY KEY, land_unit TEXT, caste TEXT, "
-                "category TEXT, class TEXT, recruitment_cost INTEGER, upkeep_cost INTEGER, "
-                "create_time INTEGER, food_cost INTEGER, multiplayer_cost INTEGER, tier INTEGER, "
-                "num_men INTEGER, is_naval INTEGER, ui_unit_group_land TEXT)")
-    for r in mains:
-        lu = land_by_key.get(r.get("land_unit"), {})
-        _rep(cur, "units", (
-            r["unit"], r.get("land_unit"), r.get("caste"),
-            lu.get("category"), lu.get("class"),
-            r.get("recruitment_cost"), r.get("upkeep_cost"), r.get("create_time"),
-            r.get("food_cost"), r.get("multiplayer_cost"), r.get("tier"),
-            r.get("num_men"), int(bool(r.get("is_naval"))), r.get("ui_unit_group_land")))
-    report["_written"]["units"] = len(mains)
 
-    skills, smeta = src("character_skills_tables")
-    if smeta["ok"]:
-        cur.execute("DROP TABLE IF EXISTS skills")
-        cur.execute("CREATE TABLE skills (key TEXT PRIMARY KEY, unlocked_at_rank INTEGER, "
-                    "influence_cost INTEGER, is_background_skill INTEGER, background_weighting REAL)")
-        for r in skills:
-            _rep(cur, "skills", (
-                r["key"], r.get("unlocked_at_rank"), r.get("influence_cost"),
-                int(bool(r.get("is_background_skill"))), r.get("background_weighting")))
-        report["_written"]["skills"] = len(skills)
-
-    rituals, rmeta = src("rituals_tables")
-    if rmeta["ok"]:
-        cur.execute("DROP TABLE IF EXISTS rituals")
-        cur.execute("CREATE TABLE rituals (key TEXT PRIMARY KEY, category TEXT, cast_time INTEGER, "
-                    "cooldown_time INTEGER, slave_cost INTEGER, influence_cost INTEGER, "
-                    "required_resources TEXT, expended_resources TEXT)")
-        for r in rituals:
-            _rep(cur, "rituals", (
-                r["key"], r.get("category"), r.get("cast_time"), r.get("cooldown_time"),
-                r.get("slave_cost"), r.get("influence_cost"),
-                r.get("required_resources"), r.get("expended_resources")))
-        report["_written"]["rituals"] = len(rituals)
-
-    _captive_reference(cur, files, d, schema, report)
-    _agent_reference(cur, files, d, schema, report)
-    _merc_reference(cur, files, d, schema, report)
-
+def build(con, defs, schema_version, found, fp):
+    t0 = time.time()
+    build_id = con.execute(
+        "INSERT INTO ops.manifest (started_ts, status, exe_version, steam_build_id,"
+        " schema_sha256, schema_version, fingerprint, fingerprint_cheap)"
+        " VALUES (%s,'building',%s,%s,decode(%s,'hex'),%s,decode(%s,'hex'),"
+        " decode(%s,'hex')) RETURNING build_id",
+        (time.time(), fp.get('version') or '', fp.get('build_id'),
+         fp['schema'], schema_version, fp['full'], fp['cheap'])).fetchone()[0]
+    log('build %d enter' % build_id)
+    drop_schema_batched(con, 'ref_build')
+    con.execute('CREATE SCHEMA ref_build')
     con.commit()
 
-
-def _merc_reference(cur, files, d, schema, report):
-    def src(table):
-        rows, meta = decode_db_table(files, d, table, schema)
-        report[table] = meta
-        return rows, meta
-
-    groups, gmeta = src("mercenary_unit_groups_tables")
-    junctions, jmeta = src("mercenary_pool_to_groups_junctions_tables")
-    pools, pmeta = src("mercenary_pools_tables")
-    if not (gmeta["ok"] and jmeta["ok"] and pmeta["ok"]):
-        print("  !! merc_units NOT built -- groups=%s junctions=%s pools=%s"
-              % (gmeta["reason"], jmeta["reason"], pmeta["reason"]))
-        return
-    group_by_key = {}
-    for g in groups:
-        group_by_key.setdefault(g["key"], []).append(g)
-    flavor_by_pool = {p["key"]: p.get("ui_recruitment_info") or "" for p in pools}
-    cur.execute("DROP TABLE IF EXISTS merc_units")
-    cur.execute("CREATE TABLE merc_units (unit TEXT, pool TEXT, flavor TEXT, subculture TEXT, "
-                "faction TEXT, tech TEXT, group_key TEXT, base_count INTEGER, max_count INTEGER, "
-                "replenish_chance REAL)")
-    n = 0
-    orphans = set()
-    for j in junctions:
-        gs = group_by_key.get(j["group"])
-        if not gs:
-            orphans.add(j["group"])
-            continue
-        flavor = flavor_by_pool.get(j["pool"])
-        if flavor is None:
-            orphans.add(j["pool"])
-            continue
-        for g in gs:
-            cur.execute("INSERT INTO merc_units VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", (
-                g["unit_record"], j["pool"], flavor,
-                j.get("subculture_requirement") or "", j.get("faction_requirement") or "",
-                j.get("tech_requirement") or "", j["group"],
-                j.get("initial_unit_count"), g.get("max_count"), g.get("chance_to_replenish")))
-            n += 1
-    cur.execute("CREATE INDEX idx_merc_units_unit ON merc_units (unit)")
-    if orphans:
-        print("  !! merc_units: %d junction rows referenced missing groups/pools: %s"
-              % (len(orphans), sorted(orphans)[:8]))
-    report["_written"]["merc_units"] = n
-
-
-def build():
-    con = pg.connect(search_path="reference")
-    con.execute("CREATE SCHEMA IF NOT EXISTS reference")
+    tables, meta, missing = collect_tables(defs, found)
+    loc_rows = collect_loc(found, defs)
+    n_rows = create_and_copy(con, tables, meta)
     con.commit()
-    cur = con.cursor()
-
-    lfiles, ld = parse_pack(GAME + "/local_en.pack")
-    cur.execute("DROP TABLE IF EXISTS loc")
-    cur.execute("CREATE TABLE loc (key TEXT PRIMARY KEY, text TEXT)")
-    n = 0
-    for name, off, size, comp in lfiles:
-        if name.endswith(".loc"):
-            b = read_file(lfiles, ld, name)
-            try:
-                for k, v in decode_loc(b).items():
-                    _rep(cur, "loc", (k, v)); n += 1
-            except Exception as e:
-                print(f"  skip {name}: {e}")
+    add_primary_keys(con, meta)
     con.commit()
-    print(f"loc: {n} entries from {sum(1 for f in lfiles if f[0].endswith('.loc'))} .loc files")
-
-    schema = load_db_schema()
-    dfiles, dd = parse_pack(GAME + "/db.pack")
-    report = {}
-    decode_db_tables(con, dfiles, dd, schema, report)
-
-    print("\n-- db feature tables written --")
-    for t, cnt in sorted(report.get("_written", {}).items()):
-        print(f"  {t:16s} {cnt} rows")
-    print("\n-- source decode outcomes --")
-    for t, m in report.items():
-        if t == "_written":
-            continue
-        tag = "OK" if m["ok"] else "SKIP"
-        print(f"  [{tag}] {t:38s} ver={m['version']} rows={m['rows']} files={m['files']} :: {m['reason']}")
-
-    cur.execute("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)")
-    _rep(cur, "meta", ("built", str(time.time())))
+    rels = relations(defs, meta)
+    declared, resolved = add_foreign_keys(con, rels, meta)
     con.commit()
-    _verify(cur)
-    con.close()
+    write_metadata(con, build_id, meta, rels, resolved, loc_rows, found)
+    con.commit()
+
+    t1 = time.time()
+    con.execute('ANALYZE')
+    log('analyze %.0f ms' % ((time.time() - t1) * 1000))
+
+    drop_schema_batched(con, 'ref_prev')
+    con.execute("UPDATE ops.manifest SET status='superseded' WHERE status='live'")
+    con.execute("SELECT 1 FROM information_schema.schemata WHERE schema_name='ref'")
+    if con.execute("SELECT 1 FROM information_schema.schemata"
+                   " WHERE schema_name='ref'").fetchone():
+        con.execute('ALTER SCHEMA ref RENAME TO ref_prev')
+    con.execute('ALTER SCHEMA ref_build RENAME TO ref')
+    seconds = time.time() - t0
+    con.execute(
+        "UPDATE ops.manifest SET status='live', finished_ts=%s, n_tables=%s,"
+        " n_rows=%s, n_loc=%s, build_seconds=%s WHERE build_id=%s",
+        (time.time(), len(meta), n_rows, len(loc_rows), seconds, build_id))
+    con.commit()
+    log('swap done, build %d live' % build_id)
+    resolve_dictionaries(con, build_id)
+    drop_schema_batched(con, 'ref_prev')
+    log('build %d exit %.1f s  %d tables  %d rows  %d loc  %d fks'
+        % (build_id, seconds, len(meta), n_rows, len(loc_rows), declared))
+    return build_id, seconds
 
 
-def _verify(cur):
-    print("\n== VERIFIED REAL JOINS ==")
-
-    def one(sql, args=()):
-        return cur.execute(sql, args).fetchone()
-
-    b = one("SELECT building_chain, level, create_cost, create_time, upkeep_cost, food_cost, "
-            "dev_point_cost FROM buildings WHERE key=%s", ("wh2_main_hef_resource_marble_1",))
-    nm = one("SELECT text FROM loc WHERE key=%s", ("building_culture_variants_name_wh2_main_hef_resource_marble_1",))
-    print(f"  building marble_1 {nm and nm[0]!r}: chain={b[0]} level={b[1]} create_cost={b[2]} "
-          f"create_time={b[3]} upkeep={b[4]} food={b[5]} dev={b[6]}")
-
-    t = one("SELECT node_set, tier, research_points_required, cost_per_round, food_cost, "
-            "required_parents, building_level, is_military FROM tech WHERE key=%s", ("wh2_main_tech_hef_0_00",))
-    tn = one("SELECT text FROM loc WHERE key=%s", ("technologies_onscreen_name_wh2_main_tech_hef_0_00",))
-    print(f"  tech hef_0_00 {tn and tn[0]!r}: node_set={t[0]} tier={t[1]} research_pts={t[2]} "
-          f"cost/round={t[3]} food={t[4]} parents={t[5]} unlocks_building={t[6]!r} is_military={t[7]}")
-
-    u = one("SELECT caste, category, class, recruitment_cost, upkeep_cost, create_time, tier, num_men "
-            "FROM units WHERE key=%s", ("wh2_main_hef_inf_spearmen_0",))
-    un = one("SELECT text FROM loc WHERE key=%s", ("land_units_onscreen_name_wh2_main_hef_inf_spearmen_0",))
-    print(f"  unit spearmen {un and un[0]!r}: caste={u[0]} category={u[1]} class={u[2]} "
-          f"recruit={u[3]} upkeep={u[4]} create_time={u[5]} tier={u[6]} num_men={u[7]}")
-
-    for tbl, key in (("skills", None), ("rituals", None)):
-        row = one(f"SELECT * FROM {tbl} LIMIT 1")
-        cnt = one(f"SELECT COUNT(*) FROM {tbl}")[0]
-        print(f"  {tbl}: {cnt} rows; sample={row}")
-
-    r = one("SELECT a.key, a.agent, a.cannot_fail_result, r.target_bundle, r.target_bundle_turns, "
-            "o.effect, o.effect_scope, o.value FROM agent_actions a "
-            "JOIN action_results r ON r.key=a.cannot_fail_result "
-            "LEFT JOIN action_result_outcomes o ON o.action_result_key=r.key "
-            "WHERE a.ability='assist_army' AND a.key LIKE '%assist_army_training' LIMIT 1")
-    print(f"  assist training {r and r[0]!r}: agent={r and r[1]} bundle={r and r[3]!r} "
-          f"turns={r and r[4]} effect={r and r[5]!r} scope={r and r[6]!r} value={r and r[7]}")
-
-    for label, etype, ekey in (("High Elves", "culture", "wh2_main_hef_high_elves"),
-                               ("Slaanesh/Masque", "faction", "wh3_dlc27_sla_masque_of_slaanesh"),
-                               ("Slaanesh (culture)", "culture", "wh3_main_sla_slaanesh")):
-        got = {}
-        for button in ("kill", "enslave", "release"):
-            r = one("SELECT o.onscreen_name FROM captive_binding b JOIN captive_options o "
-                    "ON o.record_key=b.record_key WHERE b.entity_type=%s AND b.entity_key=%s "
-                    "AND b.button=%s", (etype, ekey, button))
-            got[button] = r[0] if r else None
-        print(f"  captives {label:20s}: kill={got['kill']!r} enslave={got['enslave']!r} "
-              f"release={got['release']!r}")
-
-
-def _i0(v):
-    try:
-        return int(v)
-    except (TypeError, ValueError):
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--force', action='store_true')
+    ap.add_argument('--check', action='store_true')
+    args = ap.parse_args()
+    t0 = time.time()
+    log('enter port=%s' % os.environ.get('TW_PG_PORT', '55432'))
+    con = pg.connect(app_name='tw-refbuild', autocommit=False)
+    previous = live_manifest(con)
+    found = packs.discover()
+    fp = packs.fingerprint(found, None if args.force else previous)
+    if previous and not args.force and fp.get('full') == previous.get('full'):
+        log('reference unchanged build_id=%d (%.0f ms)'
+            % (previous['build_id'], (time.time() - t0) * 1000))
+        con.close()
         return 0
-
-
-def build_extra():
-    con = pg.connect(search_path="reference")
-    cur = con.cursor()
-    schema = load_db_schema()
-    dfiles, dd = parse_pack(GAME + "/db.pack")
-    report = {}
-
-    def src(table):
-        rows, meta = decode_db_table(dfiles, dd, table, schema)
-        report[table] = meta
-        return rows, meta
-
-    links, lmeta = src("technology_node_links_tables")
-    if lmeta["ok"]:
-        cur.execute("DROP TABLE IF EXISTS tech_links")
-        cur.execute("CREATE TABLE tech_links (child TEXT, parent TEXT, visible INT)")
-        for r in links:
-            cur.execute("INSERT INTO tech_links VALUES (%s, %s, %s)",
-                        (r["child_key"], r["parent_key"],
-                         1 if r.get("visible_in_ui") else 0))
-        cur.execute("CREATE INDEX idx_tech_links_child ON tech_links (child)")
-
-    ancs, ameta = src("ancillaries_tables")
-    if ameta["ok"]:
-        cur.execute("DROP TABLE IF EXISTS ancillaries")
-        cur.execute("CREATE TABLE ancillaries (key TEXT PRIMARY KEY, type TEXT,"
-                    " category TEXT, subcategory TEXT, legendary INT, transferrable INT,"
-                    " randomly_dropped INT, uniqueness_score INT)")
-        for r in ancs:
-            cur.execute("INSERT INTO ancillaries VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
-                        " ON CONFLICT (key) DO NOTHING",
-                        (r["key"], r["type"], r["category"], r.get("subcategory") or "",
-                         1 if r.get("legendary_item") else 0,
-                         1 if r.get("transferrable") else 0,
-                         1 if r.get("randomly_dropped") else 0,
-                         r.get("uniqueness_score") or 0))
-
-    fx, fmeta = src("ancillary_to_effects_tables")
-    if fmeta["ok"]:
-        cur.execute("DROP TABLE IF EXISTS ancillary_effects")
-        cur.execute("CREATE TABLE ancillary_effects (ancillary TEXT, effect TEXT,"
-                    " effect_scope TEXT, value REAL)")
-        for r in fx:
-            cur.execute("INSERT INTO ancillary_effects VALUES (%s, %s, %s, %s)",
-                        (r["ancillary"], r["effect"], r["effect_scope"], r["value"]))
-        cur.execute("CREATE INDEX idx_anc_effects ON ancillary_effects (ancillary)")
-
-    tnodes, tnmeta = src("technology_nodes_tables")
-    if tnmeta["ok"]:
-        cur.execute("DROP TABLE IF EXISTS tech_groups")
-        cur.execute("CREATE TABLE tech_groups (node_key TEXT, ui_group TEXT)")
-        for r in tnodes:
-            g = r.get("optional_ui_group") or ""
-            if g:
-                cur.execute("INSERT INTO tech_groups VALUES (%s, %s)", (r["key"], g))
-
-    scats, scmeta = src("character_skill_categories_tables")
-    if scmeta["ok"]:
-        cur.execute("DROP TABLE IF EXISTS skill_categories")
-        cur.execute("CREATE TABLE skill_categories (key TEXT, min_indent INT,"
-                    " max_indent INT, ord INT, subtype_override TEXT)")
-        for r in scats:
-            cur.execute("INSERT INTO skill_categories VALUES (%s, %s, %s, %s, %s)",
-                        (r["key"], r["min_indent"], r["max_indent"], r["order"],
-                         r.get("agent_subtype_override") or ""))
-
-    nodes, nmeta = src("character_skill_nodes_tables")
-    nlinks, klmeta = src("character_skill_node_links_tables")
-    if nmeta["ok"]:
-        counts: dict = {}
-        for r in nodes:
-            k = (r["character_skill_key"], _i0(r.get("indent")))
-            counts[k] = counts.get(k, 0) + 1
-        cur.execute("DROP TABLE IF EXISTS skill_indents")
-        cur.execute("CREATE TABLE skill_indents (skill TEXT, indent INT, n INT)")
-        for (sk, ind), n in counts.items():
-            cur.execute("INSERT INTO skill_indents VALUES (%s, %s, %s)", (sk, ind, n))
-        cur.execute("CREATE INDEX idx_skill_indents ON skill_indents (skill)")
-    nsets, nsmeta = src("character_skill_node_sets_tables")
-    nitems, nimeta = src("character_skill_node_set_items_tables")
-    if nsmeta["ok"]:
-        cur.execute("DROP TABLE IF EXISTS skill_node_sets")
-        cur.execute("CREATE TABLE skill_node_sets (node_set TEXT, subtype TEXT,"
-                    " agent TEXT)")
-        for r in nsets:
-            cur.execute("INSERT INTO skill_node_sets VALUES (%s, %s, %s)",
-                        (r["key"], r.get("agent_subtype_key") or "",
-                         r.get("agent_key") or ""))
-        cur.execute("CREATE INDEX idx_skill_node_sets ON skill_node_sets"
-                    " (node_set)")
-    if nmeta["ok"] and klmeta["ok"] and nimeta["ok"]:
-        skill_of = {r["key"]: r["character_skill_key"] for r in nodes}
-        sets_of: dict = {}
-        for r in nitems:
-            sets_of.setdefault(r["item"], set()).add(r["set_key"])
-        cur.execute("DROP TABLE IF EXISTS skill_links")
-        cur.execute("CREATE TABLE skill_links (child TEXT, parent TEXT,"
-                    " link_type TEXT, node_set TEXT)")
-        seen = set()
-        for r in nlinks:
-            child = skill_of.get(r["child_key"])
-            parent = skill_of.get(r["parent_key"])
-            if not child or not parent or child == parent:
-                continue
-            shared = (sets_of.get(r["child_key"], set())
-                      & sets_of.get(r["parent_key"], set()))
-            for ns in shared or {""}:
-                row = (child, parent, r["link_type"], ns)
-                if row not in seen:
-                    seen.add(row)
-                    cur.execute("INSERT INTO skill_links VALUES (%s, %s, %s, %s)",
-                                row)
-        cur.execute("CREATE INDEX idx_skill_links_child ON skill_links (child)")
-
-    if nmeta["ok"] and nimeta["ok"]:
-        skill_of = {r["key"]: r["character_skill_key"] for r in nodes}
-        tier_of = {r["key"]: _i0(r.get("tier")) for r in nodes}
-        indent_of = {r["key"]: _i0(r.get("indent")) for r in nodes}
-        sets_of = {}
-        for r in nitems:
-            sets_of.setdefault(r["item"], set()).add(r["set_key"])
-        for r in nodes:
-            ns = r.get("character_skill_node_set_key")
-            if ns:
-                sets_of.setdefault(r["key"], set()).add(ns)
-        cur.execute("DROP TABLE IF EXISTS skill_set_members")
-        cur.execute("CREATE TABLE skill_set_members (node_set TEXT, skill TEXT,"
-                    " tier INT, indent INT)")
-        seen = set()
-        for nk, sk in skill_of.items():
-            for ns in sets_of.get(nk, ()):
-                row = (ns, sk)
-                if row in seen:
-                    continue
-                seen.add(row)
-                cur.execute("INSERT INTO skill_set_members VALUES (%s, %s, %s, %s)",
-                            (ns, sk, tier_of.get(nk), indent_of.get(nk)))
-        cur.execute("CREATE INDEX idx_skill_set_members ON skill_set_members (node_set)")
-
-    tlv, tlmeta = src("character_trait_levels_tables")
-    if tlmeta["ok"]:
-        cur.execute("DROP TABLE IF EXISTS trait_levels")
-        cur.execute("CREATE TABLE trait_levels (trait TEXT, level INT,"
-                    " threshold INT, level_key TEXT)")
-        for r in tlv:
-            cur.execute("INSERT INTO trait_levels VALUES (%s, %s, %s, %s)",
-                        (r["trait"], r["level"], r["threshold_points"], r["key"]))
-        cur.execute("CREATE INDEX idx_trait_levels ON trait_levels (trait)")
-
-    tfx, tfmeta = src("trait_level_effects_tables")
-    if tfmeta["ok"]:
-        cur.execute("DROP TABLE IF EXISTS trait_effects")
-        cur.execute("CREATE TABLE trait_effects (level_key TEXT, effect TEXT,"
-                    " effect_scope TEXT, value REAL)")
-        for r in tfx:
-            cur.execute("INSERT INTO trait_effects VALUES (%s, %s, %s, %s)",
-                        (r["level_key"], r["effect"], r["effect_scope"], r["value"]))
-        cur.execute("CREATE INDEX idx_trait_effects ON trait_effects (level_key)")
-
-    tme, tmmeta = src("character_traits_tables")
-    if tmmeta["ok"]:
-        cur.execute("DROP TABLE IF EXISTS trait_meta")
-        cur.execute("CREATE TABLE trait_meta (trait TEXT PRIMARY KEY, category TEXT)")
-        for r in tme:
-            cur.execute("INSERT INTO trait_meta VALUES (%s, %s)"
-                        " ON CONFLICT (trait) DO NOTHING",
-                        (r["key"], r["category"]))
-
-    tat, tameta = src("trait_to_antitraits_tables")
-    if tameta["ok"]:
-        cur.execute("DROP TABLE IF EXISTS trait_antitraits")
-        cur.execute("CREATE TABLE trait_antitraits (trait TEXT, antitrait TEXT)")
-        for r in tat:
-            cur.execute("INSERT INTO trait_antitraits VALUES (%s, %s)",
-                        (r["trait"], r["antitrait"]))
-
-    tfx, tfxmeta = src("technology_effects_junction_tables")
-    if tfxmeta["ok"]:
-        cur.execute("DROP TABLE IF EXISTS tech_effects")
-        cur.execute("CREATE TABLE tech_effects (tech TEXT, effect TEXT,"
-                    " effect_scope TEXT, value REAL)")
-        for r in tfx:
-            cur.execute("INSERT INTO tech_effects VALUES (%s, %s, %s, %s)",
-                        (r["technology"], r["effect"], r["effect_scope"], r["value"]))
-        cur.execute("CREATE INDEX idx_tech_effects ON tech_effects (tech)")
-
-    sfx, sfxmeta = src("character_skill_level_to_effects_junctions_tables")
-    if sfxmeta["ok"]:
-        cur.execute("DROP TABLE IF EXISTS skill_effects")
-        cur.execute("CREATE TABLE skill_effects (skill TEXT, level INT, effect TEXT,"
-                    " effect_scope TEXT, value REAL)")
-        for r in sfx:
-            cur.execute("INSERT INTO skill_effects VALUES (%s, %s, %s, %s, %s)",
-                        (r["character_skill_key"], r["level"], r["effect_key"],
-                         r["effect_scope"], r["value"]))
-        cur.execute("CREATE INDEX idx_skill_effects ON skill_effects (skill, level)")
-
-    bfx, bfxmeta = src("building_effects_junction_tables")
-    if bfxmeta["ok"]:
-        cur.execute("DROP TABLE IF EXISTS building_effects")
-        cur.execute("CREATE TABLE building_effects (building TEXT, effect TEXT,"
-                    " effect_scope TEXT, value REAL, value_damaged REAL,"
-                    " value_ruined REAL)")
-        for r in bfx:
-            cur.execute("INSERT INTO building_effects VALUES (%s, %s, %s, %s, %s, %s)",
-                        (r["building"], r["effect"], r["effect_scope"], r["value"],
-                         r["value_damaged"], r["value_ruined"]))
-        cur.execute("CREATE INDEX idx_building_effects ON building_effects (building)")
-
-    sld, sldmeta = src("character_skill_level_details_tables")
-    if sldmeta["ok"]:
-        cur.execute("DROP TABLE IF EXISTS skill_level_ranks")
-        cur.execute("CREATE TABLE skill_level_ranks (skill TEXT, level INT,"
-                    " unlocked_at_rank INT)")
-        seen = set()
-        for r in sld:
-            k = (r["skill_key"], r["level"])
-            if k in seen:
-                continue
-            seen.add(k)
-            cur.execute("INSERT INTO skill_level_ranks VALUES (%s, %s, %s)",
-                        (r["skill_key"], r["level"], r["unlocked_at_rank"]))
-        cur.execute("CREATE INDEX idx_skill_level_ranks ON skill_level_ranks (skill)")
-
-    effs, emeta = src("effects_tables")
-    if emeta["ok"]:
-        cur.execute("DROP TABLE IF EXISTS effects_meta")
-        cur.execute("CREATE TABLE effects_meta (effect TEXT PRIMARY KEY, priority INT,"
-                    " positive_good INT)")
-        for r in effs:
-            cur.execute("INSERT INTO effects_meta VALUES (%s, %s, %s)"
-                        " ON CONFLICT (effect) DO NOTHING",
-                        (r["effect"], r.get("priority") or 0,
-                         1 if r.get("is_positive_value_good") else 0))
-
-    cur.execute("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)")
-    _rep(cur, "meta", ("extra_built", str(time.time())))
-    con.commit()
-    for t, m in report.items():
-        tag = "OK" if m["ok"] else "SKIP"
-        print(f"  [{tag}] {t:38s} ver={m['version']} rows={m['rows']} :: {m['reason']}")
-    for t in ("tech_links", "ancillaries", "ancillary_effects", "effects_meta",
-              "skill_links", "skill_categories", "skill_indents", "tech_groups",
-              "trait_levels", "trait_effects", "trait_meta", "trait_antitraits",
-              "tech_effects", "skill_effects", "building_effects", "skill_level_ranks",
-              "skill_set_members"):
-        n = cur.execute("SELECT COUNT(*) FROM " + t).fetchone()[0]
-        print(f"  {t:16s} {n} rows")
+    if args.check:
+        log('reference CHANGED, a build is needed')
+        con.close()
+        return 1
+    defs, schema_version = ron_schema.load(packs.SCHEMA_RON)
+    build_id, seconds = build(con, defs, schema_version, found, fp)
     con.close()
+    log('exit %.1f s  build_id=%d' % (time.time() - t0, build_id))
+    return 0
 
 
-if __name__ == "__main__":
-    import sys as _sys
-    build_extra() if "extra" in _sys.argv else build()
+if __name__ == '__main__':
+    sys.exit(main())

@@ -13,6 +13,7 @@ CREATE TABLE ops.manifest (
   schema_sha256   BYTEA NOT NULL,
   schema_version  SMALLINT NOT NULL,
   fingerprint     BYTEA NOT NULL,
+  fingerprint_cheap BYTEA NOT NULL,
   n_tables        SMALLINT,
   n_rows          INTEGER,
   n_loc           INTEGER,

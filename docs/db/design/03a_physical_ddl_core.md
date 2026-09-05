@@ -38,18 +38,18 @@ INSERT INTO dict.family (family, ref_tbl, ref_col, loc_col, note) VALUES
  ('trait',          'character_traits',                     'key',        NULL,                 '100%'),
  ('trait_level',    'character_trait_levels',               'key',        'onscreen_name',      '100%'),
  ('mission',        'missions',                             'key',        'localised_title',    '100%'),
- ('mission_issuer', 'mission_issuers',                      'key',        'on_screen_name',     ''),
+ ('mission_issuer', 'mission_issuers',                      'issuer_key', 'on_screen_name',     '2.1: pack key column is issuer_key'),
  ('edict',          'provincial_initiative_records',        'key',        'localised_name',     '100%'),
  ('effect_bundle',  'effect_bundles',                       'key',        'localised_title',    '100%'),
  ('pooled_resource','pooled_resources',                     'key',        'display_name',       '100%; corruption keys included'),
  ('stance',         'campaign_stances',                     'key',        NULL,                 'engine enum strings, no loc'),
  ('agent_action',   'agent_actions',                        'unique_id',  'localised_action_name', ''),
- ('captive_option', 'campaign_post_battle_captive_options', 'record_key', 'onscreen_name',      ''),
+ ('captive_option', 'campaign_post_battle_captive_options', 'id',         'onscreen_name',      '2.1: the pack key column is id'),
  ('dilemma',        'dilemmas',                             'key',        'localised_title',    'incidents resolved through dict.incident'),
  ('incident',       'incidents',                            'key',        'localised_title',    ''),
- ('armory_item',    'armory_item_variants',                 'key',        NULL,                 ''),
+ ('armory_item',    'armory_item_variants',                 'armory_item', NULL,                '2.1: composite key (armory_item, variant); resolve on armory_item'),
  ('unit_category',  'land_units',                           'category',   NULL,                 'non-key column'),
- ('campaign_map',   'campaigns',                            'campaign_key', NULL,               '2 values'),
+ ('campaign_map',   'campaigns',                            'campaign_name', NULL,              '2 values; 2.1: the pack key column is campaign_name'),
  ('culture',        'cultures',                             'key',        NULL,                 'race_of() 3rd token (features.py:41-45)');
 
 DO $$
