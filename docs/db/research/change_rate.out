@@ -1,0 +1,115 @@
+sample campaigns 376 decisions 17113 total campaigns 4827 total decisions 206907
+query lord: 25821 rows in 192.7s
+
+=== entity lord: snapshots=25821 consecutive_pairs=25135 whole_blob_same=3.5% (in-turn 3.9% of 22562)
+  scalar remainder unchanged between consecutive: 63.8%  (in-turn 69.6%)
+  collection             mean_len plain_rows dedup_rows   scd_rows   same% inturn%  xturn% nonempty%
+  skills                     50.7   1307890      39335      74449   97.0%   97.0%   96.7%     98.7%
+  hidden_skills               2.7     70306        721       1889  100.0%  100.0%  100.0%     98.7%
+  hidden_skill_states         0.6     15020        460        684   99.5%   99.5%   99.3%     21.4%
+  traits                      0.0       536         19         27   99.9%  100.0%   99.4%      1.5%
+  trait_progress              0.8     21016       1863       2071   98.3%   99.5%   88.0%     18.7%
+  recruitable                 3.4     86971        710       3887   98.1%   99.2%   88.4%     83.4%
+  reach_chars                10.1    260374      60369      74933   72.1%   78.8%   13.3%    100.0%
+  reach_setts                 9.7    249498      25330      51416   80.8%   86.6%   29.5%    100.0%
+  equipped                    0.8     21170       1025       1610   95.8%   95.8%   95.7%     44.5%
+  armory                      0.0       456          8          8  100.0%  100.0%  100.0%      0.2%
+  horde_slots                 3.9    100272       7978      12798   99.5%   99.6%   98.3%      4.6%
+  merc_pools                  1.4     35386       1486       3357   95.1%   97.6%   72.8%    100.0%
+  move_tiles                 13.6    350815     350743     350769    4.8%    5.3%    0.5%     94.0%
+  unit_cards                  6.8    174769      27566      33785   86.5%   92.1%   37.9%    100.0%
+  stances                     8.8    226467       7523      52976   78.6%   81.7%   52.0%    100.0%
+  pending_queue               0.1      2352        440        790   96.9%   97.4%   92.1%      6.2%
+  pending_recruit_keys        0.2      5995        979       1880   93.5%   95.0%   80.5%     14.1%
+  effect_bundles              0.0       227          4          5  100.0%  100.0%  100.0%      0.9%
+  force_effect_bundles        0.3      7826        394       1560   96.5%   96.8%   93.5%     21.5%
+  TOTAL plain=2937346 dedup=526953 scd=668894  per-snapshot plain=113.8 dedup=20.4 scd=25.9
+query hero: 19663 rows in 61.5s
+
+=== entity hero: snapshots=19663 consecutive_pairs=19116 whole_blob_same=2.2% (in-turn 2.5% of 17076)
+  scalar remainder unchanged between consecutive: 79.5%  (in-turn 85.0%)
+  collection             mean_len plain_rows dedup_rows   scd_rows   same% inturn%  xturn% nonempty%
+  skills                     31.8    624968      13170      26350   98.8%   98.8%   98.3%     99.9%
+  hidden_skills               3.6     70083        607       1894  100.0%  100.0%  100.0%    100.0%
+  hidden_skill_states         0.6     11686        287        354   99.8%   99.9%   99.4%     16.7%
+  traits                      0.0       543          8          9  100.0%  100.0%  100.0%      2.3%
+  trait_progress              0.1      1021         93        106   99.9%  100.0%   98.7%      4.2%
+  reach_chars                 9.8    193397      41881      53040   74.0%   80.6%   18.5%    100.0%
+  reach_setts                 8.9    174472      20330      34866   82.7%   88.0%   37.7%    100.0%
+  equipped                    0.2      4146        208        360   98.6%   98.5%   99.0%     19.1%
+  armory                      0.0         0          0          0  100.0%  100.0%  100.0%      0.0%
+  move_tiles                 13.5    266055     266045     266047    2.8%    3.0%    0.6%     96.2%
+  unit_cards                  0.0         0          0          0  100.0%  100.0%  100.0%      0.0%
+  pending_queue               0.0         0          0          0  100.0%  100.0%  100.0%      0.0%
+  pending_recruit_keys        0.0         0          0          0  100.0%  100.0%  100.0%      0.0%
+  effect_bundles              0.2      4651         14        423   98.8%   99.1%   95.9%     16.4%
+  force_effect_bundles        0.0         0          0          0  100.0%  100.0%  100.0%      0.0%
+  TOTAL plain=1351022 dedup=342643 scd=383449  per-snapshot plain=68.7 dedup=17.4 scd=19.5
+query province: 31122 rows in 28.2s
+
+=== entity province: snapshots=31122 consecutive_pairs=30397 whole_blob_same=80.6% (in-turn 89.4% of 27331)
+  scalar remainder unchanged between consecutive: 83.4%  (in-turn 92.4%)
+  collection             mean_len plain_rows dedup_rows   scd_rows   same% inturn%  xturn% nonempty%
+  buildable                   5.9    183584      13772      25619   92.3%   95.1%   68.0%     95.1%
+  built                       2.1     65372       1319       2677   98.2%  100.0%   82.2%     99.5%
+  building_now                0.3     10021       1104       1758   93.6%   96.7%   65.7%     27.3%
+  corruption                  7.0    217854       4550      16205   94.8%   99.0%   56.8%    100.0%
+  edicts                      4.1    127553        126       2966  100.0%  100.0%  100.0%     94.3%
+  locked_slots                3.4    105030         77       2595   99.8%  100.0%   98.1%     99.3%
+  slot_states                 5.9    183160       8836      14116   94.8%   96.7%   78.4%     99.5%
+  effect_bundles              0.0       385         17         20  100.0%  100.0%   99.9%      0.9%
+  plague_bundles              0.0         0          0          0  100.0%  100.0%  100.0%      0.0%
+  TOTAL plain=892959 dedup=29801 scd=65956  per-snapshot plain=28.7 dedup=1.0 scd=2.1
+query campaign: 17113 rows in 64.3s
+
+=== entity campaign: snapshots=17113 consecutive_pairs=16737 whole_blob_same=52.5% (in-turn 59.2% of 14854)
+  scalar remainder unchanged between consecutive: 60.1%  (in-turn 67.7%)
+  collection             mean_len plain_rows dedup_rows   scd_rows   same% inturn%  xturn% nonempty%
+  tech                       56.6    969113      37301      86473   93.3%   95.6%   75.2%     98.1%
+  lord_pools                 24.4    417189      19276      29063   95.5%   97.6%   78.8%     92.1%
+  rites                      16.7    286410      22773      36257   95.4%   97.2%   80.8%     77.6%
+  missions                    0.9     14802        994       1332   99.2%   99.4%   97.8%     10.2%
+  resources                   5.4     93109       7461      10843   91.7%   96.1%   57.4%    100.0%
+  effect_bundles              0.7     11187        519        684   99.3%   99.8%   95.4%     19.5%
+  anc_pool                    2.5     42324       1778       2209   96.0%   96.6%   91.0%     82.6%
+  equipped_all                1.6     26651       2012       2930   91.6%   91.3%   94.1%     69.4%
+  hero_type_counts            1.1     18949         90        671   98.8%   99.3%   94.7%     93.7%
+  read_failures               0.0         0          0          0  100.0%  100.0%  100.0%      0.0%
+  TOTAL plain=1879734 dedup=92204 scd=170462  per-snapshot plain=109.8 dedup=5.4 scd=10.0
+query world: 17113 rows in 61.1s
+
+=== world: snapshots=17113 consecutive_pairs=16737 whole_blob_same=44.9% (in-turn 50.6% of 14854)
+  scalar remainder unchanged between consecutive: 85.2%  (in-turn 90.7%)
+  collection             mean_len plain_rows dedup_rows   scd_rows   same% inturn%  xturn% nonempty%
+  armies                      4.7     80864      41640      43424   47.1%   52.7%    3.4%    100.0%
+  settlements                 2.0     33409       2410       4454   89.7%   90.4%   83.5%     93.4%
+  hostiles                    8.1    138112      34466      38025   73.6%   82.4%    4.2%     99.5%
+  enemy_agents                0.6      9428       1100       1197   95.9%   99.0%   71.3%     27.6%
+  ruins                       3.0     50579       1694       3255   96.6%   98.5%   81.9%     71.0%
+  regions                    14.7    251469      15758      24749   92.6%   96.7%   60.6%    100.0%
+  war_graph                   4.2     71225       4219       6334   93.9%   96.6%   72.9%     98.3%
+  relations                   9.6    164224      22350      27981   84.4%   94.4%    5.2%    100.0%
+  diplo_unseen                0.0        81         12         15   99.8%   99.9%   98.9%      0.5%
+  citizenry                   1.9     32191        998       1529   97.1%   97.8%   91.1%     92.5%
+  stationed                   2.0     33409       1348       3255   92.7%   92.5%   94.4%     93.4%
+  TOTAL plain=864991 dedup=125995 scd=154218  per-snapshot plain=50.5 dedup=7.4 scd=9.0
+query campaign blob: 17113 rows in 1.6s
+
+=== campaign blob: snapshots=17113 consecutive_pairs=16737 whole_blob_same=59.3% (in-turn 66.8% of 14854)
+  scalar remainder unchanged between consecutive: 60.1%  (in-turn 67.7%)
+  collection             mean_len plain_rows dedup_rows   scd_rows   same% inturn%  xturn% nonempty%
+  effect_bundles              0.7     11187        519        684   99.3%   99.8%   95.4%     19.5%
+  hero_type_counts            1.1     18949         90        671   98.8%   99.3%   94.7%     93.7%
+  resources                   5.4     93109       7461      10843   91.7%   96.1%   57.4%    100.0%
+  read_failures               0.0         0          0          0  100.0%  100.0%  100.0%      0.0%
+  TOTAL plain=123245 dedup=8070 scd=12198  per-snapshot plain=7.2 dedup=0.5 scd=0.7
+
+=== corpus-scale projection (sample x 12.09)
+  lord           snapshots=   312192 plain=   35514372 dedup=    6371195 scd=    8087351
+  hero           snapshots=   237738 plain=   16334710 dedup=    4142770 scd=    4636141
+  province       snapshots=   376284 plain=   10796439 dedup=     360312 scd=     797449
+  campaign       snapshots=   206907 plain=   22727173 dedup=    1114804 scd=    2060993
+  world          snapshots=   206907 plain=   10458288 dedup=    1523359 scd=    1864593
+  campaign_blob  snapshots=   206907 plain=    1490110 dedup=      97571 scd=     147481
+  TOTAL                              plain=   97321094 dedup=   13610014 scd=   17594010
+done in 410.3s

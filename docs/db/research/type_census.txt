@@ -1,0 +1,51 @@
+census decode+stats 4.7s, columns 6850
+
+PER FIELD TYPE (decoded tables, pack version used):
+  StringU8           columns=3125  tables=1508 values=2210624  maxlen_chars=1721 maxlen_bytes=1727 cols_maxlen>255=9 cols_maxlen>1000=2 nulls(absent)=0 empty=27520 nonascii_vals=2500 replacement_char_vals=0
+  OptionalStringU8   columns=1169  tables=383  values=1129743  maxlen_chars=2905 maxlen_bytes=2943 cols_maxlen>255=5 cols_maxlen>1000=1 nulls(absent)=792260 empty=0 nonascii_vals=34 replacement_char_vals=0
+  I32                columns=885   tables=391  values=826888   min=-2147483647 max=2147483647 cols_beyond_int2=48 cols_beyond_int4=0 cols_with_negatives=117 nulls=0
+  F32                columns=832   tables=229  values=550111   min=-9999999.0 max=1000000.0 nonint_values=46837 nan_inf=0
+  Boolean            columns=675   tables=290  values=868841   true=233000
+  I64                columns=114   tables=90   values=63386    min=0 max=2147469485 cols_beyond_int2=64 cols_beyond_int4=0 cols_with_negatives=0 nulls=0
+  F64                columns=28    tables=17   values=11522    min=0.0 max=500.0 nonint_values=127 nan_inf=0
+  ColourRGB          columns=19    tables=5    values=16301   
+  StringU16          columns=2     tables=2    values=34       maxlen_chars=63 maxlen_bytes=63 cols_maxlen>255=0 cols_maxlen>1000=0 nulls(absent)=0 empty=0 nonascii_vals=0 replacement_char_vals=0
+  I16                columns=1     tables=1    values=826      min=0 max=0 cols_beyond_int2=0 cols_beyond_int4=0 cols_with_negatives=0 nulls=0
+
+Boolean raw byte values: {1: 233000, 0: 635841}
+OptionalStringU8: absent(flag=0)=792260 of 1129743 values (70.1%); columns 100% absent=188, 0% absent=183
+OptionalStringU8 present-but-empty strings: 0
+StringU8 empty strings: 27520 of 2210624
+String column maxlen histogram: {'<=64': 1730, '<=32': 1938, '<=128': 583, '<=255': 29, '<=1000': 11, '>1000': 3}
+longest string columns:
+   start_pos_factions_tables                          long_description               OptionalStringU8 maxlen=2905
+   missions_tables                                    localised_description          StringU8 maxlen=1721
+   dilemmas_tables                                    localised_description          StringU8 maxlen=1394
+   building_effect_context_expressions_tables         expression                     StringU8 maxlen=930
+   cdir_events_incident_option_junctions_tables       value                          OptionalStringU8 maxlen=734
+   effect_bundles_tables                              localised_description          StringU8 maxlen=601
+   quotes_tables                                      quote_onscreen                 StringU8 maxlen=554
+   cdir_event_option_set_items_tables                 value                          OptionalStringU8 maxlen=517
+StringU16 columns: [('advisors_tables', 'advisor_icon_path', 63, 10), ('battle_types_to_victory_conditions_tables', 'battle_type', 22, 24)]
+
+F32 raw values=550111, values altered by round(...,4) in _read_field=29254 (5.32%); raw min=-9999999.0 max=1000000.0
+F32 |v|>=1e7: 0  examples: []
+F32 columns: 832 F64 columns: 28
+F32 columns all-integer-valued: 456
+I32 columns: min/max extremes:
+   campaign_group_member_criteria_numeric_ranges_tables max_range                      min=-21 max=2147483647
+   pooled_resource_factor_junctions_tables            maximum                        min=0 max=2147483647
+   pooled_resources_tables                            maximum                        min=1 max=2147483647
+   rituals_tables                                     max_times_cost_can_increase    min=9 max=2147483647
+   building_units_allowed_tables                      key                            min=59138 max=2147195279
+   campaign_group_member_criteria_numeric_ranges_tables min_range                      min=-2147483647 max=10001
+   pooled_resource_factor_junctions_tables            minimum                        min=-2147483647 max=0
+   pooled_resources_tables                            minimum                        min=-2147483647 max=20
+   cai_construction_system_synergy_levels_tables      absolute_effect                min=-971227136 max=0
+   resource_costs_tables                              treasury_cost                  min=-50000 max=5000
+I64 columns: [('armed_citizenry_units_to_unit_groups_junctions_tables', 'id', 10714, 2147469485), ('army_special_abilities_tables', 'unique_id', 30, 2143771392), ('audio_entity_focus_pools_tables', 'pool_id', 35418137, 2141054118), ('audio_entity_types_tables', 'record_id', 1, 2146837411), ('audio_group_focus_pools_tables', 'pool_id', 1493803433, 1818628370), ('audio_music_sync_events_tables', 'position_max_distance', 1000, 1000), ('audio_music_sync_events_tables', 'rtpc_max_distance', 1000, 1000), ('audio_music_sync_events_tables', 'max_near_positions', 20, 20), ('audio_music_sync_events_tables', 'far_positions_division', 5, 5), ('audio_music_sync_events_tables', 'max_total_positions', 100, 100), ('audio_music_sync_events_tables', 'offset_x', 0, 0), ('audio_music_sync_events_tables', 'offset_y', 0, 0)]
+I16 columns: [('start_pos_regions_tables', 'capture_prestige', 0, 0)]
+OptionalI32 columns: []
+ColourRGB raw values=16301, top-byte distribution={0: 16301}
+ColourRGB columns: [('battle_set_piece_armies_tables', 'uniform_colour_primary_override'), ('battle_set_piece_armies_tables', 'uniform_colour_secondary_override'), ('battle_set_piece_armies_tables', 'uniform_colour_tertiary_override'), ('battle_set_piece_armies_tables', 'banner_colour_primary_override'), ('battle_set_piece_armies_tables', 'banner_colour_secondary_override'), ('battle_set_piece_armies_tables', 'banner_colour_tertiary_override'), ('factions_tables', 'uniform_colour_primary'), ('factions_tables', 'uniform_colour_secondary'), ('factions_tables', 'uniform_colour_tertiary'), ('factions_tables', 'banner_colour_primary'), ('factions_tables', 'banner_colour_secondary'), ('factions_tables', 'banner_colour_tertiary'), ('factions_tables', 'primary_colour'), ('ritual_targets_tables', 'highlight_colour_selected_target'), ('ritual_targets_tables', 'highlight_colour_no_target_selected'), ('ritual_targets_tables', 'highlight_colour_with_target_selected'), ('ui_main_theme_options_tables', 'main_theme_colour'), ('ui_main_theme_options_tables', 'fullscreen_background_colour'), ('units_custom_battle_types_tables', 'colour')]
+Boolean columns by value distribution: {'mixed': 527, 'all_true': 47, 'all_false': 101}

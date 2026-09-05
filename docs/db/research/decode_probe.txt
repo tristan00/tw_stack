@@ -1,0 +1,126 @@
+db.pack: 1521 entries, 1521 tables, parse_pack 0.00s, 7826301 bytes on disk
+
+TOTALS: tables=1521 ok=1520 fail=1 rows=865404 raw_bytes=93213054 packed_bytes=7743851 decode_secs=1.6 wall_total=2.7
+failure classes: Counter({'no schema for table': 1})
+
+FAILURES:
+  autoresolver_unit_group_categories_enums_tables              ver=1   hdr_rows=0      ron_versions=None :: no schema for table
+
+TOP 20 BY ROWS:
+  diplomacy_negotiation_string_options_tables             ver=0   rows=64889   cols=4   raw=6965822   packed=187733   secs=0.062
+  character_skill_node_set_items_tables                   ver=0   rows=29517   cols=3   raw=2850554   packed=91507    secs=0.024
+  character_skill_nodes_tables                            ver=6   rows=24649   cols=10  raw=2891164   packed=168547   secs=0.042
+  diplomacy_strings_tables                                ver=0   rows=23809   cols=1   raw=877972    packed=43283    secs=0.007
+  building_effects_junction_tables                        ver=0   rows=21613   cols=7   raw=2832607   packed=128514   secs=0.046
+  unit_set_to_unit_junctions_tables                       ver=1   rows=21476   cols=6   raw=1515494   packed=105532   secs=0.022
+  character_skill_node_links_tables                       ver=3   rows=20590   cols=8   raw=2731444   packed=74261    secs=0.045
+  campaign_group_members_tables                           ver=1   rows=17015   cols=3   raw=2134666   packed=105312   secs=0.017
+  character_skill_level_to_effects_junctions_tables       ver=1   rows=16844   cols=5   raw=2312324   packed=155987   secs=0.025
+  effect_bundles_to_effects_junctions_tables              ver=3   rows=16430   cols=5   raw=2474306   packed=138026   secs=0.023
+  effects_tables                                          ver=0   rows=15064   cols=6   raw=1603725   packed=155933   secs=0.021
+  campaign_group_member_criteria_factions_tables          ver=1   rows=11219   cols=3   raw=1200423   packed=58149    secs=0.009
+  campaign_group_member_criteria_subcultures_tables       ver=1   rows=10769   cols=3   raw=1123428   packed=43925    secs=0.008
+  ui_text_replacements_tables                             ver=0   rows=9505    cols=1   raw=514567    packed=40277    secs=0.004
+  faction_agent_permitted_subtypes_tables                 ver=1   rows=9187    cols=4   raw=636271    packed=40025    secs=0.008
+  faction_rebellion_units_junctions_tables                ver=0   rows=8966    cols=2   raw=562327    packed=34911    secs=0.005
+  campaign_groups_tables                                  ver=0   rows=8904    cols=1   raw=511514    packed=33679    secs=0.003
+  land_units_to_unit_abilites_junctions_tables            ver=0   rows=8700    cols=2   raw=695477    packed=49668    secs=0.005
+  cdir_events_mission_option_junctions_tables             ver=2   rows=8590    cols=5   raw=873573    packed=100055   secs=0.011
+  effect_bonus_value_ids_unit_sets_tables                 ver=0   rows=8347    cols=3   raw=930163    packed=72046    secs=0.007
+
+TOP 20 BY RAW BYTES:
+  diplomacy_negotiation_string_options_tables             ver=0   rows=64889   cols=4   raw=6965822   secs=0.062
+  character_skill_nodes_tables                            ver=6   rows=24649   cols=10  raw=2891164   secs=0.042
+  character_skill_node_set_items_tables                   ver=0   rows=29517   cols=3   raw=2850554   secs=0.024
+  building_effects_junction_tables                        ver=0   rows=21613   cols=7   raw=2832607   secs=0.046
+  character_skill_node_links_tables                       ver=3   rows=20590   cols=8   raw=2731444   secs=0.045
+  effect_bundles_to_effects_junctions_tables              ver=3   rows=16430   cols=5   raw=2474306   secs=0.023
+  character_skill_level_to_effects_junctions_tables       ver=1   rows=16844   cols=5   raw=2312324   secs=0.025
+  campaign_group_members_tables                           ver=1   rows=17015   cols=3   raw=2134666   secs=0.017
+  event_feed_message_events_tables                        ver=1   rows=4988    cols=13  raw=1817174   secs=0.015
+  effects_tables                                          ver=0   rows=15064   cols=6   raw=1603725   secs=0.021
+  land_units_tables                                       ver=54  rows=2486    cols=60  raw=1558980   secs=0.033
+  unit_set_to_unit_junctions_tables                       ver=1   rows=21476   cols=6   raw=1515494   secs=0.022
+  missions_tables                                         ver=0   rows=3186    cols=19  raw=1347949   secs=0.014
+  audio_metadata_tags_tables                              ver=22  rows=6093    cols=54  raw=1274406   secs=0.060
+  character_skills_tables                                 ver=5   rows=5944    cols=10  raw=1204939   secs=0.015
+  campaign_group_member_criteria_factions_tables          ver=1   rows=11219   cols=3   raw=1200423   secs=0.009
+  campaign_group_member_criteria_subcultures_tables       ver=1   rows=10769   cols=3   raw=1123428   secs=0.008
+  audio_metadata_tag_entity_overrides_tables              ver=3   rows=6603    cols=9   raw=1053962   secs=0.015
+  effect_bundles_tables                                   ver=4   rows=5855    cols=9   raw=1015061   secs=0.011
+  models_building_tables                                  ver=8   rows=4488    cols=6   raw=965232    secs=0.007
+
+TOP 10 BY DECODE SECS:
+  diplomacy_negotiation_string_options_tables             rows=64889   cols=4   secs=0.062
+  audio_metadata_tags_tables                              rows=6093    cols=54  secs=0.060
+  building_effects_junction_tables                        rows=21613   cols=7   secs=0.046
+  character_skill_node_links_tables                       rows=20590   cols=8   secs=0.045
+  character_skill_nodes_tables                            rows=24649   cols=10  secs=0.042
+  unit_special_abilities_tables                           rows=2894    cols=71  secs=0.038
+  land_units_tables                                       rows=2486    cols=60  secs=0.033
+  building_levels_tables                                  rows=5259    cols=26  secs=0.025
+  battlefield_buildings_tables                            rows=4810    cols=27  secs=0.025
+  character_skill_level_to_effects_junctions_tables       rows=16844   cols=5   secs=0.025
+
+empty tables (0 rows): 0
+tables with guid header: 1521 / 1521
+
+JSON (schema_db.json) subset decode:
+  abilities_tables                                        ron_ok=True json_ok=True json_rows=9 ron_rows=9
+  action_results_additional_outcomes_tables               ron_ok=True json_ok=True json_rows=75 ron_rows=75
+  action_results_tables                                   ron_ok=True json_ok=True json_rows=74 ron_rows=74
+  agent_actions_tables                                    ron_ok=True json_ok=True json_rows=176 ron_rows=176
+  agents_tables                                           ron_ok=True json_ok=True json_rows=9 ron_rows=9
+  ancillaries_tables                                      ron_ok=True json_ok=True json_rows=2671 ron_rows=2671
+  ancillary_to_effects_tables                             ron_ok=True json_ok=True json_rows=4386 ron_rows=4386
+  building_chains_tables                                  ron_ok=True json_ok=True json_rows=1943 ron_rows=1943
+  building_effects_junction_tables                        ron_ok=True json_ok=True json_rows=21613 ron_rows=21613
+  building_levels_tables                                  ron_ok=True json_ok=True json_rows=5259 ron_rows=5259
+  campaign_group_member_criteria_cultures_tables          ron_ok=True json_ok=True json_rows=3078 ron_rows=3078
+  campaign_group_member_criteria_factions_tables          ron_ok=True json_ok=True json_rows=11219 ron_rows=11219
+  campaign_group_member_criteria_subcultures_tables       ron_ok=True json_ok=True json_rows=10769 ron_rows=10769
+  campaign_group_members_tables                           ron_ok=True json_ok=True json_rows=17015 ron_rows=17015
+  campaign_map_regions_tables                             ron_ok=True json_ok=True json_rows=4282 ron_rows=4282
+  campaign_post_battle_captive_options_tables             ron_ok=True json_ok=True json_rows=95 ron_rows=95
+  character_skill_categories_tables                       ron_ok=True json_ok=True json_rows=42 ron_rows=42
+  character_skill_level_details_tables                    ron_ok=True json_ok=True json_rows=2100 ron_rows=2100
+  character_skill_level_to_effects_junctions_tables       ron_ok=True json_ok=True json_rows=16844 ron_rows=16844
+  character_skill_node_links_tables                       ron_ok=True json_ok=True json_rows=20590 ron_rows=20590
+  character_skill_node_set_items_tables                   ron_ok=True json_ok=True json_rows=29517 ron_rows=29517
+  character_skill_node_sets_tables                        ron_ok=True json_ok=True json_rows=547 ron_rows=547
+  character_skill_nodes_tables                            ron_ok=True json_ok=True json_rows=24649 ron_rows=24649
+  character_skills_tables                                 ron_ok=True json_ok=True json_rows=5944 ron_rows=5944
+  character_trait_levels_tables                           ron_ok=True json_ok=True json_rows=979 ron_rows=979
+  character_traits_tables                                 ron_ok=True json_ok=True json_rows=744 ron_rows=744
+  cultures_subcultures_tables                             ron_ok=True json_ok=True json_rows=32 ron_rows=32
+  cultures_tables                                         ron_ok=True json_ok=True json_rows=27 ron_rows=27
+  dilemmas_tables                                         ron_ok=True json_ok=True json_rows=1127 ron_rows=1127
+  effects_tables                                          ron_ok=True json_ok=True json_rows=15064 ron_rows=15064
+  faction_agent_permitted_subtypes_tables                 ron_ok=True json_ok=True json_rows=9187 ron_rows=9187
+  factions_tables                                         ron_ok=True json_ok=True json_rows=717 ron_rows=717
+  incidents_tables                                        ron_ok=True json_ok=True json_rows=1754 ron_rows=1754
+  land_units_tables                                       ron_ok=True json_ok=True json_rows=2486 ron_rows=2486
+  main_units_tables                                       ron_ok=True json_ok=True json_rows=2609 ron_rows=2609
+  mercenary_pool_to_groups_junctions_tables               ron_ok=True json_ok=True json_rows=884 ron_rows=884
+  mercenary_pools_tables                                  ron_ok=True json_ok=True json_rows=63 ron_rows=63
+  mercenary_unit_groups_tables                            ron_ok=True json_ok=True json_rows=649 ron_rows=649
+  missions_tables                                         ron_ok=True json_ok=True json_rows=3186 ron_rows=3186
+  provinces_tables                                        ron_ok=True json_ok=True json_rows=316 ron_rows=316
+  region_to_province_junctions_tables                     ron_ok=True json_ok=True json_rows=826 ron_rows=826
+  regions_tables                                          ron_ok=True json_ok=True json_rows=945 ron_rows=945
+  ritual_chains_tables                                    ron_ok=True json_ok=True json_rows=91 ron_rows=91
+  rituals_tables                                          ron_ok=True json_ok=True json_rows=1326 ron_rows=1326
+  technologies_tables                                     ron_ok=True json_ok=True json_rows=1869 ron_rows=1869
+  technology_effects_junction_tables                      ron_ok=True json_ok=True json_rows=3734 ron_rows=3734
+  technology_node_links_tables                            ron_ok=True json_ok=True json_rows=1792 ron_rows=1792
+  technology_node_sets_tables                             ron_ok=True json_ok=True json_rows=33 ron_rows=33
+  technology_nodes_tables                                 ron_ok=True json_ok=True json_rows=1843 ron_rows=1843
+  technology_ui_groups_tables                             ron_ok=True json_ok=True json_rows=128 ron_rows=128
+  trait_level_effects_tables                              ron_ok=True json_ok=True json_rows=1735 ron_rows=1735
+  trait_to_antitraits_tables                              ron_ok=True json_ok=True json_rows=46 ron_rows=46
+  ui_mercenary_recruitment_infos_tables                   ron_ok=True json_ok=True json_rows=20 ron_rows=20
+
+KEYS (decoded tables): no key fields=0, single=952, composite=568, dups>0=0
+  no-key tables: []
+  tables whose schema key is NOT unique in data:
+wrote C:\Users\trist\AppData\Local\Temp\claude\D--tw-stack\503ea3b2-0e04-45e7-b92b-dfb232c06b94\scratchpad\research\decode_probe.json
