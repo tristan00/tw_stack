@@ -174,7 +174,7 @@ CREATE TABLE corpus.mission_set_member (
 CREATE TABLE corpus.region_set_member (
   set_id BIGINT NOT NULL REFERENCES corpus.state_set, ord SMALLINT NOT NULL,
   region_id INTEGER NOT NULL REFERENCES dict.region, x INTEGER, y INTEGER, province_id INTEGER REFERENCES dict.province,
-  owner_id INTEGER REFERENCES dict.faction, capital BOOLEAN NOT NULL, abandoned BOOLEAN NOT NULL, adjacent SMALLINT[] NOT NULL,
+  owner_id INTEGER REFERENCES dict.faction, capital BOOLEAN NOT NULL, abandoned BOOLEAN NOT NULL, adjacent INTEGER[] NOT NULL,
   PRIMARY KEY (set_id, ord), UNIQUE (set_id, region_id));
 CREATE TABLE corpus.settlement_set_member (
   set_id BIGINT NOT NULL REFERENCES corpus.state_set, ord SMALLINT NOT NULL,
@@ -190,7 +190,7 @@ CREATE TABLE corpus.enemy_agent_set_member (
   PRIMARY KEY (set_id, ord));
 CREATE TABLE corpus.war_graph_set_member (
   set_id BIGINT NOT NULL REFERENCES corpus.state_set, ord SMALLINT NOT NULL,
-  faction_id INTEGER NOT NULL REFERENCES dict.faction, at_war_with SMALLINT[] NOT NULL,
+  faction_id INTEGER NOT NULL REFERENCES dict.faction, at_war_with INTEGER[] NOT NULL,
   PRIMARY KEY (set_id, ord), UNIQUE (set_id, faction_id));
 CREATE TABLE corpus.relation_set_member (
   set_id BIGINT NOT NULL REFERENCES corpus.state_set, ord SMALLINT NOT NULL,
@@ -324,7 +324,7 @@ CREATE TABLE corpus.diplomacy_event (
   kind_id         INTEGER NOT NULL REFERENCES dict.enum,
   channel_id      INTEGER REFERENCES dict.enum,
   faction_id      INTEGER REFERENCES dict.faction,
-  term_ids        SMALLINT[],
+  term_ids        INTEGER[],
   gift_id         INTEGER REFERENCES dict.enum,
   ok              BOOLEAN,
   failed_at       TEXT,
@@ -346,7 +346,7 @@ CREATE TABLE corpus.diplomacy_event (
   pair_standing   SMALLINT,
   turns_played    SMALLINT,
   ended_by        TEXT[],
-  tracked_faction_ids SMALLINT[]
+  tracked_faction_ids INTEGER[]
 );
 CREATE INDEX diplomacy_event_campaign ON corpus.diplomacy_event (campaign_id, event_id);
 CREATE INDEX diplomacy_event_ts ON corpus.diplomacy_event (ts);

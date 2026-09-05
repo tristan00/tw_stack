@@ -126,6 +126,8 @@ def candidates(value):
             out.append(row)
     return out
 
+OMIT_WHEN_NULL = {('merc_pools', 'can')}
+
 NOT_SETS = ('armies', 'hostiles', 'move_tiles', 'reach_chars', 'reach_setts',
             'read_failures')
 

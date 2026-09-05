@@ -244,11 +244,11 @@ CREATE TABLE corpus.snapshot_world (
   relation_set_id      BIGINT,
   stationed_set_id     BIGINT,
   citizenry            INTEGER[],
-  diplo_unseen         SMALLINT[],
+  diplo_unseen         INTEGER[],
   diplo_schema         SMALLINT,
   diplo_hostile_rows   SMALLINT,
   reach_char_cqis      INTEGER[],
-  reach_region_ids     SMALLINT[]
+  reach_region_ids     INTEGER[]
 );
 CREATE TABLE corpus.world_army (
   snapshot_id       BIGINT NOT NULL,
@@ -341,17 +341,17 @@ CREATE TABLE corpus.char_state (
   can_embed               BOOLEAN,
   agent_type_id           INTEGER,
   skill_set_id            BIGINT NOT NULL,
-  hidden_skill_ids        SMALLINT[] NOT NULL,
+  hidden_skill_ids        INTEGER[] NOT NULL,
   stance_set_id           BIGINT,
   recruitable_set_id      BIGINT,
   unit_card_set_id        BIGINT NOT NULL,
   pending_queue_set_id    BIGINT,
-  pending_recruit_unit_ids SMALLINT[] NOT NULL,
+  pending_recruit_unit_ids INTEGER[] NOT NULL,
   equipped_set_id         BIGINT NOT NULL,
   horde_slot_set_id       BIGINT,
   merc_pool_set_id        BIGINT,
   reach_chars_true        INTEGER[] NOT NULL,
-  reach_setts_true        SMALLINT[] NOT NULL,
+  reach_setts_true        INTEGER[] NOT NULL,
   move_x                  INTEGER[] NOT NULL,
   move_y                  INTEGER[] NOT NULL,
   reach_rays              SMALLINT[],
@@ -380,7 +380,7 @@ CREATE TABLE corpus.char_state_ext (
   hidden_skill_state_set_id   BIGINT NOT NULL,
   effect_bundle_set_id        BIGINT NOT NULL,
   force_effect_bundle_set_id  BIGINT NOT NULL,
-  armory_item_ids             SMALLINT[] NOT NULL,
+  armory_item_ids             INTEGER[] NOT NULL,
   PRIMARY KEY (snapshot_id, character_id)
 );
 CREATE TABLE corpus.province_state (
@@ -410,7 +410,7 @@ CREATE TABLE corpus.province_state (
   building_now_set_id   BIGINT,
   corruption_set_id     BIGINT,
   buildable_set_id      BIGINT,
-  edict_ids             SMALLINT[],
+  edict_ids             INTEGER[],
   slot_state_set_id     BIGINT,
   effect_bundle_set_id  BIGINT,
   plague_bundle_set_id  BIGINT,
@@ -675,7 +675,7 @@ CREATE TABLE corpus.region_set_member (
   owner_id INTEGER,
   capital BOOLEAN NOT NULL,
   abandoned BOOLEAN NOT NULL,
-  adjacent SMALLINT[] NOT NULL,
+  adjacent INTEGER[] NOT NULL,
   PRIMARY KEY (set_id, ord),
   UNIQUE (set_id, region_id)
 );
@@ -712,7 +712,7 @@ CREATE TABLE corpus.war_graph_set_member (
   set_id BIGINT NOT NULL,
   ord SMALLINT NOT NULL,
   faction_id INTEGER NOT NULL,
-  at_war_with SMALLINT[] NOT NULL,
+  at_war_with INTEGER[] NOT NULL,
   PRIMARY KEY (set_id, ord),
   UNIQUE (set_id, faction_id)
 );
@@ -833,7 +833,7 @@ CREATE TABLE corpus.diplomacy_event (
   kind_id         INTEGER NOT NULL,
   channel_id      INTEGER,
   faction_id      INTEGER,
-  term_ids        SMALLINT[],
+  term_ids        INTEGER[],
   gift_id         INTEGER,
   ok              BOOLEAN,
   failed_at       TEXT,
@@ -855,7 +855,7 @@ CREATE TABLE corpus.diplomacy_event (
   pair_standing   SMALLINT,
   turns_played    SMALLINT,
   ended_by        TEXT[],
-  tracked_faction_ids SMALLINT[]
+  tracked_faction_ids INTEGER[]
 );
 CREATE TABLE corpus.postmortem (
   postmortem_id       INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

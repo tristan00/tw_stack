@@ -4,7 +4,7 @@
     "exact": 2070,
     "textual_only": 0,
     "semantic": 0,
-    "paths": 13,
+    "paths": 15,
     "conflicting_paths": {},
     "failures": {},
     "first_diff": null
@@ -35,7 +35,7 @@
     "exact": 11250,
     "textual_only": 0,
     "semantic": 0,
-    "paths": 77,
+    "paths": 83,
     "conflicting_paths": {},
     "failures": {},
     "first_diff": null

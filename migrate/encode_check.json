@@ -4,7 +4,7 @@
     "identity": 2070,
     "sets": 6638,
     "distinct_sets": 1358,
-    "encode_ms_per_record": 0.0113,
+    "encode_ms_per_record": 0.0111,
     "failures": {}
   },
   "WB": {
@@ -12,7 +12,7 @@
     "identity": 2070,
     "sets": 16305,
     "distinct_sets": 10114,
-    "encode_ms_per_record": 0.1319,
+    "encode_ms_per_record": 0.1307,
     "failures": {}
   },
   "EB": {
@@ -20,7 +20,7 @@
     "identity": 11250,
     "sets": 71078,
     "distinct_sets": 29419,
-    "encode_ms_per_record": 0.1298,
+    "encode_ms_per_record": 0.1283,
     "failures": {}
   }
 }

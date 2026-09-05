@@ -308,11 +308,11 @@ CREATE TABLE corpus.snapshot_world (
   relation_set_id      BIGINT REFERENCES corpus.state_set,
   stationed_set_id     BIGINT REFERENCES corpus.state_set,
   citizenry            INTEGER[],
-  diplo_unseen         SMALLINT[],
+  diplo_unseen         INTEGER[],
   diplo_schema         SMALLINT,
   diplo_hostile_rows   SMALLINT,
   reach_char_cqis      INTEGER[],
-  reach_region_ids     SMALLINT[]
+  reach_region_ids     INTEGER[]
 );
 
 CREATE TABLE corpus.world_army (
@@ -418,17 +418,17 @@ CREATE TABLE corpus.char_state (
   can_embed               BOOLEAN,
   agent_type_id           INTEGER REFERENCES dict.agent_type,
   skill_set_id            BIGINT NOT NULL REFERENCES corpus.state_set,
-  hidden_skill_ids        SMALLINT[] NOT NULL,
+  hidden_skill_ids        INTEGER[] NOT NULL,
   stance_set_id           BIGINT REFERENCES corpus.state_set,
   recruitable_set_id      BIGINT REFERENCES corpus.state_set,
   unit_card_set_id        BIGINT NOT NULL REFERENCES corpus.state_set,
   pending_queue_set_id    BIGINT REFERENCES corpus.state_set,
-  pending_recruit_unit_ids SMALLINT[] NOT NULL,
+  pending_recruit_unit_ids INTEGER[] NOT NULL,
   equipped_set_id         BIGINT NOT NULL REFERENCES corpus.state_set,
   horde_slot_set_id       BIGINT REFERENCES corpus.state_set,
   merc_pool_set_id        BIGINT REFERENCES corpus.state_set,
   reach_chars_true        INTEGER[] NOT NULL,
-  reach_setts_true        SMALLINT[] NOT NULL,
+  reach_setts_true        INTEGER[] NOT NULL,
   move_x                  INTEGER[] NOT NULL,
   move_y                  INTEGER[] NOT NULL,
   reach_rays              SMALLINT[],
@@ -459,7 +459,7 @@ CREATE TABLE corpus.char_state_ext (
   hidden_skill_state_set_id   BIGINT NOT NULL REFERENCES corpus.state_set,
   effect_bundle_set_id        BIGINT NOT NULL REFERENCES corpus.state_set,
   force_effect_bundle_set_id  BIGINT NOT NULL REFERENCES corpus.state_set,
-  armory_item_ids             SMALLINT[] NOT NULL,
+  armory_item_ids             INTEGER[] NOT NULL,
   PRIMARY KEY (snapshot_id, character_id),
   FOREIGN KEY (snapshot_id, character_id) REFERENCES corpus.char_state
 );
@@ -491,7 +491,7 @@ CREATE TABLE corpus.province_state (
   building_now_set_id   BIGINT REFERENCES corpus.state_set,
   corruption_set_id     BIGINT REFERENCES corpus.state_set,
   buildable_set_id      BIGINT REFERENCES corpus.state_set,
-  edict_ids             SMALLINT[],
+  edict_ids             INTEGER[],
   slot_state_set_id     BIGINT REFERENCES corpus.state_set,
   effect_bundle_set_id  BIGINT REFERENCES corpus.state_set,
   plague_bundle_set_id  BIGINT REFERENCES corpus.state_set,

@@ -10,7 +10,7 @@ SEP = b'\x1e'
 
 ID_PATHS = {
     'cqi', 'context_id', 'faction_cqi', 'index', 'slot_index',
-    'stationed', 'citizenry', 'locked_slots', 'reach_chars',
+    'stationed', 'citizenry', 'locked_slots', 'reach_chars', 'cqis',
 }
 WILD_DICTS = {'resources', 'hero_type_counts', 'read_failures', 'stationed', 'reach_chars',
               'reach_setts', 'built', 'building_now', 'corruption', 'merc_pools',
@@ -24,12 +24,13 @@ COUNT_PATHS = {
     'total_levels', 'points', 'threshold_points', 'turns_remaining', 'turns_left',
     'avail', 'max_slots', 'free_slots', 'buildings', 'settlement_level',
     'development_points', 'public_order', 'health', 'max_health', 'research_points',
-    'n', 'dist', 'standing',
+    'n', 'dist', 'standing', 'corruption', 'trait_progress', 'hero_type_counts',
+    'ranks',
 }
 
 MONEY_PATHS = {
     'income', 'treasury', 'gross_income', 'growth_per_turn', 'upkeep', 'cost',
-    'refund', 'repair_cost',
+    'refund', 'repair_cost', 'resources',
 }
 
 MEASURE_PATHS = {'ap_pct', 'hp', 'strength_pct', 'ts'}
