@@ -11,8 +11,6 @@ sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.dirname(_HERE))
 import common
 import campaign_growth as CG
-import metrics_db
-import psycopg
 import retention
 from decisions import pg
 
@@ -95,17 +93,17 @@ _CAMPAIGN_LABEL = {"wh3_main_combi": "Immortal Empires",
 
 
 def _width_counts():
+    t0 = time.time()
+    con = pg.connect(autocommit=True, readonly=True, search_path=pg.CORPUS_PATH)
     try:
-        con = pg.connect(autocommit=True, readonly=True)
-    except psycopg.OperationalError:
-        return {}
-    try:
-        return {(m, f): n for m, f, n in con.execute(
-            "SELECT campaign_map, faction, n FROM start_counts")}
-    except psycopg.errors.UndefinedTable:
-        return {}
+        out = {(m, f): n for m, f, n in con.execute(
+            "SELECT cm.key AS campaign_map, fa.key AS faction, sc.n FROM corpus.start_counts sc"
+            " JOIN dict.campaign_map cm ON cm.id = sc.campaign_map_id"
+            " JOIN dict.faction fa ON fa.id = sc.faction_id")}
     finally:
         con.close()
+    common.waitlog("width_counts", time.time() - t0, True, "%d starts" % len(out))
+    return out
 
 
 import ucb_stats as UCB
@@ -117,16 +115,14 @@ _blend = UCB.blend
 
 
 def _start_gain_stats(window=UCB_WINDOW):
-    try:
-        con = pg.connect(autocommit=True, readonly=True)
-    except psycopg.OperationalError:
-        return {}, 0.0
+    t0 = time.time()
+    con = pg.connect(autocommit=True, readonly=True, search_path=pg.CORPUS_PATH)
     try:
         rewards = UCB.window_rewards(con, window)
-    except psycopg.errors.UndefinedTable:
-        return {}, 0.0
     finally:
         con.close()
+    common.waitlog("start_gain_stats", time.time() - t0, True,
+                   "%d starts" % len(rewards))
     return UCB.start_stats(rewards), UCB.window_blend(rewards)
 
 
@@ -200,31 +196,35 @@ def _tail_jsonl(path, n):
 
 
 def _ending_evidence(rd, entry, ex):
+    t0 = time.time()
     out = {}
-    try:
-        con = pg.connect(autocommit=True, readonly=True)
-        camp = entry.get("campaign_uuid")
-        if not camp:
-            row = con.execute("SELECT campaign_id FROM decision_points"
-                              " ORDER BY decision_id DESC LIMIT 1").fetchone()
-            camp = row[0] if row else None
-            if camp:
-                out["campaign_source"] = "newest_in_corpus"
-        if camp:
+    camp = entry.get("campaign_uuid")
+    if camp:
+        con = pg.connect(autocommit=True, readonly=True, search_path=pg.CORPUS_PATH)
+        try:
             out["trajectory"] = [
                 {"turn": t, "settlements": s, "income": i, "power_rank": p}
                 for t, s, i, p in con.execute(
-                    "SELECT turn, settlements, income, power_rank FROM turn_open"
-                    " WHERE campaign_id=%s ORDER BY turn DESC LIMIT 6", (camp,))][::-1]
+                    "SELECT o.turn, o.settlements, o.income, o.power_rank"
+                    " FROM corpus.turn_open o"
+                    " JOIN corpus.campaign c USING (campaign_id)"
+                    " WHERE c.campaign_key=%s ORDER BY o.turn DESC LIMIT 6",
+                    (camp,))][::-1]
             out["recent_battles"] = [
                 {"turn": t, "kind": k, "chosen": c, "confirmed": cf}
                 for t, k, c, cf in con.execute(
-                    "SELECT turn, kind, chosen, confirmed FROM interrupt_decisions"
-                    " WHERE campaign_id=%s AND kind IN ('pre_battle','battle_results','occupation')"
-                    " ORDER BY interrupt_id DESC LIMIT 6", (camp,))][::-1]
-        con.close()
-    except Exception as e:
-        out["evidence_error"] = repr(e)[:120]
+                    "SELECT s.turn, ik.key, i.chosen, i.confirmed"
+                    " FROM corpus.interrupt i"
+                    " JOIN corpus.snapshot s ON s.snapshot_id = i.interrupt_id"
+                    " JOIN corpus.campaign c ON c.campaign_id = s.campaign_id"
+                    " JOIN dict.enum ik ON ik.enum_id = i.kind_id"
+                    " WHERE c.campaign_key=%s"
+                    " AND ik.key IN ('pre_battle','battle_results','occupation')"
+                    " ORDER BY i.interrupt_id DESC LIMIT 6", (camp,))][::-1]
+        finally:
+            con.close()
+    common.waitlog("ending_evidence", time.time() - t0, bool(camp),
+                   str(camp))
     try:
         out["defeat_row"] = bool(ex.defeated_row_seen())
     except Exception:
@@ -453,6 +453,7 @@ def run_campaigns(n=3, turns=20, plan="all",
     launch_failures = 0
     stretch, generation, trained = [], 0, None
     ledger_reconciled = False
+    _models_cache = {}
 
     for i in range(n):
         pool = presaves
@@ -552,15 +553,19 @@ def run_campaigns(n=3, turns=20, plan="all",
                 log("!! retrain before run %d FAILED -- the run needs freshly usable models, "
                     "crashing instead of playing on without them: %s" % (i + 1, repr(e)[:180]))
                 raise SystemExit("retrain before run %d failed: %s" % (i + 1, repr(e)[:250]))
+            _models_cache.clear()
             entry.setdefault("outcome", "in_progress")
             _write(out_path, dict(report, campaigns=report["campaigns"] + [entry]))
         _models = {}
 
         def _preload_models():
             try:
-                r = M.Ranker() if ("greedy_catboost" in mix and not cold) else None
-                _models["ranker"] = r
-                _models["policy"] = P.Policy(r, strategies=mix)
+                if "policy" not in _models_cache:
+                    r = M.Ranker() if ("greedy_catboost" in mix and not cold) else None
+                    _models_cache["ranker"] = r
+                    _models_cache["policy"] = P.Policy(r, strategies=mix)
+                _models["ranker"] = _models_cache["ranker"]
+                _models["policy"] = _models_cache["policy"]
             except BaseException as e:
                 _models["error"] = e
 
@@ -607,7 +612,6 @@ def run_campaigns(n=3, turns=20, plan="all",
                 entry["greedy_gnn_policy"] = ("trained(%d rows)"
                                               % (pol.ggnn.meta or {}).get("rows", 0))
                 log("greedy gnn: %s" % entry["greedy_gnn_policy"])
-            _checkpoint_trial(stretch + [entry], generation, report, trained, log)
 
             def _flush_turn(so_far, _e=entry):
                 _e.update(outcome="in_progress", turns_played=len(so_far),
@@ -712,7 +716,8 @@ def _uuid_of(rows):
 
 
 def _db(run_dir):
-    return pg.connect(autocommit=True, readonly=True, row_factory=pg.row_factory)
+    return pg.connect(autocommit=True, readonly=True, row_factory=pg.row_factory,
+                      search_path=pg.CORPUS_PATH)
 
 
 _TURNS_CACHE = {}
@@ -746,25 +751,21 @@ def _loop_turns(run_dir):
     return by_uuid
 
 
-def _resolve_uuid(con, c):
-    if c.get("campaign_uuid"):
-        return c["campaign_uuid"]
-    plan, t0 = c.get("plan"), float(c.get("started") or 0)
-    if not plan or not t0:
-        return None
-    t1 = t0 + float(c.get("seconds") or 0) + 60
-    hits = [cid for cid, first in con.execute(
-        "SELECT campaign_id, MIN(ts) FROM decision_points GROUP BY campaign_id"
-        " HAVING MIN(ts) BETWEEN %s AND %s", (t0, t1))
-        if str(cid).startswith(plan + "_")]
-    return hits[0] if len(hits) == 1 else None
-
-
 GROWTH_BASELINE = "first_decision_snapshot->peak"
+
+GROWTH_SQL = """
+SELECT c.first_settlements, c.peak_settlements, lc.settlements AS final_settlements,
+       c.first_lord_level, c.peak_lord_level, lc.lord_level AS final_lord_level,
+       (SELECT COUNT(*) FROM corpus.turn_bounds b
+         WHERE b.campaign_id = c.campaign_id) AS turn_rows
+  FROM corpus.campaign c
+  LEFT JOIN corpus.snapshot_campaign lc ON lc.snapshot_id = c.last_snapshot_id
+ WHERE c.campaign_key = %s AND c.first_snapshot_id IS NOT NULL
+"""
 
 
 def _campaign_growth(con, uuid):
-    row = con.execute(CG.TRAJECTORY_SQL_ONE, (uuid,)).fetchone()
+    row = con.execute(GROWTH_SQL, (uuid,)).fetchone()
     if not row:
         return None
     t = dict(row)
@@ -785,15 +786,17 @@ def _campaign_growth(con, uuid):
 
 def _campaign_timing(con, uuid, c, turns_by_uuid):
     n, t0, t1, roundtrip = con.execute(
-        "SELECT COUNT(*), MIN(ts), MAX(ts),"
-        " SUM(COALESCE((timings::jsonb->>'roundtrip_ms')::double precision,0))"
-        " FROM decision_points WHERE campaign_id=%s", (uuid,)).fetchone() or (0, None, None, 0)
+        "SELECT COUNT(*), MIN(s.ts), MAX(s.ts), SUM(COALESCE(dt.roundtrip_ms, 0))"
+        " FROM corpus.snapshot s"
+        " JOIN corpus.decision d ON d.decision_id = s.snapshot_id"
+        " LEFT JOIN corpus.decision_timing dt ON dt.decision_id = s.snapshot_id"
+        " JOIN corpus.campaign c ON c.campaign_id = s.campaign_id"
+        " WHERE c.campaign_key=%s", (uuid,)).fetchone() or (0, None, None, 0)
     act_ms, wasted_ms, acts = con.execute(
-        "SELECT SUM(COALESCE((a.timing::jsonb->>'total_ms')::double precision,0)) act_ms,"
-        " SUM(COALESCE((a.timing::jsonb->>'confirm_wasted_ms')::double precision,0)) wasted,"
-        " COUNT(*) n"
-        " FROM action_taken a JOIN decision_points d ON d.decision_id=a.decision_id"
-        " WHERE d.campaign_id=%s", (uuid,)).fetchone() or (0, 0, 0)
+        "SELECT SUM(COALESCE(t.total_ms, 0)) act_ms,"
+        " SUM(COALESCE(t.confirm_wasted_ms, 0)) wasted, COUNT(*) n"
+        " FROM corpus.taken t JOIN corpus.campaign c USING (campaign_id)"
+        " WHERE c.campaign_key=%s", (uuid,)).fetchone() or (0, 0, 0)
     turns = turns_by_uuid.get(uuid) or []
     ends = [float(t.get("ts") or 0) for t in turns] + [float(t1 or 0)]
     play = max(0.0, max(ends) - float(t0 or max(ends)))
@@ -824,7 +827,7 @@ def _measure(stretch, log):
              if k not in ("settlements_start", "settlements_peak", "settlements_gained",
                           "lord_level_start", "lord_level_peak", "lord_level_gained")}
         pair = cons.get(rd)
-        uuid = _resolve_uuid(pair[0], c) if pair else None
+        uuid = c.get("campaign_uuid") if pair else None
         growth = _campaign_growth(pair[0], uuid) if uuid else None
         if growth:
             e.update(growth, growth_source="decisions_db",
@@ -949,7 +952,13 @@ def _checkpoint_trial(stretch, gen_n, report, trained, log):
 
 
 def backfill_trials(runs_root=RUNS_ROOT, log=print, recompute=False):
-    have = set() if recompute else metrics_db.trial_ids()
+    have = set()
+    if not recompute:
+        con = _trial_con()
+        try:
+            have = {r[0] for r in con.execute("SELECT trial FROM ops.trial")}
+        finally:
+            con.close()
     written = 0
     for path, rep in _session_reports(runs_root):
         for gen, stretch in _stretches(rep["campaigns"]):
@@ -965,48 +974,143 @@ def backfill_trials(runs_root=RUNS_ROOT, log=print, recompute=False):
             have.add(row["trial"])
             written += 1
             log("   backfilled %s: %d campaigns" % (row["trial"], row["campaigns"]))
-    log("backfill: %d trial(s) written to %s" % (written, metrics_db.DB_PATH))
+    log("backfill: %d trial(s) written to ops.trial" % written)
     return 0
 
 
+def _trial_con():
+    return pg.connect(autocommit=True, app_name="tw-session",
+                      search_path="ops, corpus, dict, public")
+
+
 def _reconcile_ledger(run_dir, log):
-    have = set()
+    t0 = time.time()
+    con = _trial_con()
     try:
-        con = pg.connect(autocommit=True, readonly=True)
-    except psycopg.OperationalError:
-        con = None
-    if con is not None:
-        try:
-            have = {r[0] for r in con.execute("SELECT campaign_key FROM campaigns")}
-        except psycopg.errors.UndefinedTable:
-            pass
-        finally:
-            con.close()
-    gone = metrics_db.prune_unmatched(have)
-    if gone:
-        log("ledger reconciled with %s: %d trial(s) moved to trials_archive, "
-            "%d campaign(s) in the corpus -- %s"
-            % (pg.DB, len(gone), len(have), ", ".join(sorted(gone))[:300]))
+        n = con.execute(
+            "UPDATE ops.trial t SET archived = true WHERE NOT archived"
+            " AND NOT EXISTS (SELECT 1 FROM ops.trial_campaign tc"
+            " JOIN corpus.campaign c ON c.campaign_id = tc.campaign_id"
+            " WHERE tc.trial = t.trial)").rowcount
+    finally:
+        con.close()
+    common.waitlog("reconcile_ledger", time.time() - t0, True, "%d archived" % n)
+    if n:
+        log("ledger reconciled: %d trial(s) archived (no campaign in the corpus)" % n)
+
+
+TRIAL_SQL = """
+INSERT INTO ops.trial (trial, ts, when_text, session, generation, started, running,
+  feature_version, code_version, snapshots, campaigns, turns_total,
+  turns_per_campaign, campaigns_per_hour, campaign_hours, baseline,
+  sett_mean, sett_total, sett_per_turn, sett_campaigns_measured,
+  sett_campaigns_gained, sett_campaigns_lost,
+  ll_mean, ll_total, ll_per_turn, ll_campaigns_measured,
+  ll_campaigns_gained, ll_campaigns_lost,
+  timing_s_per_campaign, timing_s_per_turn, corpus_rows, corpus_n_decisions,
+  fit_trained, fit_rows, fit_mae_in_sample)
+VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,1,%s,%s,%s,%s,%s,%s,
+        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+ON CONFLICT (trial) DO UPDATE SET
+  ts = EXCLUDED.ts, when_text = EXCLUDED.when_text, running = EXCLUDED.running,
+  snapshots = ops.trial.snapshots + 1, campaigns = EXCLUDED.campaigns,
+  turns_total = EXCLUDED.turns_total, turns_per_campaign = EXCLUDED.turns_per_campaign,
+  campaigns_per_hour = EXCLUDED.campaigns_per_hour,
+  campaign_hours = EXCLUDED.campaign_hours,
+  sett_mean = EXCLUDED.sett_mean, sett_total = EXCLUDED.sett_total,
+  sett_per_turn = EXCLUDED.sett_per_turn,
+  sett_campaigns_measured = EXCLUDED.sett_campaigns_measured,
+  sett_campaigns_gained = EXCLUDED.sett_campaigns_gained,
+  sett_campaigns_lost = EXCLUDED.sett_campaigns_lost,
+  ll_mean = EXCLUDED.ll_mean, ll_total = EXCLUDED.ll_total,
+  ll_per_turn = EXCLUDED.ll_per_turn,
+  ll_campaigns_measured = EXCLUDED.ll_campaigns_measured,
+  ll_campaigns_gained = EXCLUDED.ll_campaigns_gained,
+  ll_campaigns_lost = EXCLUDED.ll_campaigns_lost,
+  timing_s_per_campaign = EXCLUDED.timing_s_per_campaign,
+  timing_s_per_turn = EXCLUDED.timing_s_per_turn,
+  corpus_rows = EXCLUDED.corpus_rows,
+  corpus_n_decisions = EXCLUDED.corpus_n_decisions,
+  fit_trained = EXCLUDED.fit_trained, fit_rows = EXCLUDED.fit_rows,
+  fit_mae_in_sample = EXCLUDED.fit_mae_in_sample
+"""
+
+
+def _enum_ids(con, domain, keys):
+    want = sorted({k for k in keys if k is not None})
+    if not want:
+        return {}
+    out = {k: i for k, i in con.execute(
+        "SELECT key, enum_id FROM dict.enum WHERE domain = %s AND key = ANY(%s)",
+        (domain, want))}
+    missing = [k for k in want if k not in out]
+    if missing:
+        raise RuntimeError("dict.enum domain %r has no rows for %r" % (domain, missing))
+    return out
 
 
 def _write_trial(row, log, quiet=False):
+    t0 = time.time()
+    s, l, t = row["settlements"], row["lord_level"], row.get("timing") or {}
+    corpus_at = row.get("corpus_at_train") or {}
+    fit = row.get("fit") or {}
+    trial = row["trial"]
+    con = _trial_con()
     try:
-        metrics_db.write_trial(row)
-    except Exception as e:
-        raise RuntimeError("trial %s NOT written to %s -- refusing to run unrecorded "
-                           "experiments: %s"
-                           % (row.get("trial"), metrics_db.DB_PATH, repr(e)[:120]))
+        con.execute(TRIAL_SQL, (
+            trial, row["ts"], row.get("when"), row.get("session"),
+            row.get("generation"), row.get("started"), bool(row.get("running")),
+            row.get("feature_version"), row.get("code_version"),
+            row.get("campaigns"), row.get("turns_total"),
+            row.get("turns_per_campaign"), row.get("campaigns_per_hour"),
+            row.get("campaign_hours"), row.get("baseline"),
+            s.get("mean"), s.get("total"), s.get("per_turn"),
+            s.get("campaigns_measured"), s.get("campaigns_that_gained"),
+            s.get("campaigns_that_lost"),
+            l.get("mean"), l.get("total"), l.get("per_turn"),
+            l.get("campaigns_measured"), l.get("campaigns_that_gained"),
+            l.get("campaigns_that_lost"),
+            t.get("s_per_campaign"), t.get("s_per_turn"),
+            corpus_at.get("rows"), corpus_at.get("n_decisions"),
+            fit.get("trained"), fit.get("rows"), fit.get("mae_in_sample")))
+        con.execute("DELETE FROM ops.trial_campaign WHERE trial = %s", (trial,))
+        uuids = row.get("campaign_uuids") or []
+        if uuids:
+            con.execute(
+                "INSERT INTO ops.trial_campaign (trial, campaign_id)"
+                " SELECT %s, campaign_id FROM corpus.campaign"
+                " WHERE campaign_key = ANY(%s) ON CONFLICT DO NOTHING",
+                (trial, uuids))
+        con.execute("DELETE FROM ops.trial_policy WHERE trial = %s", (trial,))
+        for scope, mix in (("main", row.get("strategies")),
+                           ("interrupt", row.get("interrupt_strategies"))):
+            ids = _enum_ids(con, "policy", list(mix or {}))
+            for name, weight in sorted((mix or {}).items()):
+                con.execute(
+                    "INSERT INTO ops.trial_policy (trial, scope, policy_id, weight)"
+                    " VALUES (%s,%s,%s,%s)",
+                    (trial, scope, ids[name], float(weight)))
+        con.execute("DELETE FROM ops.trial_outcome WHERE trial = %s", (trial,))
+        outcomes = row.get("outcomes") or {}
+        ids = _enum_ids(con, "outcome", list(outcomes))
+        for name, n in sorted(outcomes.items()):
+            con.execute(
+                "INSERT INTO ops.trial_outcome (trial, outcome_id, n)"
+                " VALUES (%s,%s,%s)", (trial, ids[name], int(n)))
+    finally:
+        con.close()
+    common.waitlog("write_trial", time.time() - t0, True, trial)
     if quiet:
         return
-    s, l, t = row["settlements"], row["lord_level"], row.get("timing") or {}
     num = lambda v, f="%+.2f": "unmeasured" if v is None else f % v
     log("   trial %s logged: %d campaigns (%s), settlements %s total / %s mean / %s campaigns"
-        " grew, lord level %s total, %.2f turns per campaign, %ss per campaign / %ss per turn -> %s"
+        " grew, lord level %s total, %.2f turns per campaign, %ss per campaign / %ss per turn"
+        " -> ops.trial"
         % (row["trial"], row["campaigns"],
            ", ".join(sorted(str(p) for p in row["policies"])) or "?",
            num(s["total"]), num(s["mean"], "%.3f"), num(s["campaigns_that_gained"], "%d"),
            num(l["total"]), row["turns_per_campaign"],
-           t.get("s_per_campaign", "?"), t.get("s_per_turn", "?"), metrics_db.DB_PATH))
+           t.get("s_per_campaign", "?"), t.get("s_per_turn", "?")))
 
 
 def _stretches(campaigns):

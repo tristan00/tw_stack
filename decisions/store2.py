@@ -203,6 +203,8 @@ class Store:
             self._ord_rows('world_hostile', snapshot_id, world.get('hostiles') or [])
             for i, e in enumerate(ents):
                 self._entity(snapshot_id, campaign_id, i, e, ids['e%d' % i])
+            self._campaign_progress(campaign_id, snapshot_id, camp,
+                                    snapshot.get('ts') or time.time())
             if req_id is not None:
                 self.conn.execute(
                     "INSERT INTO corpus.rpc_response (req_id, ts, snapshot_id, payload)"
@@ -212,6 +214,25 @@ class Store:
         log('write_snapshot exit %.1f ms (hash %.1f ms) snapshot_id=%d'
             % ((time.time() - t0) * 1000, hashed_ms, snapshot_id))
         return snapshot_id
+
+    def _campaign_progress(self, campaign_id, snapshot_id, camp, ts):
+        self.conn.execute(
+            "UPDATE corpus.campaign SET"
+            " first_snapshot_id = COALESCE(first_snapshot_id, %(sid)s),"
+            " last_snapshot_id = %(sid)s,"
+            " first_ts = COALESCE(first_ts, %(ts)s), last_ts = %(ts)s,"
+            " turns = GREATEST(turns, %(turn)s), n_decisions = n_decisions + 1,"
+            " first_settlements = COALESCE(first_settlements, %(setts)s),"
+            " peak_settlements = GREATEST(COALESCE(peak_settlements, 0), %(setts)s),"
+            " first_lord_level = COALESCE(first_lord_level, %(ll)s),"
+            " peak_lord_level = GREATEST(COALESCE(peak_lord_level, 0), %(ll)s),"
+            " allies_max = GREATEST(COALESCE(allies_max, 0), %(allies)s),"
+            " vassals_max = GREATEST(COALESCE(vassals_max, 0), %(vassals)s)"
+            " WHERE campaign_id = %(cid)s",
+            {'cid': campaign_id, 'sid': snapshot_id, 'ts': ts,
+             'turn': camp.get('turn') or 0, 'setts': camp.get('settlements'),
+             'll': camp.get('lord_level'), 'allies': camp.get('allies'),
+             'vassals': camp.get('vassals')})
 
     def _read_failures(self, snapshot_id, camp):
         rows = [(snapshot_id, str(msg), int(n))
@@ -345,14 +366,19 @@ class Store:
             "SELECT campaign_id FROM corpus.snapshot WHERE snapshot_id = %s",
             (decision_id,)).fetchone()[0]
         policy = self.dicts.resolve_enum('policy', [pick.get('policy')])
+        awaiting = self.dicts.resolve_enum('refusal', ['awaiting_execution'])
         self.conn.execute(
             "INSERT INTO corpus.taken (decision_id, campaign_id, offer_seq, entity_seq,"
-            " action_id, policy_id, ts, executed, confirmed, counted, latency_ms)"
-            " VALUES (%s,%s,%s,%s,%s,%s,%s,false,false,false,0)"
+            " action_id, policy_id, ts, executed, confirmed, counted, refusal_id,"
+            " latency_ms) VALUES (%s,%s,%s,%s,%s,%s,%s,false,false,false,%s,0)"
             " ON CONFLICT (decision_id) DO NOTHING",
             (decision_id, camp, pick.get('offer_seq') or 0, pick.get('entity_seq') or 0,
              self._action(pick.get('action_type'), pick.get('key')),
-             policy.get(pick.get('policy')), time.time()))
+             policy.get(pick.get('policy')), time.time(),
+             awaiting['awaiting_execution']))
+        self.conn.execute(
+            "UPDATE corpus.campaign SET n_taken = n_taken + 1 WHERE campaign_id = %s",
+            (camp,))
 
     def _respond(self, req_id, snapshot_id, **payload):
         self.conn.execute(
@@ -364,11 +390,54 @@ class Store:
         t0 = time.time()
         log('write_verification enter decision_id=%s' % decision_id)
         with self.conn.unit('U3'):
-            self.conn.execute(
+            t = result.get('timing') or {}
+            confirm = result.get('confirm') or {}
+            refusals = self.dicts.resolve_enum(
+                'refusal', [result.get('refusal'), 'awaiting_execution'])
+            sig = confirm.get('signal')
+            sig_id = self.dicts.resolve('confirm_signal', [sig]).get(sig) if sig else None
+            counted = bool(result.get('counted'))
+            vals = (result.get('executed'), result.get('confirmed'), counted,
+                    refusals.get(result.get('refusal')), sig_id,
+                    confirm.get('latency_ms'), t.get('snapshot_ms'), t.get('gates_ms'),
+                    t.get('execute_ms'), t.get('confirm_ms'), t.get('confirm_wasted_ms'),
+                    t.get('polls'), t.get('total_ms'), result.get('prechecks_passed'),
+                    result.get('doomed'), result.get('stderr'))
+            row = self.conn.execute(
                 "UPDATE corpus.taken SET executed = %s, confirmed = %s, counted = %s,"
-                " latency_ms = %s WHERE decision_id = %s",
-                (result.get('executed'), result.get('confirmed'),
-                 result.get('counted'), result.get('latency_ms'), decision_id))
+                " refusal_id = %s, confirm_signal_id = %s, latency_ms = %s,"
+                " snapshot_ms = %s, gates_ms = %s, execute_ms = %s, confirm_ms = %s,"
+                " confirm_wasted_ms = %s, polls = %s, total_ms = %s,"
+                " prechecks_passed = %s, doomed = %s, stderr = %s"
+                " WHERE decision_id = %s AND refusal_id = %s RETURNING campaign_id",
+                vals + (decision_id, refusals['awaiting_execution'])).fetchone()
+            if row is None:
+                have = self.conn.execute(
+                    "SELECT campaign_id FROM corpus.taken WHERE decision_id = %s",
+                    (decision_id,)).fetchone()
+                if have is not None:
+                    log('write_verification duplicate decision_id=%s' % decision_id)
+                    row = None
+                else:
+                    camp = self.conn.execute(
+                        "SELECT campaign_id FROM corpus.snapshot WHERE snapshot_id = %s",
+                        (decision_id,)).fetchone()[0]
+                    policy = self.dicts.resolve_enum('policy', [result.get('policy')])
+                    row = self.conn.execute(
+                        "INSERT INTO corpus.taken (decision_id, campaign_id, action_id,"
+                        " policy_id, ts, executed, confirmed, counted, refusal_id,"
+                        " confirm_signal_id, latency_ms, snapshot_ms, gates_ms,"
+                        " execute_ms, confirm_ms, confirm_wasted_ms, polls, total_ms,"
+                        " prechecks_passed, doomed, stderr)"
+                        " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
+                        "%s,%s,%s,%s) RETURNING campaign_id",
+                        (decision_id, camp,
+                         self._action(result.get('action_type'), result.get('key')),
+                         policy.get(result.get('policy')), time.time()) + vals).fetchone()
+            if row is not None and counted:
+                self.conn.execute(
+                    "UPDATE corpus.campaign SET n_counted = n_counted + 1"
+                    " WHERE campaign_id = %s", (row[0],))
             if req_id is not None:
                 self._respond(req_id, decision_id)
         log('write_verification exit %.1f ms' % ((time.time() - t0) * 1000))
@@ -478,6 +547,10 @@ class Store:
                         " FROM STDIN") as cp:
                     for row in rows:
                         cp.write_row(row)
+            self.conn.execute(
+                "UPDATE corpus.campaign SET n_interrupts = n_interrupts + 1,"
+                " last_ts = GREATEST(COALESCE(last_ts, 0), %s) WHERE campaign_id = %s",
+                (ts, campaign_id))
             if req_id is not None:
                 self._respond(req_id, snapshot_id)
         log('write_interrupt exit %.1f ms interrupt_id=%d'
@@ -512,14 +585,45 @@ class Store:
             camp = self.conn.execute(
                 "SELECT campaign_id FROM corpus.campaign WHERE campaign_key = %s",
                 (rec.get('campaign_key'),)).fetchone()
-            outcomes = self.dicts.resolve_enum('outcome', [rec.get('outcome') or 'completed'])
-            self.conn.execute(
-                "INSERT INTO corpus.postmortem (campaign_id, ts, run_dir, outcome_id,"
-                " defeated, turns_played) VALUES (%s,%s,%s,%s,%s,%s)",
-                (camp[0] if camp else None, rec.get('ts') or time.time(),
-                 rec.get('run_dir') or '',
-                 outcomes[rec.get('outcome') or 'completed'],
-                 bool(rec.get('defeated')), rec.get('turns_played')))
+            campaign_id = camp[0] if camp else None
+            outcome = rec.get('outcome') or 'completed'
+            outcomes = self.dicts.resolve_enum('outcome', [outcome])
+            factions = self.dicts.resolve('faction', [rec.get('faction')])
+            growth = rec.get('growth') or {}
+            plaus = rec.get('plausibility') or {}
+            defeated = (bool(rec.get('defeated')) if rec.get('defeated') is not None
+                        else outcome == 'defeated')
+            pm_id = self.conn.execute(
+                "INSERT INTO corpus.postmortem (campaign_id, ts, when_text, run_dir,"
+                " faction_id, turns_played, outcome_id, defeated, error, ended_by,"
+                " seconds, actions, confirmed, policy, code_version, wh3_running,"
+                " picked_ts, plausibility_verdict, growth_evaluable, growth_grew,"
+                " growth_reason, growth_turn, growth_min_gain)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
+                "%s,%s,%s,%s) RETURNING postmortem_id",
+                (campaign_id, rec.get('ts') or time.time(), rec.get('when'),
+                 rec.get('run_dir') or '', factions.get(rec.get('faction')),
+                 rec.get('turns_played'), outcomes[outcome], defeated,
+                 rec.get('error'), rec.get('ended_by'), rec.get('seconds'),
+                 rec.get('actions'), rec.get('confirmed'),
+                 (None if rec.get('policy') is None else str(rec.get('policy'))),
+                 rec.get('code_version'), rec.get('wh3_running'),
+                 rec.get('picked_ts'), plaus.get('verdict'),
+                 (bool(growth.get('evaluable')) if 'evaluable' in growth else None),
+                 (bool(growth.get('grew')) if 'grew' in growth else None),
+                 growth.get('reason'), growth.get('turn'),
+                 growth.get('min_gain'))).fetchone()[0]
+            for key, m in sorted((growth.get('metrics') or {}).items()):
+                self.conn.execute(
+                    "INSERT INTO corpus.postmortem_growth_metric (postmortem_id, label,"
+                    " then_value, now_value, window_turns) VALUES (%s,%s,%s,%s,%s)",
+                    (pm_id, m.get('label') or key, m.get('then'), m.get('now'),
+                     m.get('window')))
+            if campaign_id is not None:
+                self.conn.execute(
+                    "UPDATE corpus.campaign SET outcome_id = %s, defeated = %s,"
+                    " picked_ts = COALESCE(picked_ts, %s) WHERE campaign_id = %s",
+                    (outcomes[outcome], defeated, rec.get('picked_ts'), campaign_id))
             if req_id is not None:
                 self._respond(req_id, None)
         log('write_postmortem exit %.1f ms' % ((time.time() - t0) * 1000))
@@ -528,19 +632,36 @@ class Store:
         t0 = time.time()
         log('write_ucb_pick enter')
         with self.conn.unit('U7'):
-            factions = self.dicts.resolve('faction', [rec.get('faction')])
-            maps = self.dicts.resolve('campaign_map', [rec.get('campaign_map')])
+            chosen = rec.get('chosen') or rec
+            rows = rec.get('rows') or []
+            keys = [chosen] + rows
+            factions = self.dicts.resolve('faction', [r.get('faction') for r in keys])
+            maps = self.dicts.resolve('campaign_map',
+                                      [r.get('campaign_map') for r in keys])
             pick_id = self.conn.execute(
                 "INSERT INTO corpus.ucb_pick (ts, c, k, scale, total_plays,"
-                " campaign_map_id, faction_id, n, tied)"
-                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING pick_id",
+                " campaign_map_id, faction_id, n, mean, explore, score, tied, blend,"
+                " entropy, std, adjust)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+                " RETURNING pick_id",
                 (rec.get('ts') or time.time(), rec.get('c') or 0.0, rec.get('k'),
                  rec.get('scale'), rec.get('total_plays') or 0,
-                 maps.get(rec.get('campaign_map')),
-                 factions.get(rec.get('faction')), rec.get('n') or 0,
-                 rec.get('tied') or 0)).fetchone()[0]
+                 maps.get(chosen.get('campaign_map')),
+                 factions.get(chosen.get('faction')), chosen.get('n') or 0,
+                 chosen.get('mean'), chosen.get('explore'), chosen.get('score'),
+                 rec.get('tied') or 0, chosen.get('blend'), chosen.get('entropy'),
+                 chosen.get('std'), chosen.get('adjust'))).fetchone()[0]
+            for rank, r in enumerate(rows):
+                self.conn.execute(
+                    "INSERT INTO corpus.ucb_pick_row (pick_id, rank, campaign_map_id,"
+                    " faction_id, n, mean, explore, score, chosen, blend, entropy,"
+                    " std, adjust) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (pick_id, rank, maps.get(r.get('campaign_map')),
+                     factions.get(r.get('faction')), r.get('n'), r.get('mean'),
+                     r.get('explore'), r.get('score'), bool(r.get('chosen')),
+                     r.get('blend'), r.get('entropy'), r.get('std'), r.get('adjust')))
             if req_id is not None:
-                self._respond(req_id, None)
+                self._respond(req_id, None, pick_id=pick_id)
         log('write_ucb_pick exit %.1f ms pick_id=%d'
             % ((time.time() - t0) * 1000, pick_id))
         return pick_id

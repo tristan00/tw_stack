@@ -44,9 +44,13 @@ def entropy_bits(rewards):
 def window_rewards(con, window=WINDOW):
     out = {}
     for m, f, r in con.execute(
-            "SELECT campaign_map, faction, settlements_gained + levels_gained FROM"
-            " (SELECT campaign_map, faction, settlements_gained, levels_gained"
-            "    FROM campaign_gains ORDER BY first_ts DESC LIMIT %s) w", (int(window),)):
+            "SELECT cm.key AS campaign_map, fa.key AS faction,"
+            " w.settlements_gained + w.levels_gained AS reward FROM"
+            " (SELECT campaign_id, settlements_gained, levels_gained"
+            "    FROM corpus.campaign_gains ORDER BY first_ts DESC LIMIT %s) w"
+            " JOIN corpus.campaign c ON c.campaign_id = w.campaign_id"
+            " JOIN dict.campaign_map cm ON cm.id = c.campaign_map_id"
+            " JOIN dict.faction fa ON fa.id = c.faction_id", (int(window),)):
         out.setdefault((m, f), []).append(float(r or 0.0))
     return out
 

@@ -19,7 +19,7 @@ INSERT INTO dict.enum (domain, key) VALUES
  ('state_at','panel'),('state_at','recorder'),
  ('diplo_event_kind','deal'),('diplo_event_kind','pair_checkpoint'),('diplo_event_kind','campaign_end'),
  ('diplo_channel','outgoing'),('diplo_channel','diplomacy_proposal'),('diplo_channel','diplomacy_notice'),('diplo_channel','ally_attacked'),
- ('outcome','stagnant'),('outcome','unhandled_screen'),('outcome','stuck'),('outcome','defeated'),('outcome','error'),('outcome','completed'),
+ ('outcome','stagnant'),('outcome','unhandled_screen'),('outcome','stuck'),('outcome','defeated'),('outcome','error'),('outcome','completed'),('outcome','in_progress'),('outcome','in_flight'),('outcome','model_unavailable'),('outcome','retrain_failed'),
  ('precheck','treasury_floor'),('precheck','cannot_equip'),('precheck','units_panel_not_open_CTD_guard');
 INSERT INTO dict.rite_reason (key) VALUES ('');
 INSERT INTO dict.stance (key, is_reference, note) VALUES ('none', false, 'm8: engine literal, not a campaign_stances row');
