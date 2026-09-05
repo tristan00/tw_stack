@@ -1,0 +1,56 @@
+{
+  "building_chains": {
+    "status": "ok",
+    "legacy_rows": 1943,
+    "view_rows": 1943,
+    "only_legacy": [],
+    "only_view": [],
+    "diffs": [],
+    "documented_null_for_absent": 2
+  },
+  "buildings": {
+    "status": "ok",
+    "legacy_rows": 5259,
+    "view_rows": 5259,
+    "only_legacy": [],
+    "only_view": [],
+    "diffs": [],
+    "documented_null_for_absent": 116
+  },
+  "tech": {
+    "status": "ok",
+    "legacy_rows": 2056,
+    "view_rows": 2056,
+    "only_legacy": [],
+    "only_view": [],
+    "diffs": [],
+    "documented_null_for_absent": 0
+  },
+  "units": {
+    "status": "ok",
+    "legacy_rows": 2609,
+    "view_rows": 2609,
+    "only_legacy": [],
+    "only_view": [],
+    "diffs": [],
+    "documented_null_for_absent": 0
+  },
+  "skills": {
+    "status": "ok",
+    "legacy_rows": 5944,
+    "view_rows": 5944,
+    "only_legacy": [],
+    "only_view": [],
+    "diffs": [],
+    "documented_null_for_absent": 0
+  },
+  "rituals": {
+    "status": "ok",
+    "legacy_rows": 1326,
+    "view_rows": 1326,
+    "only_legacy": [],
+    "only_view": [],
+    "diffs": [],
+    "documented_null_for_absent": 1543
+  }
+}
