@@ -1,0 +1,1587 @@
+{
+  "tables": {
+    "buildable_set_member": [
+      {
+        "column": "set_id",
+        "type": "bigint",
+        "notnull": true,
+        "fk": "corpus.state_set"
+      },
+      {
+        "column": "ord",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "slot_index",
+        "type": "smallint",
+        "notnull": false,
+        "fk": null
+      },
+      {
+        "column": "building_id",
+        "type": "integer",
+        "notnull": true,
+        "fk": "dict.building"
+      },
+      {
+        "column": "active",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "empty",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "can_upgrade",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "cost",
+        "type": "integer",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "upkeep",
+        "type": "integer",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "level",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "can_afford_resources",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      }
+    ],
+    "building_now_set_member": [
+      {
+        "column": "set_id",
+        "type": "bigint",
+        "notnull": true,
+        "fk": "corpus.state_set"
+      },
+      {
+        "column": "ord",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "slot_index",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "building_id",
+        "type": "integer",
+        "notnull": true,
+        "fk": "dict.building"
+      },
+      {
+        "column": "turns_left",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "paused",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      }
+    ],
+    "built_set_member": [
+      {
+        "column": "set_id",
+        "type": "bigint",
+        "notnull": true,
+        "fk": "corpus.state_set"
+      },
+      {
+        "column": "ord",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "slot_index",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "building_id",
+        "type": "integer",
+        "notnull": true,
+        "fk": "dict.building"
+      }
+    ],
+    "effect_bundle_set_member": [
+      {
+        "column": "set_id",
+        "type": "bigint",
+        "notnull": true,
+        "fk": "corpus.state_set"
+      },
+      {
+        "column": "ord",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "effect_bundle_id",
+        "type": "integer",
+        "notnull": true,
+        "fk": "dict.effect_bundle"
+      },
+      {
+        "column": "turns_remaining",
+        "type": "smallint",
+        "notnull": false,
+        "fk": null
+      }
+    ],
+    "enemy_agent_set_member": [
+      {
+        "column": "set_id",
+        "type": "bigint",
+        "notnull": true,
+        "fk": "corpus.state_set"
+      },
+      {
+        "column": "ord",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "cqi",
+        "type": "integer",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "x",
+        "type": "integer",
+        "notnull": false,
+        "fk": null
+      },
+      {
+        "column": "y",
+        "type": "integer",
+        "notnull": false,
+        "fk": null
+      },
+      {
+        "column": "faction_id",
+        "type": "integer",
+        "notnull": true,
+        "fk": "dict.faction"
+      },
+      {
+        "column": "at_war",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      }
+    ],
+    "hero_count_set_member": [
+      {
+        "column": "set_id",
+        "type": "bigint",
+        "notnull": true,
+        "fk": "corpus.state_set"
+      },
+      {
+        "column": "ord",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "agent_type_id",
+        "type": "integer",
+        "notnull": true,
+        "fk": "dict.agent_type"
+      },
+      {
+        "column": "n",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      }
+    ],
+    "hidden_skill_state_set_member": [
+      {
+        "column": "set_id",
+        "type": "bigint",
+        "notnull": true,
+        "fk": "corpus.state_set"
+      },
+      {
+        "column": "ord",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "skill_id",
+        "type": "integer",
+        "notnull": true,
+        "fk": "dict.skill"
+      },
+      {
+        "column": "level",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "total_levels",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      }
+    ],
+    "horde_slot_set_member": [
+      {
+        "column": "set_id",
+        "type": "bigint",
+        "notnull": true,
+        "fk": "corpus.state_set"
+      },
+      {
+        "column": "ord",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "slot_index",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "slot_id",
+        "type": "text",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "building_id",
+        "type": "integer",
+        "notnull": true,
+        "fk": "dict.building"
+      },
+      {
+        "column": "empty",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "available",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      }
+    ],
+    "item_slot_set_member": [
+      {
+        "column": "set_id",
+        "type": "bigint",
+        "notnull": true,
+        "fk": "corpus.state_set"
+      },
+      {
+        "column": "ord",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "index",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "ancillary_id",
+        "type": "integer",
+        "notnull": false,
+        "fk": "dict.ancillary"
+      },
+      {
+        "column": "name",
+        "type": "text",
+        "notnull": true,
+        "fk": null
+      }
+    ],
+    "lord_pool_set_member": [
+      {
+        "column": "set_id",
+        "type": "bigint",
+        "notnull": true,
+        "fk": "corpus.state_set"
+      },
+      {
+        "column": "ord",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "subtype_id",
+        "type": "integer",
+        "notnull": true,
+        "fk": "dict.agent_subtype"
+      },
+      {
+        "column": "n",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      }
+    ],
+    "merc_pool_set_member": [
+      {
+        "column": "set_id",
+        "type": "bigint",
+        "notnull": true,
+        "fk": "corpus.state_set"
+      },
+      {
+        "column": "ord",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "action_id",
+        "type": "integer",
+        "notnull": true,
+        "fk": "dict.enum"
+      },
+      {
+        "column": "unit_id",
+        "type": "integer",
+        "notnull": true,
+        "fk": "dict.unit"
+      },
+      {
+        "column": "avail",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "cost",
+        "type": "integer",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "can",
+        "type": "boolean",
+        "notnull": false,
+        "fk": null
+      }
+    ],
+    "mission_set_member": [
+      {
+        "column": "set_id",
+        "type": "bigint",
+        "notnull": true,
+        "fk": "corpus.state_set"
+      },
+      {
+        "column": "ord",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "mission_id",
+        "type": "integer",
+        "notnull": true,
+        "fk": "dict.mission"
+      },
+      {
+        "column": "status_id",
+        "type": "integer",
+        "notnull": true,
+        "fk": "dict.enum"
+      },
+      {
+        "column": "turns_remaining",
+        "type": "smallint",
+        "notnull": false,
+        "fk": null
+      },
+      {
+        "column": "is_quest",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "is_victory",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "completed",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "cancelled",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "pending",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "category",
+        "type": "text",
+        "notnull": false,
+        "fk": null
+      },
+      {
+        "column": "issuer_id",
+        "type": "integer",
+        "notnull": false,
+        "fk": "dict.mission_issuer"
+      }
+    ],
+    "pending_queue_set_member": [
+      {
+        "column": "set_id",
+        "type": "bigint",
+        "notnull": true,
+        "fk": "corpus.state_set"
+      },
+      {
+        "column": "ord",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "unit_id",
+        "type": "integer",
+        "notnull": true,
+        "fk": "dict.unit"
+      },
+      {
+        "column": "turns_left",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      }
+    ],
+    "recruitable_set_member": [
+      {
+        "column": "set_id",
+        "type": "bigint",
+        "notnull": true,
+        "fk": "corpus.state_set"
+      },
+      {
+        "column": "ord",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "unit_id",
+        "type": "integer",
+        "notnull": true,
+        "fk": "dict.unit"
+      },
+      {
+        "column": "state",
+        "type": "text",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "cost",
+        "type": "integer",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "disabled",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      }
+    ],
+    "region_set_member": [
+      {
+        "column": "set_id",
+        "type": "bigint",
+        "notnull": true,
+        "fk": "corpus.state_set"
+      },
+      {
+        "column": "ord",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "region_id",
+        "type": "integer",
+        "notnull": true,
+        "fk": "dict.region"
+      },
+      {
+        "column": "x",
+        "type": "integer",
+        "notnull": false,
+        "fk": null
+      },
+      {
+        "column": "y",
+        "type": "integer",
+        "notnull": false,
+        "fk": null
+      },
+      {
+        "column": "province_id",
+        "type": "integer",
+        "notnull": false,
+        "fk": "dict.province"
+      },
+      {
+        "column": "owner_id",
+        "type": "integer",
+        "notnull": false,
+        "fk": "dict.faction"
+      },
+      {
+        "column": "capital",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "abandoned",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "adjacent",
+        "type": "smallint[]",
+        "notnull": true,
+        "fk": null
+      }
+    ],
+    "relation_set_member": [
+      {
+        "column": "set_id",
+        "type": "bigint",
+        "notnull": true,
+        "fk": "corpus.state_set"
+      },
+      {
+        "column": "ord",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "faction_id",
+        "type": "integer",
+        "notnull": true,
+        "fk": "dict.faction"
+      },
+      {
+        "column": "at_war",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "allied",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "trade",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "their_vassal",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "standing",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "excluded",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "mil_ally",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "def_ally",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "nap",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "mil_access",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "our_master",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      }
+    ],
+    "resource_set_member": [
+      {
+        "column": "set_id",
+        "type": "bigint",
+        "notnull": true,
+        "fk": "corpus.state_set"
+      },
+      {
+        "column": "ord",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "resource_id",
+        "type": "integer",
+        "notnull": true,
+        "fk": "dict.pooled_resource"
+      },
+      {
+        "column": "value",
+        "type": "integer",
+        "notnull": false,
+        "fk": null
+      }
+    ],
+    "rite_set_member": [
+      {
+        "column": "set_id",
+        "type": "bigint",
+        "notnull": true,
+        "fk": "corpus.state_set"
+      },
+      {
+        "column": "ord",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "index",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "ritual_id",
+        "type": "integer",
+        "notnull": true,
+        "fk": "dict.ritual"
+      },
+      {
+        "column": "can_perform",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "reason_id",
+        "type": "integer",
+        "notnull": false,
+        "fk": "dict.rite_reason"
+      }
+    ],
+    "ruin_set_member": [
+      {
+        "column": "set_id",
+        "type": "bigint",
+        "notnull": true,
+        "fk": "corpus.state_set"
+      },
+      {
+        "column": "ord",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "region_id",
+        "type": "integer",
+        "notnull": true,
+        "fk": "dict.region"
+      },
+      {
+        "column": "x",
+        "type": "integer",
+        "notnull": false,
+        "fk": null
+      },
+      {
+        "column": "y",
+        "type": "integer",
+        "notnull": false,
+        "fk": null
+      }
+    ],
+    "settlement_set_member": [
+      {
+        "column": "set_id",
+        "type": "bigint",
+        "notnull": true,
+        "fk": "corpus.state_set"
+      },
+      {
+        "column": "ord",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "region_id",
+        "type": "integer",
+        "notnull": false,
+        "fk": "dict.region"
+      },
+      {
+        "column": "capital",
+        "type": "boolean",
+        "notnull": false,
+        "fk": null
+      },
+      {
+        "column": "units",
+        "type": "smallint",
+        "notnull": false,
+        "fk": null
+      },
+      {
+        "column": "x",
+        "type": "integer",
+        "notnull": false,
+        "fk": null
+      },
+      {
+        "column": "y",
+        "type": "integer",
+        "notnull": false,
+        "fk": null
+      }
+    ],
+    "skill_set_member": [
+      {
+        "column": "set_id",
+        "type": "bigint",
+        "notnull": true,
+        "fk": "corpus.state_set"
+      },
+      {
+        "column": "ord",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "skill_id",
+        "type": "integer",
+        "notnull": true,
+        "fk": "dict.skill"
+      },
+      {
+        "column": "status_id",
+        "type": "integer",
+        "notnull": true,
+        "fk": "dict.enum"
+      },
+      {
+        "column": "level",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "total_levels",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "tier",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      }
+    ],
+    "slot_state_set_member": [
+      {
+        "column": "set_id",
+        "type": "bigint",
+        "notnull": true,
+        "fk": "corpus.state_set"
+      },
+      {
+        "column": "ord",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "index",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "damaged",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "can_repair",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "repairing",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "can_dismantle",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "refund",
+        "type": "integer",
+        "notnull": false,
+        "fk": null
+      },
+      {
+        "column": "queued",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "queued_building_id",
+        "type": "integer",
+        "notnull": false,
+        "fk": "dict.building"
+      },
+      {
+        "column": "empty",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "building_id",
+        "type": "integer",
+        "notnull": false,
+        "fk": "dict.building"
+      },
+      {
+        "column": "health",
+        "type": "smallint",
+        "notnull": false,
+        "fk": null
+      },
+      {
+        "column": "max_health",
+        "type": "smallint",
+        "notnull": false,
+        "fk": null
+      },
+      {
+        "column": "ruined",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "repair_cost",
+        "type": "integer",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "upgrading",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "dismantling",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      }
+    ],
+    "stance_set_member": [
+      {
+        "column": "set_id",
+        "type": "bigint",
+        "notnull": true,
+        "fk": "corpus.state_set"
+      },
+      {
+        "column": "ord",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "stance_id",
+        "type": "integer",
+        "notnull": true,
+        "fk": "dict.stance"
+      },
+      {
+        "column": "active",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "can_activate",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "can_afford",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      }
+    ],
+    "stationed_set_member": [
+      {
+        "column": "set_id",
+        "type": "bigint",
+        "notnull": true,
+        "fk": "corpus.state_set"
+      },
+      {
+        "column": "ord",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "region_id",
+        "type": "integer",
+        "notnull": true,
+        "fk": "dict.region"
+      },
+      {
+        "column": "cqi",
+        "type": "integer",
+        "notnull": false,
+        "fk": null
+      }
+    ],
+    "tech_set_member": [
+      {
+        "column": "set_id",
+        "type": "bigint",
+        "notnull": true,
+        "fk": "corpus.state_set"
+      },
+      {
+        "column": "ord",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "tech_node_id",
+        "type": "integer",
+        "notnull": true,
+        "fk": "dict.tech_node"
+      },
+      {
+        "column": "researched",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "can_research",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "cost",
+        "type": "integer",
+        "notnull": true,
+        "fk": null
+      }
+    ],
+    "trait_progress_set_member": [
+      {
+        "column": "set_id",
+        "type": "bigint",
+        "notnull": true,
+        "fk": "corpus.state_set"
+      },
+      {
+        "column": "ord",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "trait_id",
+        "type": "integer",
+        "notnull": true,
+        "fk": "dict.trait"
+      },
+      {
+        "column": "points",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      }
+    ],
+    "trait_set_member": [
+      {
+        "column": "set_id",
+        "type": "bigint",
+        "notnull": true,
+        "fk": "corpus.state_set"
+      },
+      {
+        "column": "ord",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "trait_id",
+        "type": "integer",
+        "notnull": true,
+        "fk": "dict.trait"
+      },
+      {
+        "column": "level",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "threshold_points",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "points",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "chaos_realm",
+        "type": "boolean",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "level_key_id",
+        "type": "integer",
+        "notnull": true,
+        "fk": "dict.trait_level"
+      }
+    ],
+    "unit_card_set_member": [
+      {
+        "column": "set_id",
+        "type": "bigint",
+        "notnull": true,
+        "fk": "corpus.state_set"
+      },
+      {
+        "column": "ord",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "unit_id",
+        "type": "integer",
+        "notnull": true,
+        "fk": "dict.unit"
+      },
+      {
+        "column": "strength_pct",
+        "type": "double precision",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "category_id",
+        "type": "integer",
+        "notnull": true,
+        "fk": "dict.unit_category"
+      },
+      {
+        "column": "xp",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      }
+    ],
+    "war_graph_set_member": [
+      {
+        "column": "set_id",
+        "type": "bigint",
+        "notnull": true,
+        "fk": "corpus.state_set"
+      },
+      {
+        "column": "ord",
+        "type": "smallint",
+        "notnull": true,
+        "fk": null
+      },
+      {
+        "column": "faction_id",
+        "type": "integer",
+        "notnull": true,
+        "fk": "dict.faction"
+      },
+      {
+        "column": "at_war_with",
+        "type": "smallint[]",
+        "notnull": true,
+        "fk": null
+      }
+    ]
+  },
+  "collections": {
+    "anc_pool": {
+      "shape": "list",
+      "kind": 7,
+      "fields": [
+        "index",
+        "key",
+        "name"
+      ]
+    },
+    "armies": {
+      "shape": "list",
+      "kind": null,
+      "fields": [
+        "agent_type",
+        "ap_pct",
+        "ap_per_turn",
+        "ap_remaining",
+        "cqi",
+        "has_army",
+        "hp",
+        "in_own_territory",
+        "is_general",
+        "is_leader",
+        "province",
+        "rank",
+        "region",
+        "region_owner",
+        "stance",
+        "subtype",
+        "units",
+        "x",
+        "y"
+      ]
+    },
+    "buildable": {
+      "shape": "list",
+      "kind": 13,
+      "fields": [
+        "active",
+        "can_afford_resources",
+        "can_upgrade",
+        "cost",
+        "empty",
+        "key",
+        "level",
+        "slot_index",
+        "upkeep"
+      ]
+    },
+    "building_now": {
+      "shape": "dict_of_scalar",
+      "kind": 16,
+      "fields": [
+        "{}.key",
+        "{}.paused",
+        "{}.turns_left",
+        "{}=scalar"
+      ]
+    },
+    "built": {
+      "shape": "dict_of_scalar",
+      "kind": 15,
+      "fields": [
+        "{}=scalar"
+      ]
+    },
+    "corruption": {
+      "shape": "dict_of_scalar",
+      "kind": 17,
+      "fields": [
+        "{}=scalar"
+      ]
+    },
+    "enemy_agents": {
+      "shape": "list",
+      "kind": 26,
+      "fields": [
+        "at_war",
+        "cqi",
+        "faction",
+        "x",
+        "y"
+      ]
+    },
+    "equipped": {
+      "shape": "list",
+      "kind": 7,
+      "fields": [
+        "index",
+        "key",
+        "name"
+      ]
+    },
+    "equipped_all": {
+      "shape": "list",
+      "kind": 7,
+      "fields": [
+        "index",
+        "key",
+        "name"
+      ]
+    },
+    "hero_type_counts": {
+      "shape": "dict_of_scalar",
+      "kind": 18,
+      "fields": [
+        "{}=scalar"
+      ]
+    },
+    "horde_slots": {
+      "shape": "list",
+      "kind": 8,
+      "fields": [
+        "available",
+        "empty",
+        "key",
+        "slot_id",
+        "slot_index"
+      ]
+    },
+    "hostiles": {
+      "shape": "list",
+      "kind": null,
+      "fields": [
+        "agent_type",
+        "cqi",
+        "dist",
+        "faction",
+        "hp",
+        "is_armed_citizenry",
+        "kind",
+        "province",
+        "region",
+        "stance",
+        "subtype",
+        "units",
+        "visible",
+        "x",
+        "y"
+      ]
+    },
+    "lord_pools": {
+      "shape": "dict_of_scalar",
+      "kind": 21,
+      "fields": [
+        "{}.agents",
+        "{}.bg_skills",
+        "{}.can",
+        "{}.cqis",
+        "{}.n",
+        "{}.ranks",
+        "{}.subtypes",
+        "{}.traits",
+        "{}.units",
+        "{}=scalar"
+      ]
+    },
+    "merc_pools": {
+      "shape": "dict_of_scalar",
+      "kind": 9,
+      "fields": [
+        "{}=scalar"
+      ]
+    },
+    "move_tiles": {
+      "shape": "list",
+      "kind": null,
+      "fields": [
+        "reach_max",
+        "reach_rays",
+        "sample_index",
+        "x",
+        "y"
+      ]
+    },
+    "reach_chars": {
+      "shape": "dict_of_scalar",
+      "kind": null,
+      "fields": [
+        "{}=scalar"
+      ]
+    },
+    "reach_setts": {
+      "shape": "dict_of_scalar",
+      "kind": null,
+      "fields": [
+        "{}=scalar"
+      ]
+    },
+    "read_failures": {
+      "shape": "dict_of_scalar",
+      "kind": null,
+      "fields": [
+        "{}=scalar"
+      ]
+    },
+    "recruitable": {
+      "shape": "list",
+      "kind": 3,
+      "fields": [
+        "cost",
+        "disabled",
+        "key",
+        "state"
+      ]
+    },
+    "regions": {
+      "shape": "list",
+      "kind": 23,
+      "fields": [
+        "abandoned",
+        "adjacent",
+        "capital",
+        "owner",
+        "province",
+        "region",
+        "x",
+        "y"
+      ]
+    },
+    "relations": {
+      "shape": "list",
+      "kind": 28,
+      "fields": [
+        "allied",
+        "at_war",
+        "def_ally",
+        "excluded",
+        "faction",
+        "mil_access",
+        "mil_ally",
+        "nap",
+        "our_master",
+        "standing",
+        "their_vassal",
+        "trade"
+      ]
+    },
+    "resources": {
+      "shape": "dict_of_scalar",
+      "kind": 17,
+      "fields": [
+        "{}=scalar"
+      ]
+    },
+    "rites": {
+      "shape": "list",
+      "kind": 20,
+      "fields": [
+        "can_perform",
+        "index",
+        "invalid_reason",
+        "key"
+      ]
+    },
+    "ruins": {
+      "shape": "list",
+      "kind": 25,
+      "fields": [
+        "region",
+        "x",
+        "y"
+      ]
+    },
+    "settlements": {
+      "shape": "list",
+      "kind": 24,
+      "fields": [
+        "capital",
+        "region",
+        "units",
+        "x",
+        "y"
+      ]
+    },
+    "skills": {
+      "shape": "list",
+      "kind": 1,
+      "fields": [
+        "key",
+        "level",
+        "status",
+        "tier",
+        "total_levels"
+      ]
+    },
+    "slot_states": {
+      "shape": "list",
+      "kind": 14,
+      "fields": [
+        "can_dismantle",
+        "can_repair",
+        "damaged",
+        "dismantling",
+        "empty",
+        "health",
+        "index",
+        "key",
+        "max_health",
+        "queued",
+        "queued_key",
+        "refund",
+        "repair_cost",
+        "repairing",
+        "ruined",
+        "upgrading"
+      ]
+    },
+    "stances": {
+      "shape": "list",
+      "kind": 2,
+      "fields": [
+        "active",
+        "can_activate",
+        "can_afford",
+        "key"
+      ]
+    },
+    "stationed": {
+      "shape": "dict_of_scalar",
+      "kind": 29,
+      "fields": [
+        "{}=scalar"
+      ]
+    },
+    "tech": {
+      "shape": "list",
+      "kind": 19,
+      "fields": [
+        "can_research",
+        "cost",
+        "key",
+        "researched"
+      ]
+    },
+    "unit_cards": {
+      "shape": "list",
+      "kind": 12,
+      "fields": [
+        "category",
+        "key",
+        "strength_pct",
+        "xp"
+      ]
+    },
+    "war_graph": {
+      "shape": "list",
+      "kind": 27,
+      "fields": [
+        "at_war_with",
+        "faction"
+      ]
+    }
+  }
+}
