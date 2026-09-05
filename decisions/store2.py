@@ -256,3 +256,217 @@ class Store:
                 extra['is_hero'] = kind == 'hero'
                 extra.update(self._char_derived(state))
             self._row(table, state, set_ids, extra)
+
+    def write_decide(self, decision_id, offers, pick, scores=None, timings=None,
+                     req_id=None):
+        t0 = time.time()
+        log('write_decide enter decision_id=%s offers=%d' % (decision_id, len(offers or [])))
+        seqs = {(k, str(i)): s for s, (k, i) in enumerate(self.conn.execute(
+            "SELECT se.kind_id, COALESCE(ch.cqi::text, se.region_id::text)"
+            " FROM corpus.snapshot_entity se"
+            " LEFT JOIN corpus.character ch ON ch.character_id = se.character_id"
+            " WHERE se.snapshot_id = %s ORDER BY se.entity_seq", (decision_id,)))}
+        with self.conn.unit('U2'):
+            rows = []
+            for seq, o in enumerate(offers or []):
+                action = self._action(o.get('action_type'), o.get('key'))
+                rows.append((decision_id, seq, o.get('entity_seq') or 0, action,
+                             o.get('slot_index'), o.get('score'), o.get('exploit'),
+                             o.get('rank'), o.get('pct_global'), o.get('gnn_impact'),
+                             o.get('gnn_rank'), o.get('ggnn_score'), o.get('ggnn_rank')))
+            if rows:
+                with self.conn.cursor().copy(
+                        "COPY corpus.offer (decision_id, offer_seq, entity_seq, action_id,"
+                        " slot_index, score, exploit, rank, pct_global, gnn_impact,"
+                        " gnn_rank, ggnn_score, ggnn_rank) FROM STDIN") as cp:
+                    for row in rows:
+                        cp.write_row(row)
+            self.conn.execute(
+                "UPDATE corpus.decision SET n_offers = %s WHERE decision_id = %s",
+                (len(rows), decision_id))
+            if timings:
+                self._timings(decision_id, timings)
+            if pick:
+                self._taken(decision_id, pick)
+            if req_id is not None:
+                self._respond(req_id, decision_id)
+        log('write_decide exit %.1f ms' % ((time.time() - t0) * 1000))
+
+    def _action(self, action_type, key):
+        types = self.dicts.resolve('action_type', [action_type])
+        tid = types.get(action_type)
+        row = self.conn.execute(
+            "INSERT INTO dict.action (action_type_id, action_key) VALUES (%s,%s)"
+            " ON CONFLICT (action_type_id, action_key) DO NOTHING RETURNING action_id",
+            (tid, key)).fetchone()
+        if row is None:
+            row = self.conn.execute(
+                "SELECT action_id FROM dict.action WHERE action_type_id = %s"
+                " AND action_key = %s", (tid, key)).fetchone()
+        return row[0]
+
+    def _timings(self, decision_id, t):
+        hk = t.get('housekeep_parts') or {}
+        self.conn.execute(
+            "INSERT INTO corpus.decision_timing (decision_id, t_request, t_received,"
+            " collect_ms, store_ms, pickup_lag_ms, roundtrip_ms, trace_ms, score_ms,"
+            " housekeep_ms, hk_hud_check_ms, hk_generate_ms, hk_pick_log_ms,"
+            " hk_verify_log_ms, hk_active_from_ms, hk_post_attack_ms, hk_drain_ms,"
+            " hk_resolve_ms) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+            " ON CONFLICT (decision_id) DO NOTHING",
+            (decision_id, t.get('t_request') or 0.0, t.get('t_received') or 0.0,
+             t.get('collect_ms') or 0, t.get('store_ms') or 0,
+             t.get('pickup_lag_ms') or 0, t.get('roundtrip_ms') or 0,
+             t.get('trace_ms') or 0, t.get('score_ms') or 0, t.get('housekeep_ms'),
+             hk.get('hud_check'), hk.get('generate_ms'), hk.get('pick_log'),
+             hk.get('verify_log'), hk.get('active_from'), hk.get('post_attack'),
+             hk.get('drain'), hk.get('resolve')))
+
+    def _taken(self, decision_id, pick):
+        camp = self.conn.execute(
+            "SELECT campaign_id FROM corpus.snapshot WHERE snapshot_id = %s",
+            (decision_id,)).fetchone()[0]
+        policy = self.dicts.resolve_enum('policy', [pick.get('policy')])
+        self.conn.execute(
+            "INSERT INTO corpus.taken (decision_id, campaign_id, offer_seq, entity_seq,"
+            " action_id, policy_id, ts, executed, confirmed, counted, latency_ms)"
+            " VALUES (%s,%s,%s,%s,%s,%s,%s,false,false,false,0)"
+            " ON CONFLICT (decision_id) DO NOTHING",
+            (decision_id, camp, pick.get('offer_seq') or 0, pick.get('entity_seq') or 0,
+             self._action(pick.get('action_type'), pick.get('key')),
+             policy.get(pick.get('policy')), time.time()))
+
+    def _respond(self, req_id, snapshot_id, **payload):
+        self.conn.execute(
+            "INSERT INTO corpus.rpc_response (req_id, ts, snapshot_id, payload)"
+            " VALUES (%s,%s,%s,%s) ON CONFLICT (req_id) DO NOTHING",
+            (req_id, time.time(), snapshot_id, json.dumps(payload)))
+
+    def write_verification(self, decision_id, result, req_id=None):
+        t0 = time.time()
+        log('write_verification enter decision_id=%s' % decision_id)
+        with self.conn.unit('U3'):
+            self.conn.execute(
+                "UPDATE corpus.taken SET executed = %s, confirmed = %s, counted = %s,"
+                " latency_ms = %s WHERE decision_id = %s",
+                (result.get('executed'), result.get('confirmed'),
+                 result.get('counted'), result.get('latency_ms'), decision_id))
+            if req_id is not None:
+                self._respond(req_id, decision_id)
+        log('write_verification exit %.1f ms' % ((time.time() - t0) * 1000))
+
+
+    def write_interrupt(self, rec, req_id=None):
+        t0 = time.time()
+        log('write_interrupt enter kind=%s' % rec.get('kind'))
+        camp = canon.normalise(rec.get('campaign') or {})
+        world = canon.normalise(rec.get('world') or {})
+        with self.conn.unit('U4'):
+            campaign_id = self._campaign(camp)
+            ids = {'campaign': self.setw.ensure(sets.prepare(camp)),
+                   'world': self.setw.ensure(sets.prepare(world))}
+            snapshot_id = self.conn.execute(
+                "INSERT INTO corpus.snapshot (campaign_id, kind_id, ts, turn, version_id)"
+                " VALUES (%s,%s,%s,%s,%s) RETURNING snapshot_id",
+                (campaign_id, self.kind_ids['interrupt'], rec.get('ts') or time.time(),
+                 camp.get('turn') or 0, self._version())).fetchone()[0]
+            kinds = self.dicts.resolve_enum('interrupt_kind', [rec.get('kind')])
+            states = self.dicts.resolve_enum('state_at', [rec.get('state_at') or 'panel'])
+            policies = self.dicts.resolve_enum('policy', [rec.get('policy')])
+            refusals = self.dicts.resolve_enum('refusal', [rec.get('refusal')])
+            region = (rec.get('panel') or {}).get('region')
+            regions = self.dicts.resolve('region', [region]) if region else {}
+            self.conn.execute(
+                "INSERT INTO corpus.interrupt (interrupt_id, prev_decision_id,"
+                " ts_recorded, state_at_id, kind_id, root, root_context, region_id,"
+                " chosen, answer, policy_id, executed, confirmed, counted, refusal_id,"
+                " latency_ms) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (snapshot_id, rec.get('prev_decision_id'), rec.get('ts') or time.time(),
+                 states.get(rec.get('state_at') or 'panel'), kinds[rec['kind']],
+                 rec.get('root') or '', rec.get('root_context'),
+                 regions.get(region), rec.get('chosen') or '', rec.get('answer'),
+                 policies.get(rec.get('policy')), rec.get('executed'),
+                 rec.get('confirmed'), rec.get('counted'),
+                 refusals.get(rec.get('refusal')), rec.get('latency_ms') or 0))
+            self._row('snapshot_campaign', camp, ids['campaign'],
+                      {'snapshot_id': snapshot_id})
+            self._row('snapshot_world', world, ids['world'], {'snapshot_id': snapshot_id})
+            rows = []
+            for ord_, o in enumerate(rec.get('options') or []):
+                rows.append((snapshot_id, ord_, o.get('key') or str(ord_), o.get('text'),
+                             o.get('option_id'), o.get('answer'), o.get('payload'),
+                             o.get('exploit'), o.get('score'), o.get('gnn')))
+            if rows:
+                with self.conn.cursor().copy(
+                        "COPY corpus.interrupt_option (interrupt_id, ord, option_key,"
+                        " text, option_id, answer, payload, exploit, score, gnn)"
+                        " FROM STDIN") as cp:
+                    for row in rows:
+                        cp.write_row(row)
+            if req_id is not None:
+                self._respond(req_id, snapshot_id)
+        log('write_interrupt exit %.1f ms interrupt_id=%d'
+            % ((time.time() - t0) * 1000, snapshot_id))
+        return snapshot_id
+
+    def write_diplomacy(self, row, req_id=None):
+        t0 = time.time()
+        log('write_diplomacy enter')
+        with self.conn.unit('U5'):
+            key = row.get('campaign_key')
+            camp = self.conn.execute(
+                "SELECT campaign_id FROM corpus.campaign WHERE campaign_key = %s",
+                (key,)).fetchone()
+            kinds = self.dicts.resolve_enum('diplo_event_kind', [row.get('kind') or 'deal'])
+            chans = self.dicts.resolve_enum('diplo_channel',
+                                            [row.get('channel') or 'outgoing'])
+            self.conn.execute(
+                "INSERT INTO corpus.diplomacy_event (campaign_id, turn, ts, ts_recorded,"
+                " kind_id, channel_id) VALUES (%s,%s,%s,%s,%s,%s)",
+                (camp[0] if camp else None, row.get('turn') or 0,
+                 row.get('ts') or time.time(), time.time(),
+                 kinds[row.get('kind') or 'deal'], chans[row.get('channel') or 'outgoing']))
+            if req_id is not None:
+                self._respond(req_id, None)
+        log('write_diplomacy exit %.1f ms' % ((time.time() - t0) * 1000))
+
+    def write_postmortem(self, rec, req_id=None):
+        t0 = time.time()
+        log('write_postmortem enter')
+        with self.conn.unit('U6'):
+            camp = self.conn.execute(
+                "SELECT campaign_id FROM corpus.campaign WHERE campaign_key = %s",
+                (rec.get('campaign_key'),)).fetchone()
+            outcomes = self.dicts.resolve_enum('outcome', [rec.get('outcome') or 'completed'])
+            self.conn.execute(
+                "INSERT INTO corpus.postmortem (campaign_id, ts, run_dir, outcome_id,"
+                " defeated, turns_played) VALUES (%s,%s,%s,%s,%s,%s)",
+                (camp[0] if camp else None, rec.get('ts') or time.time(),
+                 rec.get('run_dir') or '',
+                 outcomes[rec.get('outcome') or 'completed'],
+                 bool(rec.get('defeated')), rec.get('turns_played')))
+            if req_id is not None:
+                self._respond(req_id, None)
+        log('write_postmortem exit %.1f ms' % ((time.time() - t0) * 1000))
+
+    def write_ucb_pick(self, rec, req_id=None):
+        t0 = time.time()
+        log('write_ucb_pick enter')
+        with self.conn.unit('U7'):
+            factions = self.dicts.resolve('faction', [rec.get('faction')])
+            maps = self.dicts.resolve('campaign_map', [rec.get('campaign_map')])
+            pick_id = self.conn.execute(
+                "INSERT INTO corpus.ucb_pick (ts, c, k, scale, total_plays,"
+                " campaign_map_id, faction_id, n, tied)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING pick_id",
+                (rec.get('ts') or time.time(), rec.get('c') or 0.0, rec.get('k'),
+                 rec.get('scale'), rec.get('total_plays') or 0,
+                 maps.get(rec.get('campaign_map')),
+                 factions.get(rec.get('faction')), rec.get('n') or 0,
+                 rec.get('tied') or 0)).fetchone()[0]
+            if req_id is not None:
+                self._respond(req_id, None)
+        log('write_ucb_pick exit %.1f ms pick_id=%d'
+            % ((time.time() - t0) * 1000, pick_id))
+        return pick_id
+
