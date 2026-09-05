@@ -1303,6 +1303,14 @@
         "{}=scalar"
       ]
     },
+    "effect_bundles": {
+      "shape": "list",
+      "kind": 11,
+      "fields": [
+        "key",
+        "turns_remaining"
+      ]
+    },
     "enemy_agents": {
       "shape": "list",
       "kind": 26,
@@ -1332,11 +1340,28 @@
         "name"
       ]
     },
+    "force_effect_bundles": {
+      "shape": "list",
+      "kind": 11,
+      "fields": [
+        "key",
+        "turns_remaining"
+      ]
+    },
     "hero_type_counts": {
       "shape": "dict_of_scalar",
       "kind": 18,
       "fields": [
         "{}=scalar"
+      ]
+    },
+    "hidden_skill_states": {
+      "shape": "list",
+      "kind": 4,
+      "fields": [
+        "key",
+        "level",
+        "total_levels"
       ]
     },
     "horde_slots": {
@@ -1372,7 +1397,7 @@
       ]
     },
     "lord_pools": {
-      "shape": "dict_of_scalar",
+      "shape": "dict_of_dict",
       "kind": 21,
       "fields": [
         "{}.agents",
@@ -1394,6 +1419,22 @@
         "{}=scalar"
       ]
     },
+    "missions": {
+      "shape": "list",
+      "kind": 22,
+      "fields": [
+        "cancelled",
+        "category",
+        "completed",
+        "is_quest",
+        "is_victory",
+        "issuer",
+        "mission",
+        "pending",
+        "status",
+        "turns_remaining"
+      ]
+    },
     "move_tiles": {
       "shape": "list",
       "kind": null,
@@ -1403,6 +1444,14 @@
         "sample_index",
         "x",
         "y"
+      ]
+    },
+    "pending_queue": {
+      "shape": "list",
+      "kind": 10,
+      "fields": [
+        "key",
+        "turns_left"
       ]
     },
     "reach_chars": {
@@ -1563,6 +1612,25 @@
         "cost",
         "key",
         "researched"
+      ]
+    },
+    "trait_progress": {
+      "shape": "dict_of_scalar",
+      "kind": 6,
+      "fields": [
+        "{}=scalar"
+      ]
+    },
+    "traits": {
+      "shape": "list",
+      "kind": 5,
+      "fields": [
+        "chaos_realm",
+        "key",
+        "level",
+        "level_key",
+        "points",
+        "threshold_points"
       ]
     },
     "unit_cards": {

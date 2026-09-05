@@ -43,7 +43,7 @@ def main():
         fields = collections.defaultdict(collections.Counter)
         shapes = {}
         for role, sql in ROLES.items():
-            for (z,) in con.execute(sql + ' LIMIT 400'):
+            for (z,) in con.execute(sql):
                 rec = canon.normalise(json.loads(text_of(z)))
                 for key, value in rec.items():
                     if not hydrate.is_collection(key, value):
