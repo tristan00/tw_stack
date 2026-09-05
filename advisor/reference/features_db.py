@@ -14,9 +14,27 @@ _con = None
 def _connect():
     global _con
     if _con is None or _con.closed:
-        _con = pg.connect(autocommit=True, readonly=True, row_factory=pg.row_factory,
-                          search_path="reference")
+        _con = pg.connect(app_name="tw-featuresdb", autocommit=True, readonly=True,
+                          row_factory=pg.row_factory, search_path="refc,ref")
     return _con
+
+
+def build_id():
+    row = _connect().execute(
+        "SELECT build_id FROM ops.manifest WHERE status = 'live'").fetchone()
+    return row[0] if row else None
+
+
+def invalidate(current=None):
+    global _build_id
+    now = current if current is not None else build_id()
+    if now != _build_id:
+        _lookup_cache.clear()
+        _build_id = now
+    return now
+
+
+_build_id = None
 
 
 _lookup_cache = {}

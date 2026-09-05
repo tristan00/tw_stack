@@ -21,6 +21,8 @@ PRUNE_EVERY = 600
 
 
 def run(ctx):
+    from advisor.reference import check as refcheck
+    refcheck.ensure()
     from bus import Bus
     bus = Bus()
     store, cur_dir, after_id = None, None, 0

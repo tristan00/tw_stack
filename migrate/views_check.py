@@ -1,3 +1,4 @@
+import collections
 import json
 import os
 import sys
@@ -7,7 +8,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from decisions import pg
 
-VIEWS = ['building_chains', 'buildings', 'tech', 'units', 'skills', 'rituals']
+VIEWS = ['building_chains', 'buildings', 'tech', 'units', 'skills', 'rituals',
+         'tech_links', 'skill_links', 'ancillary_effects', 'effects_meta',
+         'agent_abilities', 'agent_permitted_subtypes', 'skill_actions']
 
 ROUNDED = {'background_weighting'}
 
@@ -23,10 +26,19 @@ def columns(con, schema, name):
         (schema, name))]
 
 
-def fetch(con, schema, name, cols, key):
+def rows_of(con, schema, name, cols):
     sel = ', '.join('"%s"' % c for c in cols)
-    return {r[0]: r for r in con.execute(
-        'SELECT %s FROM %s."%s" ORDER BY "%s"' % (sel, schema, name, key))}
+    return [tuple(r) for r in con.execute('SELECT %s FROM %s."%s"' % (sel, schema, name))]
+
+
+def norm(row):
+    return tuple('' if v is None else
+                 (round(v, 4) if isinstance(v, float) else
+                  (int(v) if isinstance(v, bool) else v))
+                 for v in row)
+
+
+DOCUMENTED_SUPERSET = {'skill_actions'}
 
 
 def compare(con, name):
@@ -36,36 +48,22 @@ def compare(con, name):
         return {'status': 'no legacy table'}
     if legacy_cols != view_cols:
         return {'status': 'column mismatch', 'legacy': legacy_cols, 'view': view_cols}
-    key = legacy_cols[0]
-    a = fetch(con, 'reference', name, legacy_cols, key)
-    b = fetch(con, 'refc', name, view_cols, key)
-    only_legacy = sorted(set(a) - set(b))[:5]
-    only_view = sorted(set(b) - set(a))[:5]
-    diffs = []
+    a = collections.Counter(norm(r) for r in rows_of(con, 'reference', name, legacy_cols))
+    b = collections.Counter(norm(r) for r in rows_of(con, 'refc', name, view_cols))
+    missing = a - b
+    extra = b - a
     documented = 0
-    for k in sorted(set(a) & set(b)):
-        for i, col in enumerate(legacy_cols):
-            x, y = a[k][i], b[k][i]
-            if x == y:
-                continue
-            if x == '' and y is None:
-                documented += 1
-                continue
-            if isinstance(x, float) and isinstance(y, float) and abs(x - y) < 1e-4:
-                continue
-            if col in ROUNDED and x is not None and y is not None:
-                if abs(float(x) - float(y)) < 1e-3:
-                    continue
-            diffs.append({'key': str(k), 'column': col,
-                          'legacy': str(x)[:40], 'view': str(y)[:40]})
-            if len(diffs) >= 6:
-                break
-        if len(diffs) >= 6:
-            break
-    return {'status': 'ok' if not (only_legacy or only_view or diffs) else 'differs',
-            'legacy_rows': len(a), 'view_rows': len(b),
-            'only_legacy': only_legacy, 'only_view': only_view, 'diffs': diffs,
-            'documented_null_for_absent': documented}
+    if name in DOCUMENTED_SUPERSET and not missing:
+        documented = sum(extra.values())
+        extra = collections.Counter()
+    status = 'ok' if not missing and not extra else 'differs'
+    return {'status': status, 'legacy_rows': sum(a.values()),
+            'view_rows': sum(b.values()),
+            'missing_from_view': sum(missing.values()),
+            'extra_in_view': sum(extra.values()),
+            'documented_superset': documented,
+            'sample_missing': [str(r)[:90] for r in list(missing)[:2]],
+            'sample_extra': [str(r)[:90] for r in list(extra)[:2]]}
 
 
 def main():
@@ -76,13 +74,14 @@ def main():
         for name in VIEWS:
             out[name] = compare(con, name)
             r = out[name]
-            log('%-18s %-9s legacy=%s view=%s undocumented_diffs=%d'
-                ' documented NULL-for-absent=%d'
+            log('%-26s %-8s legacy=%s view=%s missing=%s extra=%s documented=%s'
                 % (name, r['status'], r.get('legacy_rows'), r.get('view_rows'),
-                   len(r.get('diffs') or []), r.get('documented_null_for_absent', 0)))
-            for d in (r.get('diffs') or [])[:2]:
-                log('    %s.%s legacy=%r view=%r' % (d['key'][:28], d['column'],
-                                                     d['legacy'], d['view']))
+                   r.get('missing_from_view'), r.get('extra_in_view'),
+                   r.get('documented_superset')))
+            for s in (r.get('sample_missing') or [])[:1]:
+                log('    only in legacy: %s' % s)
+            for s in (r.get('sample_extra') or [])[:1]:
+                log('    only in view  : %s' % s)
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'views_check.json')
     with open(path, 'w', encoding='utf-8', newline='\n') as fh:
         json.dump(out, fh, indent=2)

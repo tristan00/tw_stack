@@ -79,3 +79,35 @@ SELECT r."key" AS key,
        r.required_resources AS required_resources,
        r.expended_resources AS expended_resources
   FROM ref.rituals r;
+
+CREATE OR REPLACE VIEW refc.tech_links AS
+SELECT DISTINCT l.child_key AS child, l.parent_key AS parent, true AS visible
+  FROM ref.technology_node_links l;
+
+CREATE OR REPLACE VIEW refc.skill_links AS
+SELECT l.child_key AS child, l.parent_key AS parent,
+       NULL::text AS link_type, NULL::text AS node_set
+  FROM ref.character_skill_node_links l;
+
+CREATE OR REPLACE VIEW refc.ancillary_effects AS
+SELECT a.ancillary AS ancillary, a.effect AS effect,
+       a.effect_scope AS effect_scope, a.value::real AS value
+  FROM ref.ancillary_to_effects a;
+
+CREATE OR REPLACE VIEW refc.effects_meta AS
+SELECT e.effect AS effect, e.priority::real AS priority,
+       e.is_positive_value_good::integer AS positive_good
+  FROM ref.effects e;
+
+CREATE OR REPLACE VIEW refc.agent_abilities AS
+SELECT a.ability AS key, a.category AS category FROM ref.abilities a;
+
+CREATE OR REPLACE VIEW refc.agent_permitted_subtypes AS
+SELECT p.faction AS faction, p.agent AS agent, p.subtype AS subtype
+  FROM ref.faction_agent_permitted_subtypes p;
+
+CREATE OR REPLACE VIEW refc.skill_actions AS
+SELECT DISTINCT j.character_skill_key AS skill,
+       substring(j.effect_key from 'agent_action_(.*)$') AS agent_action
+  FROM ref.character_skill_level_to_effects_junctions j
+ WHERE j.effect_key LIKE '%agent_action%';
