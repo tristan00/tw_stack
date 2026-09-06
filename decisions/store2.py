@@ -16,6 +16,15 @@ def _num(v):
         return None
 
 
+def _exact_int(name, v):
+    if v is None:
+        return None
+    i = int(v)
+    if i != v:
+        raise ValueError('%s is %r, not a whole number' % (name, v))
+    return i
+
+
 def log(msg):
     sys.stderr.write('%.3f  store.%s\n' % (time.time(), msg))
 
@@ -348,9 +357,12 @@ class Store:
                 rows.append((decision_id, seq,
                              (o.get('entity_seq') if o.get('entity_seq') is not None
                               else self._seq_of(seqs, o)), action,
-                             slot, o.get('score'), o.get('exploit'),
-                             o.get('rank'), o.get('pct_global'), o.get('gnn_impact'),
-                             o.get('gnn_rank'), o.get('ggnn_score'), o.get('ggnn_rank')))
+                             _exact_int('slot_index', slot), o.get('score'),
+                             o.get('exploit'), _exact_int('rank', o.get('rank')),
+                             o.get('pct_global'), o.get('gnn_impact'),
+                             _exact_int('gnn_rank', o.get('gnn_rank')),
+                             o.get('ggnn_score'),
+                             _exact_int('ggnn_rank', o.get('ggnn_rank'))))
             if rows:
                 with self.conn.cursor().copy(
                         "COPY corpus.offer (decision_id, offer_seq, entity_seq, action_id,"
