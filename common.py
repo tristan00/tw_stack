@@ -197,13 +197,7 @@ def cli_path(argv, takes_value=()):
 
 def run_dbs(runs_root=None):
     root = native(runs_root) if runs_root else native(RUNS_ROOT)
-    from decisions import pg
-    con = pg.connect(autocommit=True, readonly=True)
-    try:
-        ok = con.execute("SELECT to_regclass('public.decisions')").fetchone()[0]
-    finally:
-        con.close()
-    return [os.path.join(root, "run", DECISIONS_DB)] if ok else []
+    return [os.path.join(root, "run", DECISIONS_DB)]
 SCREEN_DUMP_DIR = RUNS_ROOT + "/screens"
 UNHANDLED_LOG = RUNS_ROOT + "/unhandled_screens.jsonl"
 CLEAR_SCREEN_TRACE = os.path.join(native(RUN_DIR), "clear_screen_trace.jsonl")

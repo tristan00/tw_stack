@@ -62,3 +62,10 @@ Strict order: a section starts only when every subsection before it is done, exc
 7.2 Stop/remove the C: cluster service or keep it (owner's call on `tw_stack_post_refactor`/`bench`). Done: owner's decision recorded; if removed, C: free space ≥ 70 GB.
 7.3 Delete repo files and dead code listed in 11.3. Done: `grep` finds no remaining reference to any deleted file or symbol; every touched module imports cleanly. Items in 11.3 that turn out to be live are kept and the discrepancy recorded.
 7.4 Remove the design's transient tooling (`bench/legacy.py`, `migrate/` except `verify.py --counts` which stays as a health check). Done: 12.7 counts reported ≤ targets.
+
+## 8. Model training path (missed by the original plan; 7.2 stays BLOCKED-OWNER)
+
+8.1 `common.run_dbs` repointed to the corpus store: the `public.decisions` probe (dropped in 7.1) removed, the single facade path returned; trainers already skip an unreachable store via `IncompatibleStore`. Done: `model.py report` counts window decisions > 0.
+8.2 `dicts.Dicts` reverse lookups cached whole per family (`keys_for`/`keys_for_family` load each `dict.*` table once per connection; `resolve` inserts update the cache). Done: no per-row `dict.*` SELECT stream in `pg_stat_activity` during gather.
+8.3 Batch hydration: `hydrate.Prefetch` fetches all per-snapshot tables, heads, read failures, and entities for a chunk of snapshot ids in one `ANY()` query each; `record()` takes an optional prefetch; `records()`, `store.taken_rows`, `store.campaign_snapshots` run in `PREFETCH_CHUNK` chunks. Done: hydrated records byte-equal to the pre-change code on sampled decisions and interrupts; `hydrate record exit` ≤ 2 ms typical in gather (was ~7 ms).
+8.4 All three session trainers complete on 55433: `model.py train`, `interrupt_model.py`, `advisor.mapgraph.greedy_train train`. Done: each reports trained=true (or a data-sufficiency refusal with correct counts) and writes model files with fresh timestamps.
