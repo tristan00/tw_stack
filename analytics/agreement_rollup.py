@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 import os
 import statistics
 import sys
@@ -8,39 +7,29 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import arms
 from analytics import store as _store
-from decisions import pg_schema as S
+from analytics.model_agreement import PAIR_KEYS
 
-FORMULA_VERSION = 4
+FORMULA_VERSION = 5
 
 TARGET_POINTS = 40
 MIN_BUCKET = 50
-
-PAIR_KEYS = tuple(S.pair_key(a, b) for a, b in S.PAIRS)
-
-
-def _pct_at(sorted_vals, p):
-    if not sorted_vals:
-        return None
-    return float(sorted_vals[int(round(p * (len(sorted_vals) - 1)))])
+HIST_BINS = 20
 
 
-def _spread(vals):
-    v = sorted(x for x in vals if x is not None)
-    if not v:
-        return None, None, None, None
-    return (float(statistics.median(v)), float(statistics.fmean(v)),
-            _pct_at(v, 0.25), _pct_at(v, 0.75))
-
-
-def _mean(vals):
-    v = [x for x in vals if x is not None]
-    return float(statistics.fmean(v)) if v else None
+def log(msg):
+    sys.stderr.write("%.3f  rollup %s\n" % (time.time(), msg))
 
 
 def _med(vals):
     v = sorted(x for x in vals if x is not None)
     return float(statistics.median(v)) if v else None
+
+
+def _mean(vals):
+    v = [x for x in vals if x is not None]
+    return float(statistics.fmean(v)) if v else None
 
 
 def bucket_size(comparable: int) -> int:
@@ -52,45 +41,19 @@ def min_decisions(size: int) -> int:
 
 
 class _Rollup:
-    SOURCE = "analytics"
     FORMULA_VERSION = FORMULA_VERSION
     DEPENDS_ON = ("model_agreement",)
 
     def safe_hi(self, src, an=None):
-        return int(_store.state(an, self.DEPENDS_ON[0])["watermark"])
-
-    def source_stats(self, src, hi):
-        return None
-
-
-_SUMMARY_DDL = """
-CREATE TABLE IF NOT EXISTS agreement_summary(
-  pair TEXT NOT NULL, scope TEXT NOT NULL, computed_ts DOUBLE PRECISION NOT NULL,
-  decisions INTEGER, comparable INTEGER,
-  missing_a INTEGER, missing_b INTEGER, too_few INTEGER, no_scores INTEGER,
-  rho_median DOUBLE PRECISION, rho_mean DOUBLE PRECISION, rho_q1 DOUBLE PRECISION, rho_q3 DOUBLE PRECISION,
-  tau_median DOUBLE PRECISION, tau_mean DOUBLE PRECISION, rbo_mean DOUBLE PRECISION,
-  top1_same INTEGER, top3_mean DOUBLE PRECISION, top5_mean DOUBLE PRECISION, top10_mean DOUBLE PRECISION,
-  overlap_median DOUBLE PRECISION, from_decision INTEGER, to_decision INTEGER,
-  fell_back INTEGER, ambiguous INTEGER,
-  PRIMARY KEY(pair, scope));
-
-CREATE TABLE IF NOT EXISTS agreement_hist(
-  pair TEXT NOT NULL, bucket INTEGER NOT NULL, lo DOUBLE PRECISION NOT NULL, hi DOUBLE PRECISION NOT NULL,
-  decisions INTEGER NOT NULL,
-  PRIMARY KEY(pair, bucket));
-"""
-
-HIST_BINS = 20
+        return int(_store.state(an, "model_agreement")["watermark"])
 
 
 class _Summary(_Rollup):
     NAME = "agreement_summary"
     TABLES = ("agreement_summary", "agreement_hist")
-    DDL = _SUMMARY_DDL
-    DEPENDS_ON = ("model_agreement", "model_generations")
 
     def step(self, src, an, lo, hi):
+        t0 = time.time()
         an.execute("DELETE FROM agreement_summary")
         an.execute("DELETE FROM agreement_hist")
         total = 0
@@ -99,31 +62,20 @@ class _Summary(_Rollup):
                 "SELECT status, COUNT(*) n FROM model_agreement WHERE pair=%s"
                 " GROUP BY status", (pair,))}
             rows = an.execute(
-                "SELECT decision_id, rho, tau_b, rbo, top1_same, top3_overlap, top5_overlap,"
-                " top10_overlap, n FROM model_agreement WHERE pair=%s AND status='ok'"
-                " ORDER BY decision_id", (pair,)).fetchall()
-            rho_m, rho_mean, q1, q3 = _spread([r["rho"] for r in rows])
-            tau_m, tau_mean, _, _ = _spread([r["tau_b"] for r in rows])
-            ov = sorted(int(r["n"]) for r in rows)
-            fell = int(an.execute(
-                "SELECT COUNT(*) FROM model_agreement WHERE pair=%s AND fell_back=1",
-                (pair,)).fetchone()[0])
+                "SELECT rho, tau, rbo, top1_agree FROM model_agreement"
+                " WHERE pair=%s AND status='ok' ORDER BY decision_id",
+                (pair,)).fetchall()
+            comparable = len(rows)
+            top1 = sum(1 for r in rows if r["top1_agree"])
             an.execute(
-                "INSERT INTO agreement_summary VALUES"
-                "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
-                "%s,%s)",
-                (pair, "all", time.time(), sum(counts.values()), len(rows),
-                 counts.get("missing_a", 0), counts.get("missing_b", 0),
-                 counts.get("too_few", 0), counts.get("no_scores", 0),
-                 rho_m, rho_mean, q1, q3, tau_m, tau_mean, _mean([r["rbo"] for r in rows]),
-                 sum(1 for r in rows if r["top1_same"]),
-                 _mean([r["top3_overlap"] for r in rows]),
-                 _mean([r["top5_overlap"] for r in rows]),
-                 _mean([r["top10_overlap"] for r in rows]),
-                 (float(statistics.median(ov)) if ov else None),
-                 (rows[0]["decision_id"] if rows else None),
-                 (rows[-1]["decision_id"] if rows else None),
-                 fell, _ambiguous(an, pair)))
+                "INSERT INTO agreement_summary(pair, scope, comparable, rho_median,"
+                " rho_mean, tau_median, rbo_median, top1_rate, missing_b, no_scores)"
+                " VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (pair, "all", comparable,
+                 _med([r["rho"] for r in rows]), _mean([r["rho"] for r in rows]),
+                 _med([r["tau"] for r in rows]), _med([r["rbo"] for r in rows]),
+                 (top1 / comparable if comparable else None),
+                 counts.get("missing_b", 0), counts.get("no_scores", 0)))
             width = 2.0 / HIST_BINS
             hist = [0] * HIST_BINS
             for r in rows:
@@ -131,165 +83,122 @@ class _Summary(_Rollup):
                     continue
                 b = min(HIST_BINS - 1, max(0, int((float(r["rho"]) + 1.0) / width)))
                 hist[b] += 1
-            _store.executemany(an, "INSERT INTO agreement_hist VALUES(%s,%s,%s,%s,%s)",
-                               [(pair, i, -1.0 + i * width, -1.0 + (i + 1) * width, c)
-                                for i, c in enumerate(hist)])
-            total += len(rows)
+            _store.executemany(
+                an, "INSERT INTO agreement_hist VALUES(%s,%s,%s,%s,%s)",
+                [(pair, i, -1.0 + i * width, -1.0 + (i + 1) * width, c)
+                 for i, c in enumerate(hist)])
+            total += comparable
+        log("summary exit %.0f ms comparable=%d" % ((time.time() - t0) * 1000, total))
         return hi, total
-
-
-def _ambiguous(an, pair) -> int:
-    try:
-        return int(an.execute(
-            "SELECT COUNT(*) FROM (SELECT a.decision_id FROM model_agreement a"
-            " JOIN model_generations g ON a.ts >= g.started_ts AND a.ts < g.ended_ts"
-            " WHERE a.pair=%s AND a.status='ok' GROUP BY a.decision_id"
-            " HAVING COUNT(*) > 1) dup",
-            (pair,)).fetchone()[0])
-    except Exception:
-        return 0
-
-
-_SERIES_DDL = """
-CREATE TABLE IF NOT EXISTS agreement_series(
-  pair TEXT NOT NULL, axis TEXT NOT NULL, seq INTEGER NOT NULL, label TEXT,
-  from_decision INTEGER, to_decision INTEGER, from_ts DOUBLE PRECISION, to_ts DOUBLE PRECISION,
-  decisions INTEGER NOT NULL,
-  rho_median DOUBLE PRECISION, rho_mean DOUBLE PRECISION, rho_q1 DOUBLE PRECISION, rho_q3 DOUBLE PRECISION,
-  tau_mean DOUBLE PRECISION, rbo_mean DOUBLE PRECISION, same_top INTEGER, gate TEXT,
-  trial TEXT, generation INTEGER, retrained INTEGER, overlapped_by TEXT,
-  bucket_decisions INTEGER,
-  PRIMARY KEY(pair, axis, seq));
-"""
 
 
 def model_version_windows(gens) -> list:
     out = []
     for g in gens:
-        if g["retrained"] or not out:
+        retrained = (g["generation"] or 0) > 0
+        if retrained or not out:
             out.append({
-                "trial": (g["trial"] if g["retrained"] else "before-%s" % g["trial"]),
-                "generation": g["generation"], "retrained": g["retrained"],
-                "overlapped_by": g["overlapped_by"],
+                "trial": (g["trial"] if retrained else "before-%s" % g["trial"]),
+                "generation": g["generation"], "retrained": retrained,
                 "seg_from_ts": g["seg_from_ts"], "seg_to_ts": g["seg_to_ts"]})
         else:
             out[-1]["seg_to_ts"] = g["seg_to_ts"]
-            out[-1]["overlapped_by"] = g["overlapped_by"]
     return out
 
 
 class _Series(_Rollup):
     NAME = "agreement_series"
     TABLES = ("agreement_series",)
-    DDL = _SERIES_DDL
-    DEPENDS_ON = ("model_agreement", "model_generations")
 
     def step(self, src, an, lo, hi):
+        t0 = time.time()
         an.execute("DELETE FROM agreement_series")
         total = 0
         gens = model_version_windows(an.execute(
-            "SELECT * FROM model_generations ORDER BY seg_from_ts").fetchall())
+            "SELECT trial, generation, seg_from_ts,"
+            " COALESCE(seg_to_ts, 'infinity'::float8) seg_to_ts"
+            " FROM model_generation ORDER BY seg_from_ts").fetchall())
         for pair in PAIR_KEYS:
             rows = an.execute(
-                "SELECT decision_id, ts, rho, tau_b, rbo, top1_same FROM model_agreement"
-                " WHERE pair=%s AND status='ok' ORDER BY decision_id", (pair,)).fetchall()
+                "SELECT decision_id, ts, rho FROM model_agreement"
+                " WHERE pair=%s AND status='ok' ORDER BY decision_id",
+                (pair,)).fetchall()
             size = bucket_size(len(rows))
             gate = min_decisions(size)
             out = []
             for seq, i in enumerate(range(0, len(rows), size)):
-                out.append(_point(pair, "window", seq, None, rows[i:i + size], gate))
+                out.append(_point(pair, "window", seq, rows[i:i + size], gate))
             for seq, g in enumerate(gens):
-                chunk = an.execute(
-                    "SELECT decision_id, ts, rho, tau_b, rbo, top1_same FROM model_agreement"
-                    " WHERE pair=%s AND status='ok' AND ts >= %s AND ts < %s"
-                    " ORDER BY decision_id",
-                    (pair, g["seg_from_ts"], g["seg_to_ts"])).fetchall()
-                p = _point(pair, "generation", seq, g["trial"], chunk, gate)
+                chunk = [r for r in rows
+                         if g["seg_from_ts"] <= (r["ts"] or 0) < g["seg_to_ts"]]
+                p = _point(pair, "generation", seq, chunk, gate)
                 p.update(trial=g["trial"], generation=g["generation"],
-                         retrained=g["retrained"], overlapped_by=g["overlapped_by"],
-                         from_ts=g["seg_from_ts"], to_ts=g["seg_to_ts"])
+                         retrained=g["retrained"], from_ts=g["seg_from_ts"])
                 out.append(p)
             _store.executemany(
                 an,
-                "INSERT INTO agreement_series(pair, axis, seq, label, from_decision,"
-                " to_decision, from_ts, to_ts, decisions, rho_median, rho_mean, rho_q1,"
-                " rho_q3, tau_mean, rbo_mean, same_top, gate, trial, generation, retrained,"
-                " overlapped_by, bucket_decisions)"
-                " VALUES(%(pair)s,%(axis)s,%(seq)s,%(label)s,%(from_decision)s,"
-                "%(to_decision)s,%(from_ts)s,%(to_ts)s,%(decisions)s,%(rho_median)s,"
-                "%(rho_mean)s,%(rho_q1)s,%(rho_q3)s,%(tau_mean)s,%(rbo_mean)s,"
-                "%(same_top)s,%(gate)s,%(trial)s,%(generation)s,%(retrained)s,"
-                "%(overlapped_by)s,%(bucket_decisions)s)",
-                [dict(p, bucket_decisions=size) for p in out])
+                "INSERT INTO agreement_series(pair, axis, seq, from_decision,"
+                " to_decision, from_ts, decisions, rho_median, gate, trial,"
+                " generation, retrained, bucket_size)"
+                " VALUES(%(pair)s,%(axis)s,%(seq)s,%(from_decision)s,"
+                "%(to_decision)s,%(from_ts)s,%(decisions)s,%(rho_median)s,"
+                "%(gate)s,%(trial)s,%(generation)s,%(retrained)s,%(bucket_size)s)",
+                [dict(p, bucket_size=size) for p in out])
             total += len(out)
+        log("series exit %.0f ms points=%d" % ((time.time() - t0) * 1000, total))
         return hi, total
 
 
-def _point(pair, axis, seq, label, chunk, gate) -> dict:
-    p = {"pair": pair, "axis": axis, "seq": seq, "label": label, "trial": None,
-         "generation": None, "retrained": None, "overlapped_by": None,
+def _point(pair, axis, seq, chunk, gate) -> dict:
+    p = {"pair": pair, "axis": axis, "seq": seq, "trial": None,
+         "generation": None, "retrained": None,
          "from_decision": (chunk[0]["decision_id"] if chunk else None),
          "to_decision": (chunk[-1]["decision_id"] if chunk else None),
          "from_ts": (chunk[0]["ts"] if chunk else None),
-         "to_ts": (chunk[-1]["ts"] if chunk else None),
-         "decisions": len(chunk), "same_top": sum(1 for r in chunk if r["top1_same"]),
-         "rho_median": None, "rho_mean": None, "rho_q1": None, "rho_q3": None,
-         "tau_mean": None, "rbo_mean": None, "gate": None}
+         "decisions": len(chunk), "rho_median": None, "gate": None}
     if len(chunk) < gate:
         p["gate"] = "%d of %d needed" % (len(chunk), gate)
         return p
-    m, mean, q1, q3 = _spread([r["rho"] for r in chunk])
-    p.update(rho_median=m, rho_mean=mean, rho_q1=q1, rho_q3=q3,
-             tau_mean=_mean([r["tau_b"] for r in chunk]),
-             rbo_mean=_mean([r["rbo"] for r in chunk]))
+    p["rho_median"] = _med([r["rho"] for r in chunk])
     return p
 
 
-_BREAKDOWN_DDL = """
-CREATE TABLE IF NOT EXISTS agreement_breakdown(
-  pair TEXT NOT NULL, dim TEXT NOT NULL, key TEXT NOT NULL, decisions INTEGER NOT NULL,
-  rho_median DOUBLE PRECISION, rho_mean DOUBLE PRECISION, tau_mean DOUBLE PRECISION, rbo_mean DOUBLE PRECISION, same_top INTEGER,
-  a_rank DOUBLE PRECISION, a_pct DOUBLE PRECISION, b_rank DOUBLE PRECISION, b_pct DOUBLE PRECISION, delta_pct DOUBLE PRECISION,
-  fell_back INTEGER,
-  PRIMARY KEY(pair, dim, key));
-"""
-
-DIMS = ("arm", "action_type", "context_kind")
+DIM_SQL = {
+    "arm": ("SELECT pp.key k, a.rho, a.top1_agree FROM model_agreement a"
+            " JOIN dict.enum pp ON pp.enum_id = a.policy_id"
+            " WHERE a.pair=%s AND a.status='ok'"),
+    "action_type": ("SELECT at.key k, a.rho, a.top1_agree FROM model_agreement a"
+                    " JOIN dict.action_type at ON at.id = a.action_type_id"
+                    " WHERE a.pair=%s AND a.status='ok'"),
+    "context_kind": ("SELECT ek.key k, a.rho, a.top1_agree FROM model_agreement a"
+                     " JOIN dict.enum ek ON ek.enum_id = a.entity_kind_id"
+                     " WHERE a.pair=%s AND a.status='ok'"),
+}
 
 
 class _Breakdown(_Rollup):
     NAME = "agreement_breakdown"
     TABLES = ("agreement_breakdown",)
-    DDL = _BREAKDOWN_DDL
+    DEPENDS_ON = ("model_agreement",)
 
     def step(self, src, an, lo, hi):
+        t0 = time.time()
         an.execute("DELETE FROM agreement_breakdown")
         out = []
         for pair in PAIR_KEYS:
-            for dim in DIMS:
-                groups = {}
-                for r in an.execute(
-                        "SELECT %s k, rho, tau_b, rbo, top1_same, taken_a_rank, taken_a_pct,"
-                        " taken_b_rank, taken_b_pct, fell_back FROM model_agreement"
-                        " WHERE pair=%%s AND status='ok' AND %s IS NOT NULL" % (dim, dim),
-                        (pair,)):
-                    groups.setdefault(r["k"], []).append(r)
+            for dim, sql in DIM_SQL.items():
+                groups: dict = {}
+                for r in an.execute(sql, (pair,)):
+                    key = arms.arm_of(r["k"]) or r["k"] if dim == "arm" else r["k"]
+                    groups.setdefault(key, []).append(r)
                 for k, rs in groups.items():
-                    m, mean, _, _ = _spread([r["rho"] for r in rs])
-                    a_pct = _med([r["taken_a_pct"] for r in rs])
-                    b_pct = _med([r["taken_b_pct"] for r in rs])
-                    out.append((
-                        pair, dim, str(k), len(rs), m, mean,
-                        _mean([r["tau_b"] for r in rs]), _mean([r["rbo"] for r in rs]),
-                        sum(1 for r in rs if r["top1_same"]),
-                        _med([r["taken_a_rank"] for r in rs]), a_pct,
-                        _med([r["taken_b_rank"] for r in rs]), b_pct,
-                        (None if a_pct is None or b_pct is None else b_pct - a_pct),
-                        sum(1 for r in rs if r["fell_back"])))
+                    top1 = sum(1 for r in rs if r["top1_agree"])
+                    out.append((pair, dim, str(k), len(rs),
+                                _med([r["rho"] for r in rs]),
+                                top1 / len(rs) if rs else None))
         _store.executemany(
-            an,
-            "INSERT INTO agreement_breakdown"
-            " VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", out)
+            an, "INSERT INTO agreement_breakdown VALUES(%s,%s,%s,%s,%s,%s)", out)
+        log("breakdown exit %.0f ms rows=%d" % ((time.time() - t0) * 1000, len(out)))
         return hi, len(out)
 
 

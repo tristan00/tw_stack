@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 import os
 import sys
 import time
@@ -9,119 +8,70 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import arms
 from analytics import metrics as M
 from analytics import store as _store
-from decisions import pg_schema as S
 
 NAME = "model_agreement"
-FORMULA_VERSION = 3
-SOURCE = "decisions"
+FORMULA_VERSION = 4
 DEPENDS_ON = ()
 TABLES = ("model_agreement",)
 
-PAIRS = S.PAIRS
-PAIR_KEYS = tuple(S.pair_key(a, b) for a, b in PAIRS)
+RANKED_ARMS = ("greedy_catboost", "marwil_gnn", "greedy_gnn")
+PAIRS = tuple((a, b) for i, a in enumerate(RANKED_ARMS) for b in RANKED_ARMS[i + 1:])
+PAIR_KEYS = tuple("%s|%s" % (a, b) for a, b in PAIRS)
 
 OK, MISSING_A, MISSING_B, NO_SCORES, TOO_FEW = ("ok", "missing_a", "missing_b",
                                                 "no_scores", "too_few")
 
-DDL = """
-CREATE TABLE IF NOT EXISTS model_agreement(
-  decision_id     BIGINT  NOT NULL,
-  pair            TEXT    NOT NULL,
-  computed_ts     DOUBLE PRECISION NOT NULL,
-  ts              DOUBLE PRECISION,
-  turn            INTEGER,
-  campaign_id     BIGINT,
-  n_offers        INTEGER NOT NULL,
-  n_a             INTEGER NOT NULL,
-  n_b             INTEGER NOT NULL,
-  n               INTEGER NOT NULL,
-  status          TEXT    NOT NULL,
-  rho             DOUBLE PRECISION,
-  tau_b           DOUBLE PRECISION,
-  rbo             DOUBLE PRECISION,
-  top1_same       INTEGER,
-  top3_overlap    DOUBLE PRECISION,
-  top5_overlap    DOUBLE PRECISION,
-  top10_overlap   DOUBLE PRECISION,
-  a_top_in_b      INTEGER,
-  b_top_in_a      INTEGER,
-  taken_offer_seq INTEGER,
-  taken_a_rank    INTEGER,
-  taken_b_rank    INTEGER,
-  taken_a_pct     DOUBLE PRECISION,
-  taken_b_pct     DOUBLE PRECISION,
-  arm             TEXT,
-  fell_back       INTEGER NOT NULL DEFAULT 0,
-  action_type     TEXT,
-  context_kind    TEXT,
-  PRIMARY KEY(decision_id, pair)
-);
+RANK_COLUMN = {"greedy_catboost": "rank", "marwil_gnn": "gnn_rank",
+               "greedy_gnn": "ggnn_rank"}
 
-CREATE INDEX IF NOT EXISTS ix_ma_pair_ts    ON model_agreement(pair, ts);
-CREATE INDEX IF NOT EXISTS ix_ma_pair_rho   ON model_agreement(pair, status, rho);
-CREATE INDEX IF NOT EXISTS ix_ma_pair_atype ON model_agreement(pair, status, action_type);
-CREATE INDEX IF NOT EXISTS ix_ma_pair_arm   ON model_agreement(pair, status, arm);
-"""
+_SELECT = (
+    "SELECT s.snapshot_id AS decision_id, s.ts, s.campaign_id, d.n_offers,"
+    "       t.offer_seq AS taken_seq, t.policy_id, a.action_type_id,"
+    "       se.kind_id AS entity_kind_id"
+    "  FROM corpus.snapshot s"
+    "  JOIN corpus.decision d ON d.decision_id = s.snapshot_id"
+    "  LEFT JOIN corpus.taken t ON t.decision_id = s.snapshot_id"
+    "  LEFT JOIN dict.action a ON a.action_id = t.action_id"
+    "  LEFT JOIN corpus.snapshot_entity se ON se.snapshot_id = s.snapshot_id"
+    "   AND se.entity_seq = t.entity_seq"
+    " WHERE s.snapshot_id > %s AND s.snapshot_id <= %s"
+    " ORDER BY s.snapshot_id")
 
-RANK_COLUMN = {"greedy_catboost": "rank", "marwil_gnn": "gnn_rank"}
-MODEL_TABLE_ARMS = tuple(a for a in S.RANKED_ARMS if a not in RANK_COLUMN)
-
-_SELECT = ("SELECT d.decision_id, d.ts, d.turn, d.campaign_id, d.n_offers,"
-           "       t.offer_seq AS taken_seq, COALESCE(t.policy, d.policy) AS policy,"
-           "       a.action_type, a.context_kind"
-           "  FROM decisions d"
-           "  LEFT JOIN taken   t ON t.decision_id = d.decision_id"
-           "  LEFT JOIN actions a ON a.action_id   = t.action_id"
-           " WHERE d.decision_id > %s AND d.decision_id <= %s"
-           " ORDER BY d.decision_id")
-
-_COLUMNS = ("decision_id", "pair", "computed_ts", "ts", "turn", "campaign_id", "n_offers",
-            "n_a", "n_b", "n", "status", "rho", "tau_b", "rbo", "top1_same",
-            "top3_overlap", "top5_overlap", "top10_overlap", "a_top_in_b", "b_top_in_a",
-            "taken_offer_seq", "taken_a_rank", "taken_b_rank", "taken_a_pct", "taken_b_pct",
-            "arm", "fell_back", "action_type", "context_kind")
+_COLUMNS = ("decision_id", "pair", "status", "n", "rho", "tau", "rbo",
+            "top1_agree", "top5_overlap", "top10_overlap", "taken_rank_a",
+            "taken_rank_b", "ts", "campaign_id", "policy_id", "action_type_id",
+            "entity_kind_id")
 
 _INSERT = ("INSERT INTO model_agreement(%s) VALUES(%s)"
            " ON CONFLICT(decision_id, pair) DO UPDATE SET %s"
            % (", ".join(_COLUMNS), ", ".join(["%s"] * len(_COLUMNS)),
               ", ".join("%s=excluded.%s" % (c, c) for c in _COLUMNS[2:])))
 
+_CHUNK = 2000
 _BATCH = 2000
 
 
+def log(msg):
+    sys.stderr.write("%.3f  agree %s\n" % (time.time(), msg))
+
+
 def safe_hi(src, an=None) -> int:
-    row = src.execute("SELECT MAX(decision_id) m FROM decisions").fetchone()
+    row = src.execute("SELECT MAX(decision_id) m FROM corpus.decision").fetchone()
     return max(0, int(row[0] or 0) - 1)
-
-
-def source_stats(src, hi):
-    row = src.execute("SELECT COUNT(*) c, MIN(decision_id) m FROM decisions"
-                      " WHERE decision_id <= %s", (hi,)).fetchone()
-    return int(row[0] or 0) * len(PAIRS), row[1]
-
-
-def _pct(rank, n):
-    if rank is None or n is None or n < 2:
-        return None
-    return round(100.0 * (float(rank) - 1.0) / (float(n) - 1.0), 3)
 
 
 def _score_vectors(src, lo, hi):
     out = {}
-    for did, seq, rank, gnn_rank in src.execute(
-            "SELECT decision_id, offer_seq, rank, gnn_rank FROM offer_scores"
+    for did, seq, rank, gnn_rank, ggnn_rank in src.execute(
+            "SELECT decision_id, offer_seq, rank, gnn_rank, ggnn_rank"
+            " FROM corpus.offer"
             " WHERE decision_id > %s AND decision_id <= %s", (lo, hi)):
         d = out.setdefault(did, {})
         d.setdefault("greedy_catboost", {})[seq] = rank
         d.setdefault("marwil_gnn", {})[seq] = gnn_rank
-    for did, seq, model, rank in src.execute(
-            "SELECT decision_id, offer_seq, model, rank FROM offer_model_scores"
-            " WHERE decision_id > %s AND decision_id <= %s AND model = ANY(%s)",
-            (lo, hi, list(MODEL_TABLE_ARMS))):
-        out.setdefault(did, {}).setdefault(model, {})[seq] = rank
+        d.setdefault("greedy_gnn", {})[seq] = ggnn_rank
     return out
 
 
@@ -129,7 +79,7 @@ def rank_vectors(row, vecs) -> dict:
     n_offers = int(row["n_offers"] or 0)
     got = vecs.get(row["decision_id"]) or {}
     out = {}
-    for arm in S.RANKED_ARMS:
+    for arm in RANKED_ARMS:
         by_seq = got.get(arm)
         if by_seq is None:
             continue
@@ -143,18 +93,16 @@ def rank_vectors(row, vecs) -> dict:
 
 def _rows(row, vecs) -> list:
     base = {c: None for c in _COLUMNS}
-    base.update(decision_id=int(row["decision_id"]), computed_ts=time.time(),
-                ts=row["ts"], turn=row["turn"], campaign_id=row["campaign_id"],
-                n_offers=int(row["n_offers"] or 0), n_a=0, n_b=0, n=0,
-                status=NO_SCORES, top1_same=None,
-                action_type=row["action_type"], context_kind=row["context_kind"],
-                arm=arms.arm_of(row["policy"]),
-                fell_back=(1 if arms.fell_back(row["policy"]) else 0))
+    base.update(decision_id=int(row["decision_id"]), ts=row["ts"],
+                campaign_id=row["campaign_id"], n=0, status=NO_SCORES,
+                policy_id=row["policy_id"], action_type_id=row["action_type_id"],
+                entity_kind_id=row["entity_kind_id"])
     vecs = rank_vectors(row, vecs)
     seq = row["taken_seq"]
+    n_offers = int(row["n_offers"] or 0)
     out = []
     for a, b in PAIRS:
-        rec = dict(base, pair=S.pair_key(a, b))
+        rec = dict(base, pair="%s|%s" % (a, b))
         va, vb = vecs.get(a), vecs.get(b)
         if va is None and vb is None:
             out.append(rec)
@@ -163,16 +111,12 @@ def _rows(row, vecs) -> list:
         ok_b = ~np.isnan(vb) if vb is not None else None
         n_a = int(ok_a.sum()) if ok_a is not None else 0
         n_b = int(ok_b.sum()) if ok_b is not None else 0
-        rec.update(n_a=n_a, n_b=n_b)
-        if seq is not None and 0 <= int(seq) < rec["n_offers"]:
-            s = int(seq)
-            rec["taken_offer_seq"] = s
-            if ok_a is not None and ok_a[s]:
-                rec["taken_a_rank"] = int(va[s])
-                rec["taken_a_pct"] = _pct(int(va[s]), n_a)
-            if ok_b is not None and ok_b[s]:
-                rec["taken_b_rank"] = int(vb[s])
-                rec["taken_b_pct"] = _pct(int(vb[s]), n_b)
+        if seq is not None and 0 <= int(seq) < n_offers:
+            si = int(seq)
+            if ok_a is not None and ok_a[si]:
+                rec["taken_rank_a"] = int(va[si])
+            if ok_b is not None and ok_b[si]:
+                rec["taken_rank_b"] = int(vb[si])
         if n_a == 0:
             rec["status"] = MISSING_A
             out.append(rec)
@@ -190,16 +134,17 @@ def _rows(row, vecs) -> list:
             continue
         rec["status"] = OK
         cmp = M.compare(va[both], vb[both])
-        rec.update({k: v for k, v in cmp.items() if k in rec})
-        rec["a_top_in_b"], rec["b_top_in_a"] = cmp["cat_top_in_gnn"], cmp["gnn_top_in_cat"]
+        rec.update(rho=cmp["rho"], tau=cmp["tau_b"], rbo=cmp["rbo"],
+                   top1_agree=bool(cmp["top1_same"]),
+                   top5_overlap=cmp.get("top5_overlap"),
+                   top10_overlap=cmp.get("top10_overlap"))
         out.append(rec)
     return out
 
 
-_CHUNK = 2000
-
-
 def step(src, an, lo, hi):
+    t0 = time.time()
+    log("step enter lo=%d hi=%d" % (lo, hi))
     written = 0
     a = lo
     while a < hi:
@@ -217,4 +162,5 @@ def step(src, an, lo, hi):
             _store.executemany(an, _INSERT, batch)
             written += len(batch)
         a = b
+    log("step exit %.0f ms written=%d" % ((time.time() - t0) * 1000, written))
     return hi, written

@@ -10,7 +10,6 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.dirname(_HERE))
 import common
-import campaign_growth as CG
 import retention
 from decisions import pg
 
@@ -771,7 +770,8 @@ def _campaign_growth(con, uuid):
     t = dict(row)
     turn_rows = int(t.get("turn_rows") or 0)
     out = {"campaign_uuid": uuid, "turns_recorded": turn_rows,
-           "growth_state": CG.state_of(turn_rows),
+           "growth_state": ("no_turn_rows" if not turn_rows
+                            else "measured" if turn_rows >= 2 else "single_turn"),
            "baseline": GROWTH_BASELINE}
     for part in TARGET_PARTS:
         first, last = t.get("first_" + part), t.get("final_" + part)
@@ -780,7 +780,8 @@ def _campaign_growth(con, uuid):
         out[part + "_start"] = float(first)
         out[part + "_peak"] = float(t.get("peak_" + part) or first)
         out[part + "_final"] = (float(last) if last is not None else None)
-        out[part + "_gained"] = CG.delta(first, out[part + "_peak"], turn_rows)
+        out[part + "_gained"] = (float(out[part + "_peak"]) - float(first)
+                                 if turn_rows >= 2 else None)
     return out
 
 

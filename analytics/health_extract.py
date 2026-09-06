@@ -15,19 +15,28 @@ VERSION_NOTE = ("a campaign that played across a retrain or relaunch can appear 
                 "version that recorded them")
 
 
+def log(msg):
+    sys.stderr.write("%.3f  health %s\n" % (time.time(), msg))
+
+
 def _rows(con, sql, args=()):
+    t0 = time.time()
     cur = con.execute(sql, args)
     cols = [c.name for c in cur.description]
-    return [dict(zip(cols, r)) for r in cur.fetchall()]
+    out = [dict(zip(cols, r)) for r in cur.fetchall()]
+    log("query %.0f ms rows=%d" % ((time.time() - t0) * 1000, len(out)))
+    return out
 
 
 def versions_seen(con, since):
     return _rows(con, """
         SELECT COALESCE(cv.collector_sha, 'unversioned') AS code_version,
                MIN(cv.started_ts) AS started_ts,
-               COUNT(DISTINCT d.campaign_id) AS campaigns, COUNT(*) AS decisions
-        FROM decisions d LEFT JOIN collector_versions cv ON cv.version_id = d.version_id
-        WHERE d.ts >= %s GROUP BY 1 ORDER BY 2 NULLS FIRST""", (since,))
+               COUNT(DISTINCT s.campaign_id) AS campaigns, COUNT(*) AS decisions
+        FROM corpus.snapshot s
+        JOIN corpus.decision d ON d.decision_id = s.snapshot_id
+        LEFT JOIN corpus.collector_version cv ON cv.version_id = s.version_id
+        WHERE s.ts >= %s GROUP BY 1 ORDER BY 2 NULLS FIRST""", (since,))
 
 
 def campaign_outcomes(con, since):
@@ -36,56 +45,63 @@ def campaign_outcomes(con, since):
                ROUND(AVG(turns)::numeric, 1) AS avg_turns
         FROM (SELECT DISTINCT c.campaign_id,
                      COALESCE(cv.collector_sha, 'unversioned') AS code_version,
-                     COALESCE(c.outcome, 'in_progress') AS outcome, c.turns
-              FROM campaigns c
-              JOIN decisions d ON d.campaign_id = c.campaign_id
-              LEFT JOIN collector_versions cv ON cv.version_id = d.version_id
-              WHERE d.ts >= %s) x
+                     COALESCE(o.key, 'in_progress') AS outcome, c.turns
+              FROM corpus.campaign c
+              JOIN corpus.snapshot s ON s.campaign_id = c.campaign_id
+              JOIN corpus.decision d ON d.decision_id = s.snapshot_id
+              LEFT JOIN corpus.collector_version cv ON cv.version_id = s.version_id
+              LEFT JOIN dict.enum o ON o.enum_id = c.outcome_id
+              WHERE s.ts >= %s) x
         GROUP BY 1, 2 ORDER BY 1, 2""", (since,))
 
 
 def action_stats(con, since):
     return _rows(con, """
-        SELECT COALESCE(cv.collector_sha, 'unversioned') AS code_version, a.action_type,
-               COUNT(*) AS tried, SUM(t.executed) AS executed,
-               SUM(t.confirmed) AS confirmed, SUM(t.counted) AS counted,
-               COUNT(*) FILTER (WHERE t.refusal IS NOT NULL) AS refused,
+        SELECT COALESCE(cv.collector_sha, 'unversioned') AS code_version,
+               at.key AS action_type,
+               COUNT(*) AS tried, COUNT(*) FILTER (WHERE t.executed) AS executed,
+               COUNT(*) FILTER (WHERE t.confirmed) AS confirmed,
+               COUNT(*) FILTER (WHERE t.counted) AS counted,
+               COUNT(*) FILTER (WHERE t.refusal_id IS NOT NULL) AS refused,
                ROUND(AVG(t.latency_ms)::numeric, 1) AS latency_mean_ms,
                percentile_cont(0.5) WITHIN GROUP (ORDER BY t.latency_ms) AS latency_p50_ms,
                percentile_cont(0.9) WITHIN GROUP (ORDER BY t.latency_ms) AS latency_p90_ms
-        FROM taken t
-        JOIN decisions d ON d.decision_id = t.decision_id
-        LEFT JOIN collector_versions cv ON cv.version_id = d.version_id
-        LEFT JOIN actions a ON a.action_id = t.action_id
+        FROM corpus.taken t
+        JOIN corpus.snapshot s ON s.snapshot_id = t.decision_id
+        LEFT JOIN corpus.collector_version cv ON cv.version_id = s.version_id
+        LEFT JOIN dict.action a ON a.action_id = t.action_id
+        LEFT JOIN dict.action_type at ON at.id = a.action_type_id
         WHERE t.ts >= %s
         GROUP BY 1, 2 ORDER BY 1, 2""", (since,))
 
 
 def refusal_stats(con, since):
     return _rows(con, """
-        SELECT COALESCE(cv.collector_sha, 'unversioned') AS code_version, a.action_type,
-               t.refusal, COUNT(*) AS n
-        FROM taken t
-        JOIN decisions d ON d.decision_id = t.decision_id
-        LEFT JOIN collector_versions cv ON cv.version_id = d.version_id
-        LEFT JOIN actions a ON a.action_id = t.action_id
-        WHERE t.ts >= %s AND t.refusal IS NOT NULL
+        SELECT COALESCE(cv.collector_sha, 'unversioned') AS code_version,
+               at.key AS action_type, rr.key AS refusal, COUNT(*) AS n
+        FROM corpus.taken t
+        JOIN corpus.snapshot s ON s.snapshot_id = t.decision_id
+        LEFT JOIN corpus.collector_version cv ON cv.version_id = s.version_id
+        LEFT JOIN dict.action a ON a.action_id = t.action_id
+        LEFT JOIN dict.action_type at ON at.id = a.action_type_id
+        JOIN dict.enum rr ON rr.enum_id = t.refusal_id
+        WHERE t.ts >= %s
         GROUP BY 1, 2, 3 ORDER BY 4 DESC LIMIT 200""", (since,))
 
 
 def interrupt_stats(con, since):
     return _rows(con, """
-        SELECT COALESCE(cv.collector_sha, 'unversioned') AS code_version, i.kind,
-               COUNT(*) AS tried, SUM(i.counted) AS counted,
-               COUNT(*) FILTER (WHERE i.refusal IS NOT NULL) AS refused,
+        SELECT COALESCE(cv.collector_sha, 'unversioned') AS code_version,
+               ek.key AS kind,
+               COUNT(*) AS tried, COUNT(*) FILTER (WHERE i.counted) AS counted,
+               COUNT(*) FILTER (WHERE i.refusal_id IS NOT NULL) AS refused,
                ROUND(AVG(i.latency_ms)::numeric, 1) AS latency_mean_ms,
                percentile_cont(0.9) WITHIN GROUP (ORDER BY i.latency_ms) AS latency_p90_ms
-        FROM interrupts i
-        LEFT JOIN LATERAL (SELECT d.version_id FROM decisions d
-                           WHERE d.campaign_id = i.campaign_id AND d.ts <= i.ts
-                           ORDER BY d.decision_id DESC LIMIT 1) dv ON TRUE
-        LEFT JOIN collector_versions cv ON cv.version_id = dv.version_id
-        WHERE i.ts >= %s
+        FROM corpus.interrupt i
+        JOIN corpus.snapshot s ON s.snapshot_id = i.interrupt_id
+        JOIN dict.enum ek ON ek.enum_id = i.kind_id
+        LEFT JOIN corpus.collector_version cv ON cv.version_id = s.version_id
+        WHERE s.ts >= %s
         GROUP BY 1, 2 ORDER BY 1, 2""", (since,))
 
 
@@ -95,27 +111,28 @@ SUSPECT_OUTCOMES = ("error", "stuck", "unhandled_screen", "model_unavailable",
 
 def postmortem_stats(con, since):
     raw = _rows(con, """
-        SELECT postmortem_id, campaign_key, ts, faction, turn, outcome, defeated,
-               reason, payload
-        FROM postmortems WHERE ts >= %s ORDER BY ts""", (since,))
+        SELECT p.postmortem_id, c.campaign_key, p.ts, f.key AS faction,
+               p.turns_played, o.key AS outcome, p.defeated, p.code_version,
+               p.seconds, p.plausibility_verdict AS verdict, p.error, p.ended_by,
+               p.wh3_running
+        FROM corpus.postmortem p
+        LEFT JOIN corpus.campaign c ON c.campaign_id = p.campaign_id
+        LEFT JOIN dict.faction f ON f.id = p.faction_id
+        LEFT JOIN dict.enum o ON o.enum_id = p.outcome_id
+        WHERE p.ts >= %s ORDER BY p.ts""", (since,))
     by_key, verdicts, suspicious = {}, {}, []
     for r in raw:
-        try:
-            p = json.loads(r.get("payload") or "{}")
-        except ValueError:
-            p = {}
-        ver = p.get("code_version") or "unversioned"
-        outcome = r.get("outcome") or p.get("outcome") or "unknown"
-        verdict = ((p.get("plausibility") or {}).get("verdict")
-                   if isinstance(p.get("plausibility"), dict) else None)
+        ver = r.get("code_version") or "unversioned"
+        outcome = r.get("outcome") or "unknown"
+        verdict = r.get("verdict")
         k = (ver, outcome)
         agg = by_key.setdefault(k, {"code_version": ver, "outcome": outcome, "n": 0,
                                     "seconds": [], "turns": []})
         agg["n"] += 1
-        if p.get("seconds") is not None:
-            agg["seconds"].append(float(p["seconds"]))
-        if p.get("turns_played") is not None:
-            agg["turns"].append(float(p["turns_played"]))
+        if r.get("seconds") is not None:
+            agg["seconds"].append(float(r["seconds"]))
+        if r.get("turns_played") is not None:
+            agg["turns"].append(float(r["turns_played"]))
         if verdict:
             vk = verdicts.setdefault(ver, {})
             vk[verdict] = vk.get(verdict, 0) + 1
@@ -126,12 +143,12 @@ def postmortem_stats(con, since):
                 "when": time.strftime("%Y-%m-%d %H:%M:%S",
                                       time.localtime(r.get("ts") or 0)),
                 "code_version": ver, "campaign_key": r.get("campaign_key"),
-                "faction": r.get("faction"), "turn": r.get("turn"),
+                "faction": r.get("faction"), "turn": r.get("turns_played"),
                 "outcome": outcome, "verdict": verdict,
-                "error": str(p.get("error") or "")[:240] or None,
-                "ended_by": (p.get("ended_by") or [])[-4:] or None,
-                "seconds": p.get("seconds"), "turns_played": p.get("turns_played"),
-                "wh3_running": p.get("wh3_running")})
+                "error": str(r.get("error") or "")[:240] or None,
+                "ended_by": (r.get("ended_by") or [])[-4:] or None,
+                "seconds": r.get("seconds"), "turns_played": r.get("turns_played"),
+                "wh3_running": r.get("wh3_running")})
     def med(xs):
         s = sorted(xs)
         return round(s[len(s) // 2], 1) if s else None
@@ -171,8 +188,11 @@ def unhandled_screens(since):
 
 
 def extract(days):
+    t0 = time.time()
+    log("extract enter days=%s" % days)
     since = time.time() - days * 86400.0
-    con = pg.connect(autocommit=True, readonly=True)
+    con = pg.connect(app_name="tw-health", autocommit=True, readonly=True,
+                     search_path=pg.CORPUS_PATH)
     try:
         out = {"generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
                "window_days": days, "since_ts": since,
@@ -187,6 +207,7 @@ def extract(days):
                "unhandled_screens": unhandled_screens(since)}
     finally:
         con.close()
+    log("extract exit %.0f ms" % ((time.time() - t0) * 1000))
     return out
 
 

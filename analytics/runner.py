@@ -25,7 +25,8 @@ def _log(msg):
 
 
 def corpus(run_dir):
-    return pg.connect(autocommit=True, readonly=True, row_factory=pg.row_factory)
+    return pg.connect(app_name="tw-analytics-read", autocommit=True, readonly=True,
+                      row_factory=pg.row_factory, search_path=pg.CORPUS_PATH)
 
 
 def one_pass(src, an, tenants, log=_log) -> dict:
@@ -36,8 +37,8 @@ def one_pass(src, an, tenants, log=_log) -> dict:
             if r.get("wiped"):
                 log("REBUILD %s: %s" % (t.NAME, r["wiped"]))
             if r["folded"]:
-                log("folded %d into %s (through %d) in %.3fs; %d rows"
-                    % (r["folded"], t.NAME, r["watermark"], r["seconds"], r["rows"]))
+                log("folded %d into %s (through %d) in %.3fs"
+                    % (r["folded"], t.NAME, r["watermark"], r["seconds"]))
             done.append(r)
         except psycopg.OperationalError as e:
             failed.append((t.NAME, str(e)))
@@ -50,15 +51,7 @@ def one_pass(src, an, tenants, log=_log) -> dict:
 
 def rebuild(an, tenants, log=_log):
     for t in tenants:
-        try:
-            an.execute(t.DDL)
-            an.execute("BEGIN")
-            an.execute("DELETE FROM %s" % t.NAME)
-            an.execute("DELETE FROM analytics_state WHERE tenant=%s", (t.NAME,))
-            an.execute("COMMIT")
-        except psycopg.Error as e:
-            an.execute("ROLLBACK")
-            log("could not clear %s: %s" % (t.NAME, e))
+        store.reset(an, t)
     log("cleared %d tenants -- the next pass rebuilds" % len(tenants))
 
 
@@ -69,7 +62,7 @@ def main(argv):
         run_dir = argv[argv.index("--run-dir") + 1]
     once = "--once" in argv
     _log("analytics: corpus %s" % pg.dsn())
-    _log("analytics: writing %s" % store.analytics_path(run_dir))
+    _log("analytics: writing schema %s" % store.SCHEMA)
     src, an = corpus(run_dir), store.connect()
     if "--rebuild" in argv:
         rebuild(an, TENANTS)
@@ -89,8 +82,8 @@ def main(argv):
         if once:
             worked = sum(r["folded"] for r in res["done"])
             for st in store.all_state(an):
-                _log("  %-22s watermark %-8s rows %-8s %s"
-                     % (st["tenant"], st["watermark"], st["rows"],
+                _log("  %-22s watermark %-10s %s"
+                     % (st["tenant"], st["watermark"],
                         ("ERROR " + st["last_error"]) if st["last_error"] else ""))
             _log("one pass: folded %d, %d tenant(s) failed, %.2fs total"
                  % (worked, len(res["failed"]), time.time() - t0))
@@ -98,7 +91,7 @@ def main(argv):
         if time.time() - last_beat > HEARTBEAT_S:
             last_beat = time.time()
             st = store.state(an, "model_agreement")
-            _log("alive: model_agreement at %s, %s rows" % (st["watermark"], st["rows"]))
+            _log("alive: model_agreement at %s" % (st["watermark"],))
         if res["failed"]:
             common.wait("analytics_busy_backoff", BUSY_BACKOFF[misses],
                         "%d tenant(s) failed" % len(res["failed"]))
