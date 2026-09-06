@@ -94,9 +94,11 @@ class Conn:
         self.con = self._open()
 
     def _open(self):
-        return connect(app_name=self.app_name, dbname=self.dbname, user=self.user,
-                       autocommit=True, readonly=self.readonly,
-                       search_path=self.search_path)
+        con = connect(app_name=self.app_name, dbname=self.dbname, user=self.user,
+                      autocommit=True, readonly=self.readonly,
+                      search_path=self.search_path)
+        con.execute("SET synchronous_commit = off")
+        return con
 
     def _reconnect(self):
         t0 = time.time()
