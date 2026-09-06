@@ -91,6 +91,7 @@ class Conn:
         self.dbname = dbname
         self.user = user
         self.reconnects = 0
+        self.on_rollback = lambda: None
         self.con = self._open()
 
     def _open(self):
@@ -108,6 +109,7 @@ class Conn:
             pass
         self.con = self._open()
         self.reconnects += 1
+        self.on_rollback()
         log("reconnect %s #%d %.0f ms" % (self.app_name, self.reconnects,
                                           (time.time() - t0) * 1000))
 
@@ -150,6 +152,7 @@ class _Unit:
                 self.conn.con.execute("COMMIT")
             else:
                 self.conn.con.execute("ROLLBACK")
+                self.conn.on_rollback()
         except psycopg.OperationalError:
             self.conn._reconnect()
             log("%s exit %.1f ms (connection lost)" % (self.name,

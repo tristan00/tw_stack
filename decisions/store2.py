@@ -41,12 +41,22 @@ class Store:
         self.setw = sets.SetWriter(self.conn, self.dicts)
         self.campaigns = {}
         self.characters = {}
+        self.actions = {}
+        self.conn.on_rollback = self._forget
         self.collector_sha = collector_sha
         self.version_id = None
         self.kind_ids = self.dicts.resolve_enum(
             'snapshot_kind', ['decision', 'interrupt'])
         self.entity_kind_ids = self.dicts.resolve_enum(
             'entity_kind', ['campaign', 'lord', 'hero', 'province'])
+
+    def _forget(self):
+        log('forget caches after rollback')
+        self.actions.clear()
+        self.campaigns.clear()
+        self.characters.clear()
+        self.dicts.cache.clear()
+        self.setw.known.clear()
 
     def close(self):
         self.conn.close()
@@ -327,9 +337,11 @@ class Store:
         log('write_decide enter decision_id=%s offers=%d' % (decision_id, len(offers or [])))
         seqs = self._entity_seqs(decision_id)
         with self.conn.unit('U2'):
+            actions = self._actions([(o.get('action_type'), o.get('key'))
+                                     for o in offers or []])
             rows = []
             for seq, o in enumerate(offers or []):
-                action = self._action(o.get('action_type'), o.get('key'))
+                action = actions[(o.get('action_type'), o.get('key'))]
                 slot = o.get('slot_index')
                 if slot is None:
                     slot = (o.get('params') or {}).get('slot_index')
@@ -365,18 +377,31 @@ class Store:
                 self._respond(req_id, decision_id)
         log('write_decide exit %.1f ms' % ((time.time() - t0) * 1000))
 
+    def _actions(self, pairs):
+        want = sorted({p for p in pairs if p not in self.actions})
+        if want:
+            types = self.dicts.resolve('action_type', [t for t, _ in want])
+            found = {(tid, key): aid for tid, key, aid in self.conn.execute(
+                "SELECT t.tid, t.key, a.action_id"
+                " FROM unnest(%s::int[], %s::text[]) AS t(tid, key)"
+                " JOIN dict.action a ON a.action_type_id = t.tid"
+                " AND a.action_key = t.key",
+                ([types[t] for t, _ in want], [k for _, k in want]))}
+            missing = [(t, k) for t, k in want if (types[t], k) not in found]
+            if missing:
+                found.update({(tid, key): aid for tid, key, aid in self.conn.execute(
+                    "INSERT INTO dict.action (action_type_id, action_key)"
+                    " SELECT tid, key FROM unnest(%s::int[], %s::text[]) AS t(tid, key)"
+                    " ON CONFLICT (action_type_id, action_key) DO UPDATE"
+                    " SET action_key = EXCLUDED.action_key"
+                    " RETURNING action_type_id, action_key, action_id",
+                    ([types[t] for t, _ in missing], [k for _, k in missing]))})
+            for t, k in want:
+                self.actions[(t, k)] = found[(types[t], k)]
+        return self.actions
+
     def _action(self, action_type, key):
-        types = self.dicts.resolve('action_type', [action_type])
-        tid = types.get(action_type)
-        row = self.conn.execute(
-            "INSERT INTO dict.action (action_type_id, action_key) VALUES (%s,%s)"
-            " ON CONFLICT (action_type_id, action_key) DO NOTHING RETURNING action_id",
-            (tid, key)).fetchone()
-        if row is None:
-            row = self.conn.execute(
-                "SELECT action_id FROM dict.action WHERE action_type_id = %s"
-                " AND action_key = %s", (tid, key)).fetchone()
-        return row[0]
+        return self._actions([(action_type, key)])[(action_type, key)]
 
     def _timings(self, decision_id, t):
         hk = t.get('housekeep_parts') or {}
