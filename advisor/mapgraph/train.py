@@ -16,7 +16,7 @@ import common
 sys.path.insert(0, common.ADVISOR)
 sys.path.insert(0, common.DECISIONS)
 
-THREADS = max(1, os.cpu_count() or 8)
+THREADS = min(4, max(1, os.cpu_count() or 1))
 
 CFG = {"hidden": 92, "entity_layers": 1, "action_rounds": 5,
        "map_aggr": "add+mean", "act_aggr": "mean", "attn": "all",
@@ -31,224 +31,10 @@ CFG = {"hidden": 92, "entity_layers": 1, "action_rounds": 5,
 MIN_FIT_S = 30
 
 
-def _shard(args):
-    db_path, out_dir, name, ranges, accept, rebuild, graph_config = args
-    import os as _os
-    import sys as _sys
-    for _v in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
-               "NUMEXPR_NUM_THREADS"):
-        _os.environ[_v] = "1"
-    root = _os.path.dirname(_os.path.dirname(
-        _os.path.dirname(_os.path.abspath(__file__))))
-    if root not in _sys.path:
-        _sys.path.insert(0, root)
-    import common as _common
-    for p in (_common.DECISIONS, _common.ADVISOR, _common.ROOT):
-        if p not in _sys.path:
-            _sys.path.insert(0, p)
-    from store import DecisionStore
-    from advisor import memory as M2
-    from advisor.mapgraph import build as B2
-    from advisor.mapgraph import corpus as CO2
-    from advisor.mapgraph import net as N2
-    import torch as _t
-    _t.set_num_threads(1)
-
-    fresh = {}
-    st = DecisionStore(_os.path.dirname(db_path), readonly=True)
-    try:
-        for lo, hi in ranges:
-            rows = st.labelled_decisions(after=lo - 1, before=hi)
-            stamps = M2.replay_stamps(
-                st, [r[0].get("decision_id") for r in rows
-                     if r[0].get("decision_id") in rebuild])
-            for rec, taken, counted in rows:
-                did = rec.get("decision_id")
-                if did not in rebuild:
-                    continue
-                patch = stamps.get(did)
-                if patch:
-                    (rec.setdefault("campaign", {})).update(patch)
-                head = (did, rec.get("campaign_id"), rec.get("campaign"),
-                        rec.get("turn"))
-                th = CO2.taken_hash(taken)
-                g = B2.build_graph(rec, graph_config)
-                if g is None:
-                    fresh[did] = head + ("no_graph", None, None, th)
-                    continue
-                if not g.action_nodes:
-                    fresh[did] = head + ("no_actions", None, None, th)
-                    continue
-                want = (str(taken[0]), str(taken[1]), str(taken[2]), str(taken[3]))
-                mask = [1.0 if k == want else 0.0 for k in g.action_keys]
-                if sum(mask) != 1.0:
-                    fresh[did] = head + ("taken_missing", None, None, th)
-                    continue
-                fresh[did] = head + (None, N2.to_data(g, taken=mask), g.counts, th)
-            rows = None
-    finally:
-        st.close()
-
-    if out_dir is None:
-        return name, fresh, []
-    recs = dict(fresh)
-    carried = []
-    path = _os.path.join(out_dir, name)
-    if _os.path.exists(path):
-        for rec in _t.load(path, weights_only=False):
-            if rec[0] in accept and rec[0] not in recs:
-                recs[rec[0]] = rec
-                carried.append(rec[0])
-    if recs:
-        CO2.write_shard(out_dir, name, recs)
-    return name, sorted(fresh), sorted(carried)
-
-
-def walk(runs_root=None, limit=None, log=print, workers=None, window=None,
-         graph_config=None):
-    import concurrent.futures as cf
-    import torch
-    from base_model import (RUNS_ROOT, TARGET_WEIGHTS, TRAIN_WINDOW_CAMPAIGNS,
-                            decision_deltas, target)
-    from store import DecisionStore, IncompatibleStore
-    started = time.time()
-    graph_config = GC.from_dict(graph_config)
-    log("mapgraph.train: walk enter graph=%s" % graph_config.fingerprint())
-    runs_root = runs_root or RUNS_ROOT
-    if window is None:
-        window = TRAIN_WINDOW_CAMPAIGNS
-    dbs = common.run_dbs(runs_root)
-
-    from advisor.mapgraph import corpus as CO
-
-    series, skipped, live = {}, [], []
-    for db in dbs:
-        run_dir = os.path.dirname(db)
-        try:
-            st = DecisionStore(run_dir, readonly=True)
-        except IncompatibleStore as e:
-            skipped.append(os.path.basename(run_dir))
-            log("mapgraph.train: skipping %s -> %s" % (run_dir, str(e)[:100]))
-            continue
-        try:
-            for camp, turns in st.target_series().items():
-                series.setdefault(camp, {}).update(turns)
-            floor = st.window_floor(window)
-            live.append((db, st.max_decision_id(), st.taken_map(min_decision=floor),
-                         floor))
-        finally:
-            st.close()
-
-    t_walk = time.time()
-    slots, built, reused = [], 0, 0
-    for db, hi, taken_all, floor in live:
-        run_key = os.path.basename(os.path.dirname(db))
-        cached, cdir = ({}, None) if limit else CO.load(
-            run_key, log=log, graph_config=graph_config)
-        taken_now = (taken_all if floor is None else
-                     {did: v for did, v in taken_all.items() if did >= floor})
-        if floor is not None and len(taken_now) < len(taken_all):
-            log("mapgraph.train: window %d campaigns -> %d of %d labelled decisions "
-                "(floor %d)" % (window, len(taken_now), len(taken_all), floor))
-
-        want = set()
-        for did, (tup, _counted) in taken_now.items():
-            hit = cached.get(did)
-            if hit is None or hit[7] != CO.taken_hash(tup):
-                want.add(did)
-        if limit:
-            want = set(sorted(want)[:max(limit * 8, 400)])
-
-        by_shard = {}
-        for did in taken_now:
-            by_shard.setdefault(CO.shard_name(did), []).append(did)
-        shard_want = {}
-        for did in sorted(want):
-            shard_want.setdefault(CO.shard_name(did), []).append(did)
-        jobs = [(db, cdir, name, CO.ranges(dids),
-                 frozenset(by_shard[name]), frozenset(dids), graph_config.as_dict())
-                for name, dids in sorted(shard_want.items())]
-
-        n_workers = workers or (min(16, THREADS, len(jobs))
-                                if len(want) > CO.SHARD else 1)
-        if jobs:
-            log("mapgraph.train: rebuilding %d graphs over %d shard(s), %d worker(s)"
-                % (len(want), len(jobs), n_workers))
-
-        def _results():
-            if n_workers <= 1 or len(jobs) <= 1:
-                for j in jobs:
-                    yield _shard(j)
-                return
-            with cf.ProcessPoolExecutor(max_workers=n_workers) as ex:
-                yield from ex.map(_shard, jobs, chunksize=1)
-
-        hold, done, from_fresh, from_cache = {}, {}, set(), set()
-        for name, fresh, carried in _results():
-            if cdir is None:
-                hold.update(fresh)
-                from_fresh.update(fresh)
-                continue
-            if fresh or carried:
-                done[name] = len(fresh) + len(carried)
-            from_fresh.update(fresh)
-            from_cache.update(carried)
-            log("mapgraph.train: %s written -- %d built, %d carried (%d of %d)"
-                % (name, len(fresh), len(carried), len(from_fresh), len(want)))
-
-        for did in taken_now:
-            if did in cached and did not in from_fresh and did not in from_cache:
-                from_cache.add(did)
-
-        if done:
-            covered = from_fresh | from_cache
-            CO.write_manifest(cdir, {CO.shard_name(d) for d in covered},
-                              len(covered), max(covered), log=log)
-            pool = {did: cached[did] for did in from_cache
-                    if CO.shard_name(did) not in done}
-            for name in sorted(done):
-                pool.update(CO.read_shard(cdir, name))
-            cached = None
-        else:
-            pool = {did: cached[did] for did in from_cache}
-            pool.update(hold)
-        built += len(from_fresh)
-        reused += len(from_cache)
-        slots.extend(pool[k] for k in sorted(pool))
-
-    graph_seconds = time.time() - t_walk
-    log("mapgraph.train: graph load/build %.1fs -- %d built, %d reused"
-        % (graph_seconds, built, reused))
-
-    examples = []
-    tally = {"no_graph": 0, "no_label": 0, "taken_missing": 0, "no_actions": 0}
-    for did, camp_id, campaign, turn, drop, data, counts, _thash in slots:
-        deltas = decision_deltas(campaign, series.get(camp_id) or {}, turn)
-        y = target(deltas)
-        if y is None:
-            tally["no_label"] += 1
-            continue
-        if drop is not None:
-            tally[drop] += 1
-            continue
-        gain = sum(TARGET_WEIGHTS.get(k, 1.0) * v for k, v in deltas.items()
-                   if k != "survival" and v is not None)
-        data.y = torch.tensor([float(y)], dtype=torch.float32)
-        examples.append({"data": data, "y": float(y), "gain": float(gain),
-                         "campaign_id": camp_id, "counts": counts})
-        if limit and len(examples) >= limit:
-            break
-    metrics = graph_metrics(examples, built=built, reused=reused,
-                            source_seconds=t_walk - started,
-                            graph_seconds=graph_seconds,
-                            total_seconds=time.time() - started,
-                            population=len(slots))
-    log("mapgraph.train: walk exit %.1fs -- %s"
-        % (metrics["total_seconds"], format_graph_metrics(metrics)))
-    return {"examples": examples, "tally": tally, "runs": len(dbs) - len(skipped),
-            "n_decisions": len(slots),
-            "campaigns": sorted({e["campaign_id"] for e in examples}),
-            "graph_config": graph_config.as_dict(), "metrics": metrics}
+def walk(runs_root=None, limit=None, log=print, window=None, graph_config=None, workers=2):
+    source = load_walk_source(runs_root, limit=limit, log=log, window=window)
+    return walk_source(source, graph_config=graph_config, limit=limit, log=log,
+                       workers=workers)
 
 
 def _percentile(values, pct):
@@ -259,6 +45,11 @@ def _percentile(values, pct):
 
 
 def _data_bytes(data):
+    from advisor.mapgraph.source import GraphView
+    if isinstance(data, dict):
+        return sum(value.nbytes for value in data.values())
+    if isinstance(data, GraphView):
+        return data.nbytes
     import torch
     return sum(v.numel() * v.element_size() for v in data.to_dict().values()
                if torch.is_tensor(v))
@@ -310,74 +101,80 @@ def format_graph_metrics(metrics):
 
 
 def load_walk_source(runs_root=None, limit=None, log=print, window=None):
-    from base_model import (RUNS_ROOT, TARGET_WEIGHTS, TRAIN_WINDOW_CAMPAIGNS,
-                            decision_deltas, target)
+    from base_model import RUNS_ROOT, TRAIN_WINDOW_CAMPAIGNS
     from store import DecisionStore, IncompatibleStore
-    from advisor import memory as M2
-    started = time.time()
-    log("mapgraph.train: source load enter")
+    from advisor.mapgraph.source import DecisionSource
+    started = time.perf_counter()
+    log("mapgraph.train: source selection enter")
     runs_root = runs_root or RUNS_ROOT
     window = TRAIN_WINDOW_CAMPAIGNS if window is None else window
     dbs = common.run_dbs(runs_root)
-    series, raw, skipped, population = {}, [], [], 0
+    jobs, skipped, population = [], [], 0
     for db in dbs:
         run_dir = os.path.dirname(db)
         try:
             st = DecisionStore(run_dir, readonly=True)
         except IncompatibleStore as e:
-            skipped.append(os.path.basename(run_dir))
+            skipped.append(run_dir)
             log("mapgraph.train: skipping %s -> %s" % (run_dir, str(e)[:100]))
             continue
         try:
             floor = st.window_floor(window)
             population += st.labelled_count(min_decision=floor)
             hydrate_limit = max(limit * 2, limit + 50) if limit else None
-            rows = st.labelled_decisions(
-                after=(floor - 1) if floor is not None else None, limit=hydrate_limit,
-                spread=bool(limit))
-            campaign_keys = {r[0].get("campaign_id") for r in rows}
-            for camp, turns in st.target_series(campaign_keys).items():
-                series.setdefault(camp, {}).update(turns)
-            stamps = M2.replay_stamps(st, [r[0].get("decision_id") for r in rows])
-            for rec, taken, counted in rows:
-                patch = stamps.get(rec.get("decision_id"))
-                if patch:
-                    rec.setdefault("campaign", {}).update(patch)
-                raw.append((rec, taken, counted))
+            heads = st.labelled_heads(
+                after=(floor - 1) if floor is not None else None,
+                limit=hydrate_limit, spread=bool(limit))
+            jobs.append((run_dir, heads))
         finally:
             st.close()
-    records = []
-    for rec, taken, counted in raw:
-        camp_id = rec.get("campaign_id")
-        campaign = rec.get("campaign")
-        turn = rec.get("turn")
-        deltas = decision_deltas(campaign, series.get(camp_id) or {}, turn)
-        y = target(deltas)
-        gain = None if y is None else sum(
-            TARGET_WEIGHTS.get(k, 1.0) * v for k, v in deltas.items()
-            if k != "survival" and v is not None)
-        records.append((rec, taken, counted, y, gain))
-    seconds = time.time() - started
-    log("mapgraph.train: source load exit %.1fs -- %d decisions, %d campaigns"
-        % (seconds, len(records), len({r[0].get("campaign_id") for r in records})))
+    seconds = time.perf_counter() - started
+    records = DecisionSource(jobs, log)
+    log("mapgraph.train: source selection exit %.1fs -- %d decisions"
+        % (seconds, len(records)))
     return {"records": records, "runs": len(dbs) - len(skipped),
             "source_seconds": seconds, "window": window,
             "population_decisions": population}
 
 
-def walk_source(source, graph_config=None, limit=None, log=print):
-    from advisor.mapgraph import net as N
-    import torch
+def walk_source(source, graph_config=None, limit=None, log=print, workers=1, arrays=False):
+    if arrays:
+        from advisor.mapgraph.arrays import to_arrays as convert
+    else:
+        from advisor.mapgraph.net import to_data as convert
     graph_config = GC.from_dict(graph_config)
+    workers = max(1, min(workers, (len(source["records"]) + 1023) // 1024))
     started = time.time()
     log("mapgraph.train: graph walk enter graph=%s" % graph_config.fingerprint())
     examples = []
     tally = {"no_graph": 0, "no_label": 0, "taken_missing": 0, "no_actions": 0}
-    for rec, taken, counted, y, gain in source["records"]:
+    input_seconds = 0.0
+    query_seconds, query_rows, build_seconds, tensor_seconds = 0.0, 0, 0.0, 0.0
+    if workers > 1:
+        for walked in source["records"].graphs(graph_config, workers):
+            examples.extend(walked["examples"])
+            input_seconds += walked["metrics"]["input_seconds"]
+            query_seconds += walked["metrics"]["query_seconds"]
+            query_rows += walked["metrics"]["query_rows"]
+            build_seconds += walked["metrics"]["build_seconds"]
+            tensor_seconds += walked["metrics"]["tensor_seconds"]
+            for key, value in walked["tally"].items():
+                tally[key] += value
+            log("mapgraph.train: %d graphs built in %.1fs"
+                % (len(examples), time.time() - started))
+            if limit and len(examples) >= limit:
+                examples = examples[:limit]
+                break
+        records = ()
+    else:
+        records = source["records"]
+    for rec, taken, counted, y, gain in records:
         if y is None:
             tally["no_label"] += 1
             continue
+        stage = time.perf_counter()
         g = B.build_graph(rec, graph_config)
+        build_seconds += time.perf_counter() - stage
         if g is None:
             tally["no_graph"] += 1
             continue
@@ -389,18 +186,29 @@ def walk_source(source, graph_config=None, limit=None, log=print):
         if sum(mask) != 1.0:
             tally["taken_missing"] += 1
             continue
-        data = N.to_data(g, taken=mask)
-        data.y = torch.tensor([float(y)], dtype=torch.float32)
+        stage = time.perf_counter()
+        data = convert(g, y=y, taken=mask)
+        tensor_seconds += time.perf_counter() - stage
         examples.append({"data": data, "y": float(y), "gain": float(gain),
                          "campaign_id": rec.get("campaign_id"), "counts": g.counts})
         if limit and len(examples) >= limit:
             break
     seconds = time.time() - started
+    if workers == 1:
+        input_seconds = source["records"].input_seconds
+        query_seconds = source["records"].query_seconds
+        query_rows = source["records"].query_rows
     metrics = graph_metrics(examples, built=len(examples), reused=0,
                             source_seconds=source.get("source_seconds", 0.0),
                             graph_seconds=seconds,
                             total_seconds=source.get("source_seconds", 0.0) + seconds,
                             population=source.get("population_decisions"))
+    metrics["input_seconds"] = round(input_seconds, 3)
+    metrics["workers"] = workers
+    metrics.update(query_seconds=round(query_seconds, 3), query_rows=query_rows,
+                   build_seconds=round(build_seconds, 3), tensor_seconds=round(tensor_seconds, 3))
+    log("mapgraph.train: accumulated worker input/query/build/tensor %.1fs/%.1fs/%.1fs/%.1fs, %d SQL rows"
+        % (input_seconds, query_seconds, build_seconds, tensor_seconds, query_rows))
     log("mapgraph.train: graph walk exit %.1fs -- %s"
         % (seconds, format_graph_metrics(metrics)))
     return {"examples": examples, "tally": tally, "runs": source["runs"],
@@ -433,13 +241,113 @@ def _corpus_bytes(batches):
                for v in b.to_dict().values() if torch.is_tensor(v))
 
 
-def _collate(items, size, dev, log, tag):
+def _batch_field(items, key, offsets):
+    import numpy as np
+    import torch
+    from advisor.mapgraph.source import data_array
+    values = [data_array(d, key) for d in items]
+    dim = 1 if key in ("edge_index", "a2e_index", "e2a_index") else 0
+    sizes = np.asarray([v.shape[dim] for v in values], dtype=np.int64)
+    value = np.concatenate(values, axis=dim)
+    indexed = key in ("edge_index", "a2e_index", "e2a_index", "action_index")
+    if indexed:
+        value += np.repeat(offsets[:-1], sizes)
+    return (torch.from_numpy(value),
+            torch.from_numpy(np.concatenate(([0], np.cumsum(sizes)))),
+            torch.from_numpy(offsets[:-1].copy() if indexed else np.zeros(len(items), dtype=np.int64)))
+
+
+def _batch(items):
+    import numpy as np
     import torch
     from torch_geometric.data import Batch
-    batches = [Batch.from_data_list(items[k:k + size]).to(dev, non_blocking=True)
-               for k in range(0, len(items), size)]
+    from advisor.mapgraph.net import DecisionGraph
+    nodes = np.asarray([d.num_nodes for d in items], dtype=np.int64)
+    offsets = np.concatenate(([0], np.cumsum(nodes)))
+    tensors, slices, increments = {}, {}, {}
+    for key in items[0].keys():
+        tensors[key], slices[key], increments[key] = _batch_field(items, key, offsets)
+    tensors["batch"] = torch.from_numpy(np.repeat(np.arange(len(items)), nodes))
+    tensors["ptr"] = torch.from_numpy(offsets)
+    batch = Batch(_base_cls=DecisionGraph, **tensors)
+    batch._num_graphs = len(items)
+    batch._slice_dict = slices
+    batch._inc_dict = increments
+    return batch
+
+
+def _collate_partitions(partitions, size, dev, log):
+    import numpy as np
+    import torch
+    from torch_geometric.data import Batch
+    from advisor.mapgraph.net import DecisionGraph
+    from advisor.mapgraph.source import GraphView
+    started = time.perf_counter()
+    jobs, loaders, blocks = [], [], {}
+    keys = next(items[0].keys() for items in partitions if items)
+    for items in partitions:
+        loader = []
+        for k in range(0, len(items), size):
+            group = items[k:k + size]
+            nodes = np.asarray([d.num_nodes for d in group], dtype=np.int64)
+            offsets = np.concatenate(([0], np.cumsum(nodes)))
+            batch = Batch(_base_cls=DecisionGraph,
+                          batch=torch.from_numpy(np.repeat(np.arange(len(group)), nodes)).to(dev),
+                          ptr=torch.from_numpy(offsets).to(dev))
+            batch._num_graphs = len(group)
+            batch._slice_dict, batch._inc_dict = {}, {}
+            loader.append(batch)
+            jobs.append((group, offsets, batch))
+            for data in group:
+                if isinstance(data, GraphView):
+                    blocks[id(data.block)] = data.block
+        loaders.append(loader)
+    for key in keys:
+        field_started = time.perf_counter()
+        for group, offsets, batch in jobs:
+            value, slices, increments = _batch_field(group, key, offsets)
+            batch[key] = value.to(dev)
+            batch._slice_dict[key], batch._inc_dict[key] = slices, increments
+            del value
+        for block in blocks.values():
+            block.pop(key, None)
+        for items in partitions:
+            for data in items:
+                if isinstance(data, GraphView):
+                    if key == "y_z":
+                        data.y_z = None
+                else:
+                    del data[key]
+        log("mapgraph.train: collate field %s transferred and CPU storage released %.2fs"
+            % (key, time.perf_counter() - field_started))
+    for items in partitions:
+        items.clear()
+    log("mapgraph.train: partition collation exit %.1fs, %d batches"
+        % (time.perf_counter() - started, len(jobs)))
+    return loaders
+
+
+def _collate(items, size, dev, log, tag, consume=False):
+    import torch
+    started = time.perf_counter()
+    batches = []
+    build_s, transfer_s, release_s = 0.0, 0.0, 0.0
+    for k in range(0, len(items), size):
+        step = time.perf_counter()
+        batch = _batch(items[k:k + size])
+        build_s += time.perf_counter() - step
+        step = time.perf_counter()
+        batches.append(batch.to(dev, non_blocking=True))
+        transfer_s += time.perf_counter() - step
+        step = time.perf_counter()
+        if consume:
+            items[k:k + size] = [None] * len(items[k:k + size])
+        release_s += time.perf_counter() - step
     if dev.type == "cuda" and batches:
         torch.cuda.synchronize()
-        log("mapgraph.train: %s %d batches resident on %s (%.2fGB)"
-            % (tag, len(batches), dev.type, _corpus_bytes(batches) / 1e9))
+        log("mapgraph.train: %s %d batches resident on %s (%.2fGB), %.1fs"
+            % (tag, len(batches), dev.type, _corpus_bytes(batches) / 1e9,
+               time.perf_counter() - started))
+    log("mapgraph.train: %s collation build/transfer/release %.1fs/%.1fs/%.1fs"
+        % (tag, build_s, transfer_s, release_s))
     return batches

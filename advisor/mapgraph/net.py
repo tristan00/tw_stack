@@ -24,55 +24,10 @@ class DecisionGraph(Data):
         return super().__cat_dim__(key, value, *args, **kwargs)
 
 
-_IDX_FIELDS = ("node_type", "race_idx", "agent_idx", "stance_idx", "subtype_idx",
-               "atype_idx", "term_idx", "cat_idx")
-
-
 def to_data(g, y=None, taken=None):
-    act = S.ACTION_TYPE_INDEX
-    ne, nn_ = len(g.src), len(g.x)
-    src = np.fromiter(g.src, dtype=np.int64, count=ne)
-    dst = np.fromiter(g.dst, dtype=np.int64, count=ne)
-    rel = np.fromiter(g.rel, dtype=np.int64, count=ne)
-    ntype = np.fromiter(g.node_type, dtype=np.int64, count=nn_)
-
-    val = np.fromiter(g.val, dtype=np.float32, count=ne)
-    dirs = np.stack((np.fromiter(g.ux, dtype=np.float32, count=ne),
-                     np.fromiter(g.uy, dtype=np.float32, count=ne)), axis=1)
-
-    is_act = ntype == act
-    s_act, d_act = is_act[src], is_act[dst]
-    chan = []
-    for mk in (~(s_act | d_act), s_act & ~d_act, d_act & ~s_act):
-        s2, d2, r2, v2 = src[mk], dst[mk], rel[mk], val[mk]
-        if s2.size == 0:
-            chan.append((torch.zeros((2, 1), dtype=torch.long),
-                         torch.zeros(1, dtype=torch.long),
-                         torch.zeros(1, dtype=torch.float32),
-                         torch.zeros((1, 2), dtype=torch.float32)))
-        else:
-            chan.append((torch.from_numpy(np.stack((s2, d2))), torch.from_numpy(r2),
-                         torch.from_numpy(v2), torch.from_numpy(dirs[mk])))
-
-    d = DecisionGraph(x=torch.from_numpy(np.asarray(g.x, dtype=np.float32)),
-                      edge_index=chan[0][0])
-    d.edge_rel, d.edge_val, d.edge_dir = chan[0][1], chan[0][2], chan[0][3]
-    d.a2e_index, d.a2e_rel, d.a2e_val, d.a2e_dir = chan[1]
-    d.e2a_index, d.e2a_rel, d.e2a_val, d.e2a_dir = chan[2]
-    d.node_type = torch.from_numpy(ntype)
-    for name in _IDX_FIELDS[1:]:
-        d[name] = torch.from_numpy(
-            np.fromiter(getattr(g, name), dtype=np.int64, count=nn_))
-    d.g_ctx = torch.from_numpy(np.asarray([g.g_ctx], dtype=np.float32))
-    na = len(g.action_nodes)
-    d.action_index = torch.from_numpy(
-        np.fromiter(g.action_nodes or [0], dtype=np.int64, count=na or 1))
-    d.n_actions = torch.tensor([na], dtype=torch.long)
-    if taken is not None:
-        d.is_taken = torch.from_numpy(np.asarray(taken, dtype=np.float32))
-    if y is not None:
-        d.y = torch.tensor([float(y)], dtype=torch.float32)
-    return d
+    from advisor.mapgraph.arrays import to_arrays
+    return DecisionGraph(**{key: torch.from_numpy(value)
+                            for key, value in to_arrays(g, y, taken).items()})
 
 
 def _mlp(dims, dropout=0.0):
@@ -121,33 +76,72 @@ _NT = len(S.NODE_TYPES)
 _NORM_SAMPLE = 2_000_000
 
 
+def _group_stats(values, groups):
+    counts = np.bincount(groups, minlength=_NT)
+    present = np.flatnonzero(counts)
+    starts = np.cumsum(counts) - counts
+    ranks = (counts[present, None] - 1) * np.asarray([0.25, 0.5, 0.75])
+    lower = np.floor(ranks).astype(np.int64)
+    upper = np.ceil(ranks).astype(np.int64)
+    order = np.argsort(groups, kind="stable")
+    ordered_groups = groups[order]
+    columns = np.arange(len(values)) - starts[ordered_groups]
+    packed = np.full((len(present), counts.max()), np.inf, dtype=np.float32)
+    packed[np.searchsorted(present, ordered_groups), columns] = values[order]
+    packed.partition(np.unique(np.concatenate((lower.ravel(), upper.ravel()))), axis=1)
+    rows = np.arange(len(present))[:, None]
+    left, right = packed[rows, lower], packed[rows, upper]
+    del packed, order, ordered_groups, columns
+    q = left + (right - left) * (ranks - lower).astype(np.float32)
+    means = np.divide(np.bincount(groups, weights=values, minlength=_NT), counts,
+                      out=np.zeros(_NT), where=counts > 0)
+    residual = values.astype(np.float64) - means[groups]
+    variance = np.bincount(groups, weights=residual * residual, minlength=_NT)
+    sd = np.sqrt(variance[present] / counts[present]).astype(np.float32)
+    iqr = q[:, 2] - q[:, 0]
+    scale = np.where(iqr > 0, iqr.astype(np.float64) / 1.349, sd)
+    return present, q[:, 1], scale
+
+
 @torch.no_grad()
 def norm_stats(datas, log=None):
-    x = torch.cat([d.x for d in datas])
-    nt = torch.cat([d.node_type for d in datas])
+    import time
+    from advisor.mapgraph.source import data_array
+    started = time.perf_counter()
+    xs = [data_array(d, "x") for d in datas]
+    nt = np.concatenate([data_array(d, "node_type") for d in datas], dtype=np.min_scalar_type(_NT - 1),
+                        casting="unsafe")
+    counts = np.bincount(nt, minlength=_NT)
+    fields = np.asarray([len(S.TYPE_FIELDS[name]) for name in S.NODE_TYPES])
+    row_dtype = np.int32 if len(nt) <= np.iinfo(np.int32).max else np.int64
+    sampled_rows = {t: np.flatnonzero(nt == t).astype(row_dtype)
+                    for t in np.flatnonzero((counts > _NORM_SAMPLE) & (fields > 0))}
     center = torch.zeros(_NT, S.MAX_FIELDS)
     spread = torch.ones(_NT, S.MAX_FIELDS)
     fitted = 0
-    for t in range(_NT):
-        rows = x[nt == t]
-        if rows.numel() == 0 or rows.size(0) < 8:
+    for c in range(S.MAX_FIELDS):
+        valid = (fields > c) & (counts >= 8)
+        if not valid.any():
             continue
-        for c in range(S.MAX_FIELDS):
-            v = rows[:, c]
-            if v.numel() > _NORM_SAMPLE:
-                gen = torch.Generator().manual_seed(t * S.MAX_FIELDS + c)
-                v = v[torch.randint(0, v.numel(), (_NORM_SAMPLE,), generator=gen)]
-            q = torch.quantile(v, torch.tensor([0.25, 0.5, 0.75], dtype=v.dtype))
-            iqr = float(q[2] - q[0])
-            sd = float(v.std(unbiased=False))
-            s = iqr / 1.349 if iqr > 0 else sd
-            if s <= 0:
-                continue
-            center[t, c] = float(q[1])
-            spread[t, c] = s
-            fitted += 1
+        column = np.concatenate([x[:, c] for x in xs])
+        mask = (valid & (counts <= _NORM_SAMPLE))[nt]
+        values, groups = [column[mask]], [nt[mask]]
+        for t in np.flatnonzero(valid & (counts > _NORM_SAMPLE)):
+            gen = torch.Generator().manual_seed(int(t) * S.MAX_FIELDS + c)
+            ranks = torch.randint(0, int(counts[t]), (_NORM_SAMPLE,), generator=gen).numpy()
+            indices = sampled_rows[t][ranks]
+            values.append(column[indices])
+            groups.append(np.full(_NORM_SAMPLE, t, dtype=nt.dtype))
+        values, groups = np.concatenate(values), np.concatenate(groups)
+        present, median, scale = _group_stats(values, groups)
+        good = scale > 0
+        selected = present[good]
+        center[selected, c] = torch.from_numpy(median[good])
+        spread[selected, c] = torch.from_numpy(scale[good].astype(np.float32))
+        fitted += int(good.sum())
     if log:
-        log("mapgraph.net: input norm fitted on %d (node type, field) pairs" % fitted)
+        log("mapgraph.net: input norm fitted on %d (node type, field) pairs in %.1fs"
+            % (fitted, time.perf_counter() - started))
     return center, spread, fitted
 
 

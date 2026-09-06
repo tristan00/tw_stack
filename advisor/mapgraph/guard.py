@@ -1,6 +1,19 @@
 from __future__ import annotations
 
 
+class RawRows:
+
+    __slots__ = ("values", "present", "eids", "fields", "base")
+
+    def __init__(self, rows, eids, fields, base):
+        import numpy as np
+        self.eids, self.fields, self.base = tuple(eids), tuple(fields), base
+        self.present = np.asarray([[field in row for field in fields] for row in rows])
+        self.values = np.asarray([[row.get(field, 0.0) for field in fields] for row in rows],
+                                 dtype=np.float64)
+        self.values[np.isnan(self.values)] = 0.0
+
+
 
 
 class CrossEntityError(Exception):
@@ -73,6 +86,10 @@ class Reader:
         self.row = row or {}
         self.eid = eid
         self.base = base
+
+    @staticmethod
+    def rows(rows, eids, fields, base):
+        return RawRows(rows, eids, fields, base)
 
     def num(self, key, default=0.0):
         v = self.row.get(key)

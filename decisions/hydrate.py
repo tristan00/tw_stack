@@ -174,7 +174,7 @@ _PREFETCH_TABLES = {
 
 class Prefetch:
 
-    def __init__(self, con, ids):
+    def __init__(self, con, ids, include_offers=True):
         t0 = time.time()
         ids = sorted({int(i) for i in ids})
         self.data = {}
@@ -209,6 +209,9 @@ class Prefetch:
             self.entities.setdefault(sid, []).append(
                 (seq, kind_id, character_id, region_id, cqi))
         self.offers = {}
+        if not include_offers:
+            log('prefetch exit %.1f ms ids=%d' % ((time.time() - t0) * 1000, len(ids)))
+            return
         for row in con.execute(
                 "SELECT o.decision_id, o.offer_seq, o.entity_seq, ty.key, a.action_key,"
                 " o.slot_index, o.score, o.exploit, o.rank FROM corpus.offer o"

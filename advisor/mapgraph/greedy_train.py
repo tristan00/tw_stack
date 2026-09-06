@@ -25,17 +25,22 @@ MIN_ROWS = S.MIN_ROWS
 
 
 def prepare(datas, ys, groups, cfg, log=print, norm=None, free_datas=False):
+    import numpy as np
     import torch
     from base_model import stable_split
     from advisor.mapgraph import net as N
 
+    started = time.perf_counter()
+    torch.set_num_threads(int(cfg.get("threads") or T.THREADS))
     dev = T._device(cfg, log)
     val_idx, trn_idx = stable_split(len(datas), groups)
     y_trn = [ys[i] for i in trn_idx]
     y_mean = sum(y_trn) / max(1, len(y_trn))
     y_sd = (sum((v - y_mean) ** 2 for v in y_trn) / max(1, len(y_trn) - 1)) ** 0.5 or 1.0
-    for d in datas:
-        d.y_z = (d.y - y_mean) / y_sd
+    normalized_y = ((np.asarray(ys, dtype=np.float32) - np.float32(y_mean))
+                    / np.float32(y_sd))
+    for i, d in enumerate(datas):
+        d.y_z = torch.from_numpy(normalized_y[i:i + 1])
 
     if norm is None:
         t_n = time.time()
@@ -45,24 +50,27 @@ def prepare(datas, ys, groups, cfg, log=print, norm=None, free_datas=False):
     gen = torch.Generator().manual_seed(cfg["seed"])
     order0 = torch.randperm(len(trn_idx), generator=gen).tolist()
     trn = [datas[trn_idx[i]] for i in order0]
-    loader = T._collate(trn, cfg["batch"], dev, log, "greedy train")
-    vloader = T._collate([datas[i] for i in val_idx], cfg["batch"], dev, log,
-                         "greedy val") if val_idx else []
-    del trn
+    val = [datas[i] for i in val_idx]
     if free_datas:
         datas.clear()
+        loader, vloader = T._collate_partitions((trn, val), cfg["batch"], dev, log)
+    else:
+        loader = T._collate(trn, cfg["batch"], dev, log, "greedy train")
+        vloader = T._collate(val, cfg["batch"], dev, log, "greedy val") if val_idx else []
+    del trn, val
 
     val_var = None
     if vloader:
         yv = torch.cat([b.y_z for b in vloader])
         val_var = float(yv.var(unbiased=False)) or 1.0
+    log("mapgraph.greedy_train: prepare exit %.1fs" % (time.perf_counter() - started))
     return {"batch": cfg["batch"], "seed": cfg["seed"], "norm": norm, "loader": loader,
             "vloader": vloader, "val_var": val_var, "y_mean": y_mean, "y_sd": y_sd,
             "train_rows": len(trn_idx), "val_rows": len(val_idx)}
 
 
 def fit_net(datas, ys, groups, cfg, log=print, on_epoch=None, free_datas=False,
-            prep=None):
+            prep=None, trial_started=None, on_first_step=None):
     import torch
     from advisor.mapgraph import greedy_net as GN
 
@@ -100,6 +108,7 @@ def fit_net(datas, ys, groups, cfg, log=print, on_epoch=None, free_datas=False,
     val_s = None
     VAL_S_GUESS = 6.0
     t0 = time.time()
+    first_step_seconds = None
     epoch = -1
     while True:
         epoch += 1
@@ -111,6 +120,14 @@ def fit_net(datas, ys, groups, cfg, log=print, on_epoch=None, free_datas=False,
             loss.backward()
             torch.nn.utils.clip_grad_norm_(net.parameters(), cfg["grad_clip"])
             opt.step()
+            if first_step_seconds is None:
+                if dev.type == "cuda":
+                    torch.cuda.synchronize()
+                first_step_seconds = time.time() - (trial_started if trial_started is not None else t0)
+                log("mapgraph.greedy_train: first GPU training step complete %.3fs since %s"
+                    % (first_step_seconds, "trial start" if trial_started is not None else "fit start"))
+                if on_first_step is not None:
+                    on_first_step(first_step_seconds)
             if time.time() - t0 > cfg["time_budget_s"] - (val_s or VAL_S_GUESS):
                 stopped = "time_budget"
                 out_of_time = True
@@ -160,7 +177,8 @@ def fit_net(datas, ys, groups, cfg, log=print, on_epoch=None, free_datas=False,
            "epochs_run": epoch + 1, "stopped_by": stopped, "device": dev.type,
            "val_rows": prep["val_rows"], "train_rows": prep["train_rows"],
            "curve": curve,
-           "seconds": round(time.time() - t0, 1)}
+           "seconds": round(time.time() - t0, 1),
+           "first_step_seconds": round(first_step_seconds, 3) if first_step_seconds is not None else None}
     return net, fit, y_mean, y_sd
 
 
@@ -205,7 +223,7 @@ def train(runs_root=None, cfg=None, log=None, model_dir=MODEL_DIR, limit=None,
     cfg = dict(CFG, **(cfg or {}))
     t0 = time.time()
     graph_config = GC.from_dict(graph_config)
-    w = T.walk(runs_root, limit=limit, log=log, graph_config=graph_config)
+    w = T.walk(runs_root, graph_config=graph_config, limit=limit, log=log)
     ex = w["examples"]
     if len(ex) < MIN_ROWS:
         return {"trained": False, "backend": "mapgraph_greedy", "rows": len(ex),

@@ -4,6 +4,8 @@ import json
 import os
 import shutil
 import sys
+import time
+from contextlib import nullcontext
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
@@ -42,9 +44,24 @@ def _note_memory(mem, rec, taken, was_counted, pb_map):
                            hit["casualties"], zone=hit["zone"])
 
 
-def gather(runs_root=RUNS_ROOT, window=TRAIN_WINDOW_CAMPAIGNS):
+def gather(runs_root=RUNS_ROOT, window=TRAIN_WINDOW_CAMPAIGNS, as_pool=False):
+    from advisor.training_rows import TrainingRows
+    started = time.perf_counter()
+    sys.stderr.write("model.gather enter window=%s pool=%s\n" % (window, as_pool))
+    with TrainingRows(F) if as_pool else nullcontext([]) as rows:
+        data = _gather(runs_root, window, rows)
+        if as_pool:
+            data["pool"], data["num"], data["cat"] = rows.pool(data["y"])
+            data.pop("full")
+    data["load_seconds"] = round(time.perf_counter() - started, 3)
+    sys.stderr.write("model.gather exit %.3fs rows=%d campaigns=%d\n"
+                     % (data["load_seconds"], len(data["y"]), data["campaigns"]))
+    return data
+
+
+def _gather(runs_root, window, full):
     dbs = common.run_dbs(runs_root)
-    full, ys, groups, confirmed = [], [], [], []
+    ys, groups, confirmed = [], [], []
     n_decisions = skipped = 0
     campaigns_seen = set()
     skipped_dbs = []
@@ -58,11 +75,16 @@ def gather(runs_root=RUNS_ROOT, window=TRAIN_WINDOW_CAMPAIGNS):
             continue
         try:
             with s.snapshot_read():
-                series = s.target_series()
-                pb_map = MEM.prebattle_attributions(s.con)
+                keys = s.window_keys(window)
+                series = s.target_series(campaign_keys=keys)
+                camp_ids = None if keys is None else [r[0] for r in s.con.execute(
+                    "SELECT campaign_id FROM corpus.campaign WHERE campaign_key = ANY(%s)",
+                    (sorted(keys),))]
+                pb_map = MEM.prebattle_attributions(s.con, camps=camp_ids)
                 floor = s.window_floor(window)
                 act_idx, mov_idx, hist, counts, mems = {}, {}, {}, {}, {}
-                for rec, taken, was_counted in s.taken_rows(min_decision=floor):
+                for rec, taken, was_counted in s.taken_rows(min_decision=floor,
+                                                           campaign_keys=keys):
                     n_decisions += 1
                     campaigns_seen.add(rec.get("campaign_id"))
                     ik = (rec.get("campaign_id"), rec.get("turn"))
@@ -109,21 +131,18 @@ def gather(runs_root=RUNS_ROOT, window=TRAIN_WINDOW_CAMPAIGNS):
 
 
 def train(runs_root=RUNS_ROOT, window=TRAIN_WINDOW_CAMPAIGNS):
-    from catboost import Pool
-    data = gather(runs_root, window=window)
-    rows, y = data["full"], data["y"]
-    if len(rows) < MIN_ROWS:
-        return {"trained": False, "rows": len(rows), "need": MIN_ROWS, **_counts(data)}
+    data = gather(runs_root, window=window, as_pool=True)
+    X, y = data.pop("pool"), data["y"]
+    n_rows = len(y)
+    if n_rows < MIN_ROWS:
+        return {"trained": False, "rows": n_rows, "need": MIN_ROWS, **_counts(data)}
     os.makedirs(MODEL_DIR, exist_ok=True)
     groups = data.get("groups")
     fit_report = {}
-    num, cat = F.split_columns(rows)
-    X = F.matrix(rows, num, cat)
-    n_rows = len(rows)
-    rows = data["full"] = None
+    num, cat = data["num"], data["cat"]
     cat_idx = list(range(len(num), len(num) + len(cat)))
     m = fit_es(X, y, cat_idx, groups, "model", fit_report)
-    preds = list(m.predict(Pool(X, cat_features=cat_idx)))
+    preds = list(m.predict(X))
     X = None
     val, _trn = grouped_split(len(preds), groups)
     if val:
@@ -146,7 +165,8 @@ def train(runs_root=RUNS_ROOT, window=TRAIN_WINDOW_CAMPAIGNS):
     shutil.rmtree(stage, ignore_errors=True)
     os.makedirs(stage)
     m.save_model(os.path.join(stage, MODEL_FILE))
-    json.dump(meta, open(os.path.join(stage, "meta.json"), "w"))
+    with open(os.path.join(stage, "meta.json"), "w") as file:
+        json.dump(meta, file)
     for name in (MODEL_FILE, "meta.json"):
         os.replace(os.path.join(stage, name), os.path.join(MODEL_DIR, name))
     shutil.rmtree(stage, ignore_errors=True)
@@ -175,7 +195,8 @@ class Ranker:
             return
         try:
             from catboost import CatBoostRegressor
-            self.meta = json.load(open(meta_path))
+            with open(meta_path) as file:
+                self.meta = json.load(file)
             self.model = CatBoostRegressor()
             self.model.load_model(model_path)
             self.ready = True
@@ -211,14 +232,17 @@ class Ranker:
 
 
 if __name__ == "__main__":
-    cmd = sys.argv[1] if len(sys.argv) > 1 else "train"
-    root = sys.argv[2] if len(sys.argv) > 2 else RUNS_ROOT
-    if cmd == "train":
-        print(json.dumps(train(root), indent=2))
-    elif cmd == "report":
-        d = gather(root)
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("command", choices=("train", "report"), nargs="?", default="train")
+    parser.add_argument("runs_root", nargs="?", default=RUNS_ROOT)
+    parser.add_argument("--window", type=int, default=TRAIN_WINDOW_CAMPAIGNS)
+    args = parser.parse_args()
+    if args.command == "train":
+        print(json.dumps(train(args.runs_root, window=args.window), indent=2))
+    elif args.command == "report":
+        d = gather(args.runs_root, window=args.window, as_pool=True)
         print("runs=%(runs)d campaigns=%(campaigns)d decisions=%(n_decisions)d "
-              "labelled_rows=%%d unlabelled=%(skipped_unlabelled)d" % d % len(d["full"]))
-        if d["full"]:
-            num, cat = F.split_columns(d["full"])
-            print("features: %d numeric + %d categorical" % (len(num), len(cat)))
+              "labelled_rows=%%d unlabelled=%(skipped_unlabelled)d" % d % len(d["y"]))
+        if d["y"]:
+            print("features: %d numeric + %d categorical" % (len(d["num"]), len(d["cat"])))

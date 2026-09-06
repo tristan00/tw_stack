@@ -85,14 +85,14 @@ def _space(trial):
 
 
 def _fit_val(X, y, cat_idx, val, trn, params, cap_s):
-    from catboost import CatBoostRegressor, Pool
+    from catboost import CatBoostRegressor
     m = CatBoostRegressor(iterations=CB_ITERATIONS, loss_function=CB_LOSS, verbose=0,
                           allow_writing_files=False, **params)
     cap = _TimeCap(cap_s)
     t0 = time.time()
     yv = [y[i] for i in val]
-    vpool = Pool([X[i] for i in val], yv, cat_features=cat_idx)
-    m.fit(Pool([X[i] for i in trn], [y[i] for i in trn], cat_features=cat_idx),
+    tpool, vpool = X
+    m.fit(tpool,
           eval_set=vpool, early_stopping_rounds=TUNE_EARLY_STOPPING,
           use_best_model=True, verbose=0, callbacks=[cap])
     best = m.get_best_score() or {}
@@ -108,21 +108,20 @@ def _fit_val(X, y, cat_idx, val, trn, params, cap_s):
                   "hit_cap": cap.hit}
 
 
-def _matrices_main():
+def _matrices_main(window=None):
     from advisor import model as AM
-    data = AM.gather()
-    rows, y, groups = data["full"], data["y"], data["groups"]
-    num, cat = F.split_columns(rows)
-    X = F.matrix(rows, num, cat)
+    data = AM.gather(as_pool=True, **({"window": window} if window is not None else {}))
+    X, y, groups = data["pool"], data["y"], data["groups"]
+    num, cat = data["num"], data["cat"]
     cat_idx = list(range(len(num), len(num) + len(cat)))
     _log("main corpus: %d rows, %d campaigns, %d features"
-         % (len(X), data["campaigns"], len(num) + len(cat)))
+         % (len(y), data["campaigns"], len(num) + len(cat)))
     return [("model", X, y, cat_idx, groups)]
 
 
-def _matrices_interrupt():
+def _matrices_interrupt(window=None):
     from advisor import interrupt_model as IM
-    data = IM.gather()
+    data = IM.gather(**({"window": window} if window is not None else {}))
     rows, y, groups = data["rows"], data["y"], data["groups"]
     num, cat = F.split_columns(rows)
     X = F.matrix(rows, num, cat)
@@ -143,13 +142,22 @@ def _trial_score(mats, params, cap_s, splits):
     return score, parts
 
 
-def run(kind, trials, timeout_s):
+def run(kind, trials, timeout_s, window=None):
     import optuna
     os.makedirs(OUT_DIR, exist_ok=True)
     trail = os.path.join(OUT_DIR, "trials_%s_%s.jsonl" % (kind, STAMP))
     cap_s = FIT_CAP_S[kind]
-    mats = _matrices_main() if kind == "main" else _matrices_interrupt()
-    splits = [grouped_split(len(X), groups) for _tag, X, _y, _c, groups in mats]
+    mats = _matrices_main(window) if kind == "main" else _matrices_interrupt(window)
+    splits = [grouped_split(len(y), groups) for _tag, X, y, _c, groups in mats]
+    from catboost import Pool
+    prepared = []
+    for (tag, X, y, cat_idx, groups), (val, trn) in zip(mats, splits):
+        if not val or not trn:
+            raise ValueError("CatBoost tuning requires training and validation campaigns")
+        pool = X if isinstance(X, Pool) else Pool(X, y, cat_features=cat_idx)
+        prepared.append((tag, (pool.slice(trn), pool.slice(val)), y, cat_idx, groups))
+    mats = prepared
+    del X, pool, prepared
     sampler = optuna.samplers.TPESampler(seed=SAMPLER_SEED, multivariate=True,
                                          n_startup_trials=TPE_STARTUP)
     study = optuna.create_study(
@@ -223,7 +231,8 @@ if __name__ == "__main__":
     kind = a[0] if a and a[0] in ("main", "interrupt") else None
     if kind is None:
         raise SystemExit("usage: optimize_catboost.py main|interrupt "
-                         "[--trials N] [--timeout S]")
+                         "[--trials N] [--timeout S] [--window N]")
     n = int(a[a.index("--trials") + 1]) if "--trials" in a else None
     t = float(a[a.index("--timeout") + 1]) if "--timeout" in a else None
-    raise SystemExit(run(kind, n, t))
+    w = int(a[a.index("--window") + 1]) if "--window" in a else None
+    raise SystemExit(run(kind, n, t, w))

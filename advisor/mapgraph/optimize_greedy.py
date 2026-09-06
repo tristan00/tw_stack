@@ -114,20 +114,20 @@ def _graph_space(trial):
                               if r in S.WORLD_RELATIONS + S.DIPLO_RELATIONS
                               + S.PROVINCE_RELATIONS + S.ACT_RELATIONS),
     }[relation_mode]
-    max_distance = trial.suggest_categorical(
-        "graph_spatial_max_distance", [0, 25, 50, 100, 200])
-    attack_max = trial.suggest_categorical(
-        "graph_attack_max_neighbors", [0, 4, 8, 16, 32])
+    max_distance = trial.suggest_int(
+        "graph_spatial_max_distance", 5, 100, step=5)
+    attack_max = trial.suggest_int(
+        "graph_attack_max_neighbors", 1, 20, step=1)
     return GC.GraphBuildConfig(
         spatial_neighbor_count=trial.suggest_int(
-            "graph_spatial_neighbor_count", 4, 32, step=4),
-        spatial_max_distance=max_distance or None,
+            "graph_spatial_neighbor_count", 4, 32, step=1),
+        spatial_max_distance=max_distance,
         spatial_node_types=("lord", "hero", "settlement")
         if spatial_nodes == "all" else ("lord", "hero"),
         spatial_pair_types=pairs,
-        attack_context_radius=trial.suggest_float(
-            "graph_attack_context_radius", 10.0, 50.0, step=5.0),
-        attack_context_max_neighbors=attack_max or None,
+        attack_context_radius=trial.suggest_int(
+            "graph_attack_context_radius", 10, 50, step=1),
+        attack_context_max_neighbors=attack_max,
         attack_context_node_types=("lord", "hero", "settlement")
         if attack_nodes == "all" else ("lord", "hero"),
         include_own_citizenry_nodes=trial.suggest_categorical(
@@ -141,7 +141,7 @@ def _probe_source(source, size):
     if not size or len(records) <= size:
         return source
     points = [round(i * (len(records) - 1) / (size - 1)) for i in range(size)]
-    return dict(source, records=[records[i] for i in points])
+    return dict(source, records=records.select(points))
 
 
 def _graph_gate(torch, max_corpus_gib, gpu_memory_fraction):
@@ -161,7 +161,8 @@ def _graph_gate(torch, max_corpus_gib, gpu_memory_fraction):
 
 def run(trials=None, budget_s=300.0, timeout_s=None, baseline=False,
         max_corpus_gib=None, limit=None, window=TUNE_WINDOW,
-        graph_probe=GRAPH_PROBE, gpu_memory_fraction=GPU_MEMORY_FRACTION):
+        graph_probe=GRAPH_PROBE, gpu_memory_fraction=GPU_MEMORY_FRACTION,
+        study_patience=STUDY_PATIENCE, on_trial=None, study_name=None):
     import optuna
     import torch
     if graph_probe < 2:
@@ -177,25 +178,27 @@ def run(trials=None, budget_s=300.0, timeout_s=None, baseline=False,
             limit, source["population_decisions"]))
     probe_source = _probe_source(source, graph_probe)
     gate = _graph_gate(torch, max_corpus_gib, gpu_memory_fraction)
-    _log("optimize_greedy: %d source decisions, %.0fs budget per trial, patience %d, "
-         "sampler seed %d" % (len(source["records"]), budget_s, STUDY_PATIENCE,
+    _log("optimize_greedy: %d source decisions, %.0fs budget per trial, patience %s, "
+         "sampler seed %d" % (len(source["records"]), budget_s, study_patience,
                               SAMPLER_SEED))
     _log("optimize_greedy: window=%d probe=%d GPU %.1f/%.1f GiB free, graph gate "
          "%.1f GiB" % (window, len(probe_source["records"]),
                         gate["free_gpu_gib"], gate["total_gpu_gib"],
                         gate["allowed_graph_gib"]))
 
-    base_fit, norm = None, None
+    base_fit = None
     if baseline:
-        w = T.walk_source(source, GC.DEFAULT, limit=limit, log=_log)
+        w = T.walk_source(source, GC.DEFAULT, limit=limit, log=_log, workers=2)
         ex = w["examples"]
         datas = T._tensorize(ex)
         ys = [e["y"] for e in ex]
         groups = [e["campaign_id"] for e in ex]
+        for e in ex:
+            e["data"] = None
         base_cfg = dict(GT.CFG, time_budget_s=budget_s)
         _log("BASELINE start (current greedy CFG at the %.0fs budget)" % budget_s)
         base_log = lambda s: _log("  base %s" % s)
-        base_prep = GT.prepare(datas, ys, groups, base_cfg, log=base_log)
+        base_prep = GT.prepare(datas, ys, groups, base_cfg, log=base_log, free_datas=True)
         _, base_fit, _, _ = GT.fit_net(datas, ys, groups, base_cfg, log=base_log,
                                        prep=base_prep)
         _log("BASELINE val_mse=%.5f r2=%+0.4f epochs=%d stopped=%s"
@@ -204,13 +207,15 @@ def run(trials=None, budget_s=300.0, timeout_s=None, baseline=False,
         base_prep = None
         datas = None
         ex = None
+        w = None
         gc.collect()
         torch.cuda.empty_cache()
 
     sampler = optuna.samplers.TPESampler(seed=SAMPLER_SEED, multivariate=True,
                                          n_startup_trials=TPE_STARTUP)
     study = optuna.create_study(
-        study_name="gnn_greedy_%s" % STAMP, storage=_storage(), direction="minimize",
+        study_name=study_name or "gnn_greedy_%s" % STAMP, storage=_storage(), direction="minimize",
+        load_if_exists=study_name is not None,
         sampler=sampler, pruner=optuna.pruners.NopPruner())
     _log("optimize_greedy: sampler %s reports n_startup_trials=%d (asked for %d), "
          "pruner %s -- trials 0..%d are random, TPE from trial %d"
@@ -218,9 +223,11 @@ def run(trials=None, budget_s=300.0, timeout_s=None, baseline=False,
             type(study.pruner).__name__, TPE_STARTUP - 1, TPE_STARTUP))
 
     def objective(trial):
+        probe = w = ex = datas = prep = None
         p = _space(trial)
         graph_config = _graph_space(trial)
         cfg = dict(GT.CFG, **FIXED, **p, time_budget_s=budget_s)
+        trial.set_user_attr("model_config", cfg)
         _log("TRIAL %d start [%s] model=%s graph=%s"
              % (trial.number, "random" if trial.number < TPE_STARTUP else "tpe",
                 json.dumps(p, sort_keys=True),
@@ -250,7 +257,7 @@ def run(trials=None, budget_s=300.0, timeout_s=None, baseline=False,
             else:
                 probe = None
                 w = T.walk_source(
-                    source, graph_config, limit=limit,
+                    source, graph_config, limit=limit, workers=2,
                     log=lambda s: _log("  t%d %s" % (trial.number, s)))
             metrics = w["metrics"]
             trial.set_user_attr("graph_metrics", metrics)
@@ -260,24 +267,27 @@ def run(trials=None, budget_s=300.0, timeout_s=None, baseline=False,
             datas = T._tensorize(ex)
             ys = [e["y"] for e in ex]
             groups = [e["campaign_id"] for e in ex]
+            for e in ex:
+                e["data"] = None
             prep = GT.prepare(datas, ys, groups, cfg,
+                              free_datas=True,
                               log=lambda s: _log("  t%d %s" % (trial.number, s)))
             if not prep["val_rows"]:
                 raise optuna.TrialPruned("stable split produced no validation rows")
             _, fit, _, _ = GT.fit_net(datas, ys, groups, cfg,
                                       log=lambda s: _log("  t%d %s" % (trial.number, s)),
-                                      on_epoch=on_epoch, prep=prep)
-        except optuna.TrialPruned:
-            torch.cuda.empty_cache()
+                                      on_epoch=on_epoch, prep=prep, trial_started=t0)
+        except optuna.TrialPruned as e:
+            trial.set_user_attr("reason", str(e))
             raise
-        except RuntimeError as e:
+        except (RuntimeError, MemoryError) as e:
             msg = repr(e)[:200]
             _log("TRIAL %d FAILED %s" % (trial.number, msg))
-            e = None
-            gc.collect()
-            torch.cuda.empty_cache()
+            trial.set_user_attr("reason", msg)
             raise RuntimeError(msg) from None
         finally:
+            probe = w = ex = datas = prep = None
+            gc.collect()
             torch.cuda.empty_cache()
         row = {"trial": trial.number, "params": p,
                "graph_config": graph_config.as_dict(), "graph_metrics": metrics,
@@ -289,6 +299,7 @@ def run(trials=None, budget_s=300.0, timeout_s=None, baseline=False,
         trial.set_user_attr("epochs", fit["epochs_run"])
         trial.set_user_attr("stopped", fit["stopped_by"])
         trial.set_user_attr("seconds", row["seconds"])
+        trial.set_user_attr("first_step_seconds", fit["first_step_seconds"])
         with open(TRIALS_JSONL, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(row) + "\n")
         vals = [t.value for t in study.trials if t.value is not None]
@@ -298,8 +309,11 @@ def run(trials=None, budget_s=300.0, timeout_s=None, baseline=False,
                 fit["stopped_by"], row["seconds"], min(vals + [fit["val_mse"]])))
         return fit["val_mse"]
 
+    callbacks = [_patience_cb(study_patience)] if study_patience else []
+    if on_trial is not None:
+        callbacks.append(on_trial)
     study.optimize(objective, n_trials=trials, timeout=timeout_s, gc_after_trial=True,
-                   catch=(RuntimeError,), callbacks=[_patience_cb()])
+                   catch=(RuntimeError,), callbacks=callbacks)
     complete = [t for t in study.trials if t.value is not None]
     if not complete:
         _log("STUDY COMPLETE with no completed trials")

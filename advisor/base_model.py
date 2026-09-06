@@ -126,21 +126,18 @@ def regressor(iterations=None, learning_rate=None, base=None):
 def fit_es(X, y, cat_idx, groups, tag, report, iterations=None, learning_rate=None,
            base=None):
     from catboost import Pool
-    val, trn = grouped_split(len(X), groups)
+    pool = X if isinstance(X, Pool) else Pool(X, y, cat_features=cat_idx)
+    val, trn = grouped_split(pool.num_row(), groups)
     m = regressor(iterations=iterations, learning_rate=learning_rate, base=base)
     t0 = time.time()
     if not val:
-        m.fit(Pool(X, y, cat_features=cat_idx))
+        m.fit(pool)
         report[tag] = {"early_stopping": False, "reason": "too few campaigns to hold out",
                        "iterations": int(m.tree_count_),
                        "fit_seconds": round(time.time() - t0, 1)}
         return m
-    Xt = [X[i] for i in trn]
-    yt = [y[i] for i in trn]
-    Xv = [X[i] for i in val]
-    yv = [y[i] for i in val]
-    m.fit(Pool(Xt, yt, cat_features=cat_idx),
-          eval_set=Pool(Xv, yv, cat_features=cat_idx),
+    m.fit(pool.slice(trn),
+          eval_set=pool.slice(val),
           early_stopping_rounds=CB_EARLY_STOPPING, use_best_model=True, verbose=0)
     best = m.get_best_score() or {}
     report[tag] = {"early_stopping": True, "val_rows": len(val), "train_rows": len(trn),
@@ -200,5 +197,4 @@ def target(deltas):
     if not parts:
         return None
     return float(sum(parts))
-
 

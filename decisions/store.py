@@ -192,6 +192,12 @@ class DecisionStore:
     @timed('labelled_decisions')
     def labelled_decisions(self, confirmed_only=False, after=None, before=None, limit=None,
                            spread=False):
+        rows = self.labelled_heads(confirmed_only, after, before, limit, spread)
+        return [row for chunk in self.hydrate_decisions(rows) for row in chunk]
+
+    @timed('labelled_heads')
+    def labelled_heads(self, confirmed_only=False, after=None, before=None, limit=None,
+                       spread=False):
         rng, args = "", []
         if after is not None:
             rng += " AND t.decision_id > %s"
@@ -212,32 +218,48 @@ class DecisionStore:
                         [rows[i * (len(rows) - 1) // (n - 1)] for i in range(n)])
             else:
                 rows = rows[:n]
-        out = []
+        return rows
+
+    def hydrate_decisions(self, rows):
+        started = time.perf_counter()
         for i in range(0, len(rows), hydrate.PREFETCH_CHUNK):
             chunk = rows[i:i + hydrate.PREFETCH_CHUNK]
             pre = hydrate.Prefetch(self.con, [r[0] for r in chunk])
+            out = []
             for did, kind, cqi, region, faction, at, ak, counted, ts, eseq, ckey \
                     in chunk:
                 rec = hydrate.record(self.con, did, pre=pre)
                 hydrate.offers(self.con, rec, pre=pre)
                 out.append((rec, self._identity(kind, cqi, region, faction, at, ak),
                             bool(counted)))
-        return out
+            yield out
+        log('hydrate_decisions exit %.1f ms rows=%d'
+            % ((time.perf_counter() - started) * 1000, len(rows)))
 
-    @timed('taken_rows')
-    def taken_rows(self, min_decision=None):
-        sql, args = self._taken_sql(" AND t.decision_id >= %s",
-                                    [int(min_decision or 0)])
-        rows = self.con.execute(sql, tuple(args)).fetchall()
-        for i in range(0, len(rows), hydrate.PREFETCH_CHUNK):
-            chunk = rows[i:i + hydrate.PREFETCH_CHUNK]
-            pre = hydrate.Prefetch(self.con, [r[0] for r in chunk])
-            for did, kind, cqi, region, faction, at, ak, counted, ts, eseq, ckey \
-                    in chunk:
-                rec = hydrate.record(self.con, did, pre=pre)
-                hydrate.attach_taken(self.con, rec, eseq, at, ak)
-                yield (rec, self._identity(kind, cqi, region, faction, at, ak),
-                       bool(counted))
+    def taken_rows(self, min_decision=None, campaign_keys=None):
+        started = time.perf_counter()
+        n = 0
+        where, args = " AND t.decision_id >= %s", [int(min_decision or 0)]
+        if campaign_keys is not None:
+            where += " AND c.campaign_key = ANY(%s)"
+            args.append(sorted(campaign_keys))
+        sql, args = self._taken_sql(where, args)
+        try:
+            with self.con.transaction(), self.con.cursor(name='catboost_taken') as cursor:
+                cursor.execute(sql, tuple(args))
+                while chunk := cursor.fetchmany(hydrate.PREFETCH_CHUNK):
+                    pre = hydrate.Prefetch(self.con, [r[0] for r in chunk],
+                                           include_offers=False)
+                    for did, kind, cqi, region, faction, at, ak, counted, ts, eseq, ckey in chunk:
+                        rec = hydrate.record(self.con, did, pre=pre)
+                        hydrate.attach_taken(self.con, rec, eseq, at, ak)
+                        n += 1
+                        yield (rec, self._identity(kind, cqi, region, faction, at, ak),
+                               bool(counted))
+                    del pre
+        finally:
+            log('taken_rows exit %.1f ms rows=%d'
+                % ((time.perf_counter() - started) * 1000, n))
 
     @timed('campaign_snapshots')
     def campaign_snapshots(self, min_decision=None):

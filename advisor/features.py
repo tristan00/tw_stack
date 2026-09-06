@@ -1032,6 +1032,8 @@ def state_row(record, entity):
 
 
 def offer_rows(record, entity, base_sink=None):
+    if not entity.get("offers") and base_sink is None:
+        return []
     world = record.get("world") or {}
     provinces = {e["context_id"]: e.get("state") or {} for e in record.get("entities") or []
                  if e.get("context_kind") == "province"}

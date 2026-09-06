@@ -20,7 +20,7 @@ _SKILL_REL = {"active": "skill_active", "locked_due_to_rank": "skill_rank_locked
 
 
 class Graph:
-    __slots__ = ("_nodes", "_edges", "config",
+    __slots__ = ("_nodes", "_edges", "config", "_catalogue_rows", "_allowed_relations",
                  "x", "node_type", "race_idx", "agent_idx", "stance_idx", "subtype_idx",
                  "atype_idx", "term_idx", "cat_idx", "src", "dst", "rel", "val",
                  "ux", "uy",
@@ -29,6 +29,9 @@ class Graph:
 
     def __init__(self, config=None):
         self.config = GC.from_dict(config)
+        self._catalogue_rows = {}
+        self._allowed_relations = (None if self.config.enabled_relation_types is None
+                                   else frozenset(self.config.enabled_relation_types))
         self._nodes = []
         self._edges = []
         self.x = []
@@ -79,13 +82,25 @@ class Graph:
         return idx
 
     def edge(self, i, j, rel, val=0.0, ux=0.0, uy=0.0):
-        if i is None or j is None or not self.config.allows_relation(rel):
+        if i is None or j is None or (self._allowed_relations is not None
+                                     and rel not in self._allowed_relations):
             return
         r = S.REL_INDEX[rel]
         v, x, y = float(val), float(ux), float(uy)
         self._edges.extend((i, j, r, v, x, y, j, i, r + _NREL, v, -x, -y))
 
     def finalize(self):
+        for kind, nodes in self._catalogue_rows.items():
+            attrs = C.attrs().get(kind, {})
+            fields = S.TYPE_FIELDS[kind]
+            rows = G.Reader.rows([attrs.get(key, {}) for _, key, _ in nodes],
+                                 [nid for _, _, nid in nodes], fields, "reference." + kind)
+            for (index, _, _), values in zip(nodes, rows.values.tolist()):
+                self._nodes[index][1][:len(fields)] = values
+            for field, present in zip(fields, rows.present.any(axis=0)):
+                if present:
+                    self.provenance.setdefault(kind + "." + field, set()).add(kind)
+        self._catalogue_rows.clear()
         if self._nodes:
             cols = list(zip(*self._nodes))
             (self.node_ids, self.x, self.node_type, self.race_idx, self.agent_idx,
@@ -103,8 +118,9 @@ class Graph:
         idx = self.id2idx.get(nid)
         if idx is not None:
             return idx
-        idx = self.add(nid, kind, _cat_values(kind, key, nid),
-                       cat=S.cat_global(kind, key))
+        idx = self.add(nid, kind, cat=S.cat_global(kind, key))
+        if S.TYPE_FIELDS[kind]:
+            self._catalogue_rows.setdefault(kind, []).append((idx, key, nid))
         if kind == "building":
             ch = C.chain_of(key)
             if ch:
@@ -119,18 +135,6 @@ class Graph:
             for ek, v in C.item_effects_of(key):
                 self.edge(idx, self.cat_node("effect", ek), "grants", val=v)
         return idx
-
-
-def _cat_values(kind, key, nid):
-    row = C.attrs().get(kind, {}).get(key)
-    if not row:
-        return None
-    rd = G.Reader(row, nid, "reference.%s" % kind)
-    out = {}
-    for name in S.TYPE_FIELDS[kind]:
-        if name in row:
-            out[name] = rd.num(name)
-    return out or None
 
 
 def _pos_ok(x, y):
@@ -506,7 +510,6 @@ def build_graph(record, config=None):
         float(cd.num("power_rank")),
         float(cd.num("lord_level") / 10.0),
     ]
-    g.finalize()
     g.counts = {"nodes": len(g.x), "edges": len(g.src), "actions": len(g.action_nodes),
                 "regions": len(region_rows), "offers": n_offers}
     return g
