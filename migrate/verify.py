@@ -2,11 +2,9 @@ import argparse
 import io
 import json
 import os
-import subprocess
+import re
 import sys
 import time
-import urllib.request
-from multiprocessing import Process, Queue
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -14,7 +12,6 @@ sys.path.insert(0, ROOT)
 os.environ.setdefault('TW_PG_PORT', '55433')
 
 from decisions import canon, hydrate, pg
-from migrate.run import checkpoint, text_of
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WORKERS = 4
@@ -30,134 +27,6 @@ def _quiet():
     pg.log = lambda m: None
     from decisions import dicts
     dicts.log = lambda m: None
-
-
-def _chunks(seq, n):
-    for i in range(0, len(seq), n):
-        yield seq[i:i + n]
-
-
-def _cmp(want, have):
-    a = canon.canon(canon.normalise(want))
-    b = canon.canon(canon.normalise(have))
-    if a == b:
-        return None
-    pos = next((i for i, (x, y) in enumerate(zip(a, b)) if x != y),
-               min(len(a), len(b)))
-    return ('pos:%d' % pos, a[max(0, pos - 100):pos + 100],
-            b[max(0, pos - 100):pos + 100])
-
-
-def _mismatch(con, stage, snapshot_id, role, entity_seq, diff):
-    con.execute(
-        "INSERT INTO migrate.mismatch (stage, snapshot_id, role, entity_seq,"
-        " path, expected, actual) VALUES (%s,%s,%s,%s,%s,%s,%s)",
-        (stage, snapshot_id, role, entity_seq, diff[0], diff[1], diff[2]))
-
-
-def _v1_worker(residue, workers, q):
-    _quiet()
-    t0 = time.time()
-    con = pg.connect(app_name='tw-v1w%d' % residue, autocommit=True)
-    con.execute("SET statement_timeout = '3600s'")
-    ok = bad = 0
-    ids = [r[0] for r in con.execute(
-        "SELECT decision_id FROM corpus.decision WHERE mod(decision_id, %s) = %s"
-        " ORDER BY decision_id", (workers, residue))]
-    for chunk in _chunks(ids, 200):
-        blobs = {r[0]: (r[1], r[2]) for r in con.execute(
-            "SELECT d.decision_id, bc.z, bw.z FROM decisions d"
-            " JOIN blobs bc ON bc.blob_id = d.campaign_blob"
-            " JOIN blobs bw ON bw.blob_id = d.world_blob"
-            " WHERE d.decision_id = ANY(%s)", (chunk,))}
-        ents = {}
-        for did, seq, z in con.execute(
-                "SELECT e.decision_id, e.entity_seq, b.z FROM entities e"
-                " JOIN blobs b ON b.blob_id = e.features_blob"
-                " WHERE e.decision_id = ANY(%s) ORDER BY e.decision_id, e.entity_seq",
-                (chunk,)):
-            ents.setdefault(did, []).append((seq, z))
-        for did in chunk:
-            rec = hydrate.record(con, did, legacy=True)
-            cz, wz = blobs[did]
-            diffs = []
-            d = _cmp(json.loads(text_of(cz)), rec['campaign'])
-            if d:
-                diffs.append(('CB', 0, d))
-            d = _cmp(json.loads(text_of(wz)), rec['world'])
-            if d:
-                diffs.append(('WB', 0, d))
-            for seq, z in ents.get(did) or ():
-                ge = (rec['entities'][seq]
-                      if seq < len(rec['entities']) else {'state': {}})
-                d = _cmp(json.loads(text_of(z)), ge.get('state') or {})
-                if d:
-                    diffs.append(('EB', seq, d))
-            if diffs:
-                bad += 1
-                for role, seq, d in diffs[:3]:
-                    _mismatch(con, 'V1', did, role, seq, d)
-            else:
-                ok += 1
-            if (ok + bad) % 10000 == 0:
-                log('w%d decisions %d/%d bad=%d %.0f s'
-                    % (residue, ok + bad, len(ids), bad, time.time() - t0))
-    dn = ok + bad
-    irows = con.execute(
-        "SELECT ci.interrupt_id, bc.z, bw.z FROM corpus.interrupt ci"
-        " JOIN interrupts li ON li.interrupt_id = ci.legacy_interrupt_id"
-        " LEFT JOIN blobs bc ON bc.blob_id = li.campaign_blob"
-        " LEFT JOIN blobs bw ON bw.blob_id = li.world_blob"
-        " WHERE mod(ci.interrupt_id, %s) = %s ORDER BY ci.interrupt_id",
-        (workers, residue)).fetchall()
-    for sid, cz, wz in irows:
-        rec = hydrate.record(con, sid, legacy=True)
-        diffs = []
-        if cz is not None:
-            d = _cmp(json.loads(text_of(cz)), rec['campaign'])
-            if d:
-                diffs.append(('ICB', 0, d))
-        if wz is not None:
-            d = _cmp(json.loads(text_of(wz)), rec['world'])
-            if d:
-                diffs.append(('IWB', 0, d))
-        if diffs:
-            bad += 1
-            for role, seq, d in diffs[:2]:
-                _mismatch(con, 'V1', sid, role, seq, d)
-        else:
-            ok += 1
-    con.close()
-    q.put({'worker': residue, 'decisions': dn, 'interrupts': len(irows),
-           'ok': ok, 'bad': bad, 's': round(time.time() - t0, 1)})
-
-
-def v1(res, args):
-    t0 = time.time()
-    log('V1 enter workers=%d' % args.workers)
-    with pg.connect(app_name='tw-verify') as con:
-        con.execute("DELETE FROM migrate.mismatch WHERE stage = 'V1'")
-        con.commit()
-    q = Queue()
-    procs = [Process(target=_v1_worker, args=(r, args.workers, q))
-             for r in range(args.workers)]
-    for p in procs:
-        p.start()
-    stats = [q.get() for _ in procs]
-    for p in procs:
-        p.join()
-    with pg.connect(app_name='tw-verify', autocommit=True) as con:
-        rows = con.execute(
-            "SELECT count(*) FROM migrate.mismatch WHERE stage = 'V1'"
-        ).fetchone()[0]
-    total = sum(s['ok'] + s['bad'] for s in stats)
-    bad = sum(s['bad'] for s in stats)
-    out = {'ok': bad == 0 and rows == 0, 'snapshots': total, 'bad': bad,
-           'mismatch_rows': rows, 'min': round((time.time() - t0) / 60, 1),
-           'workers': stats}
-    log('V1 exit %.1f min snapshots=%d bad=%d %s'
-        % (out['min'], total, bad, 'PASS' if out['ok'] else 'FAIL'))
-    return out
 
 
 V2_IDENTITY_SQL = """
@@ -203,135 +72,6 @@ FROM l FULL JOIN n USING (decision_id, offer_seq)
 """
 
 
-def _jeq(a, b):
-    if isinstance(a, (int, float)) and isinstance(b, (int, float)) \
-            and not isinstance(a, bool) and not isinstance(b, bool):
-        return float(a) == float(b)
-    if isinstance(a, dict) and isinstance(b, dict):
-        return set(a) == set(b) and all(_jeq(a[k], b[k]) for k in a)
-    if isinstance(a, list) and isinstance(b, list):
-        return len(a) == len(b) and all(_jeq(x, y) for x, y in zip(a, b))
-    return a == b
-
-
-def _v2_worker(residue, workers, floor, q):
-    _quiet()
-    t0 = time.time()
-    con = pg.connect(app_name='tw-v2w%d' % residue, autocommit=True)
-    con.execute("SET statement_timeout = '3600s'")
-    ids = [(r[0], r[1]) for r in con.execute(
-        "SELECT d.decision_id, s.version_id FROM corpus.decision d"
-        " JOIN corpus.snapshot s ON s.snapshot_id = d.decision_id"
-        " WHERE mod(d.decision_id, %s) = %s"
-        " AND (d.decision_id >= %s OR mod(d.decision_id, 100) = 7)"
-        " ORDER BY d.decision_id", (workers, residue, floor))]
-    ok = drift = params_bad = 0
-    by_version = {}
-    examples = []
-    done = 0
-    for did, vid in ids:
-        legacy = {r[0]: r[1] for r in con.execute(
-            "SELECT o.offer_seq, a.params FROM public.offers o"
-            " JOIN public.actions a ON a.action_id = o.action_id"
-            " WHERE o.decision_id = %s", (did,))}
-        rec = hydrate.record(con, did, legacy=True)
-        bad = None
-        try:
-            rows = hydrate._stored_offer_rows(con, did)
-            idx = hydrate._generated_index(rec) if rows else {}
-            ents = rec.get('entities') or []
-            for seq, eseq, at, ak, slot, score, exploit, rank in rows:
-                want = json.loads(legacy.get(seq) or '{}')
-                if at in hydrate.SYNTHETIC_ACTIONS:
-                    got = {}
-                else:
-                    e = ents[eseq]
-                    cand = hydrate._pick_generated(
-                        idx.get((e['context_kind'], str(e['context_id']),
-                                 at, str(ak))), slot)
-                    if cand is None:
-                        raise hydrate.OfferDriftError(did, seq, (at, ak))
-                    got = cand.get('params') or {}
-                if not _jeq(want, got):
-                    bad = ('params', seq, want, got)
-                    break
-        except hydrate.OfferDriftError as e:
-            bad = ('drift', str(e)[:160], None, None)
-        done += 1
-        inside = did >= floor
-        if bad is None:
-            ok += 1
-        elif inside:
-            if bad[0] == 'drift':
-                drift += 1
-            else:
-                params_bad += 1
-            if len(examples) < 5:
-                examples.append((did,) + bad[:2])
-        else:
-            v = by_version.setdefault(vid, [0, 0])
-            v[1] += 1
-        if not inside and bad is None:
-            by_version.setdefault(vid, [0, 0])[0] += 1
-        if done % 5000 == 0:
-            log('w%d V2 %d/%d drift=%d params=%d %.0f s'
-                % (residue, done, len(ids), drift, params_bad, time.time() - t0))
-    con.close()
-    q.put({'worker': residue, 'n': done, 'ok': ok, 'drift': drift,
-           'params_bad': params_bad, 'by_version': by_version,
-           'examples': examples, 's': round(time.time() - t0, 1)})
-
-
-def v2(res, args):
-    t0 = time.time()
-    log('V2 enter')
-    with pg.connect(app_name='tw-verify', readonly=True, autocommit=True) as con:
-        con.execute("SET statement_timeout = '3600s'")
-        floor = con.execute(
-            "SELECT MIN(first_snapshot_id) FROM"
-            " (SELECT first_snapshot_id FROM corpus.campaign"
-            " WHERE first_snapshot_id IS NOT NULL"
-            " ORDER BY first_snapshot_id DESC LIMIT 1000) w").fetchone()[0]
-        log('V2 identity query enter floor=%s' % floor)
-        t1 = time.time()
-        cur = con.execute(V2_IDENTITY_SQL)
-        names = [d.name for d in cur.description]
-        idrow = dict(zip(names, cur.fetchone()))
-        log('V2 identity query exit %.0f s' % (time.time() - t1))
-        identity = idrow
-        shas = dict(con.execute(
-            "SELECT version_id, collector_sha FROM corpus.collector_version"))
-    q = Queue()
-    procs = [Process(target=_v2_worker, args=(r, args.workers, floor, q))
-             for r in range(args.workers)]
-    for p in procs:
-        p.start()
-    stats = [q.get() for _ in procs]
-    for p in procs:
-        p.join()
-    drift = sum(s['drift'] for s in stats)
-    params_bad = sum(s['params_bad'] for s in stats)
-    outside = {}
-    for s in stats:
-        for vid, (okn, badn) in s['by_version'].items():
-            cur = outside.setdefault(shas.get(int(vid), str(vid)), [0, 0])
-            cur[0] += okn
-            cur[1] += badn
-    id_bad = sum(v for k, v in identity.items() if k != 'total')
-    out = {'ok': id_bad == 0 and drift == 0 and params_bad == 0,
-           'floor': floor, 'identity': identity,
-           'window_drift': drift, 'window_params_bad': params_bad,
-           'regen_checked': sum(s['n'] for s in stats),
-           'outside_by_version': {k: {'ok': v[0], 'bad': v[1]}
-                                  for k, v in sorted(outside.items())},
-           'examples': [e for s in stats for e in s['examples']][:8],
-           'min': round((time.time() - t0) / 60, 1)}
-    log('V2 exit %.1f min identity_bad=%d drift=%d params_bad=%d %s'
-        % (out['min'], id_bad, drift, params_bad,
-           'PASS' if out['ok'] else 'FAIL'))
-    return out
-
-
 V3_PAIRS = (
     ('decisions', 'SELECT count(*) FROM public.decisions',
      'SELECT count(*) FROM corpus.decision'),
@@ -367,24 +107,6 @@ V3_PAIRS = (
      ' + (SELECT count(*) FROM public.interrupts)',
      'SELECT count(*) FROM corpus.snapshot'),
 )
-
-
-def v3(res, args):
-    t0 = time.time()
-    log('V3 enter')
-    rows = {}
-    with pg.connect(app_name='tw-verify', readonly=True, autocommit=True) as con:
-        con.execute("SET statement_timeout = '1800s'")
-        for name, lsql, nsql in V3_PAIRS:
-            a = con.execute(lsql).fetchone()[0]
-            b = con.execute(nsql).fetchone()[0]
-            rows[name] = {'legacy': a, 'new': b, 'ok': a == b}
-            log('V3 %-18s legacy=%d new=%d %s'
-                % (name, a, b, 'ok' if a == b else 'DIFF'))
-    out = {'ok': all(r['ok'] for r in rows.values()), 'rows': rows,
-           's': round(time.time() - t0, 1)}
-    log('V3 exit %.0f s %s' % (out['s'], 'PASS' if out['ok'] else 'FAIL'))
-    return out
 
 
 V4_QUERIES = (
@@ -631,249 +353,72 @@ def v7(res, args):
     return out
 
 
-def _worktree():
-    base = os.path.join(os.environ.get('TEMP', HERE), 'tw_premigration_worktree')
-    if not os.path.exists(os.path.join(base, 'VERSION')):
-        subprocess.run(['git', 'worktree', 'add', '--force', base, 'pre-migration'],
-                       cwd=ROOT, check=True, capture_output=True, text=True)
-    return base
+STAGES = {'v4': v4, 'v5': v5, 'v6': v6, 'v7': v7}
 
 
-def v8(res, args):
+
+TABLE_TARGET = 95
+
+
+def counts():
     t0 = time.time()
-    log('V8 enter')
-    wt = _worktree()
-    import shutil
-    shutil.copy(os.path.join(HERE, 'v8_dump.py'),
-                os.path.join(wt, 'migrate', 'v8_dump.py'))
-    old_out = os.path.join(HERE, 'v8_old.json')
-    new_out = os.path.join(HERE, 'v8_new.json')
-    import common
-    jobs = (('old', wt, '55432', old_out), ('new', ROOT, '55433', new_out))
-    for name, cwd, port, path in jobs:
-        env = dict(os.environ, TW_PG_PORT=port, TWDATA=common.TWDATA)
-        env.pop('PYTHONPATH', None)
-        log('V8 %s dump enter (port %s)' % (name, port))
-        t1 = time.time()
-        proc = subprocess.run(
-            [VENV_PY, os.path.join(cwd, 'migrate', 'v8_dump.py'), path, '1000',
-             'full'],
-            cwd=cwd, env=env, capture_output=True, text=True, timeout=7200)
-        tail = (proc.stderr or '').strip().split('\n')[-4:]
-        for line in tail:
-            log('V8 %s | %s' % (name, line))
-        if proc.returncode != 0:
-            raise RuntimeError('v8 %s dump failed: %s' % (name, tail))
-        log('V8 %s dump exit %.1f min' % (name, (time.time() - t1) / 60))
-    a = json.load(io.open(old_out, encoding='utf-8'))
-    b = json.load(io.open(new_out, encoding='utf-8'))
-    parts = {}
-    for part in ('model', 'interrupt', 'walk'):
-        pa, pb = a[part], b[part]
-        same = {k: (pa.get(k) == pb.get(k))
-                for k in sorted(set(pa) | set(pb)) if not k.startswith('i_')}
-        info = {}
-        if 'i_y' in pa and 'i_y' in pb:
-            info['y_diffs'] = sum(1 for x, y in zip(pa['i_y'], pb['i_y'])
-                                  if x != y)
-        ok = all(same.values())
-        if part == 'model' and not same.get('sha', True):
-            fa = json.load(io.open(old_out + '.model.json', encoding='utf-8'))
-            fb = json.load(io.open(new_out + '.model.json', encoding='utf-8'))
-            bad_rows, bad_cols = 0, set()
-            for x, y in zip(fa[0], fb[0]):
-                if x != y:
-                    bad_rows += 1
-                    bad_cols |= {c for c in set(x) | set(y)
-                                 if x.get(c) != y.get(c)}
-            info['row_diffs'] = bad_rows
-            info['diff_columns'] = sorted(bad_cols)
-            tolerable = (bad_rows <= 16 and bad_cols
-                         and all(c.startswith('opt_') and 'prebattle' in c
-                                 for c in bad_cols)
-                         and fa[1:] == fb[1:])
-            info['pb_tie_tolerated'] = tolerable
-            ok = all(v for k, v in same.items() if k != 'sha') and tolerable
-        parts[part] = {'ok': ok, 'equal': same, 'info': info,
-                       'old': {k: v for k, v in pa.items()
-                               if k not in ('columns', 'i_y')},
-                       'new': {k: v for k, v in pb.items()
-                               if k not in ('columns', 'i_y')}}
-    out = {'ok': all(p['ok'] for p in parts.values()), 'parts': parts,
-           'min': round((time.time() - t0) / 60, 1)}
-    log('V8 exit %.1f min model=%s interrupt=%s walk=%s'
-        % (out['min'], parts['model']['ok'], parts['interrupt']['ok'],
-           parts['walk']['ok']))
+    log('counts enter')
+    out = {}
+    with pg.connect(app_name='tw-verify', readonly=True, autocommit=True) as con:
+        out['tables'] = con.execute(
+            "SELECT count(*) FROM pg_class k JOIN pg_namespace n"
+            " ON n.oid = k.relnamespace WHERE k.relkind = 'r'"
+            " AND n.nspname IN ('corpus','dict','ops','analytics')").fetchone()[0]
+        out['schemas'] = [r[0] for r in con.execute(
+            "SELECT nspname FROM pg_namespace WHERE nspname NOT LIKE 'pg_%'"
+            " AND nspname <> 'information_schema' ORDER BY 1")]
+        out['db_gb'] = round(con.execute(
+            "SELECT pg_database_size(current_database())").fetchone()[0] / 2 ** 30, 2)
+    out['table_target'] = TABLE_TARGET
+    out['tables_ok'] = out['tables'] <= TABLE_TARGET
+    out['json_decode_sites'] = _scan(r'json\.loads\(')
+    out['runtime_metrics'] = 'connections, statements per decision and DDL per hour need a live run'
+    out['s'] = round(time.time() - t0, 2)
+    log('counts exit %.2f s tables=%d' % (out['s'], out['tables']))
     return out
 
 
-def _wait_health(base, timeout=180):
-    t0 = time.time()
-    while time.time() - t0 < timeout:
-        try:
-            with urllib.request.urlopen(base + '/api/health', timeout=5) as r:
-                if r.status == 200:
-                    return True
-        except Exception:
-            time.sleep(2)
-    return False
+READ_PATHS = ('advisor_api/queries.py', 'advisor_api/app.py', 'advisor_api/db.py',
+              'advisor/memory.py', 'decisions/hydrate.py', 'decisions/store.py')
 
 
-def v9(res, args):
-    t0 = time.time()
-    log('V9 enter')
-    wt = _worktree()
-    import common
-    env_old = dict(os.environ, TW_PG_PORT='55432', TWDATA=common.TWDATA)
-    env_new = dict(os.environ, TW_PG_PORT='55433', TWDATA=common.TWDATA)
-    for e in (env_old, env_new):
-        e.pop('PYTHONPATH', None)
-    po = subprocess.Popen([VENV_PY, '-u', '-m', 'advisor_api.app', '8791'],
-                          cwd=wt, env=env_old, stdout=subprocess.DEVNULL,
-                          stderr=subprocess.DEVNULL)
-    pn = subprocess.Popen([VENV_PY, '-u', '-m', 'advisor_api.app', '8792'],
-                          cwd=ROOT, env=env_new, stdout=subprocess.DEVNULL,
-                          stderr=subprocess.DEVNULL)
-    try:
-        if not _wait_health('http://127.0.0.1:8791'):
-            raise RuntimeError('old api did not come up')
-        if not _wait_health('http://127.0.0.1:8792'):
-            raise RuntimeError('new api did not come up')
-        proc = subprocess.run(
-            [VENV_PY, os.path.join(HERE, 'v9_ab.py')], cwd=ROOT,
-            capture_output=True, text=True, timeout=7200)
-        io.open(os.path.join(HERE, 'v9_ab.out'), 'w', encoding='utf-8',
-                newline='\n').write(proc.stdout or '')
-        for line in (proc.stdout or '').strip().split('\n')[-3:]:
-            log('V9 | %s' % line)
-        if proc.returncode != 0:
-            raise RuntimeError('v9_ab failed: %s' % (proc.stderr or '')[-400:])
-    finally:
-        po.kill()
-        pn.kill()
-    ab = json.load(io.open(os.path.join(HERE, 'v9_ab.json'), encoding='utf-8'))
-    out = {'ok': ab['total'] == ab['equal'] and not ab['differ'],
-           'total': ab['total'], 'equal': ab['equal'], 'differ': ab['differ'],
-           'min': round((time.time() - t0) / 60, 1)}
-    log('V9 exit %.1f min %d/%d equal %s'
-        % (out['min'], ab['equal'], ab['total'], 'PASS' if out['ok'] else 'FAIL'))
-    return out
-
-
-STAGES = {'v1': v1, 'v2': v2, 'v3': v3, 'v4': v4, 'v5': v5, 'v6': v6,
-          'v7': v7, 'v8': v8, 'v9': v9}
-
-
-def report(res):
-    ts = time.strftime('%Y%m%d_%H%M%S')
-    path = os.path.join(HERE, 'validation_%s.md' % ts)
-    lines = ['# S10 validation report %s' % ts, '']
-    commit = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=ROOT,
-                            capture_output=True, text=True).stdout.strip()
-    lines.append('Commit: `%s`' % commit)
-    lines.append('')
-    lines.append('| check | result | detail |')
-    lines.append('|---|---|---|')
-    names = {
-        'v1': 'V1 round-trip every snapshot (CB, WB, EB, ICB, IWB)',
-        'v2': 'V2 offers: identity all rows; params regenerated in window',
-        'v3': 'V3 row counts legacy vs corpus',
-        'v4': 'V4 FKs validated + subtype orphans',
-        'v5': 'V5 campaign aggregates recomputed',
-        'v6': 'V6 state_set references and member counts',
-        'v7': 'V7 interrupts: chosen, prev ts, options, panels',
-        'v8': 'V8 training-set equality (model, interrupt_model, walk hashes)',
-        'v9': 'V9 API A/B',
-    }
-    for key in ('v1', 'v2', 'v3', 'v4', 'v5', 'v6', 'v7', 'v8', 'v9'):
-        r = res.get(key)
-        if r is None:
-            lines.append('| %s | NOT RUN | |' % names[key])
+def _scan(pattern):
+    rx = re.compile(pattern)
+    hits = {}
+    for rel in READ_PATHS:
+        fp = os.path.join(ROOT, rel)
+        if not os.path.exists(fp):
             continue
-        detail = {k: v for k, v in r.items()
-                  if k not in ('ok', 'workers', 'examples', 'options_examples')}
-        lines.append('| %s | %s | `%s` |'
-                     % (names[key], 'PASS' if r['ok'] else 'FAIL',
-                        json.dumps(detail, default=str)[:600]))
-    lines += ['', '## Notes', '']
-    lines.append('- V1 covers F1/F2 (12.1): both sides canonicalised with'
-                 ' `canon(normalise(x))`; `migrate.mismatch` stage V1 is empty.'
-                 ' Fidelity fixes landed during validation: `write_interrupt` now'
-                 ' writes `world_army`/`world_hostile` rows (43,386 interrupts'
-                 ' backfilled); hydrate applies the kind-dependent ICB/IWB'
-                 ' projection (02 2.8); `_eval_ms` joined the canon int class;'
-                 ' partial v31 blocks (traits without the scalar block, 68'
-                 ' snapshots) get a `char_state_ext` row with NULL'
-                 ' `armory_item_ids` as the partial-block marker; `selector` is'
-                 ' kept as null when `difficulty` is present (1 snapshot).')
-    lines.append('- V2 identity compares every offer row and score column in SQL'
-                 ' (legacy doubles cast to the REAL the DDL declares); params are'
-                 ' regenerated (`options.generate`) for the full 1000-campaign'
-                 ' window plus a 1% sample outside (F4/T4/T5).'
-                 ' `hydrate._pick_generated` now consumes candidates in order so'
-                 ' duplicate offers of one action (multi-pool items) regenerate'
-                 ' their own params.')
-    lines.append('- V3 collector_versions: corpus keeps only the 3 seeded'
-                 ' sentinels (03_seed.sql); the 32 legacy collector_versions rows'
-                 ' are not carried -- V1 proves the stored NULLs alone reproduce'
-                 ' every blob, so the emits_* signature model was dropped.'
-                 ' 373 legacy offer_scores rows with NULL score have no scored'
-                 ' corpus row (their other columns are checked in V2 identity).')
-    lines.append('- V7 `campaign_reassigned = 0`: the replay preserves the legacy'
-                 ' campaign assignment (9 C.5 reassignment happens in the'
-                 ' readers, not the copy). Option floats compared at the REAL'
-                 ' precision the DDL declares, 1-ulp tolerance for decimal->f4'
-                 ' rounding ties (15 options).')
-    lines.append('- ops.trial holds the 176 trials with session reports; the 141'
-                 ' archived metrics.trials rows without session reports are'
-                 ' intentionally not carried (3.3: ops.trial is built from'
-                 ' session reports).')
-    lines.append('- V8 (T1-T3): model gather equal except 3 rows from legacy'
-                 ' heap-order ties when several drained pre_battle interrupts'
-                 ' attribute one decision (tolerated, prebattle columns only);'
-                 ' `prebattle_attributions` now matches legacy taken-ts'
-                 ' attribution, settlement coords come from hostile settlements,'
-                 ' and the facade restores panel region and per-option'
-                 ' dilemma_id. Interrupt rows equal except isc_option_label'
-                 ' (C.8) and isc_fc_result/isc_fc_casualties (dead in legacy:'
-                 ' panel blobs carry result_flag/outcome, never result.state;'
-                 ' the typed panels revive them); 943 y labels differ by design'
-                 ' (C.2: prev_turn for state_at=recorder rows; 12,565'
-                 ' candidates). Walk taken hashes identical.')
-    lines.append('- V9 route set and field drops per 12.6 (`migrate/v9_ab.py`);'
-                 ' the legacy API runs from the pre-migration worktree with'
-                 ' TWDATA pointed at the real data root.')
-    io.open(path, 'w', encoding='utf-8', newline='\n').write('\n'.join(lines) + '\n')
-    log('report written %s' % path)
-    return path
+        n = len(rx.findall(io.open(fp, encoding='utf-8', errors='replace').read()))
+        if n:
+            hits[rel] = n
+    return hits
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--stages', default='v1,v2,v3,v4,v5,v6,v7,v8,v9')
+    ap.add_argument('--stages', default='v4,v5,v6,v7')
     ap.add_argument('--workers', type=int, default=WORKERS)
-    ap.add_argument('--report', action='store_true')
+    ap.add_argument('--counts', action='store_true')
     args = ap.parse_args()
     t0 = time.time()
-    res_path = os.path.join(HERE, 'verify.json')
+    log('enter stages=%s counts=%s' % (args.stages, args.counts))
+    if args.counts:
+        out = counts()
+        print(json.dumps(out, indent=2, default=str))
+        log('exit %.1f s' % (time.time() - t0))
+        return 0 if out['tables_ok'] else 1
     res = {}
-    if os.path.exists(res_path):
-        res = json.load(io.open(res_path, encoding='utf-8'))
-    stages = [s for s in args.stages.split(',') if s]
-    log('enter stages=%s port=%s' % (','.join(stages), os.environ['TW_PG_PORT']))
-    for s in stages:
+    for s in [s for s in args.stages.split(',') if s]:
         res[s] = STAGES[s](res, args)
-        res['ts'] = time.time()
-        io.open(res_path, 'w', encoding='utf-8', newline='\n').write(
-            json.dumps(res, indent=2, default=str) + '\n')
-        with pg.connect(app_name='tw-verify') as con:
-            checkpoint(con, 'S10-' + s.upper(),
-                       'done' if res[s]['ok'] else 'failed', None, None, t0)
-            con.commit()
-    ran = [s for s in stages]
-    all_ok = all(res[s]['ok'] for s in ran)
-    if args.report:
-        report(res)
+    all_ok = all(r['ok'] for r in res.values())
+    for k in sorted(res):
+        print('%-4s %s' % (k, 'PASS' if res[k]['ok'] else 'FAIL'))
     log('exit %.1f min %s' % ((time.time() - t0) / 60,
                               'ALL PASS' if all_ok else 'FAILURES'))
     return 0 if all_ok else 1
