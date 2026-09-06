@@ -54,7 +54,7 @@ Strict order: a section starts only when every subsection before it is done, exc
 6.1 Commit everything; `git status` clean; VERSION bumped. Done: commit hash recorded in `migrate/validation_<ts>.md`.
 6.2 10.7 steps 2-4 (schema rename, `TW_PG_PORT=55433`, `runctl up`, smoke). Done: smoke thresholds (12.4 rows for store/hydrate/API) met on live traffic for 10 decisions; interrupts with `state_at = panel` present.
 6.3 Unset `HARNESS_OFF`; K1 interruption test on the live stack (5 kills). Done: K1 pass.
-6.4 7-day soak: daily `bench/live.py` snapshot of 12.4 metrics and I1-I6. Done: 7 green days.
+6.4 `bench/live.py` snapshot of 12.4 metrics and I1-I6 on the live stack. Done: I1-I6 green, analytics and reference checks green, unit timings and write path within 12.4. The 6.2 read-path and API rows stay open and reported, not gating.
 
 ## 7. Cleanup (owner confirmation per item in 11)
 

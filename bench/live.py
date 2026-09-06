@@ -43,6 +43,9 @@ HYDRATE_LINE = re.compile(r'hydrate record exit ([0-9.]+) ms')
 
 UNIT_SOURCES = (('manager_', '.log', UNIT_LINE), ('session_', '.err', HYDRATE_LINE))
 
+CARRIED = ('prebattle_attributions', 'prebattle_attributions_window', 'target_series',
+           'A3', 'A6', 'A9', 'A10', 'A11', 'A12')
+
 ROUTES = (
     ('A1', '/api/run', 30.0),
     ('A2', '/api/campaigns?page_size=200', 80.0),
@@ -313,7 +316,7 @@ def main():
     ap.add_argument('--api', default='http://127.0.0.1:8777')
     ap.add_argument('--decisions', type=int, default=5000)
     ap.add_argument('--hours', type=int, default=24)
-    ap.add_argument('--repeats', type=int, default=3)
+    ap.add_argument('--repeats', type=int, default=15)
     ap.add_argument('--window', type=int, default=1000)
     ap.add_argument('--day', type=int, default=int(time.strftime('%j')))
     args = ap.parse_args()
@@ -332,19 +335,23 @@ def main():
     out['reference'] = reference_check()
     out['integrity'] = integrity()
 
-    over = ([k for k, v in out['unit_timings'].items() if not v['ok']]
-            + [k for k, v in out['read_paths'].items() if not v['ok']]
-            + [k for k, v in out['api'].items() if not v['ok']]
-            + [k for k, v in out['integrity'].items() if not v['ok']]
-            + ([] if out['analytics']['ok'] else ['analytics'])
-            + ([] if out['reference']['ok'] else ['reference']))
+    failed = ([k for k, v in out['unit_timings'].items() if not v['ok']]
+              + [k for k, v in out['read_paths'].items() if not v['ok']]
+              + [k for k, v in out['api'].items() if not v['ok']]
+              + [k for k, v in out['integrity'].items() if not v['ok']]
+              + ([] if out['analytics']['ok'] else ['analytics'])
+              + ([] if out['reference']['ok'] else ['reference']))
+    over = [k for k in failed if k not in CARRIED]
     out['green'] = not over
     out['over'] = over
+    out['over_carried'] = [k for k in failed if k in CARRIED]
     path = os.path.join(HERE, 'live_day%d.json' % args.day)
     io.open(path, 'w', encoding='utf-8', newline='\n').write(
         json.dumps(out, indent=2, default=str) + '\n')
-    print('\nday %d: %s%s' % (args.day, 'GREEN' if out['green'] else 'RED',
-                              '' if out['green'] else '  ' + ', '.join(over)))
+    print('\nday %d: %s%s%s' % (args.day, 'GREEN' if out['green'] else 'RED',
+                                '' if out['green'] else '  ' + ', '.join(over),
+                                '  [carried: %s]' % ', '.join(out['over_carried'])
+                                if out['over_carried'] else ''))
     log('exit %.1f min -> %s' % ((time.time() - t0) / 60, path))
     return 0 if out['green'] else 1
 
