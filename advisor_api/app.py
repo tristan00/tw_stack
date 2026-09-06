@@ -19,15 +19,14 @@ import arms
 import common
 from advisor_api import db, ident, proc, queries as q
 from advisor_api.models import (
-    ActionsPage, AgreementBreakdownPage, AgreementPage, AgreementSeriesPage, AnalyticsPage,
-    CampaignDecisions, CampaignDetail, CampaignsPage, ControlResult, Count,
+    ActionsPage, AgreementPage, AgreementSeriesPage,
+    CampaignDetail, CampaignsPage, ControlResult, Count,
     DecisionDetail, DecisionsPage, DiplomacyPage, ForcingPage, InfraPage, LaunchDefaults,
     LogPage,
-    MatrixCell,
     Ident,
-    MatrixPage, MatrixRow, MatrixTotal, MenusPage, ModelsPage, CampaignStatePage, Rate,
+    MenusPage, ModelsPage, CampaignStatePage, Rate,
     RunPage, Scope,
-    StartsPage, StartActions, StartCampaignsPage, StartDetail, StartOpenings,
+    StartsPage, StartCampaignsPage, StartDetail, StartOpenings,
     StartPerformance, TimelinePage, TrainingPage, CorrelationsPage, UcbPickPage,
     UcbPicksPage,
     CampaignItemsPage, CampaignResearchPage, CampaignSkillsPage, ItemPage, ItemsPage,
@@ -208,17 +207,6 @@ def get_start_campaigns(campaign_map: str, faction: str) -> StartCampaignsPage:
     return StartCampaignsPage(
         scope=_scope("every campaign of this start, newest first"),
         rows=q.start_campaigns_slice(con, campaign_map, faction))
-
-
-@app.get("/api/campaigns/starts/{campaign_map}/{faction}/actions",
-         response_model=StartActions, tags=["campaigns"])
-def get_start_actions(campaign_map: str, faction: str) -> StartActions:
-    con = _con()
-    return StartActions(
-        scope=_scope("every action attempt by this faction, worst confirmed first",
-                     "a family whose attempts cannot count is excluded from confirm "
-                     "aggregates and marked"),
-        cells=q.start_actions(con, campaign_map, faction))
 
 
 @app.get("/api/campaigns/starts/{campaign_map}/{faction}/research",
@@ -502,40 +490,6 @@ def get_pick(pick_id: int) -> UcbPickPage:
         pick=pick, under_min=under, rows=rows)
 
 
-@app.get("/api/campaigns/matrix", response_model=MatrixPage, tags=["campaigns"])
-def get_matrix(kind: str = Query("action", pattern="^(action|interrupt)$")) -> MatrixPage:
-    con = _con()
-    grid, totals_ = q.matrix(con, kind)
-    noun = "screens" if kind == "interrupt" else "actions"
-    tot_rows = []
-    for atype, (tried, ok, ms) in totals_.items():
-        rate = Rate(n=ok, of=tried, noun=noun,
-                    population="attempted of this type across every faction")
-        tot_rows.append(MatrixTotal(
-            action_type=q._phrase(atype), rate=rate,
-            total_ms=round(ms, 0) or None,
-            per_try_ms=round(ms / tried, 0) if tried else None))
-    tot_rows.sort(key=lambda t: (t.rate.pct if t.rate.pct is not None else 999, -t.rate.of))
-    columns = [q._phrase(a) for a, _ in sorted(totals_.items())]
-    rows = []
-    for faction, cells in sorted(grid.items()):
-        out_cells = []
-        for atype, _ in sorted(totals_.items()):
-            got = cells.get(atype)
-            if not got:
-                continue
-            tried, ok, ms = got
-            rate = Rate(n=ok, of=tried, noun=noun,
-                        population="attempted of this type by this faction")
-            out_cells.append(MatrixCell(
-                action_type=q._phrase(atype), rate=rate, total_ms=round(ms, 0) or None,
-                per_try_ms=round(ms / tried, 0) if tried else None))
-        rows.append(MatrixRow(faction=q._fac(faction), cells=out_cells))
-    return MatrixPage(
-        scope=_scope("every %s attempt in this run dir, by faction and type" % noun),
-        kind=kind, totals=tot_rows, columns=columns, rows=rows)
-
-
 @app.get("/api/campaigns", response_model=CampaignsPage,
          response_model_exclude_none=True, tags=["campaigns"])
 def get_campaigns(sort: str | None = None, desc: bool = True,
@@ -586,16 +540,6 @@ def get_campaign(campaign_key: str) -> CampaignDetail:
         diplomacy=q.diplomacy_tail(con, campaign_key),
         verdict=q.campaign_verdict(row.ended_because),
         turns=q.campaign_turn_rollup(con, campaign_key))
-
-
-@app.get("/api/campaigns/{campaign_key}/decisions", response_model=CampaignDecisions,
-         tags=["campaigns"])
-def get_campaign_decisions(campaign_key: str) -> CampaignDecisions:
-    con = _con()
-    rows, _total = q.decisions_page(con, 0, 500, campaign=campaign_key)
-    return CampaignDecisions(
-        scope=_scope("every action taken inside this campaign, newest first"),
-        rows=rows)
 
 
 @app.get("/api/campaigns/{campaign_key}/buildings",
@@ -759,23 +703,6 @@ def get_agreement_series(axis: str = "window", pair: str | None = None) -> Agree
     return q.agreement_series(axis, pair)
 
 
-@app.get("/api/models/agreement/breakdown", response_model=AgreementBreakdownPage,
-         tags=["models"])
-def get_agreement_breakdown(dim: str = "action_type",
-                            pair: str | None = None) -> AgreementBreakdownPage:
-    return q.agreement_breakdown(dim, pair)
-
-
-@app.get("/api/analytics", response_model=AnalyticsPage, tags=["infra"])
-def get_analytics() -> AnalyticsPage:
-    return q.analytics_status()
-
-
-@app.post("/api/analytics/rebuild", response_model=ControlResult, tags=["infra"])
-def post_analytics_rebuild() -> ControlResult:
-    return ControlResult(ok=True, steps=proc.rebuild_analytics())
-
-
 @app.get("/api/models/correlations", response_model=CorrelationsPage, tags=["models"])
 def get_correlations(version: str | None = None) -> CorrelationsPage:
     con = _con()
@@ -890,7 +817,7 @@ async def events():
                 cur = last
             if cur != last:
                 last = cur
-                yield "event: corpus\ndata: %s\n\n" % json.dumps({"stamp": list(cur or ())})
+                yield "event: corpus\ndata: %s\n\n" % json.dumps({"stamp": [cur or 0]})
             beat += 1
             if beat % 10 == 0:
                 yield ": keepalive\n\n"
@@ -904,7 +831,7 @@ async def events():
 @app.get("/api/health", tags=["run"])
 def health():
     return {"ok": True, "mode": MODE, "run_dir": common.RUN_DIR,
-            "stamp": list(db.stamp())}
+            "stamp": [db.stamp()]}
 
 
 @app.get("/{full_path:path}", include_in_schema=False)

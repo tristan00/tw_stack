@@ -40,11 +40,6 @@ class Scope(BaseModel):
     detail: str | None = None
 
 
-class SeriesPoint(BaseModel):
-    x: float
-    y: float | None = None
-
-
 class Service(BaseModel):
     name: str
     up: bool
@@ -333,36 +328,6 @@ class StartsPage(BaseModel):
     rows: list[StartRow]
 
 
-class MatrixCell(BaseModel):
-    action_type: Ident
-    rate: Rate
-    total_ms: float | None = None
-    per_try_ms: float | None = None
-    state: State = "neutral"
-    counted: Rate | None = None
-
-
-class MatrixTotal(BaseModel):
-    action_type: Ident
-    rate: Rate
-    total_ms: float | None = None
-    per_try_ms: float | None = None
-    state: State = "neutral"
-
-
-class MatrixRow(BaseModel):
-    faction: Ident
-    cells: list[MatrixCell]
-
-
-class MatrixPage(BaseModel):
-    scope: Scope
-    kind: Literal["action", "interrupt"]
-    totals: list[MatrixTotal]
-    columns: list[Ident]
-    rows: list[MatrixRow]
-
-
 class StartCampaign(BaseModel):
     campaign: Ident
     ts: float | None = None
@@ -490,11 +455,6 @@ class StartOpenings(BaseModel):
     ribbon: list[RibbonBucket] = Field(default_factory=list)
     conquest: list[ConquestStep] = Field(default_factory=list)
     no_settlement: int = 0
-
-
-class StartActions(BaseModel):
-    scope: Scope
-    cells: list[MatrixCell] = Field(default_factory=list)
 
 
 class TechRow(BaseModel):
@@ -1018,11 +978,7 @@ class DiploEvent(BaseModel):
     turn: int | None = None
     channel: Ident | None = None
     faction: Ident | None = None
-    outcome: Ident | None = None
-    deal_score: float | None = None
-    standing: float | None = None
     terms: str | None = None
-    state: State = "neutral"
 
 
 class Verdict(BaseModel):
@@ -1051,11 +1007,6 @@ class CampaignDetail(BaseModel):
     diplomacy: list[DiploEvent]
     verdict: Verdict | None = None
     turns: list[TurnRollup] = Field(default_factory=list)
-
-
-class CampaignDecisions(BaseModel):
-    scope: Scope
-    rows: list["DecisionRow"] = Field(default_factory=list)
 
 
 class DecisionRow(BaseModel):
@@ -1164,6 +1115,7 @@ class InterruptOption(BaseModel):
 
 class InterruptRow(BaseModel):
     interrupt_id: int
+    legacy_interrupt_id: int | None = None
     ts: float | None = None
     kind: Ident
     root: str | None = None
@@ -1311,7 +1263,6 @@ class AgreementRankRow(BaseModel):
 class AnalyticsFreshness(BaseModel):
     tenant: str
     behind: Count
-    rows: Count
     computed_through: int | None = None
     age_seconds: float | None = None
     formula_version: int = 0
@@ -1412,48 +1363,6 @@ class AgreementSeriesPage(BaseModel):
     points: list[AgreementSeriesPoint] = Field(default_factory=list)
     generations: list[GenerationRow] = Field(default_factory=list)
     empty_reason: str | None = None
-
-
-class AgreementBreakdownRow(BaseModel):
-    key: Ident
-    decisions: Count
-    rho_median: float | None = None
-    rho_mean: float | None = None
-    tau_mean: float | None = None
-    rbo_mean: float | None = None
-    same_top: Rate
-
-
-class AgreementBreakdownPage(BaseModel):
-    scope: Scope
-    freshness: AnalyticsFreshness
-    pair: str
-    a: str
-    b: str
-    pairs: list[PairOption] = Field(default_factory=list)
-    dim: Literal["arm", "action_type", "context_kind"]
-    rows: list[AgreementBreakdownRow] = Field(default_factory=list)
-    empty_reason: str | None = None
-
-
-class TenantStatus(BaseModel):
-    tenant: str
-    formula_version: int = 0
-    rows: Count
-    behind: Count
-    watermark: int | None = None
-    built: str | None = None
-    last_run: str | None = None
-    last_run_seconds: float | None = None
-    last_error: str | None = None
-    state: State = "neutral"
-
-
-class AnalyticsPage(BaseModel):
-    scope: Scope
-    tenants: list[TenantStatus] = Field(default_factory=list)
-    db_path: str
-    runner_hint: str
 
 
 class AgreementMatrixCell(BaseModel):
