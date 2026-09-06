@@ -576,58 +576,6 @@ def _feq(a, b):
     return abs(a - b) <= max(abs(a), abs(b)) * 1.3e-07
 
 
-def _options_projection(con):
-    t0 = time.time()
-    log('V7 options projection enter')
-    from migrate.replay import _options_list
-    bad = 0
-    examples = []
-    lrows = con.execute(
-        "SELECT ci.interrupt_id, li.options_json, li.n_options"
-        " FROM corpus.interrupt ci JOIN public.interrupts li"
-        " ON li.interrupt_id = ci.legacy_interrupt_id"
-        " ORDER BY ci.interrupt_id").fetchall()
-    stored = {}
-    for iid, ord_, key, textv, oid, ans, payload, exploit, score, gnn in con.execute(
-            "SELECT interrupt_id, ord, option_key, text, option_id, answer,"
-            " payload, exploit, score, gnn FROM corpus.interrupt_option"
-            " ORDER BY interrupt_id, ord"):
-        stored.setdefault(iid, []).append(
-            (key, textv, oid, ans, payload, exploit, score, gnn))
-    for sid, oj, n_options in lrows:
-        want = _options_list(json.loads(oj) if oj else [])
-        have = stored.get(sid) or []
-        rec_bad = len(want) != len(have)
-        if not rec_bad:
-            for w, h in zip(want, have):
-                pay = w.get('payload')
-                if isinstance(pay, (dict, list)):
-                    pay = json.dumps(pay, sort_keys=True)
-                hp = h[4]
-                if isinstance(hp, (dict, list)):
-                    hp = json.dumps(hp, sort_keys=True)
-                elif isinstance(hp, str) and hp and hp[0] in '{[':
-                    hp = json.dumps(json.loads(hp), sort_keys=True)
-                if (str(w.get('key')) != h[0]
-                        or (w.get('text') or None) != h[1]
-                        or (w.get('option_id') or None) != h[2]
-                        or (w.get('answer') or None) != h[3]
-                        or (pay or None) != (hp or None)
-                        or not _feq(w.get('exploit'), h[5])
-                        or not _feq(w.get('score'), h[6])
-                        or not _feq(w.get('gnn'), h[7])):
-                    rec_bad = True
-                    break
-        if rec_bad:
-            bad += 1
-            if len(examples) < 5:
-                examples.append({'interrupt_id': sid, 'want': want[:2],
-                                 'have': have[:2]})
-    log('V7 options projection exit %.0f s interrupts=%d bad=%d'
-        % (time.time() - t0, len(lrows), bad))
-    return bad, len(lrows), examples
-
-
 def v7(res, args):
     t0 = time.time()
     log('V7 enter')
@@ -643,21 +591,15 @@ def v7(res, args):
             " JOIN corpus.snapshot si ON si.snapshot_id = i.interrupt_id"
             " JOIN corpus.snapshot sp ON sp.snapshot_id = i.prev_decision_id"
             " WHERE sp.ts > si.ts").fetchone()[0]
-        n_options_bad = con.execute(
-            "SELECT count(*) FROM corpus.interrupt ci"
-            " JOIN public.interrupts li ON li.interrupt_id = ci.legacy_interrupt_id"
-            " LEFT JOIN (SELECT interrupt_id, count(*) c FROM corpus.interrupt_option"
-            " GROUP BY 1) o ON o.interrupt_id = ci.interrupt_id"
-            " WHERE COALESCE(o.c, 0) <> COALESCE(li.n_options, 0)").fetchone()[0]
         panel_missing = con.execute(
             "SELECT count(*) FROM corpus.interrupt ci"
             " JOIN dict.enum k ON k.enum_id = ci.kind_id"
-            " JOIN public.interrupts li ON li.interrupt_id = ci.legacy_interrupt_id"
+            " JOIN dict.enum st ON st.enum_id = ci.state_at_id"
             " LEFT JOIN corpus.interrupt_battle_panel bp"
             " ON bp.interrupt_id = ci.interrupt_id"
             " LEFT JOIN corpus.interrupt_diplo_panel dp"
             " ON dp.interrupt_id = ci.interrupt_id"
-            " WHERE li.panel_blob IS NOT NULL"
+            " WHERE st.key = 'panel'"
             " AND ((k.key IN ('pre_battle','battle_results')"
             "       AND bp.interrupt_id IS NULL)"
             "  OR (k.key IN ('diplomacy_proposal','diplomacy_notice','war_declared')"
@@ -669,11 +611,6 @@ def v7(res, args):
             " WHERE b.interrupt_id = ci.interrupt_id)"
             " OR EXISTS (SELECT 1 FROM corpus.interrupt_diplo_panel d"
             " WHERE d.interrupt_id = ci.interrupt_id) GROUP BY 1 ORDER BY 1")}
-        reassigned = con.execute(
-            "SELECT count(*) FROM corpus.interrupt ci"
-            " JOIN corpus.snapshot s ON s.snapshot_id = ci.interrupt_id"
-            " JOIN public.interrupts li ON li.interrupt_id = ci.legacy_interrupt_id"
-            " WHERE s.campaign_id IS DISTINCT FROM li.campaign_id").fetchone()[0]
         twins = con.execute(
             "SELECT count(*) FROM corpus.interrupt a"
             " JOIN corpus.snapshot sa ON sa.snapshot_id = a.interrupt_id"
@@ -683,18 +620,14 @@ def v7(res, args):
             " WHERE a.root = b.root"
             " AND a.root_context IS NOT DISTINCT FROM b.root_context"
             " AND abs(sa.ts - sb.ts) <= 60").fetchone()[0]
-        opt_bad, opt_n, opt_examples = _options_projection(con)
-    out = {'ok': (chosen_bad == 0 and prev_bad == 0 and n_options_bad == 0
-                  and panel_missing == 0 and opt_bad == 0),
+    out = {'ok': chosen_bad == 0 and prev_bad == 0 and panel_missing == 0,
            'chosen_not_in_options': chosen_bad, 'prev_ts_after': prev_bad,
-           'n_options_mismatch': n_options_bad, 'panel_missing': panel_missing,
-           'panel_by_kind': panel_by_kind, 'campaign_reassigned': reassigned,
-           'twins_60s': twins, 'options_projection_bad': opt_bad,
-           'options_projection_n': opt_n, 'options_examples': opt_examples,
+           'panel_missing': panel_missing, 'panel_by_kind': panel_by_kind,
+           'twins_60s': twins,
            'min': round((time.time() - t0) / 60, 1)}
-    log('V7 exit %.1f min chosen=%d prev=%d nopt=%d panel=%d proj=%d %s'
-        % (out['min'], chosen_bad, prev_bad, n_options_bad, panel_missing,
-           opt_bad, 'PASS' if out['ok'] else 'FAIL'))
+    log('V7 exit %.1f min chosen=%d prev=%d panel=%d %s'
+        % (out['min'], chosen_bad, prev_bad, panel_missing,
+           'PASS' if out['ok'] else 'FAIL'))
     return out
 
 

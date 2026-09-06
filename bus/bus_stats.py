@@ -331,24 +331,24 @@ def reset_suppression() -> None:
         sys.stderr.write("bus_stats: reset_suppression failed -> %s\n" % repr(e)[:120])
 
 
-def load_rows(db_path: str | None = None) -> list[dict]:
+def load_rows() -> list[dict]:
+    t0 = time.perf_counter()
+    conn = pg.connect(autocommit=True, readonly=True, row_factory=pg.row_factory,
+                      search_path="ops")
     try:
-        conn = pg.connect(autocommit=True, readonly=True, row_factory=pg.row_factory,
-                          search_path="bus")
-        try:
-            cur = conn.execute(
-                "SELECT channel, key, calls, hits, empties, timeouts, errors, total_ms, last_ts "
-                "FROM call_stats")
-            return [dict(r) for r in cur.fetchall()]
-        finally:
-            conn.close()
-    except Exception as e:
-        sys.stderr.write("bus_stats: load_rows failed -> %s\n" % repr(e)[:120])
-        return []
+        cur = conn.execute(
+            "SELECT channel, key, calls, hits, empties, timeouts, errors, total_ms, last_ts "
+            "FROM ops.bus_call_stat")
+        rows = [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+    sys.stderr.write("bus_stats: load_rows exit %d rows %.0f ms\n"
+                     % (len(rows), (time.perf_counter() - t0) * 1000.0))
+    return rows
 
 
-def build_report(db_path: str | None = None, junk_min_calls: int = 5) -> dict:
-    rows = load_rows(db_path)
+def build_report(junk_min_calls: int = 5) -> dict:
+    rows = load_rows()
     tot = {"calls": 0, "hits": 0, "empties": 0, "timeouts": 0, "errors": 0, "total_ms": 0.0}
     for r in rows:
         for k in tot:
@@ -411,7 +411,7 @@ def main(argv=None) -> int:
     args = p.parse_args(argv)
     rep = build_report(junk_min_calls=args.min_calls)
     if not rep["rows"]:
-        sys.stderr.write("bus_stats: no rows in bus.call_stats (has the instrumented bus "
+        sys.stderr.write("bus_stats: no rows in ops.bus_call_stat (has the instrumented bus "
                          "run yet?)\n")
         return 1
     print(format_report(rep, top=args.top))
