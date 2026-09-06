@@ -225,11 +225,82 @@ def decode_payload(payload):
     return tuple(out)
 
 
+def preflight():
+    import shutil
+    import subprocess
+
+    t0 = time.time()
+    log('preflight enter')
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    sys.path.insert(0, root)
+    import common
+    from advisor.reference import packs
+    checks = []
+
+    def check(name, ok, detail):
+        checks.append({'name': name, 'ok': bool(ok), 'detail': detail})
+        log('preflight %-24s %s  %s' % (name, 'PASS' if ok else 'FAIL', detail))
+
+    dirty = subprocess.run(['git', 'status', '--porcelain'], cwd=root,
+                           capture_output=True, text=True).stdout.strip()
+    check('git_clean', dirty == '', dirty.replace('\n', '; ') or 'clean')
+    ver = io.open(os.path.join(root, 'VERSION'), encoding='utf-8').read().strip()
+    tagver = subprocess.run(['git', 'show', 'pre-migration:VERSION'], cwd=root,
+                            capture_output=True, text=True).stdout.strip()
+    check('version_bumped', ver != tagver, '%s (pre-migration %s)' % (ver, tagver))
+    free_gb = shutil.disk_usage('D:\\').free / 2 ** 30
+    check('d_free_100gb', free_gb >= 100, '%.0f GB free' % free_gb)
+    pgpass = os.path.join(os.environ['APPDATA'], 'postgresql', 'pgpass.conf')
+    check('pgpass_present', os.path.exists(pgpass), pgpass)
+    old_port = pg.PORT
+    try:
+        pg.PORT = 55432
+        with pg.connect(app_name='tw-preflight', readonly=True, autocommit=True) as con:
+            n = con.execute(
+                "SELECT count(*) FROM pg_stat_activity WHERE usename='tw'"
+                " AND backend_type='client backend' AND pid <> pg_backend_pid()"
+            ).fetchone()[0]
+            check('c_reachable', True, 'tw@55432')
+            check('stack_down', n == 0, '%d other tw backends on 55432' % n)
+    except Exception as e:
+        check('c_reachable', False, repr(e)[:120])
+    finally:
+        pg.PORT = old_port
+    try:
+        pg.PORT = 55433
+        with pg.connect(app_name='tw-preflight', readonly=True, autocommit=True) as con:
+            con.execute('SELECT 1').fetchone()
+            check('d_reachable', True, 'tw@55433')
+    except Exception as e:
+        check('d_reachable', False, repr(e)[:120])
+    finally:
+        pg.PORT = old_port
+    check('harness_off', os.path.exists(common.HARNESS_OFF), common.HARNESS_OFF)
+    loc = [p for p in os.listdir(packs.DATA_DIR)
+           if p.startswith('local_en') and p.endswith('.pack')] \
+        if os.path.isdir(packs.DATA_DIR) else []
+    for name, path in (
+            ('ref_db_pack', os.path.join(packs.DATA_DIR, 'db.pack')),
+            ('ref_schema_ron', packs.SCHEMA_RON),
+            ('ref_game_exe', os.path.join(packs.GAME_DIR, 'Warhammer3.exe'))):
+        check(name, os.path.exists(path), path)
+    check('ref_loc_pack', len(loc) > 0, ','.join(loc[:3]) or 'no local_en*.pack')
+    ok = all(c['ok'] for c in checks)
+    out = {'ts': time.time(), 'ok': ok, 'checks': checks}
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'preflight.json')
+    io.open(path, 'w', encoding='utf-8', newline='\n').write(json.dumps(out, indent=2) + '\n')
+    log('preflight exit %.0f ms %s' % ((time.time() - t0) * 1000, 'CLEAN' if ok else 'FAILED'))
+    return 0 if ok else 1
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--sample', default='100:7')
     ap.add_argument('--sync-commit', default='off', choices=['on', 'off'])
+    ap.add_argument('--preflight', action='store_true')
     args = ap.parse_args()
+    if args.preflight:
+        raise SystemExit(preflight())
     modulus, residue = (int(x) for x in args.sample.split(':'))
 
     t0 = time.time()
