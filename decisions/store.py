@@ -207,28 +207,36 @@ class DecisionStore:
         sql, args = self._taken_sql(" AND t.decision_id >= %s",
                                     [int(min_decision or 0)])
         rows = self.con.execute(sql, tuple(args)).fetchall()
-        for did, kind, cqi, region, faction, at, ak, counted, ts, eseq, ckey in rows:
-            rec = hydrate.record(self.con, did)
-            hydrate.attach_taken(self.con, rec, eseq, at, ak)
-            yield (rec, self._identity(kind, cqi, region, faction, at, ak),
-                   bool(counted))
+        for i in range(0, len(rows), hydrate.PREFETCH_CHUNK):
+            chunk = rows[i:i + hydrate.PREFETCH_CHUNK]
+            pre = hydrate.Prefetch(self.con, [r[0] for r in chunk])
+            for did, kind, cqi, region, faction, at, ak, counted, ts, eseq, ckey \
+                    in chunk:
+                rec = hydrate.record(self.con, did, pre=pre)
+                hydrate.attach_taken(self.con, rec, eseq, at, ak)
+                yield (rec, self._identity(kind, cqi, region, faction, at, ak),
+                       bool(counted))
 
     @timed('campaign_snapshots')
     def campaign_snapshots(self, min_decision=None):
         dc = hydrate._dicts(self.con)
         types = hydrate.legacy_types()
         out = []
-        for did, ts, ckey in self.con.execute(
-                "SELECT d.decision_id, s.ts, c.campaign_key FROM corpus.decision d"
-                " JOIN corpus.snapshot s ON s.snapshot_id = d.decision_id"
-                " JOIN corpus.campaign c ON c.campaign_id = s.campaign_id"
-                " WHERE d.decision_id >= %s ORDER BY d.decision_id",
-                (int(min_decision or 0),)).fetchall():
-            camp = hydrate._campaign_dict(self.con, dc, did, ckey) or {}
-            world = hydrate._world_dict(self.con, dc, did)
-            out.append((ckey, ts or 0.0,
-                        hydrate.canon.legacy_view(camp, types['CB']),
-                        hydrate.canon.legacy_view(world, types['WB'])))
+        heads = self.con.execute(
+            "SELECT d.decision_id, s.ts, c.campaign_key FROM corpus.decision d"
+            " JOIN corpus.snapshot s ON s.snapshot_id = d.decision_id"
+            " JOIN corpus.campaign c ON c.campaign_id = s.campaign_id"
+            " WHERE d.decision_id >= %s ORDER BY d.decision_id",
+            (int(min_decision or 0),)).fetchall()
+        for i in range(0, len(heads), hydrate.PREFETCH_CHUNK):
+            chunk = heads[i:i + hydrate.PREFETCH_CHUNK]
+            pre = hydrate.Prefetch(self.con, [h[0] for h in chunk])
+            for did, ts, ckey in chunk:
+                camp = hydrate._campaign_dict(self.con, dc, did, ckey, pre) or {}
+                world = hydrate._world_dict(self.con, dc, did, pre)
+                out.append((ckey, ts or 0.0,
+                            hydrate.canon.legacy_view(camp, types['CB']),
+                            hydrate.canon.legacy_view(world, types['WB'])))
         return out
 
     @timed('target_series')
