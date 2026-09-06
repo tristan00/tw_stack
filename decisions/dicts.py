@@ -38,7 +38,7 @@ ARRAY_FAMILIES = {
 }
 
 FAMILY_SQL = """
-SELECT c.relname, a.attname, cl.relname
+SELECT c.relname AS src_table, a.attname AS src_column, cl.relname AS dict_table
   FROM pg_constraint k
   JOIN pg_class c ON c.oid = k.conrelid
   JOIN pg_namespace n ON n.oid = c.relnamespace

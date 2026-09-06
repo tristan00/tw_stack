@@ -140,6 +140,7 @@ CREATE TABLE corpus.campaign (
   vassals_max        SMALLINT,
   outcome_id         INTEGER,
   defeated           BOOLEAN,
+  note               TEXT,
   CHECK (presave_radius IS NULL OR presave_radius > 0)
 )WITH (fillfactor = 80);
 CREATE TABLE corpus.snapshot (
@@ -369,13 +370,13 @@ CREATE TABLE corpus.char_state_ext (
   character_id                INTEGER NOT NULL,
   trait_set_id                BIGINT,
   trait_progress_set_id       BIGINT,
-  xp                          INTEGER NOT NULL,
-  xp_next_level               INTEGER NOT NULL,
-  subterfuge                  SMALLINT NOT NULL,
-  zeal                        SMALLINT NOT NULL,
-  authority                   SMALLINT NOT NULL,
-  resurrection_turns          SMALLINT NOT NULL,
-  upkeep                      INTEGER NOT NULL,
+  xp                          INTEGER,
+  xp_next_level               INTEGER,
+  subterfuge                  SMALLINT,
+  zeal                        SMALLINT,
+  authority                   SMALLINT,
+  resurrection_turns          SMALLINT,
+  upkeep                      INTEGER,
   background_skill_id         INTEGER,
   hidden_skill_state_set_id   BIGINT NOT NULL,
   effect_bundle_set_id        BIGINT NOT NULL,
@@ -1119,7 +1120,7 @@ CREATE TABLE migrate.id_map (
 CREATE TABLE analytics2.state (
   tenant           TEXT PRIMARY KEY,
   formula_version  SMALLINT NOT NULL,
-  watermark        BIGINT NOT NULL,
+  watermark        BIGINT NOT NULL DEFAULT 0,
   built_ts         DOUBLE PRECISION,
   last_run_ts      DOUBLE PRECISION,
   last_run_seconds REAL,

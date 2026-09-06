@@ -17,7 +17,7 @@ CREATE VIEW corpus.campaign_gains AS
 
 CREATE VIEW corpus.start_counts AS
   SELECT campaign_map_id, faction_id, COUNT(*) AS n FROM corpus.campaign
-  WHERE n_decisions > 0 GROUP BY campaign_map_id, faction_id;
+  WHERE n_decisions >= 2 GROUP BY campaign_map_id, faction_id;
 
 CREATE VIEW corpus.campaign_ending AS
   SELECT p.campaign_id, c.campaign_key, p.ts, p.faction_id, p.outcome_id, p.when_text, p.error,
