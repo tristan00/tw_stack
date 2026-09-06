@@ -191,15 +191,18 @@ class DecisionStore:
             rng += " AND t.decision_id <= %s"
             args.append(int(before))
         sql, args = self._taken_sql(rng, args)
+        rows = [r for r in self.con.execute(sql, tuple(args))
+                if not (confirmed_only and not r[7])]
         out = []
-        for did, kind, cqi, region, faction, at, ak, counted, ts, eseq, ckey \
-                in self.con.execute(sql, tuple(args)):
-            if confirmed_only and not counted:
-                continue
-            rec = hydrate.record(self.con, did)
-            hydrate.offers(self.con, rec)
-            out.append((rec, self._identity(kind, cqi, region, faction, at, ak),
-                        bool(counted)))
+        for i in range(0, len(rows), hydrate.PREFETCH_CHUNK):
+            chunk = rows[i:i + hydrate.PREFETCH_CHUNK]
+            pre = hydrate.Prefetch(self.con, [r[0] for r in chunk])
+            for did, kind, cqi, region, faction, at, ak, counted, ts, eseq, ckey \
+                    in chunk:
+                rec = hydrate.record(self.con, did, pre=pre)
+                hydrate.offers(self.con, rec)
+                out.append((rec, self._identity(kind, cqi, region, faction, at, ak),
+                            bool(counted)))
         return out
 
     @timed('taken_rows')
