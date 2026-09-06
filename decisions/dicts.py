@@ -60,6 +60,7 @@ class Dicts:
         self.con = con
         self.cache = {}
         self.enum_cache = {}
+        self.rcache = {}
         self.families = {}
         self.has_is_reference = set()
         self.load_families()
@@ -106,6 +107,7 @@ class Dicts:
                            " ON CONFLICT (key) DO NOTHING RETURNING key, id" % family)
                 for key, ident in self.con.execute(sql, (missing,)):
                     cache[key] = ident
+                    self.rcache.get(('family', family), {})[ident] = key
                 still = [k for k in missing if k not in cache]
                 if still:
                     for key, ident in self.con.execute(
@@ -128,28 +130,31 @@ class Dicts:
                                % (domain, missing))
         return cache
 
+    def _reverse(self, kind, name):
+        ck = (kind, name)
+        m = self.rcache.get(ck)
+        if m is None:
+            t0 = time.time()
+            if kind == 'enum':
+                rows = self.con.execute("SELECT enum_id, key FROM dict.enum")
+            else:
+                rows = self.con.execute("SELECT id, key FROM dict.%s" % name)
+            m = self.rcache[ck] = {i: k for i, k in rows}
+            log('reverse %s.%s loaded %d keys %.0f ms'
+                % (kind, name, len(m), (time.time() - t0) * 1000))
+        return m
+
     def keys_for(self, table, column, ids):
         spec = self.family_of(table, column)
         if spec is None:
             return None
         kind, name = spec
-        want = sorted({i for i in ids if i is not None})
-        if not want:
-            return {}
-        if kind == 'enum':
-            rows = self.con.execute(
-                "SELECT enum_id, key FROM dict.enum WHERE enum_id = ANY(%s)", (want,))
-        else:
-            rows = self.con.execute(
-                "SELECT id, key FROM dict.%s WHERE id = ANY(%%s)" % name, (want,))
-        return {i: k for i, k in rows}
+        m = self._reverse(kind, name if kind == 'family' else 'enum')
+        return {i: m[i] for i in ids if i is not None and i in m}
 
     def keys_for_family(self, family, ids):
-        want = sorted({i for i in ids if i is not None})
-        if not want:
-            return {}
-        return {i: k for i, k in self.con.execute(
-            "SELECT id, key FROM dict.%s WHERE id = ANY(%%s)" % family, (want,))}
+        m = self._reverse('family', family)
+        return {i: m[i] for i in ids if i is not None and i in m}
 
     def ids_for(self, table, column, keys):
         spec = self.family_of(table, column)
