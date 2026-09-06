@@ -60,5 +60,5 @@ Strict order: a section starts only when every subsection before it is done, exc
 
 7.1 Drop legacy schemas on D: and `migrate`. Done: `\dn` shows `corpus, dict, ref, ops, analytics, public(empty)`.
 7.2 Stop/remove the C: cluster service or keep it (owner's call on `tw_stack_post_refactor`/`bench`). Done: owner's decision recorded; if removed, C: free space ≥ 70 GB.
-7.3 Delete repo files and dead code listed in 11.3. Done: `pytest` green; `grep` clean.
+7.3 Delete repo files and dead code listed in 11.3. Done: `grep` finds no remaining reference to any deleted file or symbol; every touched module imports cleanly. Items in 11.3 that turn out to be live are kept and the discrepancy recorded.
 7.4 Remove the design's transient tooling (`bench/legacy.py`, `migrate/` except `verify.py --counts` which stays as a health check). Done: 12.7 counts reported ≤ targets.

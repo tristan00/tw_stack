@@ -105,18 +105,6 @@ def _f(v, default=None):
     return default if math.isnan(f) or math.isinf(f) else f
 
 
-def _jload(v):
-    if not v:
-        return {}
-    if isinstance(v, (dict, list)):
-        return v
-    try:
-        parsed = json.loads(v)
-    except (ValueError, TypeError):
-        return {}
-    return parsed if isinstance(parsed, (dict, list)) else {}
-
-
 def _text(v):
     if v is None or v == "":
         return None
@@ -156,11 +144,6 @@ def _by_arm(rows) -> list:
         if arms.fell_back(raw):
             slot[1] += n
     return sorted(((a, v[0], v[1]) for a, v in agg.items()), key=lambda t: -t[1])
-
-
-def _clock(ts):
-    t = _f(ts)
-    return time.strftime("%Y-%m-%d %H:%M", time.localtime(t)) if t else None
 
 
 def _age_words(seconds):
@@ -487,12 +470,6 @@ def cycle_timing(con) -> list:
 def _campaign_keys(con) -> dict:
     return {r["campaign_id"]: r["campaign_key"] for r in con.execute(
         "SELECT campaign_id, campaign_key FROM corpus.campaign")}
-
-
-def _faction_of(con) -> dict:
-    return {r["campaign_id"]: r["faction"] for r in con.execute(
-        "SELECT c.campaign_id, f.key AS faction FROM corpus.campaign c"
-        " JOIN dict.faction f ON f.id = c.faction_id")}
 
 
 def _decs_all(con) -> dict:
@@ -1601,10 +1578,6 @@ def _camp_meta(con, force=False) -> dict:
             camp[_i(r["campaign_id"], 0)] = d
         return camp
     return _stamped_slow("camp_meta", build, force=force)
-
-
-def _start_of(c) -> tuple:
-    return ((c["campaign_map"] or ""), c["faction"])
 
 
 def _item_ident(key):
@@ -4518,11 +4491,6 @@ def agreement_matrices() -> list:
             key="all", title="all time", arms=arms_, cells=all_cells,
             detail="every comparable decision in this run dir, across every model version"),
     ]
-
-
-def _stale_analytics(e) -> str:
-    return ("the analytics tables predate the pair formula (%s) -- restart the analytics "
-            "service (`python -m analytics.runner`) and it rebuilds them" % str(e)[:80])
 
 
 _SECONDARY_NOTE = "a supplement to the rank correlation above, not a substitute for it"

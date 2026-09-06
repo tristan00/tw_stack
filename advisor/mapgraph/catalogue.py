@@ -160,10 +160,6 @@ def ability_of(agent_action_key):
     return _load()["agent_ability"].get(agent_action_key)
 
 
-def ready():
-    return _load()["ok"]
-
-
 if __name__ == "__main__":
     c = _load()
     print("reference ok      :", c["ok"])

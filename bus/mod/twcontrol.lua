@@ -172,25 +172,6 @@ end
 
 local handlers = {}
 
-function handlers.snapshot(seq)
-  local f = human_faction()
-  local leader = f and try(function() return f:faction_leader() end)
-
-
-  local income = try(function() return f:income() end)
-      or try(function() return f:net_income() end)
-  log({
-    seq = seq, cmd = "snapshot", turn = turn(),
-    faction = or_null(f and try(function() return f:name() end)),
-    treasury = or_null(f and try(function() return f:treasury() end)),
-    income = or_null(income),
-    regions = or_null(f and try(function() return f:region_list():num_items() end)),
-    leader_cqi = or_null(leader and try(function() return leader:command_queue_index() end)),
-    leader_x = or_null(leader and try(function() return leader:logical_position_x() end)),
-    leader_y = or_null(leader and try(function() return leader:logical_position_y() end)),
-  })
-end
-
 function handlers.find(seq, rest)
   local uic, parts = resolve(rest)
   local kids = {}
@@ -1043,78 +1024,6 @@ function handlers.hostiles(seq)
     end
   end
   log({ seq = seq, cmd = "hostiles", count = #out, hostiles = out })
-end
-
-
-function handlers.forces(seq)
-  local f = human_faction()
-  local out = {}
-  local myname = f and try(function() return f:name() end)
-  local lx = f and try(function() return f:faction_leader():logical_position_x() end)
-  local ly = f and try(function() return f:faction_leader():logical_position_y() end)
-  local function dist(x, y)
-    if lx and ly and x and y then local dx, dy = x - lx, y - ly; return math.floor(math.sqrt(dx * dx + dy * dy)) end
-    return nil
-  end
-
-
-  local MAX_DIST = 200
-  local CAP = 250
-  local function keep(at_war, d)
-    if #out >= CAP then return false end
-    if at_war then return true end
-    return d ~= nil and d <= MAX_DIST
-  end
-  if f then
-    local fl = try(function() return cm:model():world():faction_list() end)
-    local nf = fl and try(function() return fl:num_items() end) or 0
-    for i = 0, nf - 1 do
-      if #out >= CAP then break end
-      local fac = try(function() return fl:item_at(i) end)
-      local fname = fac and try(function() return fac:name() end)
-
-      if fac and fname and fname ~= myname and try(function() return not fac:is_null_interface() end) then
-        local at_war = try(function() return f:at_war_with(fac) end) == true
-        local alive = try(function() return not fac:is_dead() end)
-        if alive ~= false then
-          local cl = try(function() return fac:character_list() end)
-          local nc = cl and try(function() return cl:num_items() end) or 0
-          for j = 0, nc - 1 do
-            if #out >= CAP then break end
-            local c = try(function() return cl:item_at(j) end)
-            if c and try(function() return c:has_military_force() end) then
-              local x = try(function() return c:logical_position_x() end)
-              local y = try(function() return c:logical_position_y() end)
-              local d = dist(x, y)
-              if keep(at_war, d) then
-                out[#out + 1] = { kind = "army", faction = fname, at_war = at_war,
-                  cqi = or_null(try(function() return c:command_queue_index() end)),
-                  x = or_null(x), y = or_null(y), dist = or_null(d) }
-              end
-            end
-          end
-          local rl = try(function() return fac:region_list() end)
-          local nr = rl and try(function() return rl:num_items() end) or 0
-          for j = 0, nr - 1 do
-            if #out >= CAP then break end
-            local r = try(function() return rl:item_at(j) end)
-            local s = r and try(function() return r:settlement() end)
-            if s then
-              local x = try(function() return s:logical_position_x() end)
-              local y = try(function() return s:logical_position_y() end)
-              local d = dist(x, y)
-              if keep(at_war, d) then
-                out[#out + 1] = { kind = "settlement", faction = fname, at_war = at_war,
-                  region = or_null(try(function() return r:name() end)),
-                  x = or_null(x), y = or_null(y), dist = or_null(d) }
-              end
-            end
-          end
-        end
-      end
-    end
-  end
-  log({ seq = seq, cmd = "forces", count = #out, forces = out })
 end
 
 

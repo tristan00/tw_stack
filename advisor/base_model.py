@@ -151,23 +151,6 @@ def fit_es(X, y, cat_idx, groups, tag, report, iterations=None, learning_rate=No
     return m
 
 
-def _pct(v, sample):
-    n = len(sample)
-    if n == 0:
-        return 0.5
-    below = sum(1 for x in sample if x < v)
-    equal = sum(1 for x in sample if x == v)
-    return (below + 0.5 * equal) / n
-
-
-def _sd(xs):
-    n = len(xs)
-    if n < 2:
-        return 0.0
-    m = sum(xs) / n
-    return (sum((x - m) ** 2 for x in xs) / (n - 1)) ** 0.5
-
-
 def _ranks(vals):
     n = len(vals)
     if n == 0:
@@ -186,13 +169,6 @@ def _ranks(vals):
             out[order[k]] = share
         i = j + 1
     return out
-
-
-def future_best(turns, turn, part, horizon=None):
-    hi = None if horizon is None else turn + horizon
-    vals = [turns[t].get(part) for t in turns
-            if t >= turn and (hi is None or t <= hi) and turns[t].get(part) is not None]
-    return max(vals) if vals else None
 
 
 def future_best_at(turns, turn, part, horizon=None):
@@ -224,13 +200,5 @@ def target(deltas):
     if not parts:
         return None
     return float(sum(parts))
-
-
-def turns_left(turns, turn):
-    ts = [int(t) for t in turns if t is not None]
-    if not ts:
-        return None
-    last = max(ts)
-    return float(last - int(turn or 0)) if last >= int(turn or 0) else None
 
 

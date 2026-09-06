@@ -700,9 +700,6 @@ def run_campaigns(n=3, turns=20, plan="all",
     return report
 
 
-METRICS_DIR = common.METRICS_DIR
-
-
 TARGET_PARTS = ("settlements", "lord_level")
 
 
@@ -1147,11 +1144,6 @@ def _stretch_context(path, rep, gen, stretch, extra):
     req = rep.get("requested") or {}
     shadow = dict(extra, session=path, _corpus=corpus, requested=req)
     return shadow, trained
-
-
-IN_FLIGHT_S = 600
-LIVE_LOG_S = 1800
-CURRENT_SESSION_LOG = common.CURRENT_SESSION_LOG
 
 
 def _feature_version():

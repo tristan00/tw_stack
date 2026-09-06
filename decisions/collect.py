@@ -107,24 +107,12 @@ def _parse_resources(raw):
     return out
 
 
-def faction_resources(bus):
-    return _parse_resources(_ev(bus, _LUA_FACTION_RESOURCES, timeout=25.0, allow_nil=True))
-
-
 CAMPAIGN_UUID_KEY = "tw_stack_campaign_uuid"
 
 _LUA_UUID_EXPR = ("local ok,v=pcall(function() return cm:get_cached_value('%s', function() "
                   "local t={} for i=1,4 do t[i]=string.format('%%04x', cm:random_number(65535,0)) end "
                   "return cm:get_local_faction_name(true)..'_'..table.concat(t) end) end) "
                   "if ok and v then return tostring(v) end return 'NO-UUID'" % CAMPAIGN_UUID_KEY)
-_LUA_UUID = _LUA_UUID_EXPR
-
-
-def campaign_uuid(bus):
-    v = _ev(bus, _LUA_UUID, timeout=25.0, allow_nil=True)
-    return None if v in (None, "NO-UUID", "nil", "") else str(v)
-
-
 _LUA_CAMPAIGN_MAP = (
     "local out='' "
     "local function try(fn) if out~='' then return end "
@@ -240,7 +228,7 @@ def _game_version():
     return _GAME_VERSION[0]
 
 
-def campaign_state(bus, with_uuid=True):
+def campaign_state(bus):
     return _parse_campaign(_ev(bus, _LUA_CAMPAIGN))
 
 
@@ -883,10 +871,6 @@ def _parse_stationed(raw):
     return {"stationed": stationed, "citizenry": citizenry}
 
 
-def settlement_forces(bus):
-    return _parse_stationed(_ev(bus, _LUA_STATIONED, timeout=25.0, allow_nil=True))
-
-
 HORDE_SLOT_SCAN = 1200
 
 
@@ -1011,30 +995,6 @@ def _parse_missions(raw):
     return out
 
 
-def missions(bus):
-    return _parse_missions(_ev(bus, _LUA_MISSIONS, timeout=20.0, allow_nil=True))
-
-
-_LUA_REF_REGIONS = (
-    "local function t(fn) local ok,v=pcall(fn) if ok then return v end return nil end "
-    "local function ts(v) if v==nil then return '' end return tostring(v) end "
-    "local rl=cm:model():world():region_manager():region_list() local o={} "
-    "for i=0,rl:num_items()-1 do local r=rl:item_at(i) "
-    "  local s=t(function() return r:settlement() end) "
-    "  local adj={} local al=t(function() return r:adjacent_region_list() end) "
-    "  if al then for j=0,al:num_items()-1 do "
-    "    local an=t(function() return al:item_at(j):name() end) "
-    "    if an then adj[#adj+1]=an end end end "
-    "  o[#o+1]=ts(t(function() return r:name() end))"
-    "..'~'..ts(s and t(function() return s:logical_position_x() end))"
-    "..'~'..ts(s and t(function() return s:logical_position_y() end))"
-    "..'~'..ts(t(function() return r:province_name() end))"
-    "..'~'..ts(t(function() return r:is_province_capital() end))"
-    "..'~'..ts(t(function() return s and s:get_climate() end))"
-    "..'~'..table.concat(adj,'|') end "
-    "return table.concat(o,',')")
-
-
 def _parse_ref_regions(raw):
     out = []
     for row in str(raw or "").split(","):
@@ -1045,111 +1005,6 @@ def _parse_ref_regions(raw):
                     "province": _key(p[3]), "is_capital": p[4] == "true",
                     "climate": _key(p[5]),
                     "adjacent": [a for a in p[6].split("|") if a]})
-    return out
-
-
-_LUA_REF_TECH = (_G +
-    "local f=cm:get_local_faction(true) local c=cco('CcoCampaignFaction',f:name()) "
-    "local l=g(c,'TechnologyList') if type(l)~='table' then return '' end local o={} "
-    "for i=1,#l do local x=l[i] local k=ts(g(x,'NodeKey')) "
-    "  o[#o+1]='T~'..k..'~'..ts(g(x,'Tier'))..'~'..ts(g(x,'Indent'))"
-    "..'~'..ts(g(x,'Duration'))..'~'..ts(g(x,'Cost'))..'~'..ts(g(x,'ResearchPointsCost'))"
-    "..'~'..ts(g(x,'RequiredParentsNumber')) "
-    "  local el=g(x,'EffectList') "
-    "  if type(el)=='table' then for j=1,#el do local e=el[j] "
-    "    o[#o+1]='E~'..k..'~'..ts(g(e,'EffectKey'))..'~'..ts(g(e,'Value'))"
-    "..'~'..ts(g(e,'IsPositive'))..'~'..ts(g(e,'EffectScopeContext.Key')) end end "
-    "  local rl=g(x,'RequiredTechnologiesList') "
-    "  if type(rl)=='table' then for j=1,#rl do "
-    "    o[#o+1]='P~'..k..'~'..ts(g(rl[j],'Key')) end end end "
-    "return table.concat(o,',')")
-
-
-_LUA_REF_SKILLS = (_G +
-    "local ch=cco('CcoCampaignCharacter','%(cqi)s') if not ch then return '' end "
-    "local l=g(ch,'SkillList') if type(l)~='table' then return '' end local o={} "
-    "for i=1,#l do local s=l[i] local k=ts(g(s,'Key')) "
-    "  local ps={} local pl=g(s,'ParentSkillsList') "
-    "  if type(pl)=='table' then for j=1,#pl do ps[#ps+1]=ts(g(pl[j],'Key')) end end "
-    "  o[#o+1]='S~'..k..'~'..ts(g(s,'Tier'))..'~'..ts(g(s,'Indent'))"
-    "..'~'..ts(g(s,'TotalLevels'))..'~'..ts(g(s,'IsBackgroundSkill'))"
-    "..'~'..table.concat(ps,'|') "
-    "  local ll=g(s,'LevelsDetailsList') "
-    "  if type(ll)=='table' then for j=1,#ll do local d=ll[j] "
-    "    local lv=ts(g(d,'Level')) "
-    "    o[#o+1]='L~'..k..'~'..lv..'~'..ts(g(d,'RankRequired')) "
-    "    local el=g(d,'EffectList') "
-    "    if type(el)=='table' then for m=1,#el do local e=el[m] "
-    "      o[#o+1]='E~'..k..'~'..lv..'~'..ts(g(e,'EffectKey'))..'~'..ts(g(e,'Value'))"
-    "..'~'..ts(g(e,'IsPositive')) end end end end end "
-    "return table.concat(o,',')")
-
-
-def _parse_ref_tech(raw):
-    techs, effects, parents = {}, [], []
-    for row in str(raw or "").split(","):
-        p = row.split("~")
-        if len(p) < 3 or not p[1]:
-            continue
-        if p[0] == "T" and len(p) >= 8:
-            techs[p[1]] = {"tech": p[1], "tier": _num(p[2]), "indent": _num(p[3]),
-                           "duration": _num(p[4]), "cost": _num(p[5]),
-                           "research_points": _num(p[6]), "required_parents": _num(p[7])}
-        elif p[0] == "E" and len(p) >= 5:
-            effects.append({"tech": p[1], "effect": p[2], "value": _num(p[3]),
-                            "positive": p[4] == "true",
-                            "scope": _key(p[5]) if len(p) > 5 else None})
-        elif p[0] == "P":
-            parents.append({"tech": p[1], "parent": p[2]})
-    return {"tech": sorted(techs.values(), key=lambda r: r["tech"]),
-            "tech_effect": effects, "tech_parent": parents}
-
-
-def _parse_ref_skills(raw):
-    skills, levels, effects = {}, {}, []
-    for row in str(raw or "").split(","):
-        p = row.split("~")
-        if len(p) < 3 or not p[1]:
-            continue
-        if p[0] == "S" and len(p) >= 7:
-            skills[p[1]] = {"skill": p[1], "tier": _num(p[2]), "indent": _num(p[3]),
-                            "total_levels": _num(p[4]), "background": p[5] == "true",
-                            "parents": [a for a in p[6].split("|") if a]}
-        elif p[0] == "L" and len(p) >= 4:
-            levels[(p[1], p[2])] = {"skill": p[1], "level": _num(p[2]),
-                                    "rank_required": _num(p[3])}
-        elif p[0] == "E" and len(p) >= 6:
-            effects.append({"skill": p[1], "level": _num(p[2]), "effect": p[3],
-                            "value": _num(p[4]), "positive": p[5] == "true"})
-    return {"skill": sorted(skills.values(), key=lambda r: r["skill"]),
-            "skill_level": sorted(levels.values(), key=lambda r: (r["skill"], r["level"])),
-            "skill_effect": effects}
-
-
-def game_reference(bus, characters=(), with_regions=True):
-    out = {"regions": [], "tech": [], "tech_effect": [], "tech_parent": [],
-           "skill": [], "skill_level": [], "skill_effect": [], "subtypes": {}}
-    if with_regions:
-        out["regions"] = _parse_ref_regions(
-            _ev(bus, _LUA_REF_REGIONS, timeout=60.0, allow_nil=True))
-    out.update(_parse_ref_tech(_ev(bus, _LUA_REF_TECH, timeout=45.0, allow_nil=True)))
-    seen = set()
-    for cqi, subtype in characters:
-        if not subtype or subtype in seen:
-            continue
-        seen.add(subtype)
-        s = _parse_ref_skills(_ev(bus, _LUA_REF_SKILLS % {"cqi": cqi},
-                                  timeout=45.0, allow_nil=True))
-        for r in s["skill"]:
-            r["subtype"] = subtype
-        for r in s["skill_level"]:
-            r["subtype"] = subtype
-        for r in s["skill_effect"]:
-            r["subtype"] = subtype
-        out["skill"] += s["skill"]
-        out["skill_level"] += s["skill_level"]
-        out["skill_effect"] += s["skill_effect"]
-        out["subtypes"][subtype] = str(cqi)
     return out
 
 
@@ -1203,11 +1058,6 @@ def _parse_ancillaries(raw):
             out.append({"index": int(p[0]), "name": p[1],
                         "key": p[2] or None})
     return out
-
-
-def ancillary_pool(bus, faction_cqi):
-    return _parse_ancillaries(_ev(bus, _LUA_ANCILLARY_POOL % {"fac": faction_cqi},
-                                  timeout=25.0, allow_nil=True))
 
 
 _LUA_PROVINCE_OFFERS = (_G +
@@ -1417,14 +1267,6 @@ _LUA_CAMPAIGN_OFFERS = (_G +
     "ts(g(r[i],'CanPerformRitual'))..'~'..ts(g(r[i],'RitualContext.Key'))"
     "..'~'..ts(g(r[i],'InvalidRitualReason')) end end "
     "return cur..'||'..table.concat(tech,',')..'||'..table.concat(rites,',')..'||'..pts")
-
-
-def current_research(bus, faction_cqi):
-    v = _ev(bus, _G + "local m=g(cco('CcoCampaignFaction','%s'),'TechnologyManagerContext') "
-                      "local c=m and g(m,'CurrentResearchingTechnologyContext') "
-                      "if c then return ts(g(c,'NodeKey')) end return 'none'" % faction_cqi,
-            timeout=20.0, allow_nil=True)
-    return None if v in (None, "none", "nil") else str(v)
 
 
 DIPLO_SCHEMA = 2
