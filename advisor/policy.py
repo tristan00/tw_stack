@@ -171,7 +171,7 @@ class Policy:
 
     def _graph(self, record):
         from advisor.mapgraph import build as B
-        return B.build_graph(record)
+        return B.build_graph(record, self.ggnn.graph_config)
 
     def _score_with_greedy(self, ranked, record, graph=None):
         if self.ggnn is None or not ranked:

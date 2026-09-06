@@ -7,6 +7,7 @@ import os
 import shutil
 
 from advisor.mapgraph import schema as S
+from advisor.mapgraph import graph_config as GC
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_ROOT = os.path.join(os.path.dirname(S.MODEL_DIR), "mapgraph_corpus")
@@ -41,8 +42,10 @@ def _graph_sources():
     return sorted(seen)
 
 
-def fingerprint():
+def fingerprint(graph_config=None):
+    graph_config = GC.from_dict(graph_config)
     h = hashlib.sha1(S.schema_hash().encode())
+    h.update(graph_config.fingerprint().encode())
     for name in _graph_sources():
         p = os.path.join(_HERE, name)
         if not os.path.exists(p):
@@ -65,16 +68,16 @@ def taken_hash(t):
     return hashlib.sha1(("\x00".join(str(v) for v in t)).encode()).hexdigest()[:16]
 
 
-def root(run_key, fp=None):
-    return os.path.join(CACHE_ROOT, fp or fingerprint(), run_key)
+def root(run_key, fp=None, graph_config=None):
+    return os.path.join(CACHE_ROOT, fp or fingerprint(graph_config), run_key)
 
 
 def shard_name(did):
     return "shard_%08d.pt" % (did // SHARD)
 
 
-def load(run_key, log=print):
-    d = root(run_key)
+def load(run_key, log=print, graph_config=None):
+    d = root(run_key, graph_config=graph_config)
     man = os.path.join(d, "manifest.json")
     if not os.path.exists(man):
         return {}, d
@@ -113,11 +116,6 @@ def write_manifest(d, shards, n, watermark, log=print):
     json.dump({"fingerprint": os.path.basename(os.path.dirname(d)),
                "shards": sorted(shards), "n": n, "watermark": watermark},
               open(os.path.join(d, "manifest.json"), "w"))
-    fp = os.path.basename(os.path.dirname(d))
-    for stale in os.listdir(CACHE_ROOT):
-        if stale != fp:
-            shutil.rmtree(os.path.join(CACHE_ROOT, stale), ignore_errors=True)
-            log("mapgraph.corpus: pruned stale cache generation %s" % stale)
     log("mapgraph.corpus: cache holds %d graphs across %d shard(s)"
         % (n, len(shards)))
 

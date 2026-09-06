@@ -15,6 +15,8 @@ sys.path.insert(0, common.ADVISOR)
 sys.path.insert(0, common.DECISIONS)
 
 from advisor.mapgraph import greedy_train as GT
+from advisor.mapgraph import graph_config as GC
+from advisor.mapgraph import schema as S
 from advisor.mapgraph import train as T
 
 STAMP = time.strftime("%Y%m%d_%H%M%S")
@@ -26,6 +28,9 @@ FIXED = {"patience": 4, "bf16": True, "seed": 0, "device": "cuda",
 STUDY_PATIENCE = 40
 TPE_STARTUP = 11
 SAMPLER_SEED = int(time.time()) % 100000
+TUNE_WINDOW = 2000
+GRAPH_PROBE = 200
+GPU_MEMORY_FRACTION = 0.70
 
 
 def _patience_cb(patience=STUDY_PATIENCE):
@@ -87,22 +92,106 @@ def _space(trial):
     return p
 
 
-def run(trials=None, budget_s=300.0, timeout_s=None, baseline=False):
+def _graph_space(trial):
+    spatial_nodes = trial.suggest_categorical(
+        "graph_spatial_nodes", ["mobile", "all"])
+    pair_mode = trial.suggest_categorical(
+        "graph_spatial_pairs", ["all", "mobile", "no_settlement_pair"])
+    attack_nodes = trial.suggest_categorical(
+        "graph_attack_nodes", ["mobile", "all"])
+    relation_mode = trial.suggest_categorical(
+        "graph_relations", ["all", "no_catalogue", "world_action"])
+    pairs = {
+        "all": None,
+        "mobile": ("hero:hero", "hero:lord", "lord:lord"),
+        "no_settlement_pair": ("hero:hero", "hero:lord", "hero:settlement",
+                               "lord:lord", "lord:settlement"),
+    }[pair_mode]
+    relations = {
+        "all": None,
+        "no_catalogue": tuple(r for r in S.RELATIONS if r not in S.CATALOGUE_RELATIONS),
+        "world_action": tuple(r for r in S.RELATIONS
+                              if r in S.WORLD_RELATIONS + S.DIPLO_RELATIONS
+                              + S.PROVINCE_RELATIONS + S.ACT_RELATIONS),
+    }[relation_mode]
+    max_distance = trial.suggest_categorical(
+        "graph_spatial_max_distance", [0, 25, 50, 100, 200])
+    attack_max = trial.suggest_categorical(
+        "graph_attack_max_neighbors", [0, 4, 8, 16, 32])
+    return GC.GraphBuildConfig(
+        spatial_neighbor_count=trial.suggest_int(
+            "graph_spatial_neighbor_count", 4, 32, step=4),
+        spatial_max_distance=max_distance or None,
+        spatial_node_types=("lord", "hero", "settlement")
+        if spatial_nodes == "all" else ("lord", "hero"),
+        spatial_pair_types=pairs,
+        attack_context_radius=trial.suggest_float(
+            "graph_attack_context_radius", 10.0, 50.0, step=5.0),
+        attack_context_max_neighbors=attack_max or None,
+        attack_context_node_types=("lord", "hero", "settlement")
+        if attack_nodes == "all" else ("lord", "hero"),
+        include_own_citizenry_nodes=trial.suggest_categorical(
+            "graph_include_own_citizenry_nodes", [False, True]),
+        enabled_relation_types=relations,
+    ).normalized()
+
+
+def _probe_source(source, size):
+    records = source["records"]
+    if not size or len(records) <= size:
+        return source
+    points = [round(i * (len(records) - 1) / (size - 1)) for i in range(size)]
+    return dict(source, records=[records[i] for i in points])
+
+
+def _graph_gate(torch, max_corpus_gib, gpu_memory_fraction):
+    free_bytes, total_bytes = torch.cuda.mem_get_info()
+    free_gib = free_bytes / (1024 ** 3)
+    total_gib = total_bytes / (1024 ** 3)
+    automatic_gib = free_gib * gpu_memory_fraction
+    allowed_gib = (automatic_gib if max_corpus_gib is None
+                   else min(automatic_gib, max_corpus_gib))
+    return {"free_gpu_gib": round(free_gib, 3),
+            "total_gpu_gib": round(total_gib, 3),
+            "gpu_memory_fraction": gpu_memory_fraction,
+            "automatic_graph_gib": round(automatic_gib, 3),
+            "max_corpus_gib": max_corpus_gib,
+            "allowed_graph_gib": round(allowed_gib, 3)}
+
+
+def run(trials=None, budget_s=300.0, timeout_s=None, baseline=False,
+        max_corpus_gib=None, limit=None, window=TUNE_WINDOW,
+        graph_probe=GRAPH_PROBE, gpu_memory_fraction=GPU_MEMORY_FRACTION):
     import optuna
     import torch
+    if graph_probe < 2:
+        raise ValueError("graph_probe must be at least 2")
+    if not 0.0 < gpu_memory_fraction <= 1.0:
+        raise ValueError("gpu_memory_fraction must be in (0, 1]")
+    if max_corpus_gib is not None and max_corpus_gib <= 0:
+        raise ValueError("max_corpus_gib must be positive")
     os.makedirs(OUT_DIR, exist_ok=True)
-    _log("optimize_greedy: walking the corpus once")
-    w = T.walk(log=_log)
-    ex = w["examples"]
-    datas = T._tensorize(ex)
-    ys = [e["y"] for e in ex]
-    groups = [e["campaign_id"] for e in ex]
-    _log("optimize_greedy: %d rows, %d campaigns, %.0fs budget per trial, patience %d, "
-         "sampler seed %d" % (len(ex), len(w["campaigns"]), budget_s, STUDY_PATIENCE,
+    source = T.load_walk_source(limit=limit, window=window, log=_log)
+    if limit:
+        source = dict(source, population_decisions=min(
+            limit, source["population_decisions"]))
+    probe_source = _probe_source(source, graph_probe)
+    gate = _graph_gate(torch, max_corpus_gib, gpu_memory_fraction)
+    _log("optimize_greedy: %d source decisions, %.0fs budget per trial, patience %d, "
+         "sampler seed %d" % (len(source["records"]), budget_s, STUDY_PATIENCE,
                               SAMPLER_SEED))
+    _log("optimize_greedy: window=%d probe=%d GPU %.1f/%.1f GiB free, graph gate "
+         "%.1f GiB" % (window, len(probe_source["records"]),
+                        gate["free_gpu_gib"], gate["total_gpu_gib"],
+                        gate["allowed_graph_gib"]))
 
     base_fit, norm = None, None
     if baseline:
+        w = T.walk_source(source, GC.DEFAULT, limit=limit, log=_log)
+        ex = w["examples"]
+        datas = T._tensorize(ex)
+        ys = [e["y"] for e in ex]
+        groups = [e["campaign_id"] for e in ex]
         base_cfg = dict(GT.CFG, time_budget_s=budget_s)
         _log("BASELINE start (current greedy CFG at the %.0fs budget)" % budget_s)
         base_log = lambda s: _log("  base %s" % s)
@@ -112,15 +201,11 @@ def run(trials=None, budget_s=300.0, timeout_s=None, baseline=False):
         _log("BASELINE val_mse=%.5f r2=%+0.4f epochs=%d stopped=%s"
              % (base_fit["val_mse"], base_fit["val_r2"] or 0.0, base_fit["epochs_run"],
                 base_fit["stopped_by"]))
-        norm = base_prep["norm"]
         base_prep = None
+        datas = None
+        ex = None
         gc.collect()
         torch.cuda.empty_cache()
-
-    t_prep = time.time()
-    prep = GT.prepare(datas, ys, groups, dict(GT.CFG, **FIXED), log=_log, norm=norm)
-    _log("optimize_greedy: trial batches prepared once at batch %d in %.1fs -- reused by "
-         "every trial" % (prep["batch"], time.time() - t_prep))
 
     sampler = optuna.samplers.TPESampler(seed=SAMPLER_SEED, multivariate=True,
                                          n_startup_trials=TPE_STARTUP)
@@ -134,10 +219,12 @@ def run(trials=None, budget_s=300.0, timeout_s=None, baseline=False):
 
     def objective(trial):
         p = _space(trial)
+        graph_config = _graph_space(trial)
         cfg = dict(GT.CFG, **FIXED, **p, time_budget_s=budget_s)
-        _log("TRIAL %d start [%s] %s"
+        _log("TRIAL %d start [%s] model=%s graph=%s"
              % (trial.number, "random" if trial.number < TPE_STARTUP else "tpe",
-                json.dumps(p, sort_keys=True)))
+                json.dumps(p, sort_keys=True),
+                json.dumps(graph_config.as_dict(), sort_keys=True)))
         t0 = time.time()
 
         def on_epoch(epoch, score):
@@ -146,6 +233,37 @@ def run(trials=None, budget_s=300.0, timeout_s=None, baseline=False):
                 raise optuna.TrialPruned()
 
         try:
+            probe = T.walk_source(
+                probe_source, graph_config,
+                log=lambda s: _log("  t%d probe %s" % (trial.number, s)))
+            metrics = probe["metrics"]
+            trial.set_user_attr("graph_config", graph_config.as_dict())
+            trial.set_user_attr("graph_probe_metrics", metrics)
+            trial.set_user_attr("graph_memory_gate", gate)
+            corpus_gib = metrics["projected_tensor_gib"]
+            if corpus_gib > gate["allowed_graph_gib"]:
+                raise optuna.TrialPruned(
+                    "projected graph tensors %.3f GiB exceed %.3f GiB GPU gate"
+                    % (corpus_gib, gate["allowed_graph_gib"]))
+            if probe_source is source:
+                w = probe
+            else:
+                probe = None
+                w = T.walk_source(
+                    source, graph_config, limit=limit,
+                    log=lambda s: _log("  t%d %s" % (trial.number, s)))
+            metrics = w["metrics"]
+            trial.set_user_attr("graph_metrics", metrics)
+            if len(w["examples"]) < GT.MIN_ROWS:
+                raise optuna.TrialPruned("only %d trainable graphs" % len(w["examples"]))
+            ex = w["examples"]
+            datas = T._tensorize(ex)
+            ys = [e["y"] for e in ex]
+            groups = [e["campaign_id"] for e in ex]
+            prep = GT.prepare(datas, ys, groups, cfg,
+                              log=lambda s: _log("  t%d %s" % (trial.number, s)))
+            if not prep["val_rows"]:
+                raise optuna.TrialPruned("stable split produced no validation rows")
             _, fit, _, _ = GT.fit_net(datas, ys, groups, cfg,
                                       log=lambda s: _log("  t%d %s" % (trial.number, s)),
                                       on_epoch=on_epoch, prep=prep)
@@ -161,7 +279,9 @@ def run(trials=None, budget_s=300.0, timeout_s=None, baseline=False):
             raise RuntimeError(msg) from None
         finally:
             torch.cuda.empty_cache()
-        row = {"trial": trial.number, "params": p, "seconds": round(time.time() - t0, 1),
+        row = {"trial": trial.number, "params": p,
+               "graph_config": graph_config.as_dict(), "graph_metrics": metrics,
+               "seconds": round(time.time() - t0, 1),
                "val_mse": fit["val_mse"], "val_r2": fit["val_r2"],
                "epochs": fit["epochs_run"], "stopped_by": fit["stopped_by"],
                "ts": time.time()}
@@ -180,6 +300,15 @@ def run(trials=None, budget_s=300.0, timeout_s=None, baseline=False):
 
     study.optimize(objective, n_trials=trials, timeout=timeout_s, gc_after_trial=True,
                    catch=(RuntimeError,), callbacks=[_patience_cb()])
+    complete = [t for t in study.trials if t.value is not None]
+    if not complete:
+        _log("STUDY COMPLETE with no completed trials")
+        json.dump({"best_trial": None, "best_val_mse": None, "best_params": None,
+                   "n_trials": len(study.trials), "budget_s": budget_s,
+                   "graph_memory_gate": gate, "window": window,
+                   "graph_probe": graph_probe},
+                  open(os.path.join(OUT_DIR, "best_%s.json" % STAMP), "w"), indent=1)
+        return 2
     best = study.best_trial
     _log("STUDY COMPLETE best trial %d val_mse=%.5f (baseline %s) params %s"
          % (best.number, best.value,
@@ -187,7 +316,11 @@ def run(trials=None, budget_s=300.0, timeout_s=None, baseline=False):
             json.dumps(best.params, sort_keys=True)))
     json.dump({"best_trial": best.number, "best_val_mse": best.value,
                "best_params": best.params, "n_trials": len(study.trials),
+               "best_graph_config": best.user_attrs.get("graph_config"),
+               "best_graph_metrics": best.user_attrs.get("graph_metrics"),
                "budget_s": budget_s,
+               "graph_memory_gate": gate, "window": window,
+               "graph_probe": graph_probe,
                "baseline_val_mse": base_fit["val_mse"] if base_fit else None,
                "baseline_val_r2": base_fit["val_r2"] if base_fit else None,
                "baseline_cfg": {k: GT.CFG[k] for k in sorted(GT.CFG)}},
@@ -201,4 +334,12 @@ if __name__ == "__main__":
     n = int(a[a.index("--trials") + 1]) if "--trials" in a else None
     b = float(a[a.index("--budget") + 1]) if "--budget" in a else 300.0
     t = float(a[a.index("--timeout") + 1]) if "--timeout" in a else None
-    raise SystemExit(run(n, b, t, baseline="--baseline" in a))
+    g = float(a[a.index("--max-corpus-gib") + 1]) if "--max-corpus-gib" in a else None
+    limit = int(a[a.index("--limit") + 1]) if "--limit" in a else None
+    window = int(a[a.index("--window") + 1]) if "--window" in a else TUNE_WINDOW
+    probe = int(a[a.index("--graph-probe") + 1]) if "--graph-probe" in a else GRAPH_PROBE
+    fraction = (float(a[a.index("--gpu-memory-fraction") + 1])
+                if "--gpu-memory-fraction" in a else GPU_MEMORY_FRACTION)
+    raise SystemExit(run(n, b, t, baseline="--baseline" in a,
+                         max_corpus_gib=g, limit=limit, window=window,
+                         graph_probe=probe, gpu_memory_fraction=fraction))

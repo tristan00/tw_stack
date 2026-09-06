@@ -105,7 +105,7 @@ class DecisionStore:
             "SELECT MIN(first_snapshot_id) FROM"
             " (SELECT first_snapshot_id FROM corpus.campaign"
             " WHERE first_snapshot_id IS NOT NULL"
-            " ORDER BY first_snapshot_id DESC LIMIT %s) w", (int(n),)).fetchone()
+            " ORDER BY first_snapshot_id DESC NULLS LAST LIMIT %s) w", (int(n),)).fetchone()
         return int(r[0]) if r and r[0] is not None else None
 
     def window_keys(self, n):
@@ -174,6 +174,14 @@ class DecisionStore:
                         bool(counted))
         return out
 
+    @timed('labelled_count')
+    def labelled_count(self, min_decision=None):
+        skip = self._skip_refusal_ids()
+        return int(self.con.execute(
+            "SELECT COUNT(*) FROM corpus.taken WHERE decision_id >= %s"
+            " AND (refusal_id IS NULL OR refusal_id != ALL(%s))",
+            (int(min_decision or 0), skip)).fetchone()[0])
+
     @timed('action_sequence')
     def action_sequence(self, min_decision=None):
         sql, args = self._taken_sql(
@@ -182,7 +190,8 @@ class DecisionStore:
                 ts, eseq, ckey in self.con.execute(sql, tuple(args))]
 
     @timed('labelled_decisions')
-    def labelled_decisions(self, confirmed_only=False, after=None, before=None):
+    def labelled_decisions(self, confirmed_only=False, after=None, before=None, limit=None,
+                           spread=False):
         rng, args = "", []
         if after is not None:
             rng += " AND t.decision_id > %s"
@@ -191,8 +200,18 @@ class DecisionStore:
             rng += " AND t.decision_id <= %s"
             args.append(int(before))
         sql, args = self._taken_sql(rng, args)
+        if limit is not None and not confirmed_only and not spread:
+            sql += " LIMIT %s"
+            args.append(max(0, int(limit)))
         rows = [r for r in self.con.execute(sql, tuple(args))
                 if not (confirmed_only and not r[7])]
+        if limit is not None:
+            n = max(0, int(limit))
+            if spread and n and len(rows) > n:
+                rows = ([rows[-1]] if n == 1 else
+                        [rows[i * (len(rows) - 1) // (n - 1)] for i in range(n)])
+            else:
+                rows = rows[:n]
         out = []
         for i in range(0, len(rows), hydrate.PREFETCH_CHUNK):
             chunk = rows[i:i + hydrate.PREFETCH_CHUNK]
@@ -200,7 +219,7 @@ class DecisionStore:
             for did, kind, cqi, region, faction, at, ak, counted, ts, eseq, ckey \
                     in chunk:
                 rec = hydrate.record(self.con, did, pre=pre)
-                hydrate.offers(self.con, rec)
+                hydrate.offers(self.con, rec, pre=pre)
                 out.append((rec, self._identity(kind, cqi, region, faction, at, ak),
                             bool(counted)))
         return out
@@ -243,12 +262,16 @@ class DecisionStore:
         return out
 
     @timed('target_series')
-    def target_series(self):
+    def target_series(self, campaign_keys=None):
         out = {}
+        where, args = "", ()
+        if campaign_keys is not None:
+            where = " WHERE c.campaign_key = ANY(%s)"
+            args = (sorted(set(campaign_keys)),)
         for camp, turn, inc, setl, allies, vass, rank, lvl in self.con.execute(
                 "SELECT c.campaign_key, o.turn, o.income, o.settlements, o.allies,"
                 " o.vassals, o.power_rank, o.lord_level FROM corpus.turn_open o"
-                " JOIN corpus.campaign c USING (campaign_id)"):
+                " JOIN corpus.campaign c USING (campaign_id)" + where, args):
             out.setdefault(camp, {})[int(turn)] = {
                 "income": inc or 0.0, "settlements": setl or 0.0,
                 "power_rank": (rank if rank is not None else -50.0),

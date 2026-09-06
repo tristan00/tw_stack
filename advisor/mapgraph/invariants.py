@@ -203,6 +203,7 @@ def check(verbose=True):
        "%d node types, %d relations" % (len(S.NODE_TYPES), S.N_RELATIONS))
 
     src_gnet = open(os.path.join(_HERE, "greedy_net.py"), encoding="utf-8").read()
+    src_build = open(os.path.join(_HERE, "build.py"), encoding="utf-8").read()
     code_greedy = _code_only(os.path.join(_HERE, "greedy_train.py"))
     ok("greedy: the shared net.py encoder, reused unchanged",
        "N.Encoder(" in src_gnet and "class Encoder" not in src_gnet)
@@ -216,6 +217,8 @@ def check(verbose=True):
        not any(os.path.exists(os.path.join(_HERE, f)) for f in
                ("interrupt_rank.py", "interrupt_train.py", "interrupt_build.py")),
        "blocking screens draw from %s only" % ", ".join(_interrupt_names()))
+    ok("invisible hostiles are unconditionally excluded from graphs",
+       src_build.count('h.get("visible") is False') >= 2)
 
     launcher_screens = _launcher_screens()
     missing = sorted(launcher_screens - set(S.SCREEN_TYPES))

@@ -235,22 +235,27 @@ def _enum_ids(con, domain, keys):
 
 
 _PB_ATTRIB_SQL = (
-    "SELECT t.decision_id, ty.key, a.action_key, i.chosen,"
-    " ib.result_state, ib.casualties_text"
+    "WITH panels AS MATERIALIZED ("
+    " SELECT i.interrupt_id, i.chosen, s.campaign_id, s.ts"
     " FROM corpus.interrupt i"
     " JOIN corpus.snapshot s ON s.snapshot_id = i.interrupt_id"
+    " WHERE i.kind_id = %(kind)s AND i.counted"
+    " __CAMP_FILTER__"
+    ") SELECT t.decision_id, ty.key, a.action_key, p.chosen,"
+    " ib.result_state, ib.casualties_text"
+    " FROM panels p"
     " JOIN LATERAL (SELECT t2.decision_id, t2.action_id, t2.ts FROM corpus.taken t2"
-    " WHERE t2.campaign_id = s.campaign_id AND t2.ts <= s.ts"
+    " WHERE t2.campaign_id = p.campaign_id AND t2.ts <= p.ts"
     " AND (t2.refusal_id IS NULL OR t2.refusal_id != ALL(%(skip)s))"
     " ORDER BY t2.ts DESC LIMIT 1) t ON TRUE"
     " JOIN dict.action a ON a.action_id = t.action_id"
     " JOIN dict.action_type ty ON ty.id = a.action_type_id"
-    " LEFT JOIN corpus.interrupt_battle_panel ib ON ib.interrupt_id = i.interrupt_id"
-    " WHERE i.kind_id = %(kind)s AND i.counted"
+    " LEFT JOIN corpus.interrupt_battle_panel ib ON ib.interrupt_id = p.interrupt_id"
+    " WHERE TRUE"
     " AND ty.key IN ('attack_army','attack_settlement')"
-    " AND s.ts - t.ts <= %(win)s")
+    " AND p.ts - t.ts <= %(win)s")
 
-_PB_ATTRIB_ORDER = " ORDER BY i.interrupt_id"
+_PB_ATTRIB_ORDER = " ORDER BY p.interrupt_id"
 
 
 def _army_targets(con, pairs):
@@ -305,9 +310,11 @@ def prebattle_attributions(con, camps=None):
     kind = _enum_ids(con, "interrupt_kind", ["pre_battle"])["pre_battle"]
     sql = _PB_ATTRIB_SQL
     params = {"skip": skip, "kind": kind, "win": PB_WINDOW_S}
+    camp_filter = ""
     if camps is not None:
-        sql += " AND s.campaign_id = ANY(%(camps)s)"
+        camp_filter = "AND s.campaign_id = ANY(%(camps)s)"
         params["camps"] = sorted(camps)
+    sql = sql.replace("__CAMP_FILTER__", camp_filter)
     rows = con.execute(sql + _PB_ATTRIB_ORDER, params).fetchall()
     army_pairs, sett_pairs = [], []
     for did, at, akey, chosen, result, casualties in rows:
@@ -365,7 +372,7 @@ _REPLAY_SQL = (
     " LEFT JOIN corpus.char_state cs ON cs.snapshot_id = t.decision_id"
     " AND cs.entity_seq = t.entity_seq"
     " WHERE (t.refusal_id IS NULL OR t.refusal_id != ALL(%s))"
-    " AND s.campaign_id = ANY(%s) ORDER BY t.decision_id")
+    " AND t.campaign_id = ANY(%s) ORDER BY t.decision_id")
 
 
 def _queue_members(con, set_ids):

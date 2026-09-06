@@ -208,6 +208,15 @@ class Prefetch:
                 (ids,)):
             self.entities.setdefault(sid, []).append(
                 (seq, kind_id, character_id, region_id, cqi))
+        self.offers = {}
+        for row in con.execute(
+                "SELECT o.decision_id, o.offer_seq, o.entity_seq, ty.key, a.action_key,"
+                " o.slot_index, o.score, o.exploit, o.rank FROM corpus.offer o"
+                " JOIN dict.action a ON a.action_id = o.action_id"
+                " JOIN dict.action_type ty ON ty.id = a.action_type_id"
+                " WHERE o.decision_id = ANY(%s) ORDER BY o.decision_id, o.offer_seq",
+                (ids,)):
+            self.offers.setdefault(row[0], []).append(row[1:])
         log('prefetch exit %.1f ms ids=%d' % ((time.time() - t0) * 1000, len(ids)))
 
     def rows(self, table, snapshot_id, key=None):
@@ -478,9 +487,9 @@ def _stored_offer_rows(con, decision_id):
         " WHERE o.decision_id = %s ORDER BY o.offer_seq", (decision_id,)).fetchall()
 
 
-def offers(con, record):
+def offers(con, record, pre=None):
     did = record['decision_id']
-    rows = _stored_offer_rows(con, did)
+    rows = pre.offers.get(did, []) if pre is not None else _stored_offer_rows(con, did)
     if not rows:
         return record
     ents = record.get('entities') or []

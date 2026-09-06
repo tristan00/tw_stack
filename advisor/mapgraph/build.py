@@ -7,6 +7,7 @@ import sys
 from advisor.mapgraph import schema as S
 from advisor.mapgraph import guard as G
 from advisor.mapgraph import catalogue as C
+from advisor.mapgraph import graph_config as GC
 from advisor import memory as M
 
 _TI = {t: i for i, t in enumerate(S.NODE_TYPES)}
@@ -19,14 +20,15 @@ _SKILL_REL = {"active": "skill_active", "locked_due_to_rank": "skill_rank_locked
 
 
 class Graph:
-    __slots__ = ("_nodes", "_edges",
+    __slots__ = ("_nodes", "_edges", "config",
                  "x", "node_type", "race_idx", "agent_idx", "stance_idx", "subtype_idx",
                  "atype_idx", "term_idx", "cat_idx", "src", "dst", "rel", "val",
                  "ux", "uy",
                  "id2idx", "node_ids", "action_nodes", "action_keys", "own_mask", "g_ctx",
                  "player_faction", "counts", "provenance")
 
-    def __init__(self):
+    def __init__(self, config=None):
+        self.config = GC.from_dict(config)
         self._nodes = []
         self._edges = []
         self.x = []
@@ -77,7 +79,7 @@ class Graph:
         return idx
 
     def edge(self, i, j, rel, val=0.0, ux=0.0, uy=0.0):
-        if i is None or j is None:
+        if i is None or j is None or not self.config.allows_relation(rel):
             return
         r = S.REL_INDEX[rel]
         v, x, y = float(val), float(ux), float(uy)
@@ -135,11 +137,12 @@ def _pos_ok(x, y):
     return x is not None and y is not None and 0 <= float(x) < 4096 and 0 <= float(y) < 4096
 
 
-def build_graph(record):
+def build_graph(record, config=None):
+    config = GC.from_dict(config)
     world = record.get("world") or {}
     campaign = record.get("campaign") or {}
     me = str(campaign.get("faction") or "")
-    g = Graph()
+    g = Graph(config)
     g.player_faction = me
 
     citizenry = {str(c) for c in (world.get("citizenry") or [])}
@@ -366,7 +369,7 @@ def build_graph(record):
     reach_pending = []
     for a in world.get("armies") or []:
         cqi = str(a.get("cqi") or "")
-        if not cqi or cqi in citizenry:
+        if not cqi or (cqi in citizenry and not config.include_own_citizenry_nodes):
             continue
         kind, st = char_state.get(cqi, (None, {}))
         row = dict(a)
@@ -471,8 +474,8 @@ def build_graph(record):
             g.edge(ci, sj, "garrisons")
 
     g.finalize()
-    _wire_knn(g)
-    near_pts = _target_pts(g)
+    _wire_knn(g, config)
+    near_pts = _target_pts(g, config.attack_context_node_types)
     pend_by_cqi = {cqi: st.get("pending_recruits")
                    for cqi, (kind, st) in char_state.items()
                    if st and st.get("pending_recruits") is not None}
@@ -555,7 +558,7 @@ def _wire_char(g, ci, cqi, row, faction, prov_of_region, st):
             g.edge(ci, g.cat_node("item", ek), "wears")
 
 
-def _wire_knn(g):
+def _wire_knn(g, config):
     xi = S.TYPE_FIELDS["lord"].index("x")
     yi = S.TYPE_FIELDS["lord"].index("y")
     sxi = S.TYPE_FIELDS["settlement"].index("x")
@@ -563,6 +566,8 @@ def _wire_knn(g):
     pts = []
     for i, t in enumerate(g.node_type):
         tn = S.NODE_TYPES[t]
+        if tn not in config.spatial_node_types:
+            continue
         if tn in ("lord", "hero"):
             x, y = g.x[i][xi], g.x[i][yi]
         elif tn == "settlement":
@@ -570,14 +575,17 @@ def _wire_knn(g):
         else:
             continue
         if x or y:
-            pts.append((i, x, y))
+            pts.append((i, tn, x, y))
     if len(pts) < 2:
         return
     seen = set()
-    for i, x0, y0 in pts:
-        d = sorted(((math.hypot(x0 - x1, y0 - y1), j, x1, y1)
-                    for j, x1, y1 in pts if j != i))
-        for dd, j, x1, y1 in d[:S.KNN_K]:
+    for i, t0, x0, y0 in pts:
+        d = sorted((math.hypot(x0 - x1, y0 - y1), j, x1, y1)
+                   for j, t1, x1, y1 in pts
+                   if j != i and config.allows_pair(t0, t1))
+        if config.spatial_max_distance is not None:
+            d = [row for row in d if row[0] <= config.spatial_max_distance]
+        for dd, j, x1, y1 in d[:config.spatial_neighbor_count]:
             pair = (i, j) if i < j else (j, i)
             if pair in seen:
                 continue
@@ -613,7 +621,8 @@ def _lord_memory_row(campaign, cqi, row=None):
     return out
 
 
-def _target_pts(g):
+def _target_pts(g, node_types=None):
+    node_types = set(node_types or GC.SPATIAL_TYPES)
     out = []
     lxi = S.TYPE_FIELDS["lord"].index("x")
     lyi = S.TYPE_FIELDS["lord"].index("y")
@@ -621,6 +630,8 @@ def _target_pts(g):
     syi = S.TYPE_FIELDS["settlement"].index("y")
     for i, t in enumerate(g.node_type):
         tn = S.NODE_TYPES[t]
+        if tn not in node_types:
+            continue
         if tn in ("lord", "hero"):
             x, y = g.x[i][lxi], g.x[i][lyi]
         elif tn == "settlement":
@@ -751,12 +762,18 @@ def _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me,
 
     if at in M.PB_ATTACK_TYPES and _pos_ok(params.get("x"), params.get("y")):
         tx, ty = float(params["x"]), float(params["y"])
+        found = []
         for j, jx, jy in near_pts:
             if j == tgt or j == ego:
                 continue
             d = math.hypot(jx - tx, jy - ty)
-            if d > 25:
+            if d > g.config.attack_context_radius:
                 continue
+            found.append((d, j, jx, jy))
+        found.sort()
+        if g.config.attack_context_max_neighbors is not None:
+            found = found[:g.config.attack_context_max_neighbors]
+        for d, j, jx, jy in found:
             ux, uy = ((jx - tx) / d, (jy - ty) / d) if d > 0 else (0.0, 0.0)
             g.edge(ai, j, "near_target", val=d, ux=ux, uy=uy)
 

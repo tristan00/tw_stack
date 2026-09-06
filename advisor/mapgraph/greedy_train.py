@@ -8,6 +8,7 @@ import sys
 import time
 
 from advisor.mapgraph import schema as S
+from advisor.mapgraph import graph_config as GC
 from advisor.mapgraph import train as T
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
@@ -177,9 +178,14 @@ def _save(model_dir, net, meta):
     shutil.rmtree(stage, ignore_errors=True)
 
 
-def _meta(backend, cfg, ex, fit, y_mean, y_sd, tally):
+def _meta(backend, cfg, ex, fit, y_mean, y_sd, tally, graph_config=None,
+          graph_metrics=None):
+    graph_config = GC.from_dict(graph_config)
     return {"backend": backend, "schema_version": S.SCHEMA_VERSION,
             "schema_hash": S.schema_hash(), "cfg": cfg, "rows": len(ex),
+            "graph_config": graph_config.as_dict(),
+            "graph_fingerprint": graph_config.fingerprint(),
+            "graph_metrics": graph_metrics,
             "campaigns": sorted({e["campaign_id"] for e in ex}), "fit": fit,
             "y_mean": round(y_mean, 6), "y_sd": round(y_sd, 6),
             "n_scalars": S.N_SCALARS, "node_types": list(S.NODE_TYPES),
@@ -193,11 +199,13 @@ def _budget(cfg, walked, log):
     return fit_cfg
 
 
-def train(runs_root=None, cfg=None, log=None, model_dir=MODEL_DIR, limit=None):
+def train(runs_root=None, cfg=None, log=None, model_dir=MODEL_DIR, limit=None,
+          graph_config=None):
     log = log or (lambda s: sys.stderr.write(str(s) + "\n"))
     cfg = dict(CFG, **(cfg or {}))
     t0 = time.time()
-    w = T.walk(runs_root, limit=limit, log=log)
+    graph_config = GC.from_dict(graph_config)
+    w = T.walk(runs_root, limit=limit, log=log, graph_config=graph_config)
     ex = w["examples"]
     if len(ex) < MIN_ROWS:
         return {"trained": False, "backend": "mapgraph_greedy", "rows": len(ex),
@@ -214,7 +222,7 @@ def train(runs_root=None, cfg=None, log=None, model_dir=MODEL_DIR, limit=None):
         import torch
         torch.cuda.empty_cache()
     meta = _meta("mapgraph_greedy", dict(fit_cfg, time_budget_s=cfg["time_budget_s"]),
-                 ex, fit, y_mean, y_sd, w["tally"])
+                 ex, fit, y_mean, y_sd, w["tally"], graph_config, w.get("metrics"))
     _save(model_dir, net, meta)
     return {"trained": True, "backend": "mapgraph_greedy", "rows": n_rows, "fit": fit,
             "campaigns": len(meta["campaigns"]), "tally": w["tally"],
@@ -236,7 +244,9 @@ def _cli(a):
             over[key] = cast(a[a.index(flag) + 1])
     limit = int(a[a.index("--limit") + 1]) if "--limit" in a else None
     out = a[a.index("--out") + 1] if "--out" in a else None
-    return over, limit, out
+    graph_config = (GC.from_dict(json.loads(a[a.index("--graph-config") + 1]))
+                    if "--graph-config" in a else GC.DEFAULT)
+    return over, limit, out, graph_config
 
 
 if __name__ == "__main__":
@@ -249,9 +259,10 @@ if __name__ == "__main__":
         sys.stdout.flush()
 
     if cmd == "train":
-        over, limit, out = _cli(a)
+        over, limit, out, graph_config = _cli(a)
         print(json.dumps(train(cfg=over or None, log=_log, model_dir=out or MODEL_DIR,
-                               limit=limit), indent=2, default=str))
+                               limit=limit, graph_config=graph_config), indent=2,
+                         default=str))
     elif cmd == "report":
         w = T.walk(limit=200)
         print(json.dumps({"examples": len(w["examples"]), "tally": w["tally"],
@@ -260,4 +271,5 @@ if __name__ == "__main__":
     else:
         raise SystemExit(
             "usage: greedy_train.py train [--budget S] [--batch N] [--epochs N] "
-            "[--device cuda|cpu] [--limit N] [--out DIR] | report")
+            "[--device cuda|cpu] [--limit N] [--out DIR] "
+            "[--graph-config JSON] | report")

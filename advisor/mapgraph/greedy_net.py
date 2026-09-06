@@ -9,6 +9,7 @@ import torch.nn as nn
 
 from advisor.mapgraph import net as N
 from advisor.mapgraph import schema as S
+from advisor.mapgraph import graph_config as GC
 
 
 class RewardHead(nn.Module):
@@ -73,6 +74,12 @@ def load(model_dir, tag):
             "%s: meta schema hash %s != code %s -- trained on a different graph; "
             "unready until retrain\n"
             % (tag, str(meta.get("schema_hash"))[:12], S.schema_hash()[:12]))
+        return None, meta
+    graph_config = GC.from_dict(meta.get("graph_config"))
+    saved_graph = meta.get("graph_fingerprint")
+    if saved_graph is not None and saved_graph != graph_config.fingerprint():
+        sys.stderr.write("%s: graph config fingerprint mismatch -- unready until retrain\n"
+                         % tag)
         return None, meta
     net = from_cfg(meta.get("cfg") or {})
     net.encoder.load_state_dict(blob["encoder"])

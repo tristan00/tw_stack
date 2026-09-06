@@ -7,6 +7,7 @@ import sys
 
 from advisor.mapgraph import schema as S
 from advisor.mapgraph import build as B
+from advisor.mapgraph import graph_config as GC
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
@@ -41,6 +42,7 @@ class Ranker:
         self.misses = 0
         self._warned = False
         self.net, self.meta = _load(model_dir, "mapgraph.greedy_rank")
+        self.graph_config = GC.from_dict((self.meta or {}).get("graph_config"))
         self.ready = self.net is not None
 
     def score_elig(self, offers, record, graph=None):
@@ -49,7 +51,7 @@ class Ranker:
         import torch
         from advisor.mapgraph import net as N
         from advisor.mapgraph import greedy_net as GN
-        g = graph if graph is not None else B.build_graph(record)
+        g = graph if graph is not None else B.build_graph(record, self.graph_config)
         if g is None:
             raise ValueError("mapgraph.greedy_rank: record produced no graph")
         if not g.action_nodes:

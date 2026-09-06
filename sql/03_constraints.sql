@@ -190,6 +190,7 @@ ALTER TABLE corpus.taken ADD CONSTRAINT taken_refusal_id_fkey FOREIGN KEY (refus
 ALTER TABLE corpus.taken ADD CONSTRAINT taken_confirm_signal_id_fkey FOREIGN KEY (confirm_signal_id) REFERENCES dict.confirm_signal;
 ALTER TABLE corpus.taken ADD CONSTRAINT taken_failed_precheck_id_fkey FOREIGN KEY (failed_precheck_id) REFERENCES dict.enum;
 CREATE INDEX taken_campaign ON corpus.taken (campaign_id, decision_id) INCLUDE (action_id, policy_id, latency_ms);
+CREATE INDEX taken_campaign_ts ON corpus.taken (campaign_id, ts DESC) INCLUDE (decision_id, action_id, refusal_id);
 CREATE INDEX taken_ts ON corpus.taken (ts);
 CREATE INDEX taken_action ON corpus.taken (action_id);
 ALTER TABLE corpus.interrupt_option ADD CONSTRAINT interrupt_option_interrupt_id_fkey FOREIGN KEY (interrupt_id) REFERENCES corpus.interrupt;
