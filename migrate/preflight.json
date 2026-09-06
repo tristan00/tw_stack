@@ -1,0 +1,66 @@
+{
+  "ts": 1788655132.0756252,
+  "ok": true,
+  "checks": [
+    {
+      "name": "git_clean",
+      "ok": true,
+      "detail": "clean"
+    },
+    {
+      "name": "version_bumped",
+      "ok": true,
+      "detail": "0.4.0 (pre-migration 0.3.3)"
+    },
+    {
+      "name": "d_free_100gb",
+      "ok": true,
+      "detail": "1784 GB free"
+    },
+    {
+      "name": "pgpass_present",
+      "ok": true,
+      "detail": "C:\\Users\\trist\\AppData\\Roaming\\postgresql\\pgpass.conf"
+    },
+    {
+      "name": "c_reachable",
+      "ok": true,
+      "detail": "tw@55432"
+    },
+    {
+      "name": "stack_down",
+      "ok": true,
+      "detail": "0 other tw backends on 55432"
+    },
+    {
+      "name": "d_reachable",
+      "ok": true,
+      "detail": "tw@55433"
+    },
+    {
+      "name": "harness_off",
+      "ok": true,
+      "detail": "D:\\twdata\\HARNESS_OFF"
+    },
+    {
+      "name": "ref_db_pack",
+      "ok": true,
+      "detail": "D:\\SteamLibrary\\steamapps\\common\\Total War WARHAMMER III\\data\\db.pack"
+    },
+    {
+      "name": "ref_schema_ron",
+      "ok": true,
+      "detail": "D:\\twdata\\reference\\ui3_extraction\\schema_wh3.ron"
+    },
+    {
+      "name": "ref_game_exe",
+      "ok": true,
+      "detail": "D:\\SteamLibrary\\steamapps\\common\\Total War WARHAMMER III\\Warhammer3.exe"
+    },
+    {
+      "name": "ref_loc_pack",
+      "ok": true,
+      "detail": "local_en.pack"
+    }
+  ]
+}
