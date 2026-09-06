@@ -441,18 +441,22 @@ class Store:
         eseq = pick.get('entity_seq')
         if eseq is None and seqs is not None:
             eseq = self._seq_of(seqs, pick)
-        self.conn.execute(
+        row = self.conn.execute(
             "INSERT INTO corpus.taken (decision_id, campaign_id, offer_seq, entity_seq,"
             " action_id, policy_id, ts, executed, confirmed, counted, refusal_id,"
             " latency_ms) VALUES (%s,%s,%s,%s,%s,%s,%s,false,false,false,%s,0)"
-            " ON CONFLICT (decision_id) DO NOTHING",
+            " ON CONFLICT (decision_id) DO NOTHING RETURNING campaign_id",
             (decision_id, camp, pick.get('offer_seq'), eseq,
              self._action(pick.get('action_type'), pick.get('key')),
              policy.get(pick.get('policy')), time.time(),
-             awaiting['awaiting_execution']))
+             awaiting['awaiting_execution'])).fetchone()
+        if row is not None:
+            self._count_taken(camp)
+
+    def _count_taken(self, campaign_id):
         self.conn.execute(
             "UPDATE corpus.campaign SET n_taken = n_taken + 1 WHERE campaign_id = %s",
-            (camp,))
+            (campaign_id,))
 
     def _respond(self, req_id, snapshot_id, **payload):
         self.conn.execute(
@@ -508,6 +512,7 @@ class Store:
                         (decision_id, camp,
                          self._action(result.get('action_type'), result.get('key')),
                          policy.get(result.get('policy')), time.time()) + vals).fetchone()
+                    self._count_taken(camp)
             if row is not None and counted:
                 self.conn.execute(
                     "UPDATE corpus.campaign SET n_counted = n_counted + 1"

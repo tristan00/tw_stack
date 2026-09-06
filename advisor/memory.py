@@ -248,8 +248,9 @@ _PB_ATTRIB_SQL = (
     " LEFT JOIN corpus.interrupt_battle_panel ib ON ib.interrupt_id = i.interrupt_id"
     " WHERE i.kind_id = %(kind)s AND i.counted"
     " AND ty.key IN ('attack_army','attack_settlement')"
-    " AND s.ts - t.ts <= %(win)s"
-    " ORDER BY i.interrupt_id")
+    " AND s.ts - t.ts <= %(win)s")
+
+_PB_ATTRIB_ORDER = " ORDER BY i.interrupt_id"
 
 
 def _army_targets(con, pairs):
@@ -307,7 +308,7 @@ def prebattle_attributions(con, camps=None):
     if camps is not None:
         sql += " AND s.campaign_id = ANY(%(camps)s)"
         params["camps"] = sorted(camps)
-    rows = con.execute(sql, params).fetchall()
+    rows = con.execute(sql + _PB_ATTRIB_ORDER, params).fetchall()
     army_pairs, sett_pairs = [], []
     for did, at, akey, chosen, result, casualties in rows:
         if at == "attack_army" and str(akey).startswith("cqi:"):
