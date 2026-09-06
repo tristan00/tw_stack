@@ -224,15 +224,22 @@ def from_store(db, t0, t1):
     sys.path.insert(0, common.ROOT)
     from decisions import pg
     rows = []
-    con = pg.connect(autocommit=True, readonly=True)
+    con = pg.connect(app_name="tw-timeline", autocommit=True, readonly=True,
+                     search_path=pg.CORPUS_PATH)
     try:
-        for did, ts, turn, seq, policy, ne, no, timings in con.execute(
-                "SELECT decision_id, ts, turn, decision_seq, policy, n_entities, n_offers,"
-                " timings FROM decisions WHERE ts BETWEEN %s AND %s ORDER BY ts", (t0, t1)):
+        for did, ts, turn, policy, ne, no, tm in con.execute(
+                "SELECT s.snapshot_id, s.ts, s.turn, pp.key, d.n_entities,"
+                " d.n_offers, to_jsonb(dt)"
+                " FROM corpus.snapshot s"
+                " JOIN corpus.decision d ON d.decision_id = s.snapshot_id"
+                " LEFT JOIN corpus.decision_timing dt ON dt.decision_id = s.snapshot_id"
+                " LEFT JOIN corpus.taken t ON t.decision_id = s.snapshot_id"
+                " LEFT JOIN dict.enum pp ON pp.enum_id = t.policy_id"
+                " WHERE s.ts BETWEEN %s AND %s ORDER BY s.ts", (t0, t1)):
             rows.append((ts, "store", "decision",
-                         "#%s turn=%s seq=%s policy=%s entities=%s offers=%s"
-                         % (did, turn, seq, policy, ne, no)))
-            tm = _jloads(timings)
+                         "#%s turn=%s policy=%s entities=%s offers=%s"
+                         % (did, turn, policy, ne, no)))
+            tm = tm or {}
             if tm.get("t_request"):
                 rows.append((float(tm["t_request"]), "store", "rpc",
                              "#%s request sent" % did))
@@ -242,34 +249,40 @@ def from_store(db, t0, t1):
                              % (did, tm.get("roundtrip_ms"), tm.get("pickup_lag_ms"))))
             if tm:
                 rows.append((ts, "store", "timing",
-                             "#%s collect=%sms score=%sms store=%sms housekeep=%sms %s"
+                             "#%s collect=%sms score=%sms store=%sms housekeep=%sms"
                              % (did, tm.get("collect_ms"), tm.get("score_ms"),
-                                tm.get("store_ms"), tm.get("housekeep_ms"),
-                                json.dumps(tm.get("housekeep_parts") or {},
-                                           separators=(",", ":")))[:380]))
-        for did, ts, ex, cf, ct, refusal, lat, policy, timing, diag in con.execute(
-                "SELECT decision_id, ts, executed, confirmed, counted, refusal, latency_ms,"
-                " policy, timing, diagnostics FROM taken WHERE ts BETWEEN %s AND %s"
-                " ORDER BY ts", (t0, t1)):
-            tm = _jloads(timing)
+                                tm.get("store_ms"), tm.get("housekeep_ms"))))
+        for did, ts, ex, cf, ct, refusal, lat, policy, exms, cfms, snms, stderr \
+                in con.execute(
+                "SELECT t.decision_id, t.ts, t.executed, t.confirmed, t.counted,"
+                " rr.key, t.latency_ms, pp.key, t.execute_ms, t.confirm_ms,"
+                " t.snapshot_ms, t.stderr FROM corpus.taken t"
+                " LEFT JOIN dict.enum rr ON rr.enum_id = t.refusal_id"
+                " LEFT JOIN dict.enum pp ON pp.enum_id = t.policy_id"
+                " WHERE t.ts BETWEEN %s AND %s ORDER BY t.ts", (t0, t1)):
             rows.append((ts, "store", "taken",
                          "#%s executed=%s confirmed=%s counted=%s refusal=%s latency=%sms "
                          "execute=%sms confirm=%sms snapshot=%sms policy=%s"
-                         % (did, ex, cf, ct, refusal, lat, tm.get("execute_ms"),
-                            tm.get("confirm_ms"), tm.get("snapshot_ms"), policy)))
-            for t, line in _stderr_lines(_jloads(diag).get("stderr"), t0, t1):
+                         % (did, ex, cf, ct, refusal, lat, exms, cfms, snms, policy)))
+            for t, line in _stderr_lines(stderr, t0, t1):
                 rows.append((t, "action", _classify_log(line), "#%s %s" % (did, line[:360])))
         for ts, turn, kind, root, nopt, chosen, ex, cf, ct, refusal, lat in con.execute(
-                "SELECT ts, turn, kind, root, n_options, chosen, executed, confirmed,"
-                " counted, refusal, latency_ms FROM interrupts WHERE ts BETWEEN %s AND %s"
-                " ORDER BY ts", (t0, t1)):
+                "SELECT s.ts, s.turn, ek.key, i.root,"
+                " (SELECT COUNT(*) FROM corpus.interrupt_option o"
+                "   WHERE o.interrupt_id = i.interrupt_id),"
+                " i.chosen, i.executed, i.confirmed, i.counted, rr.key, i.latency_ms"
+                " FROM corpus.interrupt i"
+                " JOIN corpus.snapshot s ON s.snapshot_id = i.interrupt_id"
+                " JOIN dict.enum ek ON ek.enum_id = i.kind_id"
+                " LEFT JOIN dict.enum rr ON rr.enum_id = i.refusal_id"
+                " WHERE s.ts BETWEEN %s AND %s ORDER BY s.ts", (t0, t1)):
             rows.append((ts, "store", "interrupt",
                          "%s root=%s turn=%s options=%s chose=%s executed=%s confirmed=%s "
                          "counted=%s refusal=%s latency=%sms"
                          % (kind, root, turn, nopt, chosen, ex, cf, ct, refusal, lat)))
         for ts, kind, payload in con.execute(
-                "SELECT ts, kind, payload FROM rpc_requests WHERE ts BETWEEN %s AND %s"
-                " ORDER BY ts", (t0, t1)):
+                "SELECT ts, kind, payload FROM corpus.rpc_request"
+                " WHERE ts BETWEEN %s AND %s ORDER BY ts", (t0, t1)):
             d = _jloads(payload)
             did = d.get("decision_id")
             if kind == "pick":
@@ -287,25 +300,33 @@ def from_store(db, t0, t1):
             else:
                 rows.append((ts, "store", "rpc", "%s #%s" % (kind, did)))
         for ts, req, err in con.execute(
-                "SELECT ts, req_id, error FROM rpc_responses WHERE ts BETWEEN %s AND %s"
-                " ORDER BY ts", (t0, t1)):
+                "SELECT ts, req_id, error FROM corpus.rpc_response"
+                " WHERE ts BETWEEN %s AND %s ORDER BY ts", (t0, t1)):
             rows.append((ts, "store", "rpc", "reply %s%s"
                          % (req, " error=%s" % str(err)[:120] if err else "")))
         for ts, key, turn, outcome, defeated, reason in con.execute(
-                "SELECT ts, campaign_key, turn, outcome, defeated, reason FROM postmortems"
-                " WHERE ts BETWEEN %s AND %s ORDER BY ts", (t0, t1)):
+                "SELECT p.ts, c.campaign_key, p.turns_played, o.key, p.defeated,"
+                " p.growth_reason FROM corpus.postmortem p"
+                " LEFT JOIN corpus.campaign c ON c.campaign_id = p.campaign_id"
+                " LEFT JOIN dict.enum o ON o.enum_id = p.outcome_id"
+                " WHERE p.ts BETWEEN %s AND %s ORDER BY p.ts", (t0, t1)):
             rows.append((ts, "store", "postmortem",
                          "%s turn=%s outcome=%s defeated=%s reason=%s"
                          % (key, turn, outcome, defeated, str(reason)[:160])))
-        for ts, key, turn, kind, payload in con.execute(
-                "SELECT ts, campaign_key, turn, kind, payload FROM diplomacy_events"
-                " WHERE ts BETWEEN %s AND %s ORDER BY ts", (t0, t1)):
+        for ts, key, turn, kind in con.execute(
+                "SELECT e.ts, c.campaign_key, e.turn, k.key"
+                " FROM corpus.diplomacy_event e"
+                " JOIN dict.enum k ON k.enum_id = e.kind_id"
+                " LEFT JOIN corpus.campaign c ON c.campaign_id = e.campaign_id"
+                " WHERE e.ts BETWEEN %s AND %s ORDER BY e.ts", (t0, t1)):
             rows.append((ts, "store", "diplomacy",
-                         "%s %s turn=%s %s" % (kind, key, turn, str(payload)[:200])))
+                         "%s %s turn=%s" % (kind, key, turn)))
         for pid, ts, c, total, cmap, fac, n, mean, explore, score, tied in con.execute(
-                "SELECT pick_id, ts, c, total_plays, campaign_map, faction, n, mean,"
-                " explore, score, tied FROM ucb_picks WHERE ts BETWEEN %s AND %s ORDER BY ts",
-                (t0, t1)):
+                "SELECT p.pick_id, p.ts, p.c, p.total_plays, cm.key, cf.key, p.n,"
+                " p.mean, p.explore, p.score, p.tied FROM corpus.ucb_pick p"
+                " JOIN dict.faction cf ON cf.id = p.faction_id"
+                " LEFT JOIN dict.campaign_map cm ON cm.id = p.campaign_map_id"
+                " WHERE p.ts BETWEEN %s AND %s ORDER BY p.ts", (t0, t1)):
             rows.append((ts, "store", "select",
                          "ucb c=%s picked %s on %s n=%s mean=%s explore=%s score=%s "
                          "plays=%s tied=%s (pick %s)"
