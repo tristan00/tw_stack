@@ -215,9 +215,11 @@ def _campaign_dict(con, dc, snapshot_id, campaign_key):
         return None
     out, set_ids = _invert(con, dc, 'snapshot_campaign', rows[0])
     _attach_sets(con, dc, out, set_ids)
-    for key in ('_eval_ms', 'difficulty', 'leader', 'selector'):
+    for key in ('_eval_ms', 'difficulty', 'leader'):
         if out.get(key) is None:
             out.pop(key, None)
+    if out.get('selector') is None and out.get('difficulty') is None:
+        out.pop('selector', None)
     out['campaign_uuid'] = campaign_key if campaign_key != out.get('faction') else None
     out['read_failures'] = _read_failures_of(con, snapshot_id)
     return out
@@ -305,6 +307,8 @@ def _char_state(con, dc, snapshot_id, entity_seq, character_id, cqi, world):
                       (snapshot_id, character_id))
     if ext:
         eout, eset_ids = _invert(con, dc, 'char_state_ext', ext[0])
+        if ext[0].get('armory_item_ids') is None:
+            eout = {}
         out.update(eout)
         _attach_sets(con, dc, out, eset_ids)
     return out
@@ -356,18 +360,32 @@ def _entities(con, dc, snapshot_id, campaign, world):
 MAX_ENTITIES = 64
 
 
+ICB_KEYS = ('_eval_ms', 'allies', 'armies', 'campaign_uuid', 'defeated',
+            'difficulty', 'faction', 'faction_cqi', 'game_version', 'income',
+            'is_researching', 'leader', 'll_wounded', 'lord_level', 'power_rank',
+            'settlements', 'treasury', 'turn', 'vassals')
+IWB_KEYS = ('armies', 'enemy_agents', 'hostiles', 'regions', 'ruins', 'settlements')
+
+
 def record(con, snapshot_id, legacy=True):
     t0 = time.time()
     dc = _dicts(con)
     head = con.execute(
-        "SELECT s.turn, c.campaign_key FROM corpus.snapshot s"
+        "SELECT s.turn, c.campaign_key, e.key FROM corpus.snapshot s"
         " JOIN corpus.campaign c ON c.campaign_id = s.campaign_id"
+        " JOIN dict.enum e ON e.enum_id = s.kind_id"
         " WHERE s.snapshot_id = %s", (snapshot_id,)).fetchone()
     if head is None:
         raise KeyError('snapshot %s not in the store' % snapshot_id)
-    turn, campaign_key = head[0], head[1]
+    turn, campaign_key, kind = head[0], head[1], head[2]
     campaign = _campaign_dict(con, dc, snapshot_id, campaign_key) or {}
     world = _world_dict(con, dc, snapshot_id)
+    if kind == 'interrupt':
+        campaign = {k: campaign[k] for k in ICB_KEYS if k in campaign}
+        world = {k: world[k] for k in IWB_KEYS if k in world}
+        for a in world.get('armies') or ():
+            a.pop('ap_per_turn', None)
+            a.pop('ap_remaining', None)
     entities = _entities(con, dc, snapshot_id, campaign, world)
     if legacy:
         types = legacy_types()
@@ -414,11 +432,13 @@ def _generated_index(record):
 
 
 def _pick_generated(cands, slot_index):
+    if not cands:
+        return None
     if slot_index is None:
-        return cands[0] if cands else None
-    for o in cands:
+        return cands.pop(0)
+    for i, o in enumerate(cands):
         if (o.get('params') or {}).get('slot_index') == slot_index:
-            return o
+            return cands.pop(i)
     return None
 
 

@@ -25,6 +25,7 @@ COUNT_PATHS = {
     'avail', 'max_slots', 'free_slots', 'buildings', 'settlement_level',
     'development_points', 'public_order', 'health', 'max_health', 'research_points',
     'n', 'dist', 'standing', 'corruption', 'trait_progress', 'hero_type_counts',
+    '_eval_ms',
     'ranks',
 }
 

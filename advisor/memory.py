@@ -239,18 +239,17 @@ _PB_ATTRIB_SQL = (
     " ib.result_state, ib.casualties_text"
     " FROM corpus.interrupt i"
     " JOIN corpus.snapshot s ON s.snapshot_id = i.interrupt_id"
-    " JOIN LATERAL (SELECT t2.decision_id, t2.action_id FROM corpus.taken t2"
-    " JOIN corpus.snapshot ds ON ds.snapshot_id = t2.decision_id"
-    " WHERE t2.campaign_id = s.campaign_id AND ds.ts <= s.ts"
+    " JOIN LATERAL (SELECT t2.decision_id, t2.action_id, t2.ts FROM corpus.taken t2"
+    " WHERE t2.campaign_id = s.campaign_id AND t2.ts <= s.ts"
     " AND (t2.refusal_id IS NULL OR t2.refusal_id != ALL(%(skip)s))"
-    " ORDER BY t2.decision_id DESC LIMIT 1) t ON TRUE"
+    " ORDER BY t2.ts DESC LIMIT 1) t ON TRUE"
     " JOIN dict.action a ON a.action_id = t.action_id"
     " JOIN dict.action_type ty ON ty.id = a.action_type_id"
     " LEFT JOIN corpus.interrupt_battle_panel ib ON ib.interrupt_id = i.interrupt_id"
     " WHERE i.kind_id = %(kind)s AND i.counted"
     " AND ty.key IN ('attack_army','attack_settlement')"
-    " AND s.ts - (SELECT ts FROM corpus.snapshot WHERE snapshot_id = t.decision_id)"
-    " <= %(win)s")
+    " AND s.ts - t.ts <= %(win)s"
+    " ORDER BY i.interrupt_id")
 
 
 def _army_targets(con, pairs):
@@ -270,6 +269,14 @@ def _settlement_targets(con, pairs):
     sids = [p[0] for p in pairs]
     keys = [p[1] for p in pairs]
     coords = {}
+    for sid, rkey, x, y in con.execute(
+            "SELECT wh.snapshot_id, dr.key, wh.x, wh.y FROM corpus.world_hostile wh"
+            " JOIN dict.enum k ON k.enum_id = wh.kind_id AND k.domain = 'hostile_kind'"
+            " AND k.key = 'settlement'"
+            " JOIN dict.region dr ON dr.id = wh.region_id"
+            " JOIN unnest(%s::bigint[], %s::text[]) AS u(sid, rkey)"
+            " ON u.sid = wh.snapshot_id AND u.rkey = dr.key", (sids, keys)):
+        coords.setdefault((sid, rkey), (x, y))
     for table in ("settlement_set_member", "ruin_set_member"):
         col = "settlement_set_id" if table.startswith("settlement") else "ruin_set_id"
         for sid, rkey, x, y in con.execute(

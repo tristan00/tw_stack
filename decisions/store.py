@@ -56,6 +56,10 @@ class _SnapshotRead:
 _SKIP_REFUSALS = ('awaiting_execution', 'campaign_died')
 
 
+DILEMMA_ID_KINDS = ('declare_war_cancel', 'dilemma', 'diplomacy_notice',
+                    'diplomacy_proposal', 'event_ack', 'war_declared')
+
+
 class DecisionStore:
 
     def __init__(self, run_dir=None, readonly=True):
@@ -250,7 +254,7 @@ class DecisionStore:
         heads = self.con.execute(
             "SELECT i.interrupt_id, s.ts, c.campaign_key, s.turn, ik.key, sa.key,"
             " i.chosen, i.answer, i.executed, i.confirmed, i.counted, rf.key,"
-            " dd.key, di.key, i.root_context, ps.turn"
+            " dd.key, di.key, i.root_context, ps.turn, i.root, rg.key"
             " FROM corpus.interrupt i"
             " JOIN corpus.snapshot s ON s.snapshot_id = i.interrupt_id"
             " JOIN corpus.campaign c ON c.campaign_id = s.campaign_id"
@@ -259,6 +263,7 @@ class DecisionStore:
             " LEFT JOIN dict.enum rf ON rf.enum_id = i.refusal_id"
             " LEFT JOIN dict.dilemma dd ON dd.id = i.dilemma_id"
             " LEFT JOIN dict.incident di ON di.id = i.incident_id"
+            " LEFT JOIN dict.region rg ON rg.id = i.region_id"
             " LEFT JOIN corpus.snapshot ps ON ps.snapshot_id = i.prev_decision_id"
             " WHERE TRUE" + where + " ORDER BY i.interrupt_id",
             tuple(args)).fetchall()
@@ -306,16 +311,20 @@ class DecisionStore:
                 'amount_demanded': amtd, 'amount_offered': amto}
         out = []
         for (iid, ts, ckey, turn, kind, state_at, chosen, answer, executed,
-             confirmed, counted, refusal, dkey, ikey, root_context, prev_turn) \
-                in heads:
-            screen_id = dkey or ikey or root_context
+             confirmed, counted, refusal, dkey, ikey, root_context, prev_turn,
+             root, region) in heads:
+            screen_id = ((root_context or root)
+                         if kind in DILEMMA_ID_KINDS else None)
             options = opts.get(iid) or {}
             for m in options.values():
                 m.setdefault('dilemma_id', screen_id)
+            panel = panels.get(iid) or {}
+            if region is not None:
+                panel['region'] = region
             out.append({'interrupt_id': iid, 'ts': ts, 'campaign_id': ckey,
                         'turn': turn, 'prev_turn': prev_turn, 'state_at': state_at,
                         'screen': kind, 'options': options, 'chosen': chosen,
                         'answer': answer, 'executed': executed,
                         'confirmed': confirmed, 'counted': counted,
-                        'refusal': refusal, 'panel': panels.get(iid) or {}})
+                        'refusal': refusal, 'panel': panel})
         return out

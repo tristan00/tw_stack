@@ -378,10 +378,10 @@ CREATE TABLE corpus.char_state_ext (
   resurrection_turns          SMALLINT,
   upkeep                      INTEGER,
   background_skill_id         INTEGER,
-  hidden_skill_state_set_id   BIGINT NOT NULL,
-  effect_bundle_set_id        BIGINT NOT NULL,
-  force_effect_bundle_set_id  BIGINT NOT NULL,
-  armory_item_ids             INTEGER[] NOT NULL,
+  hidden_skill_state_set_id   BIGINT,
+  effect_bundle_set_id        BIGINT,
+  force_effect_bundle_set_id  BIGINT,
+  armory_item_ids             INTEGER[],
   PRIMARY KEY (snapshot_id, character_id)
 );
 CREATE TABLE corpus.province_state (

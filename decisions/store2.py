@@ -246,8 +246,10 @@ class Store:
 
     def _has_ext(self, state):
         for src in rowmap.CHAR_STATE_EXT.values():
-            if src is None or src.startswith(rowmap.SET):
+            if src is None:
                 continue
+            if src.startswith(rowmap.SET):
+                src = src[len(rowmap.SET):]
             if src in state:
                 return True
         return False
@@ -565,6 +567,8 @@ class Store:
                       {'snapshot_id': snapshot_id})
             self._read_failures(snapshot_id, camp)
             self._row('snapshot_world', world, ids['world'], {'snapshot_id': snapshot_id})
+            self._ord_rows('world_army', snapshot_id, world.get('armies') or [])
+            self._ord_rows('world_hostile', snapshot_id, world.get('hostiles') or [])
             panel = rec.get('panel') or {}
             if panel and rec['kind'] in self.BATTLE_PANEL_KINDS:
                 self._battle_panel(snapshot_id, panel)
