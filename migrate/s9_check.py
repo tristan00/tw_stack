@@ -43,7 +43,7 @@ def main():
         have_cons = dict(con.execute(
             "SELECT conname, convalidated FROM pg_constraint c"
             " JOIN pg_namespace n ON n.oid = c.connamespace"
-            " WHERE n.nspname IN ('corpus','dict','ref','ops','analytics2','public')"))
+            " WHERE n.nspname IN ('corpus','dict','ref','ops','analytics','public')"))
         for c in cons:
             if c not in have_cons:
                 missing['constraints'].append(c)
@@ -56,7 +56,7 @@ def main():
         bad = sum(len(v) for v in missing.values())
         ok = bad == 0
         t1 = time.time()
-        for schema in ('corpus', 'dict', 'ops', 'analytics2'):
+        for schema in ('corpus', 'dict', 'ops', 'analytics'):
             for (t,) in con.execute(
                     "SELECT tablename FROM pg_tables WHERE schemaname=%s", (schema,)):
                 con.execute('ANALYZE %s."%s"' % (schema, t))

@@ -490,7 +490,7 @@ def main():
     ap.add_argument('--check', action='store_true')
     args = ap.parse_args()
     t0 = time.time()
-    log('enter port=%s' % os.environ.get('TW_PG_PORT', '55432'))
+    log('enter port=%s' % pg.PORT)
     con = pg.connect(app_name='tw-refbuild', autocommit=False)
     previous = live_manifest(con)
     found = packs.discover()

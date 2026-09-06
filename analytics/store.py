@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from decisions import pg
 
-SCHEMA = "analytics2"
+SCHEMA = "analytics"
 
 
 def log(msg):

@@ -25,7 +25,7 @@ CREATE VIEW corpus.campaign_ending AS
   FROM corpus.postmortem p JOIN corpus.campaign c USING (campaign_id)
   WHERE p.postmortem_id = (SELECT MAX(postmortem_id) FROM corpus.postmortem q WHERE q.campaign_id = p.campaign_id);
 
-CREATE VIEW analytics2.model_generation AS
+CREATE VIEW analytics.model_generation AS
   SELECT trial, generation, ts AS seg_from_ts,
          LEAD(ts) OVER (ORDER BY ts) AS seg_to_ts, campaigns, corpus_n_decisions AS corpus_decisions
   FROM ops.trial WHERE NOT archived;

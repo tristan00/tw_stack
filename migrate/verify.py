@@ -418,7 +418,7 @@ V4_QUERIES = (
     ('unvalidated_fks',
      "SELECT count(*) FROM pg_constraint c JOIN pg_namespace n"
      " ON n.oid = c.connamespace WHERE c.contype = 'f' AND NOT c.convalidated"
-     " AND n.nspname IN ('corpus','dict','ref','ops','analytics2')"),
+     " AND n.nspname IN ('corpus','dict','ref','ops','analytics')"),
 )
 
 

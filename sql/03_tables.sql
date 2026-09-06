@@ -2,7 +2,7 @@ CREATE SCHEMA dict;
 CREATE SCHEMA corpus;
 CREATE SCHEMA ref;
 CREATE SCHEMA ops;
-CREATE SCHEMA analytics2;
+CREATE SCHEMA analytics;
 CREATE TABLE dict.family (
   family      TEXT PRIMARY KEY,
   ref_tbl     TEXT NOT NULL,
@@ -1117,7 +1117,7 @@ CREATE TABLE migrate.id_map (
   new_id      BIGINT NOT NULL,
   PRIMARY KEY (old_table, old_id)
 );
-CREATE TABLE analytics2.state (
+CREATE TABLE analytics.state (
   tenant           TEXT PRIMARY KEY,
   formula_version  SMALLINT NOT NULL,
   watermark        BIGINT NOT NULL DEFAULT 0,
@@ -1126,7 +1126,7 @@ CREATE TABLE analytics2.state (
   last_run_seconds REAL,
   last_error       TEXT
 );
-CREATE TABLE analytics2.model_agreement (
+CREATE TABLE analytics.model_agreement (
   decision_id   BIGINT NOT NULL,
   pair          TEXT NOT NULL,
   status        TEXT NOT NULL,
@@ -1146,7 +1146,7 @@ CREATE TABLE analytics2.model_agreement (
   entity_kind_id SMALLINT,
   PRIMARY KEY (decision_id, pair)
 );
-CREATE TABLE analytics2.agreement_summary (
+CREATE TABLE analytics.agreement_summary (
   pair TEXT NOT NULL,
   scope TEXT NOT NULL,
   comparable INTEGER,
@@ -1159,7 +1159,7 @@ CREATE TABLE analytics2.agreement_summary (
   no_scores INTEGER,
   PRIMARY KEY (pair, scope)
 );
-CREATE TABLE analytics2.agreement_hist (
+CREATE TABLE analytics.agreement_hist (
   pair TEXT NOT NULL,
   bucket SMALLINT NOT NULL,
   lo REAL,
@@ -1167,7 +1167,7 @@ CREATE TABLE analytics2.agreement_hist (
   n INTEGER,
   PRIMARY KEY (pair, bucket)
 );
-CREATE TABLE analytics2.agreement_series (
+CREATE TABLE analytics.agreement_series (
   pair TEXT NOT NULL,
   axis TEXT NOT NULL,
   seq INTEGER NOT NULL,
@@ -1183,7 +1183,7 @@ CREATE TABLE analytics2.agreement_series (
   bucket_size INTEGER,
   PRIMARY KEY (pair, axis, seq)
 );
-CREATE TABLE analytics2.agreement_breakdown (
+CREATE TABLE analytics.agreement_breakdown (
   pair TEXT NOT NULL,
   dim TEXT NOT NULL,
   key TEXT NOT NULL,
@@ -1192,7 +1192,7 @@ CREATE TABLE analytics2.agreement_breakdown (
   top1_rate REAL,
   PRIMARY KEY (pair, dim, key)
 );
-CREATE TABLE analytics2.acquisition (
+CREATE TABLE analytics.acquisition (
   campaign_id           INTEGER NOT NULL,
   family                TEXT NOT NULL,
   key_id                INTEGER NOT NULL,
@@ -1206,7 +1206,7 @@ CREATE TABLE analytics2.acquisition (
   ranks                 SMALLINT,
   PRIMARY KEY (campaign_id, family, key_id, ctx)
 );
-CREATE TABLE analytics2.item_event (
+CREATE TABLE analytics.item_event (
   event_id     BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   campaign_id  INTEGER NOT NULL,
   character_id INTEGER NOT NULL,

@@ -49,7 +49,7 @@ def checkpoint(con, stage, state, rows_in=None, rows_out=None, started=None):
         (stage, state, str(os.getpid()), started, time.time(), rows_in, rows_out))
 
 
-NEW_SCHEMAS = ('corpus', 'dict', 'ref', 'ops', 'analytics2', 'migrate')
+NEW_SCHEMAS = ('corpus', 'dict', 'ref', 'ops', 'analytics', 'migrate')
 
 
 def stage_schema(con):

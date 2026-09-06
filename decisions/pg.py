@@ -33,7 +33,7 @@ def row_factory(cursor):
 
 
 HOST = _cfg("HOST", "127.0.0.1")
-PORT = int(_cfg("PORT", "55432"))
+PORT = int(_cfg("PORT", "55433"))
 DB = _cfg("DB", "tw_stack")
 USER = _cfg("USER", "tw")
 PASSWORD = _cfg("PASSWORD", "")

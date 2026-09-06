@@ -72,7 +72,7 @@ def main():
     cols = con.execute(
         "SELECT table_schema, table_name, column_name"
         " FROM information_schema.columns"
-        " WHERE table_schema IN ('corpus','dict','ops','analytics2','migrate')"
+        " WHERE table_schema IN ('corpus','dict','ops','analytics','migrate')"
         " AND (is_identity = 'YES' OR column_default LIKE 'nextval%')"
         " ORDER BY 1, 2").fetchall()
     seqs = []

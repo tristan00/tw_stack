@@ -52,11 +52,11 @@ def timed(name, fn, repeats=3):
 
 def main():
     t0 = time.time()
-    log('bench.legacy enter port=%s' % os.environ.get('TW_PG_PORT', '55432'))
     from decisions import pg, store
+    log('bench.legacy enter port=%s' % pg.PORT)
     from advisor import memory
 
-    out = {'ts': time.time(), 'port': int(os.environ.get('TW_PG_PORT', '55432')),
+    out = {'ts': time.time(), 'port': pg.PORT,
            'git_sha': os.popen('git rev-parse --short HEAD').read().strip(),
            'no_baseline': NO_BASELINE}
 

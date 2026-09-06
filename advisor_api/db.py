@@ -14,7 +14,7 @@ from decisions import pg
 _local = threading.local()
 _trace = contextvars.ContextVar("api_trace", default=None)
 
-SEARCH_PATH = "corpus,dict,refc,ref,analytics2,ops"
+SEARCH_PATH = "corpus,dict,refc,ref,analytics,ops"
 
 
 def trace_begin():
