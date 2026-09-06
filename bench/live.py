@@ -315,7 +315,7 @@ def main():
     ap.add_argument('--hours', type=int, default=24)
     ap.add_argument('--repeats', type=int, default=3)
     ap.add_argument('--window', type=int, default=1000)
-    ap.add_argument('--day', type=int, required=True)
+    ap.add_argument('--day', type=int, default=int(time.strftime('%j')))
     args = ap.parse_args()
 
     t0 = time.time()
