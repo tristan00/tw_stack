@@ -178,6 +178,7 @@ export function useApi<T>(
 let sharedSource: EventSource | null = null
 const listeners = new Set<(s: string) => void>()
 const STAMP_THROTTLE_MS = 10000
+const STAMP_RECONNECT_MS = 3000
 let lastEmit = 0
 let pendingStamp: string | null = null
 let pendingTimer: ReturnType<typeof setTimeout> | null = null
@@ -208,9 +209,15 @@ function onStamp(s: string) {
 
 function ensureSource() {
   if (sharedSource || typeof window === 'undefined') return
-  sharedSource = new EventSource('/api/events')
-  sharedSource.addEventListener('corpus', (ev) => {
+  const src = new EventSource('/api/events')
+  sharedSource = src
+  src.addEventListener('corpus', (ev) => {
     onStamp((ev as MessageEvent).data ?? '')
+  })
+  src.addEventListener('error', () => {
+    if (sharedSource !== src || src.readyState !== EventSource.CLOSED) return
+    sharedSource = null
+    if (listeners.size) setTimeout(ensureSource, STAMP_RECONNECT_MS)
   })
 }
 

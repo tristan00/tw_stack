@@ -5,6 +5,7 @@ import os
 import sys
 import threading
 import time
+import traceback
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
@@ -661,8 +662,11 @@ def run_campaigns(n=3, turns=20, plan="all",
                 log("== campaign %d LOST (faction destroyed; surfaced as %s because the bus "
                     "stops answering on the defeat screen)" % (i + 1, type(e).__name__))
             else:
-                entry.update(outcome="error", error=repr(e)[:300], **_played(e))
+                tb = traceback.format_exc()
+                entry.update(outcome="error", error=repr(e)[:300],
+                             traceback=tb[-4000:], **_played(e))
                 log("!! campaign %d failed: %s" % (i + 1, repr(e)[:200]))
+                log(tb)
             if "did not load" in str(e) or "never logged" in str(e):
                 launch_failures += 1
                 if launch_failures >= MAX_LAUNCH_FAILURES:
