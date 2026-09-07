@@ -14,9 +14,9 @@ Direct pytest also works:
 .venv/Scripts/python.exe -m pytest
 ```
 
-Direct pytest has a 20-second watchdog starting at project configuration; use python -m tests to enforce the complete process budget. Both commands collect only tests/unit by default. The default suite can run alongside tuning or runctl: it uses small synthetic inputs, has no model fitting, and does not query the database or GPU.
+Use python -m tests to enforce the 20-second process budget; direct pytest does not enforce a timeout. Both commands collect only tests/unit by default. The default suite uses small synthetic inputs, has no model fitting, and does not query the database or GPU.
 
-Default tests reject network connections, SQLite connections, database/model framework imports, and subprocess launches. File mutations are restricted to a unique test temporary directory and tests/.results. Bytecode writes are disabled. These process-local guards prevent accidental application interactions; they are not a security sandbox for untrusted native code. Application processes and their settings are untouched.
+Tests are selected to avoid interfering with tuning and runctl. There are no runtime access blockers or import restrictions. Keep tests independent of running applications by testing pure logic and using tiny synthetic fixtures.
 
 Pytest prints slowest phases and writes tests/.results/timings.json with collection time and every test's setup, call, teardown, and total durations. tests/.results/junit.xml provides CI-compatible results. Reports are overwritten on each run and ignored by Git. A forced timeout may interrupt these two reports; process.json is authoritative for the supervised run's outcome.
 
@@ -34,6 +34,6 @@ Framework-heavy checks remain under tests/adhoc; real database and GPU checks re
 .venv/Scripts/python.exe -m pytest --run-gpu-tests tests/integration/test_gnn_gpu.py
 ```
 
-These opt-in commands disable default isolation and its watchdog. Run them sequentially, with tuning and runctl stopped. Existing unittest-style classes are executed by pytest.
+These opt-in commands run checks outside the default suite and its time budget. Run them sequentially, with tuning and runctl stopped. Existing unittest-style classes are executed by pytest.
 
 Full-window tools remain under bench/, outside pytest discovery: gnn_first_step_check.py, gnn_edge_profile.py, gnn_input_profile.py, and gnn_profile.py. They require explicit invocation and may access real data, GPU resources, and application outputs. The first-step tool uses the cancelled 12-edge study's trial-0 parameters as its baseline.
