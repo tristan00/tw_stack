@@ -432,6 +432,45 @@ def resolve_dictionaries(con, build_id):
     return flips
 
 
+def resolve_live(con=None):
+    t0 = time.time()
+    own = con is None
+    if own:
+        con = pg.connect(app_name='tw-dictresolve', autocommit=False)
+    try:
+        prev = live_manifest(con)
+        if not prev:
+            log('dict.resolve skipped: no live reference build')
+            return 0
+        n = resolve_dictionaries(con, prev['build_id'])
+        con.commit()
+    finally:
+        if own:
+            con.close()
+    log('resolve_live exit %.0f ms  %d flips' % ((time.time() - t0) * 1000, n))
+    return n
+
+
+def build_geometry(con):
+    t0 = time.time()
+    from advisor.reference import build_map_geometry
+    n = build_map_geometry.run(con, verbose=False)
+    con.commit()
+    log('geometry exit %.1f s  %d regions' % (time.time() - t0, n))
+    return n
+
+
+def ensure_geometry(con):
+    t0 = time.time()
+    n = con.execute('SELECT count(*) FROM ops.region_geometry').fetchone()[0]
+    if n:
+        log('geometry ensure exit %.0f ms  %d regions present'
+            % ((time.time() - t0) * 1000, n))
+        return n
+    log('geometry ensure: ops.region_geometry is empty, tracing now')
+    return build_geometry(con)
+
+
 def build(con, defs, schema_version, found, fp):
     t0 = time.time()
     build_id = con.execute(
@@ -479,6 +518,7 @@ def build(con, defs, schema_version, found, fp):
     resolve_dictionaries(con, build_id)
     drop_schema_batched(con, 'ref_prev')
     apply_views(con)
+    build_geometry(con)
     log('build %d exit %.1f s  %d tables  %d rows  %d loc  %d fks'
         % (build_id, seconds, len(meta), n_rows, len(loc_rows), declared))
     return build_id, seconds
@@ -496,6 +536,9 @@ def main():
     found = packs.discover()
     fp = packs.fingerprint(found, None if args.force else previous)
     if previous and not args.force and fp.get('full') == previous.get('full'):
+        resolve_dictionaries(con, previous['build_id'])
+        ensure_geometry(con)
+        con.commit()
         log('reference unchanged build_id=%d (%.0f ms)'
             % (previous['build_id'], (time.time() - t0) * 1000))
         con.close()

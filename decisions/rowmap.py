@@ -14,6 +14,15 @@ SNAPSHOT_CAMPAIGN = {
     'resource_set_id': SET + 'resources',
     'hero_count_set_id': SET + 'hero_type_counts',
     'effect_bundle_set_id': SET + 'effect_bundles',
+    'net_income': 'net_income', 'expenditure': 'expenditure', 'upkeep': 'upkeep',
+    'trade_value': 'trade_value', 'tax_level': 'tax_level', 'influence': 'influence',
+    'food_production': 'food_production', 'food_consumption': 'food_consumption',
+    'imperium_level': 'imperium_level',
+    'settlement_income': 'settlement_income',
+    'province_income': 'province_income',
+    'raiding_income': 'raiding_income',
+    'effect_set_id': SET + 'effects',
+    'merc_pool_set_id': SET + 'faction_merc',
 }
 
 SNAPSHOT_WORLD = {
@@ -33,7 +42,8 @@ WORLD_ARMY = {
     'hp': 'hp', 'units': 'units', 'region_owner_id': 'region_owner',
     'region_id': 'region', 'province_id': 'province',
     'in_own_territory': 'in_own_territory', 'ap_remaining': 'ap_remaining',
-    'ap_per_turn': 'ap_per_turn',
+    'ap_per_turn': 'ap_per_turn', 'raiding_income': 'raiding_income',
+    'upkeep': 'upkeep',
 }
 
 WORLD_HOSTILE = {
@@ -60,6 +70,7 @@ CHAR_STATE = {
     'recruitable_set_id': SET + 'recruitable', 'unit_card_set_id': SET + 'unit_cards',
     'pending_queue_set_id': SET + 'pending_queue', 'equipped_set_id': SET + 'equipped',
     'horde_slot_set_id': SET + 'horde_slots', 'merc_pool_set_id': SET + 'merc_pools',
+    'skill_prereq_set_id': SET + 'skill_prereq',
 }
 
 CHAR_STATE_EXT = {
@@ -89,6 +100,7 @@ PROVINCE_STATE = {
     'slot_state_set_id': SET + 'slot_states',
     'effect_bundle_set_id': SET + 'effect_bundles',
     'plague_bundle_set_id': SET + 'plague_bundles',
+    'income_breakdown_set_id': SET + 'income_breakdown',
 }
 
 CAMPAIGN_STATE = {

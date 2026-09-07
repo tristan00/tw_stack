@@ -8,7 +8,8 @@ DICT_LIST = 'dict_list'
 COLLECTIONS = {
     'skills': (1, 'skill_set_member', LIST, {
         'skill_id': 'key', 'status_id': 'status', 'level': 'level',
-        'total_levels': 'total_levels', 'tier': 'tier'}),
+        'total_levels': 'total_levels', 'tier': 'tier',
+        'rank_required': 'rank_required'}),
     'stances': (2, 'stance_set_member', LIST, {
         'stance_id': 'key', 'active': 'active', 'can_activate': 'can_activate',
         'can_afford': 'can_afford'}),
@@ -102,6 +103,15 @@ COLLECTIONS = {
         'nap': 'nap', 'mil_access': 'mil_access', 'our_master': 'our_master'}),
     'stationed': (29, 'stationed_set_member', DICT_SCALAR, {
         'region_id': '{key}', 'cqi': '{value}'}),
+    'effects': (30, 'effect_set_member', LIST, {
+        'effect_bundle_id': 'bundle', 'effect_id': 'key',
+        'value': 'value', 'scope_id': 'scope'}),
+    'faction_merc': (31, 'faction_merc_set_member', LIST, {
+        'unit_id': 'key', 'base_max': 'base_max', 'current_max': 'current_max'}),
+    'income_breakdown': (32, 'income_breakdown_set_member', LIST, {
+        'label': 'label', 'amount': 'amount'}),
+    'skill_prereq': (33, 'skill_prereq_set_member', LIST, {
+        'skill_id': 'skill', 'parent_skill_id': 'parent'}),
 }
 
 LORD_POOL_CHILD = 'lord_pool_candidate'

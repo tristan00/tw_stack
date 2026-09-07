@@ -135,9 +135,14 @@ def game_version():
         return None
 
 
+def contributes(p):
+    return any(e[0].startswith('db/') or e[0].endswith('.loc') for e in p['index'])
+
+
 def fingerprint(found, previous=None):
     t0 = time.time()
-    log('fingerprint enter %d packs' % len(found))
+    found = [p for p in found if contributes(p)]
+    log('fingerprint enter %d contributing packs' % len(found))
     cheap = hashlib.sha256()
     for p in found:
         cheap.update(('%s|%d|%.6f' % (p['name'], p['size'], p['mtime'])).encode())

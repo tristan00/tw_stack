@@ -120,6 +120,14 @@ class Watchdog:
                 self._log("STUCK (%s) after %.0fs -- firing handler"
                           % (reason, detail.get("turn_s") or detail.get("idle_s") or 0))
                 try:
+                    import opslog
+                    opslog.record_stall(
+                        detail.get("idle_s") or detail.get("turn_s") or 0,
+                        turn=detail.get("turn"), last_roots=detail.get("roots"),
+                        recovered=False)
+                except Exception as e:
+                    self._log("stall not recorded: %s" % repr(e)[:120])
+                try:
                     self._on_stuck(reason, detail)
                 except Exception as e:
                     self._log("on_stuck handler raised: %s" % repr(e)[:160])

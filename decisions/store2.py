@@ -638,6 +638,134 @@ class Store:
             % ((time.time() - t0) * 1000, snapshot_id))
         return snapshot_id
 
+    def write_battles(self, rows):
+        t0 = time.time()
+        if not rows:
+            return 0
+        campaign_id = None
+        if self.campaigns:
+            campaign_id = list(self.campaigns.values())[-1]
+        facs, units, regions = set(), set(), set()
+        for r in rows:
+            if r.get('region'):
+                regions.add(r['region'])
+            for sd in ('attackers', 'defenders'):
+                for pt in r.get(sd) or []:
+                    if pt.get('faction'):
+                        facs.add(pt['faction'])
+                    for u in pt.get('units') or []:
+                        if u.get('unit_key'):
+                            units.add(u['unit_key'])
+        fmap = self.dicts.resolve('faction', sorted(facs))
+        umap = self.dicts.resolve('unit', sorted(units))
+        rmap = self.dicts.resolve('region', sorted(regions))
+        n = 0
+        with self.conn.unit('U9'):
+            for r in rows:
+                bid = self.conn.execute(
+                    "INSERT INTO corpus.battle (campaign_id, turn, ts, battle_type,"
+                    " autoresolved, attacker_result, defender_result, attacker_casualties,"
+                    " defender_casualties, attacker_kills, defender_kills, attacker_hp_lost,"
+                    " defender_hp_lost, attacker_routed, defender_routed, siege, naval,"
+                    " ambush, night, region_id)"
+                    " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+                    " RETURNING battle_id",
+                    (campaign_id, r.get('turn'), r.get('ts') or time.time(),
+                     r.get('battle_type'), r.get('autoresolved'), r.get('attacker_result'),
+                     r.get('defender_result'), r.get('attacker_casualties'),
+                     r.get('defender_casualties'), r.get('attacker_kills'),
+                     r.get('defender_kills'), r.get('attacker_hp_lost'),
+                     r.get('defender_hp_lost'), r.get('attacker_routed'),
+                     r.get('defender_routed'), r.get('siege'), r.get('naval'),
+                     r.get('ambush'), r.get('night'), rmap.get(r.get('region')))).fetchone()[0]
+                uord = 0
+                for side in ('attackers', 'defenders'):
+                    tag = 'attacker' if side == 'attackers' else 'defender'
+                    for pt in r.get(side) or []:
+                        self.conn.execute(
+                            "INSERT INTO corpus.battle_participant (battle_id, ord, side,"
+                            " char_cqi, mf_cqi, faction_id) VALUES (%s,%s,%s,%s,%s,%s)",
+                            (bid, pt.get('ord') or 0, tag, pt.get('char_cqi'),
+                             pt.get('mf_cqi'), fmap.get(pt.get('faction'))))
+                        for u in pt.get('units') or []:
+                            self.conn.execute(
+                                "INSERT INTO corpus.battle_unit (battle_id, ord, side,"
+                                " part_ord, unit_id, unit_cqi) VALUES (%s,%s,%s,%s,%s,%s)",
+                                (bid, uord, tag, pt.get('ord') or 0,
+                                 umap.get(u.get('unit_key')), u.get('unit_cqi')))
+                            uord += 1
+                n += 1
+        log('write_battles exit %.1f ms n=%d campaign_id=%s'
+            % ((time.time() - t0) * 1000, n, campaign_id))
+        return n
+
+    def write_finance(self, rows):
+        t0 = time.time()
+        if not rows:
+            return 0
+        campaign_id = None
+        if self.campaigns:
+            campaign_id = list(self.campaigns.values())[-1]
+        n = 0
+        with self.conn.unit('U10'):
+            for r in rows:
+                turn = r.get('turn')
+                ts = r.get('ts') or time.time()
+                for item in r.get('rows') or []:
+                    self.conn.execute(
+                        "INSERT INTO corpus.finance_panel_row (campaign_id, turn, ts,"
+                        " kind, ord, component_id, label, value, value_state)"
+                        " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                        (campaign_id, turn, ts, item.get('kind') or 'row',
+                         item.get('ord'), item.get('id'), item.get('label'),
+                         item.get('value'), item.get('value_state')))
+                    n += 1
+                for k, v in (r.get('totals') or {}).items():
+                    if v is None:
+                        continue
+                    self.conn.execute(
+                        "INSERT INTO corpus.finance_panel_row (campaign_id, turn, ts,"
+                        " kind, component_id, label, value)"
+                        " VALUES (%s,%s,%s,'total',%s,%s,%s)",
+                        (campaign_id, turn, ts, k, k, str(v)))
+                    n += 1
+        log('write_finance exit %.1f ms n=%d' % ((time.time() - t0) * 1000, n))
+        return n
+
+    def write_events(self, rows):
+        t0 = time.time()
+        if not rows:
+            return 0
+        campaign_id = None
+        if self.campaigns:
+            campaign_id = list(self.campaigns.values())[-1]
+        incidents = self.dicts.resolve(
+            'incident', sorted({r['incident'] for r in rows if r.get('incident')}))
+        dilemmas = self.dicts.resolve(
+            'dilemma', sorted({r['dilemma'] for r in rows if r.get('dilemma')}))
+        factions = self.dicts.resolve(
+            'faction', sorted({r['faction'] for r in rows if r.get('faction')}))
+        ancillaries = self.dicts.resolve(
+            'ancillary', sorted({r['ancillary'] for r in rows if r.get('ancillary')}))
+        regions = self.dicts.resolve(
+            'region', sorted({r['region'] for r in rows if r.get('region')}))
+        n = 0
+        with self.conn.unit('U8'):
+            for r in rows:
+                self.conn.execute(
+                    "INSERT INTO corpus.event (campaign_id, turn, ts, kind, incident_id,"
+                    " dilemma_id, choice, faction_id, ancillary_id, character_cqi,"
+                    " region_id) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (campaign_id, r.get('turn'), r.get('ts') or time.time(), r['kind'],
+                     incidents.get(r.get('incident')), dilemmas.get(r.get('dilemma')),
+                     r.get('choice'), factions.get(r.get('faction')),
+                     ancillaries.get(r.get('ancillary')), r.get('cqi'),
+                     regions.get(r.get('region'))))
+                n += 1
+        log('write_events exit %.1f ms n=%d campaign_id=%s'
+            % ((time.time() - t0) * 1000, n, campaign_id))
+        return n
+
     def write_diplomacy(self, row, req_id=None):
         t0 = time.time()
         log('write_diplomacy enter')

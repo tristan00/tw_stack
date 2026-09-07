@@ -73,6 +73,11 @@ def _num(x):
         return None
 
 
+def _int(x):
+    v = _num(x)
+    return None if v is None else int(v)
+
+
 _LUA_FACTION_RESOURCES = (
     "local f=cm:get_local_faction(true) "
     "if not f or f:is_null_interface() then return '' end "
@@ -197,7 +202,30 @@ _LUA_CAMPAIGN = (_G + "local okc,t0=pcall(os.clock) "
                  "local sn='' pcall(function() "
                  "sn=common.get_localised_string(l:get_surname()) end) "
                  "if sn and sn~='' then return fn..' '..sn end return fn end) "
-                 "if ok and v and v~='' then return v end return 'nil' end)()")
+                 "if ok and v and v~='' then return v end return 'nil' end)()"
+                 "..'|'..(function() local o={} "
+                 "local function n(fn) local ok,v=pcall(fn) "
+                 "if ok and v~=nil then o[#o+1]=tostring(v) else o[#o+1]='' end end "
+                 "n(function() return f:net_income() end) "
+                 "n(function() return f:expenditure() end) "
+                 "n(function() return f:upkeep() end) "
+                 "n(function() return f:trade_value() end) "
+                 "n(function() return f:tax_level() end) "
+                 "n(function() return f:influence() end) "
+                 "n(function() return f:food_production() end) "
+                 "n(function() return f:food_consumption() end) "
+                 "n(function() return f:imperium_level() end) "
+                 "n(function() return common.get_context_value("
+                 "'PlayersFaction.SettlementList.Sum(Income)') end) "
+                 "n(function() return common.get_context_value("
+                 "'PlayersFaction.ProvinceList.Sum(Income)') end) "
+                 "n(function() return common.get_context_value("
+                 "'PlayersFaction.MilitaryForceList.Sum(RaidingIncome)') end) "
+                 "return table.concat(o,'~') end)()")
+
+_ECON = ("net_income", "expenditure", "upkeep", "trade_value", "tax_level",
+         "influence", "food_production", "food_consumption", "imperium_level",
+         "settlement_income", "province_income", "raiding_income")
 
 
 _GAME_VERSION = ["unread"]
@@ -258,7 +286,17 @@ def _parse_campaign(raw):
                          else None),
             "difficulty": _num(p[16]) if len(p) > 16 else None,
             "leader": (p[17].strip() if len(p) > 17 and p[17].strip()
-                       and p[17].strip() != "nil" else None)}
+                       and p[17].strip() != "nil" else None),
+            **_parse_econ(p[18] if len(p) > 18 else "")}
+
+
+def _parse_econ(blob):
+    parts = blob.split("~") if blob else []
+    out = {}
+    for i, name in enumerate(_ECON):
+        raw = parts[i].strip() if i < len(parts) else ""
+        out[name] = _num(raw) if raw not in ("", "nil") else None
+    return out
 
 
 _LUA_REGIONS = (_G +
@@ -701,7 +739,26 @@ _LUA_PROVINCE = (_G +
     "return table.concat(o,',') end)()"
     "..'|'..(function() local l=g(s,'PlagueEffectBundleList') if type(l)~='table' then return '' end "
     "local o={} for i=1,#l do o[#o+1]=ts(g(l[i],'Key'))..'~'..ts(g(l[i],'TurnsRemaining')) end "
+    "return table.concat(o,',') end)()"
+    "..'|'..(function() local o={} "
+    "local pm='FactionProvinceManagerContext.IncomeBreakdownList' "
+    "local n=tonumber(ts(g(s,pm..'.Size'))) or 0 "
+    "for i=0,n-1 do local b=pm..'.At('..i..')' "
+    "  o[#o+1]=ts(g(s,b..'.StringValue'))..'~'..ts(g(s,b..'.IntValue')) end "
     "return table.concat(o,',') end)()")
+
+
+def _parse_income_breakdown(raw):
+    out = []
+    for chunk in str(raw or "").split(","):
+        if not chunk:
+            continue
+        bits = chunk.split("~")
+        if not bits[0] or bits[0] in ("nil", "-"):
+            continue
+        out.append({"label": bits[0],
+                    "amount": _int(bits[1]) if len(bits) > 1 and bits[1] else None})
+    return out
 
 
 def _parse_province(raw, region):
@@ -744,7 +801,8 @@ def _parse_province(raw, region):
             "has_port": (p[17] == "true") if len(p) > 17 else None,
             "has_walls": (p[18] == "true") if len(p) > 18 else None,
             "effect_bundles": _parse_bundles(p[19] if len(p) > 19 else ""),
-            "plague_bundles": _parse_bundles(p[20] if len(p) > 20 else "")}
+            "plague_bundles": _parse_bundles(p[20] if len(p) > 20 else ""),
+            "income_breakdown": _parse_income_breakdown(p[21] if len(p) > 21 else "")}
 
 
 _LUA_MOVE_CANDIDATES = (
@@ -829,8 +887,12 @@ _LUA_LORD_OFFERS = (_G +
     "if type(l)=='table' then for i=1,#l do local v=l[i] st[#st+1]=ts(g(v,'Key'))"
     "..'~'..ts(g(v,'IsActive'))..'~'..ts(g(v,'CanBeActivated'))..'~'..ts(g(v,'CanAfford')) end end end "
     "local sk={} local s=g(c,'SkillList') "
-    "if type(s)=='table' then for i=1,#s do sk[#sk+1]=ts(g(s[i],'Key'))..'~'..ts(g(s[i],'Status'))"
-    "..'~'..ts(g(s[i],'Level'))..'~'..ts(g(s[i],'TotalLevels'))..'~'..ts(g(s[i],'Tier')) end end "
+    "if type(s)=='table' then for i=1,#s do local si=s[i] "
+    "local nl=g(si,'NextLevelContext') local pp={} local pl=g(si,'ParentSkillsList') "
+    "if type(pl)=='table' then for j=1,#pl do pp[#pp+1]=ts(g(pl[j],'Key')) end end "
+    "sk[#sk+1]=ts(g(si,'Key'))..'~'..ts(g(si,'Status'))"
+    "..'~'..ts(g(si,'Level'))..'~'..ts(g(si,'TotalLevels'))..'~'..ts(g(si,'Tier'))"
+    "..'~'..ts(nl and g(nl,'RankRequired'))..'~'..table.concat(pp,';') end end "
     "local hk={} local h=g(c,'HiddenSkillList') "
     "if type(h)=='table' then for i=1,#h do hk[#hk+1]=ts(g(h[i],'Key')) end end "
     "local cr={} local q=g(c,'ChaosRealmTraitsList') "
@@ -844,6 +906,41 @@ _LUA_LORD_OFFERS = (_G +
     "..'~'..pts..'~'..(cr[k] and '1' or '0')..'~'..ts(g(t[i],'Key')) end end "
     "return table.concat(st,',')..'||'..table.concat(sk,',')..'||'..table.concat(hk,',')"
     "..'||'..table.concat(tr,',')")
+
+
+_LUA_FORCE_ECON = (_G +
+    "local f=cm:get_local_faction(true) local c=cco('CcoCampaignFaction',f:name()) "
+    "local l=g(c,'MilitaryForceList') if type(l)~='table' then return '' end "
+    "local o={} for i=1,#l do local m=l[i] "
+    "  local cc=g(m,'CommandingCharacterContext') "
+    "  o[#o+1]=ts(cc and g(cc,'CQI'))..'~'..ts(g(m,'RaidingIncome'))"
+    "..'~'..ts(g(m,'Upkeep')) end "
+    "return table.concat(o,',')")
+
+
+def _parse_force_econ(raw):
+    t0 = time.time()
+    out = {}
+    for row in str(raw or "").split(","):
+        p = row.split("~")
+        if len(p) < 2 or not _key(p[0]):
+            continue
+        out[str(_int(p[0]))] = {
+            "raiding_income": _int(p[1]) if len(p) > 1 and _key(p[1]) else None,
+            "upkeep": _int(p[2]) if len(p) > 2 and _key(p[2]) else None}
+    sys.stderr.write("collect: parse_force_econ exit %.1f ms n=%d\n"
+                     % ((time.time() - t0) * 1000, len(out)))
+    return out
+
+
+def _merge_force_econ(armies, econ):
+    if not econ:
+        return armies
+    for a in armies or []:
+        e = econ.get(str(a.get("cqi")))
+        if e:
+            a.update(e)
+    return armies
 
 
 _LUA_STATIONED = (_G +
@@ -911,8 +1008,12 @@ def _parse_horde_slots(raw):
 _LUA_HERO_OFFERS = (_G +
     "local c=cco('CcoCampaignCharacter','%(cqi)s') "
     "local sk={} local s=g(c,'SkillList') "
-    "if type(s)=='table' then for i=1,#s do sk[#sk+1]=ts(g(s[i],'Key'))..'~'..ts(g(s[i],'Status'))"
-    "..'~'..ts(g(s[i],'Level'))..'~'..ts(g(s[i],'TotalLevels'))..'~'..ts(g(s[i],'Tier')) end end "
+    "if type(s)=='table' then for i=1,#s do local si=s[i] "
+    "local nl=g(si,'NextLevelContext') local pp={} local pl=g(si,'ParentSkillsList') "
+    "if type(pl)=='table' then for j=1,#pl do pp[#pp+1]=ts(g(pl[j],'Key')) end end "
+    "sk[#sk+1]=ts(g(si,'Key'))..'~'..ts(g(si,'Status'))"
+    "..'~'..ts(g(si,'Level'))..'~'..ts(g(si,'TotalLevels'))..'~'..ts(g(si,'Tier'))"
+    "..'~'..ts(nl and g(nl,'RankRequired'))..'~'..table.concat(pp,';') end end "
     "local tk='' local ch=cm:get_character_by_cqi(%(cqi)s) "
     "if ch then local ok,v=pcall(function() return ch:character_type_key() end) "
     "if ok then tk=ts(v) end end "
@@ -978,7 +1079,69 @@ _LUA_MISSIONS = (_G +
 _MISSION_STATUS = {"0": "active", "1": "succeeded", "2": "cancelled", "3": "expired"}
 
 
+_LUA_FACTION_EFFECTS = (_G +
+    "local f=cm:get_local_faction(true) local out={} "
+    "local okb,bl=pcall(function() return f:effect_bundles() end) "
+    "if not okb or not bl then return '' end "
+    "for i=0,bl:num_items()-1 do local b=bl:item_at(i) "
+    "  local bk='' local okk,k=pcall(function() return b:key() end) "
+    "  if okk and k then bk=k end "
+    "  local oke,es=pcall(function() return b:effects() end) "
+    "  if oke and es then for j=0,es:num_items()-1 do local e=es:item_at(j) "
+    "    local ok1,ek=pcall(function() return e:key() end) "
+    "    local ok2,ev=pcall(function() return e:value() end) "
+    "    local ok3,sc=pcall(function() return e:scope() end) "
+    "    if ok1 and ek then out[#out+1]=bk..'~'..ek..'~'"
+    "      ..(ok2 and ev~=nil and tostring(ev) or '')..'~'"
+    "      ..(ok3 and sc~=nil and tostring(sc) or '') end end end end "
+    "return table.concat(out,'|')")
+
+
+def _parse_faction_effects(raw):
+    out = []
+    for row in (raw or "").split("|"):
+        if not row:
+            continue
+        p = row.split("~")
+        if len(p) < 2 or not p[1]:
+            continue
+        out.append({"bundle": p[0] or None, "key": p[1],
+                    "value": _num(p[2]) if len(p) > 2 and p[2] else None,
+                    "scope": (p[3] or None) if len(p) > 3 else None})
+    return out
+
+
+_LUA_FACTION_MERC = (_G +
+    "local f=cm:get_local_faction(true) local out={} "
+    "local ok,l=pcall(function() return f:mercenary_pool():mercenary_pool_units() end) "
+    "if not ok or not l then return '' end "
+    "for i=0,l:num_items()-1 do local u=l:item_at(i) "
+    "  local function s(m) local o,v=pcall(function() return u[m](u) end) "
+    "    if not o or v==nil then return '' end "
+    "    if type(v)=='userdata' then local o2,k=pcall(function() return v:key() end) "
+    "      if o2 and k then return tostring(k) end return '' end "
+    "    return tostring(v) end "
+    "  local k=s('unit_record') "
+    "  if k~='' then out[#out+1]=k..'~'..s('base_max_units')..'~'..s('current_max_units') end end "
+    "return table.concat(out,'|')")
+
+
+def _parse_faction_merc(raw):
+    out = []
+    for row in (raw or "").split("|"):
+        if not row:
+            continue
+        p = row.split("~")
+        if not p[0]:
+            continue
+        out.append({"key": p[0],
+                    "base_max": _int(p[1]) if len(p) > 1 and p[1] else None,
+                    "current_max": _int(p[2]) if len(p) > 2 and p[2] else None})
+    return out
+
+
 def _parse_missions(raw):
+    t0 = time.time()
     if raw is None or str(raw) in ("nil", "None"):
         return None
     out = []
@@ -992,6 +1155,8 @@ def _parse_missions(raw):
                     "cancelled": p[6] == "true", "pending": p[7] == "1",
                     "category": _key(p[8]) if len(p) > 8 else None,
                     "issuer": _key(p[9]) if len(p) > 9 else None})
+    sys.stderr.write("collect: parse_missions exit %.1f ms n=%d\n"
+                     % ((time.time() - t0) * 1000, len(out)))
     return out
 
 
@@ -1361,6 +1526,7 @@ def _parse_stance_skills(raw):
 
 
 def _parse_skills(sk_raw):
+    t0 = time.time()
     out = []
     for row in str(sk_raw or "").split(","):
         p = row.split("~")
@@ -1369,8 +1535,18 @@ def _parse_skills(sk_raw):
         out.append({"key": p[0], "status": p[1],
                     "level": _num(p[2]) if len(p) > 2 else None,
                     "total_levels": _num(p[3]) if len(p) > 3 else None,
-                    "tier": _num(p[4]) if len(p) > 4 else None})
+                    "tier": _num(p[4]) if len(p) > 4 else None,
+                    "rank_required": _int(p[5]) if len(p) > 5 and p[5] else None,
+                    "parents": [k for k in (p[6].split(";") if len(p) > 6 else [])
+                                if k and k not in ("nil", "-")]})
+    sys.stderr.write("collect: parse_skills exit %.1f ms n=%d\n"
+                     % ((time.time() - t0) * 1000, len(out)))
     return out
+
+
+def _skill_prereqs(skills):
+    return [{"skill": s["key"], "parent": k}
+            for s in (skills or []) for k in s.get("parents") or []]
 
 
 def _parse_traits(tr_raw):
@@ -1435,9 +1611,11 @@ def _parse_char_extra(raw):
 
 def _parse_hero_blob(raw):
     parts = str(raw or "").split("||")
+    _sk = _parse_skills(parts[2] if len(parts) > 2 else "")
     return {"is_agent": (parts[0] == "true") if parts else False,
             "can_embed": (parts[1] == "true") if len(parts) > 1 else False,
-            "skills": _parse_skills(parts[2] if len(parts) > 2 else ""),
+            "skills": _sk,
+            "skill_prereq": _skill_prereqs(_sk),
             "agent_type": parts[3].strip() if len(parts) > 3 else "",
             "hidden_skills": [k for k in (parts[4] if len(parts) > 4 else "").split(",") if k],
             "traits": _parse_traits(parts[5] if len(parts) > 5 else "")}
@@ -1518,12 +1696,19 @@ def snapshot(bus, active=None):
                          ("eval", _LUA_STATIONED), ("eval", _LUA_DIPLO_TARGETS),
                          ("eval", _LUA_ENEMY_AGENTS), ("eval", _LUA_AP_ALL),
                          ("eval", _LUA_WAR_GRAPH), ("eval", _LUA_FACTION_BUNDLES),
-                         ("trait_progress", ""), ("eval", _LUA_MISSIONS)], timeout=40.0)
+                         ("trait_progress", ""), ("eval", _LUA_MISSIONS),
+                         ("eval", _LUA_FACTION_EFFECTS),
+                         ("eval", _LUA_FACTION_MERC),
+                         ("eval", _LUA_FORCE_ECON)], timeout=40.0)
     prof["wave_a_ms"] = int((time.time() - t0) * 1000)
     camp = _parse_campaign(_bres(ra[0], "campaign_state"))
     prof["campaign_state_engine_ms"] = camp.pop("_eval_ms", None)
     camp["resources"] = _parse_resources(_bres(ra[1], "faction_resources", allow_nil=True))
     camp["effect_bundles"] = _parse_bundles(_bres(ra[11], "faction_bundles", allow_nil=True))
+    camp["effects"] = _parse_faction_effects(
+        _bres(ra[14], "faction_effects", allow_nil=True) if len(ra) > 14 else "")
+    camp["faction_merc"] = _parse_faction_merc(
+        _bres(ra[15], "faction_merc", allow_nil=True) if len(ra) > 15 else "")
     trait_progress = _parse_trait_progress(ra[12].get("chars") or [])
     missions_now = _parse_missions(_bres(ra[13], "missions", allow_nil=True))
     camp["campaign_map"] = campaign_map(bus, camp.get("campaign_uuid"))
@@ -1532,7 +1717,10 @@ def snapshot(bus, active=None):
     regs = _parse_regions(_bres(ra[2], "regions", allow_nil=True))
     rs = _ruins_of(regs)
     ruin_keys = {r["region"] for r in rs}
-    world = {"armies": _mask_ruin_owners(ra[3].get("chars") or [], ruin_keys),
+    force_econ = _parse_force_econ(
+        _bres(ra[16], "force_econ", allow_nil=True) if len(ra) > 16 else "")
+    world = {"armies": _merge_force_econ(
+                 _mask_ruin_owners(ra[3].get("chars") or [], ruin_keys), force_econ),
              "settlements": ra[4].get("setts") or [],
              "hostiles": _mask_ruin_owners(
                  [h for h in (ra[5].get("hostiles") or [])
@@ -1623,7 +1811,8 @@ def snapshot(bus, active=None):
         stances, skills, hidden, traits = _parse_stance_skills(
             _bres(rb[i + 1], "lord_blob:%s" % cqi, allow_nil=True))
         rc, rs_ = _parse_reach(_bres(rb[i + 3], "reach:%s" % cqi, allow_nil=True))
-        st.update(stances=stances, skills=skills, hidden_skills=hidden, traits=traits,
+        st.update(stances=stances, skills=skills, skill_prereq=_skill_prereqs(skills),
+                  hidden_skills=hidden, traits=traits,
                   recruitable=_parse_recruitable(
                       _bres(rb[i + 2], "recruitable:%s" % cqi, allow_nil=True)),
                   reach_chars=rc, reach_setts=rs_,

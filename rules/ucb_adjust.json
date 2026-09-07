@@ -1,6 +1,7 @@
 {
  "_comment": "Manual additions to the UCB start score, keyed by faction key. Applied as score = blend + explore + adjust for starts with enough plays; starts under MIN_PLAYS still score infinite and are played first. A copy at <TWDATA>/rules/ucb_adjust.json overrides this file.",
  "adjustments": {
+  "wh2_main_def_cult_of_pleasure": 0.2,
   "wh2_main_hef_nagarythe": 1.0,
   "wh3_main_sla_seducers_of_slaanesh": 0.2,
   "wh3_dlc27_sla_masque_of_slaanesh": 0.2,

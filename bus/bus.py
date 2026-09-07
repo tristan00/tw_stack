@@ -213,6 +213,37 @@ class Bus:
                 return None, off
             time.sleep(min(poll, max(0.02, deadline - time.time())))
 
+    def drain_rows(self, kinds, offset: int):
+        t0 = time.time()
+        kinds = frozenset(kinds)
+        try:
+            size = os.path.getsize(self.out_path)
+        except OSError:
+            return [], offset
+        if size < offset:
+            offset = 0
+        if size <= offset:
+            return [], offset
+        with open(self.out_path, "rb") as f:
+            f.seek(offset)
+            data = f.read()
+        parts = data.split(b"\n")
+        tail = parts.pop()
+        out = []
+        for bline in parts:
+            line = bline.decode("utf-8", "replace").strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if row.get("cmd") in kinds:
+                out.append(row)
+        common.waitlog("drain_rows", time.time() - t0, bool(out),
+                       "%d rows %s" % (len(out), ",".join(sorted(kinds))))
+        return out, size - len(tail)
+
     def _scan_result(self, offset: int, seq: int, channel: str | None) -> dict | None:
         try:
             with open(self.out_path, "rb") as f:

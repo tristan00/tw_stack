@@ -387,8 +387,10 @@ def run_campaigns(n=3, turns=20, plan="all",
     from executor import Executor
 
     import model as M
+    import opslog
     import random
     rng = random.Random(seed)
+    opslog.open_session(campaigns=n, turns=turns)
     ex = Executor(Bus())
     mix = ({"random": 1.0} if cold and strategies is None
            else P.normalize_strategies(strategies))
@@ -537,6 +539,8 @@ def run_campaigns(n=3, turns=20, plan="all",
                     trained = trained or entry.get("retrain_greedy_gnn")
                 for what, r in (("catboost", rep), ("interrupt", entry.get("retrain_interrupt")),
                                 ("greedy_gnn", entry.get("retrain_greedy_gnn"))):
+                    if r is not None:
+                        opslog.record_retrain(what, r, campaign_index=i + 1)
                     if r is not None and not r.get("trained"):
                         raise P.ModelUnavailable(
                             "retrain %d: %s trainer reported trained=false (rows=%s need=%s "
@@ -549,6 +553,9 @@ def run_campaigns(n=3, turns=20, plan="all",
                 entry["retrain"]["error"] = repr(e)[:250]
                 entry["outcome"] = "retrain_failed"
                 trained = entry["retrain"]
+                opslog.record_retrain("retrain", {"trained": False, "error": repr(e)[:250]},
+                                      campaign_index=i + 1)
+                opslog.close_session("failed")
                 _write(out_path, dict(report, campaigns=report["campaigns"] + [entry]))
                 log("!! retrain before run %d FAILED -- the run needs freshly usable models, "
                     "crashing instead of playing on without them: %s" % (i + 1, repr(e)[:180]))
@@ -697,6 +704,7 @@ def run_campaigns(n=3, turns=20, plan="all",
     report["seconds"] = round(time.time() - report["started"], 1)
     report["totals"] = _totals(report)
     _write(out_path, report)
+    opslog.close_session("complete", turns=(report.get("totals") or {}).get("turns"))
     log("\n" + "=" * 78)
     log("SESSION DONE in %.0fs -> %s" % (report["seconds"], out_path))
     for k, v in report["totals"].items():
@@ -1010,9 +1018,11 @@ INSERT INTO ops.trial (trial, ts, when_text, session, generation, started, runni
   ll_mean, ll_total, ll_per_turn, ll_campaigns_measured,
   ll_campaigns_gained, ll_campaigns_lost,
   timing_s_per_campaign, timing_s_per_turn, corpus_rows, corpus_n_decisions,
-  fit_trained, fit_rows, fit_mae_in_sample)
+  fit_trained, fit_rows, fit_mae_in_sample,
+  train_window, retrain_every, turn_budget, start_pool, status)
 VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,1,%s,%s,%s,%s,%s,%s,
-        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+        %s,%s,%s,%s,%s)
 ON CONFLICT (trial) DO UPDATE SET
   ts = EXCLUDED.ts, when_text = EXCLUDED.when_text, running = EXCLUDED.running,
   snapshots = ops.trial.snapshots + 1, campaigns = EXCLUDED.campaigns,
@@ -1034,7 +1044,10 @@ ON CONFLICT (trial) DO UPDATE SET
   corpus_rows = EXCLUDED.corpus_rows,
   corpus_n_decisions = EXCLUDED.corpus_n_decisions,
   fit_trained = EXCLUDED.fit_trained, fit_rows = EXCLUDED.fit_rows,
-  fit_mae_in_sample = EXCLUDED.fit_mae_in_sample
+  fit_mae_in_sample = EXCLUDED.fit_mae_in_sample,
+  train_window = EXCLUDED.train_window, retrain_every = EXCLUDED.retrain_every,
+  turn_budget = EXCLUDED.turn_budget, start_pool = EXCLUDED.start_pool,
+  status = EXCLUDED.status
 """
 
 
@@ -1074,7 +1087,10 @@ def _write_trial(row, log, quiet=False):
             l.get("campaigns_that_lost"),
             t.get("s_per_campaign"), t.get("s_per_turn"),
             corpus_at.get("rows"), corpus_at.get("n_decisions"),
-            fit.get("trained"), fit.get("rows"), fit.get("mae_in_sample")))
+            fit.get("trained"), fit.get("rows"), fit.get("mae_in_sample"),
+            common.LOOKBACK_CAMPAIGNS, row.get("retrain_every"),
+            row.get("turn_budget"), row.get("start_pool"),
+            "running" if row.get("running") else "done"))
         con.execute("DELETE FROM ops.trial_campaign WHERE trial = %s", (trial,))
         uuids = row.get("campaign_uuids") or []
         if uuids:

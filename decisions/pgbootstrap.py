@@ -10,7 +10,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from decisions import pg
 
 FILES = ('sql/03_tables.sql', 'sql/03_seed.sql', 'sql/03_views.sql',
-         'sql/03_constraints.sql')
+         'sql/03_constraints.sql',
+         'sql/05_capture_gaps.sql', 'sql/06_capture_gaps_constraints.sql',
+         'sql/07_effect_scope_family.sql', 'sql/08_skill_nodes.sql', 'sql/11_event.sql', 'sql/12_merc_pool_duplicates.sql', 'sql/13_drop_broken_slaves.sql', 'sql/14_drop_mission_runtime.sql', 'sql/15_drop_interrupt_payload.sql', 'sql/16_event_ancillary.sql', 'sql/17_battle.sql', 'sql/18_ops.sql', 'sql/19_diplomacy_state_change.sql', 'sql/20_income_sources.sql', 'sql/21_finance_panel.sql', 'sql/22_finance_categories.sql', 'sql/23_finance_value_state.sql')
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

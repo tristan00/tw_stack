@@ -1072,6 +1072,15 @@ CREATE TABLE ops.column_meta (
   description    TEXT,
   PRIMARY KEY (tbl, col)
 );
+CREATE TABLE ops.region_geometry (
+  region_id INTEGER PRIMARY KEY,
+  cx        DOUBLE PRECISION NOT NULL,
+  cy        DOUBLE PRECISION NOT NULL,
+  area_px   INTEGER NOT NULL,
+  map_w     INTEGER NOT NULL,
+  map_h     INTEGER NOT NULL,
+  outline   TEXT NOT NULL
+);
 CREATE TABLE ref.loc (
   tbl      TEXT NOT NULL,
   col      TEXT NOT NULL,

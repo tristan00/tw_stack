@@ -20,15 +20,66 @@ POLL = 0.1
 PRUNE_EVERY = 600
 
 
+EVENT_KINDS = ("incident_occured", "dilemma_issued", "dilemma_choice_made",
+               "ancillary_gained")
+
+
+BATTLE_KIND = "battle_completed"
+FINANCE_KIND = "finance_income"
+
+
+def _drain_events(bus, store, offset, counts, ctx):
+    rows, offset = bus.drain_rows(EVENT_KINDS + (BATTLE_KIND, FINANCE_KIND), offset)
+    if not rows:
+        return offset
+    finance = [r for r in rows if r.get("cmd") == FINANCE_KIND]
+    battles = [r for r in rows if r.get("cmd") == BATTLE_KIND]
+    rows = [r for r in rows if r.get("cmd") not in (BATTLE_KIND, FINANCE_KIND)]
+    if finance:
+        try:
+            nf = store.write_finance(finance)
+            counts["finance"] = counts.get("finance", 0) + nf
+            ctx.emit({"kind": "decisions_finance", "n": nf})
+        except Exception as e:
+            counts["error"] += 1
+            ctx.on_error("decisions-finance", e)
+    if battles:
+        try:
+            nb = store.write_battles(battles)
+            counts["battle"] = counts.get("battle", 0) + nb
+            ctx.emit({"kind": "decisions_battles", "n": nb})
+        except Exception as e:
+            counts["error"] += 1
+            ctx.on_error("decisions-battles", e)
+    if not rows:
+        return offset
+    out = []
+    for r in rows:
+        out.append({"kind": r.get("cmd"), "turn": r.get("turn"), "ts": r.get("ts"),
+                    "incident": r.get("incident"), "dilemma": r.get("dilemma"),
+                    "choice": r.get("choice"), "faction": r.get("faction"),
+                    "ancillary": r.get("ancillary"), "cqi": r.get("cqi"),
+                    "region": r.get("region")})
+    try:
+        n = store.write_events(out)
+        counts["event"] = counts.get("event", 0) + n
+        ctx.emit({"kind": "decisions_events", "n": n})
+    except Exception as e:
+        counts["error"] += 1
+        ctx.on_error("decisions-events", e)
+    return offset
+
+
 def run(ctx):
     from advisor.reference import check as refcheck
     refcheck.ensure()
     from bus import Bus
     bus = Bus()
     store, cur_dir, after_id = None, None, 0
+    event_off = bus.out_offset()
     ticks = 0
     counts = {"snapshot": 0, "turn": 0, "hash": 0, "decide": 0,
-              "verification": 0, "error": 0}
+              "verification": 0, "event": 0, "battle": 0, "error": 0}
     t_loop = time.time()
     sys.stderr.write("decisions_stream: poll loop starting (tick %.2fs)\n" % POLL)
     while ctx.is_running():
@@ -121,6 +172,8 @@ def run(ctx):
                     if rid:
                         journal.respond(out_dir, rid, error=(lambda _m: _m if len(_m) <= 700 else
                                                  _m[:200] + " ...<<cut>>... " + _m[-500:])(repr(e)))
+            if store is not None:
+                event_off = _drain_events(bus, store, event_off, counts, ctx)
             ticks += 1
             if ticks % PRUNE_EVERY == 0 and after_id:
                 gone_a, gone_b = journal.prune(out_dir, after_id)

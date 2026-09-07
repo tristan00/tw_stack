@@ -267,3 +267,44 @@ SELECT DISTINCT ON (entity_type, entity_key, button)
        entity_type, entity_key, button, record_key
   FROM scored
  ORDER BY entity_type, entity_key, button, r1, r2, r3, r4, record_key;
+
+CREATE OR REPLACE VIEW refc.dilemma_payloads AS
+SELECT d.id AS dilemma_id,
+       p.dilemma_key AS dilemma_key,
+       p.choice_key AS choice_key,
+       p.payload_key AS payload_key,
+       p.value AS value,
+       p.target_key AS target_key
+  FROM dict.dilemma d
+  JOIN ref.cdir_events_dilemma_payloads p
+    ON p.dilemma_key = replace(d."key", 'CcoCdirEventsDilemmaChoiceDetailRecord', '');
+
+CREATE OR REPLACE VIEW refc.incident_payloads AS
+SELECT i.id AS incident_id,
+       p.incident_key AS incident_key,
+       p.payload_key AS payload_key,
+       p.value AS value,
+       p.target_key AS target_key
+  FROM dict.incident i
+  JOIN ref.cdir_events_incident_payloads p ON p.incident_key = i."key";
+
+CREATE OR REPLACE VIEW refc.mission_payloads AS
+SELECT m.id AS mission_id,
+       p.mission_key AS mission_key,
+       p.status_key AS status_key,
+       p.payload_key AS payload_key,
+       p.value AS value,
+       p.target_key AS target_key
+  FROM dict.mission m
+  JOIN ref.cdir_events_mission_payloads p ON p.mission_key = m."key";
+
+CREATE OR REPLACE VIEW refc.mission_targets AS
+SELECT d.id AS mission_id,
+       r."key" AS mission_key,
+       r.mission_type AS mission_type,
+       r.event_category AS event_category,
+       r.location_x::integer AS location_x,
+       r.location_y::integer AS location_y,
+       r.quest_character AS quest_character
+  FROM dict.mission d
+  JOIN ref.missions r ON r."key" = d."key";

@@ -19,12 +19,6 @@ MIN_PART = 0.05
 TOLERANCES = (1.0, 1.4, 2.0, 2.8, 4.0, 5.6, 8.0, 11.0, 16.0, 22.0, 32.0)
 SPOT = ("hag_graef", "altdorf", "naggarond", "lothern", "karaz_a_karak", "couronne")
 
-DDL = ("CREATE TABLE IF NOT EXISTS ref.region_geometry ("
-       " region_id INTEGER PRIMARY KEY, cx DOUBLE PRECISION NOT NULL,"
-       " cy DOUBLE PRECISION NOT NULL, area_px INTEGER NOT NULL,"
-       " map_w INTEGER NOT NULL, map_h INTEGER NOT NULL, outline TEXT NOT NULL)")
-
-
 def _decode_tga(b):
     idlen, cmaptype, imgtype = b[0], b[1], b[2]
     cmfirst, cmlen, cmdepth = struct.unpack_from("<HHB", b, 3)
@@ -302,7 +296,7 @@ def extract(con, campaign):
 
 
 def store(con, geo, w, h):
-    con.execute(DDL)
+    t0 = time.time()
     from decisions import dicts
     ids = dicts.Dicts(con).resolve("region", sorted(geo))
     missing = sorted(set(geo) - set(ids))
@@ -316,12 +310,13 @@ def store(con, geo, w, h):
         total += len(blob)
         rows.append((ids[key], g["cx"], g["cy"], g["area_px"], w, h, blob))
     con.cursor().executemany(
-        "INSERT INTO ref.region_geometry(region_id, cx, cy, area_px, map_w, map_h, outline)"
+        "INSERT INTO ops.region_geometry(region_id, cx, cy, area_px, map_w, map_h, outline)"
         " VALUES(%s,%s,%s,%s,%s,%s,%s)"
         " ON CONFLICT (region_id) DO UPDATE SET cx=excluded.cx, cy=excluded.cy,"
         " area_px=excluded.area_px, map_w=excluded.map_w, map_h=excluded.map_h,"
         " outline=excluded.outline", rows)
-    print("geometry regions %d written to ref.region_geometry" % len(rows))
+    print("geometry store exit %.0f ms  %d regions written to ops.region_geometry"
+          % ((time.time() - t0) * 1000, len(rows)))
     print("outline payload %d bytes (%.2f MB) over %d rows, %d points"
           % (total, total / 1e6, len(rows),
              sum(len(r) for g in geo.values() for r in g["rings"])))
@@ -336,7 +331,7 @@ def report(con, geo, w, h):
             continue
         g = geo[key]
         row = con.execute(
-            "SELECT g.cx, g.cy, g.area_px FROM ref.region_geometry g"
+            "SELECT g.cx, g.cy, g.area_px FROM ops.region_geometry g"
             " JOIN dict.region d ON d.id = g.region_id WHERE d.key = %s",
             (key,)).fetchone()
         print("  %-16s %-46s centroid=(%7.1f,%7.1f) area=%6d px rings=%d points=%3d db=%s"
@@ -345,17 +340,26 @@ def report(con, geo, w, h):
                  "-" if row is None else "(%.1f,%.1f) %d px" % (row[0], row[1], row[2])))
 
 
-def main():
+def run(con, verbose=True):
     t0 = time.time()
+    for campaign in CAMPAIGNS:
+        geo, w, h = extract(con, campaign)
+        store(con, geo, w, h)
+        if verbose:
+            report(con, geo, w, h)
+    n = con.execute("SELECT count(*) FROM ops.region_geometry").fetchone()[0]
+    if not n:
+        raise RuntimeError("map geometry produced no rows for %s" % (CAMPAIGNS,))
+    print("map geometry exit %.1f s  %d regions" % (time.time() - t0, n))
+    return n
+
+
+def main():
     con = pg.connect(app_name="tw-mapgeom", autocommit=True)
     try:
-        for campaign in CAMPAIGNS:
-            geo, w, h = extract(con, campaign)
-            store(con, geo, w, h)
-            report(con, geo, w, h)
+        run(con)
     finally:
         con.close()
-    print("map geometry exit %.1f s" % (time.time() - t0))
 
 
 if __name__ == "__main__":

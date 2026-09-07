@@ -1402,6 +1402,89 @@ local function arm_defeat_listener()
 end
 
 
+local function uic_text(c)
+  return try(function() return c:GetStateText() end)
+end
+
+
+local function find_by_id(start, want, cap)
+  local found, n = nil, 0
+  local function walk(c, d)
+    if found or n > (cap or 60000) then return end
+    n = n + 1
+    if tostring(try(function() return c:Id() end)) == want then found = c return end
+    local k = try(function() return c:ChildCount() end) or 0
+    for i = 0, k - 1 do
+      local ch = try(function() return UIComponent(c:Find(i)) end)
+      if ch then walk(ch, d + 1) end
+    end
+  end
+  if start then walk(start, 0) end
+  return found, n
+end
+
+
+local function scrape_finance()
+  local r = root()
+  if not r then return nil end
+  local target, scanned = find_by_id(r, "projected_income")
+  if not target then return nil end
+  local rows = {}
+  local function child_named(parent, want)
+    local k = try(function() return parent:ChildCount() end) or 0
+    for i = 0, k - 1 do
+      local ch = try(function() return UIComponent(parent:Find(i)) end)
+      if ch and tostring(try(function() return ch:Id() end)) == want then return ch end
+    end
+    return nil
+  end
+  local function collect(parent_id, kind)
+    local p = child_named(target, parent_id)
+    if not p then return end
+    local m = try(function() return p:ChildCount() end) or 0
+    for i = 0, m - 1 do
+      local row = try(function() return UIComponent(p:Find(i)) end)
+      local val = row and child_named(row, "dy_value")
+      if row and val then
+        rows[#rows + 1] = {
+          kind = kind, ord = i,
+          id = or_null(try(function() return row:Id() end)),
+          label = or_null(uic_text(row)),
+          value = or_null(uic_text(val)),
+          value_state = or_null(try(function() return val:CurrentState() end)) }
+      end
+    end
+  end
+  collect("income_parent", "income")
+  collect("expenditure_parent", "expenditure")
+  local function total(path_id, leaf_id)
+    local holder = child_named(target, path_id)
+    if not holder then return nil end
+    if not leaf_id then return or_null(uic_text(holder)) end
+    local leaf = child_named(holder, leaf_id)
+    if not leaf then return nil end
+    return or_null(uic_text(leaf))
+  end
+  local totals = {
+    total_income = total("tx_total_income", "dy_sum_credit"),
+    total_expenditure = total("dy_sum_debit", nil),
+    income_next_turn = total("tx_income_annual", "dy_annual-income") }
+  return { rows = rows, totals = totals, scanned = scanned }
+end
+
+
+function handlers.finance(seq, rest)
+  local was_open = try(function()
+    return common.get_context_value([[IsHUDPanelOpen("finance_screen")]]) end)
+  local sent = try(function()
+    common.call_context_command([[ToggleHUDPanel("finance_screen")]]) return true end)
+  local now_open = try(function()
+    return common.get_context_value([[IsHUDPanelOpen("finance_screen")]]) end)
+  log({ seq = seq, cmd = "finance", sent = or_null(sent), turn = turn(),
+        was_open = or_null(was_open), open = or_null(now_open) })
+end
+
+
 local function arm_event_recorder()
   if not (core and core.add_listener) then
     log({ cmd = "event_recorder", armed = false, reason = "core:add_listener unavailable" })
@@ -1437,11 +1520,77 @@ local function arm_event_recorder()
               faction = or_null(try(function() return context:faction():name() end)) })
       end, true)
 
+    core:add_listener("twcontrol_ancillary_gained", "CharacterAncillaryGained", true,
+      function(context)
+        local anc = nil
+        for _, acc in ipairs({ "ancillary", "ancillary_key", "string" }) do
+          if anc == nil then
+            local v = try(function() return context[acc](context) end)
+            if v ~= nil then anc = v end
+          end
+        end
+        local ch = try(function() return context:character() end)
+        log({ cmd = "ancillary_gained", turn = turn(),
+              ancillary = or_null(anc),
+              cqi = or_null(try(function() return ch:command_queue_index() end)),
+              region = or_null(try(function() return ch:region():name() end)),
+              faction = or_null(try(function() return ch:faction():name() end)) })
+      end, true)
+
     core:add_listener("twcontrol_battle_completed", "BattleCompleted", true,
       function(context)
+        local pb = try(function() return context:model():pending_battle() end)
+        local function p(fn) return or_null(try(fn)) end
+        local function side(n, getter, units_getter)
+          local out = {}
+          for i = 1, (try(n) or 0) do
+            local cqi, mf, fac = try(function()
+              local a, b, c = getter(i); return { a, b, c } end), nil, nil
+            local trio = cqi
+            local row = { ord = i - 1 }
+            if type(trio) == "table" then
+              row.char_cqi = or_null(trio[1])
+              row.mf_cqi = or_null(trio[2])
+              row.faction = or_null(trio[3])
+            end
+            local us = try(function() return units_getter(i) end)
+            local ul = {}
+            if type(us) == "table" then
+              for j = 1, #us do
+                local u = us[j]
+                ul[#ul + 1] = { unit_key = or_null(try(function() return u.unit_key end)),
+                                unit_cqi = or_null(try(function() return u.unit_cqi end)) }
+              end
+            end
+            row.units = ul
+            out[#out + 1] = row
+          end
+          return out
+        end
         log({ cmd = "battle_completed", turn = turn(),
-              autoresolved = or_null(try(function()
-                return context:model():pending_battle():has_been_autoresolved() end)) })
+              battle_type = p(function() return pb:battle_type() end),
+              autoresolved = p(function() return pb:is_auto_resolved() end),
+              attacker_result = p(function() return pb:attacker_battle_result() end),
+              defender_result = p(function() return pb:defender_battle_result() end),
+              attacker_casualties = p(function() return pb:attacker_casulaties() end),
+              defender_casualties = p(function() return pb:defender_casulaties() end),
+              attacker_kills = p(function() return pb:attacker_kills() end),
+              defender_kills = p(function() return pb:defender_kills() end),
+              attacker_hp_lost = p(function() return pb:attacker_total_hp_lost() end),
+              defender_hp_lost = p(function() return pb:defender_total_hp_lost() end),
+              attacker_routed = p(function() return pb:percentage_of_attacker_routed() end),
+              defender_routed = p(function() return pb:percentage_of_defender_routed() end),
+              siege = p(function() return pb:siege_battle() end),
+              naval = p(function() return pb:naval_battle() end),
+              ambush = p(function() return pb:ambush_battle() end),
+              night = p(function() return pb:night_battle() end),
+              region = p(function() return pb:region_data():region():name() end),
+              attackers = side(function() return cm:pending_battle_cache_num_attackers() end,
+                               function(i) return cm:pending_battle_cache_get_attacker(i) end,
+                               function(i) return cm:pending_battle_cache_get_attacker_units(i) end),
+              defenders = side(function() return cm:pending_battle_cache_num_defenders() end,
+                               function(i) return cm:pending_battle_cache_get_defender(i) end,
+                               function(i) return cm:pending_battle_cache_get_defender_units(i) end) })
       end, true)
 
 
@@ -1490,6 +1639,26 @@ local function arm_event_recorder()
       function(context)
         local pname = or_null(try(function() return context.string end))
         log({ cmd = "panel", opened = true, turn = turn(), name = pname })
+
+        local pl = string.lower(tostring(pname))
+        if string.find(pl, "finance") or string.find(pl, "treasur") then
+          local function grab(tag)
+            local fin = scrape_finance()
+            if fin and #fin.rows > 0 then
+              log({ cmd = "finance_income", turn = turn(), panel = pname, at = tag,
+                    rows = fin.rows, totals = fin.totals, scanned = fin.scanned })
+              return true
+            end
+            return false
+          end
+          if not grab("open") then
+            for _, wait in ipairs({ 0.3, 0.8, 1.5 }) do
+              try(function()
+                cm:callback(function() grab("delay" .. wait) end, wait)
+              end)
+            end
+          end
+        end
 
         if pname == "campaign_victory" then
           local seen = {}

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 
 from advisor.mapgraph import schema as S
 from advisor.mapgraph import build as B
@@ -37,13 +38,17 @@ def _load(model_dir, tag):
 class Ranker:
 
     def __init__(self, model_dir=MODEL_DIR):
+        t0 = time.time()
         self.model_dir = model_dir
         self.last_reward = None
         self.misses = 0
         self._warned = False
         self.net, self.meta = _load(model_dir, "mapgraph.greedy_rank")
-        self.graph_config = GC.from_dict((self.meta or {}).get("graph_config"))
         self.ready = self.net is not None
+        self.graph_config = (GC.from_dict(self.meta.get("graph_config"))
+                             if self.ready else None)
+        sys.stderr.write("mapgraph.greedy_rank: ranker exit %.0f ms ready=%s\n"
+                         % ((time.time() - t0) * 1000, self.ready))
 
     def score_elig(self, offers, record, graph=None):
         if not self.ready:

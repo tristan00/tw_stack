@@ -261,7 +261,8 @@ def open_segment(vals, note=None):
     finally:
         con.close()
     os.environ["TW_SEGMENT_ID"] = str(sid)
-    return {"segment_id": sid}
+    os.environ["TW_LAUNCH_ID"] = str(sid)
+    return {"segment_id": sid, "launch_id": sid}
 
 
 def version_unbumped(info):
@@ -379,6 +380,22 @@ def harness_tick():
         retention.sweep(apply=True, log=_harness_note)
     except Exception as e:
         _harness_note("retention sweep failed: %r" % (e,))
+    try:
+        from analytics import db_stats
+        nt, nc = db_stats.refresh()
+        _harness_note("db stats refreshed: %d tables, %d columns" % (nt, nc))
+    except Exception as e:
+        _harness_note("db stats refresh failed: %r" % (e,))
+    try:
+        from analytics import diplo_changes
+        _harness_note("diplomacy state changes: %d intervals" % diplo_changes.refresh())
+    except Exception as e:
+        _harness_note("diplomacy state change refresh failed: %r" % (e,))
+    try:
+        from advisor.reference import build_reference
+        _harness_note("dictionaries resolved: %d flips" % build_reference.resolve_live())
+    except Exception as e:
+        _harness_note("dictionary resolve failed: %r" % (e,))
     if os.path.exists(common.HARNESS_OFF):
         _harness_note("HARNESS_OFF present -- standing down")
         return "off"
