@@ -1,42 +1,39 @@
-# Central test suite
+# Project tests
 
-Run from the repository root:
-
-```powershell
-.venv/Scripts/python.exe -m unittest discover -s tests -t . -v
-```
-
-The default suite runs the GNN and CatBoost unit tests. Database and CUDA checks are skipped unless explicitly enabled. Discovery does not launch tuning studies or full-window benchmarks.
-
-Run only the GNN unit tests:
+Install requirements-test.txt into the project virtual environment. Run from the repository root:
 
 ```powershell
-.venv/Scripts/python.exe -m unittest tests.unit.test_gnn_input tests.unit.test_gnn_edges -v
+.venv/Scripts/python.exe -m tests
 ```
 
-Database integration checks compare projected inputs with gameplay hydration and serial graph construction with parallel construction:
+This launches pytest with a 20-second deadline covering the entire pytest process, including startup, collection, fixtures, tests, and reporting. Timeout terminates only the test process and returns exit code 124. Automatic third-party plugin loading is disabled and numerical library threads are limited to one. The supervisor writes tests/.results/process.json with measured process wall time and exit code.
+
+Direct pytest also works:
 
 ```powershell
-$env:TW_RUN_INTEGRATION = '1'
-.venv/Scripts/python.exe -m unittest tests.integration.test_gnn_projection tests.integration.test_gnn_source -v
-Remove-Item Env:TW_RUN_INTEGRATION
+.venv/Scripts/python.exe -m pytest
 ```
 
-The GPU check validates tensor batching and source-storage release:
+Direct pytest has a 20-second watchdog starting at project configuration; use python -m tests to enforce the complete process budget. Both commands collect only tests/unit by default. The default suite can run alongside tuning or runctl: it uses small synthetic inputs, has no model fitting, and does not query the database or GPU.
+
+Default tests reject network connections, SQLite connections, database/model framework imports, and subprocess launches. File mutations are restricted to a unique test temporary directory and tests/.results. Bytecode writes are disabled. These process-local guards prevent accidental application interactions; they are not a security sandbox for untrusted native code. Application processes and their settings are untouched.
+
+Pytest prints slowest phases and writes tests/.results/timings.json with collection time and every test's setup, call, teardown, and total durations. tests/.results/junit.xml provides CI-compatible results. Reports are overwritten on each run and ignored by Git. A forced timeout may interrupt these two reports; process.json is authoritative for the supervised run's outcome.
+
+## Adding tests
+
+Put pure logic checks under tests/unit/test_*.py, using pytest assertions and fixtures. Keep synthetic inputs small and use tmp_path for files. Prefer tests that finish in milliseconds. No live services, model imports, subprocesses, application state changes, or large datasets belong here. A check that pushes the suite over 20 seconds belongs outside the default suite until its cost is reduced. Collection/import time counts too.
+
+## Explicit checks
+
+Framework-heavy checks remain under tests/adhoc; real database and GPU checks remain under tests/integration. Default discovery excludes these directories before importing them, including pytest tests. Explicit paths require the corresponding opt-in flag.
 
 ```powershell
-$env:TW_RUN_GPU_TESTS = '1'
-.venv/Scripts/python.exe -m unittest tests.integration.test_gnn_gpu -v
-Remove-Item Env:TW_RUN_GPU_TESTS
+.venv/Scripts/python.exe -m pytest --run-adhoc tests/adhoc
+.venv/Scripts/python.exe -m pytest --run-integration tests/integration/test_gnn_source.py tests/integration/test_gnn_projection.py
+.venv/Scripts/python.exe -m pytest --run-gpu-tests tests/integration/test_gnn_gpu.py
 ```
 
-Run integration checks and benchmarks sequentially, with the tuning study stopped. The default unit suite uses CPU only.
+These opt-in commands disable default isolation and its watchdog. Run them sequentially, with tuning and runctl stopped. Existing unittest-style classes are executed by pytest.
 
-Performance tools remain under `bench/` because they measure real workloads rather than run during test discovery:
-
-- `gnn_first_step_check.py`: full-window startup and first optimizer-step measurement using trial 0 from `bench/gnn-study-12edges-window2500-20260906-162344/trials.json`. Requires that saved study, the database, CUDA, and a new output directory.
-- `gnn_edge_profile.py`: per-relation calibration and graph-size measurements. Calibration writes `advisor/mapgraph/edge_defaults.json`.
-- `gnn_input_profile.py`: input-path CPU profiling.
-- `gnn_profile.py`: phase-level profiling for a selected workload.
-
-The old `gnn_startup_check.py` was superseded by the full-window check. The standalone projection and parallel checks now live in the integration suite. The old tuner smoke script was removed; the suite checks GPU-budget calculation and tuner edge configuration without starting studies.
+Full-window tools remain under bench/, outside pytest discovery: gnn_first_step_check.py, gnn_edge_profile.py, gnn_input_profile.py, and gnn_profile.py. They require explicit invocation and may access real data, GPU resources, and application outputs. The first-step tool uses the cancelled 12-edge study's trial-0 parameters as its baseline.

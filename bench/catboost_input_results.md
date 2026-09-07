@@ -28,7 +28,7 @@ The baseline comparison against commit `3fa3235e7e9d1abd711724e90c032fbcd77b517d
 Reproduce from the repository root:
 
 ```powershell
-.venv/Scripts/python.exe -m unittest tests.unit.test_catboost_input -v
+.venv/Scripts/python.exe -m pytest --run-adhoc tests/adhoc/test_catboost_input.py
 .venv/Scripts/python.exe bench/catboost_input_check.py 1500
 .venv/Scripts/python.exe bench/catboost_input_profile.py --pool --fit --window 4000 --output bench/catboost-window4000
 .venv/Scripts/python.exe advisor/model.py report --window 4000

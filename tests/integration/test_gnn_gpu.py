@@ -4,7 +4,7 @@ import unittest
 import torch
 
 from advisor.mapgraph import train as T
-from tests.unit import test_gnn_input as inputs
+from tests.adhoc import test_gnn_input as inputs
 
 
 @unittest.skipUnless(os.environ.get("TW_RUN_GPU_TESTS") == "1" and torch.cuda.is_available(),
