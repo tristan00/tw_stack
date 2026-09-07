@@ -32,14 +32,14 @@ class GraphModelChecks(unittest.TestCase):
         q.sum().backward()
         self.assertTrue(any(p.grad is not None for p in model.parameters()))
 
-    def test_defaults_match_observed_medians_and_unobserved_policy(self):
+    def test_defaults_match_observed_p95_and_unobserved_policy(self):
         import json
-        from bench.gnn_edge_profile import median
-        self.assertEqual(median({1: 1, 100: 1}), 51)
+        from bench.gnn_edge_profile import percentile
+        self.assertEqual(percentile({1: 95, 100: 5}, .95), 1)
         document = json.loads(GC.DEFAULTS_PATH.read_text())
         for name, evidence in document["evidence"].items():
-            medians = []
+            percentiles = []
             for side in ("forward", "reverse"):
                 values = np.repeat([int(v) for v in evidence[side]], list(evidence[side].values()))
-                medians.append(int(np.ceil(np.median(values))) if len(values) else 0)
-            self.assertEqual(document["limits"][name], max(1, *medians), name)
+                percentiles.append(int(np.quantile(values, .95, method="inverted_cdf")) if len(values) else 0)
+            self.assertEqual(document["limits"][name], max(1, *percentiles), name)

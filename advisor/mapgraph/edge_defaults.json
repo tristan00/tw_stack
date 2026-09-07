@@ -1,74 +1,74 @@
 {
-  "method": "Maximum of forward and reverse positive incoming-degree medians; p99 tuning upper bounds; one for unobserved relations (user specified)",
+  "method": "Maximum of forward and reverse positive incoming-degree p95; p99 tuning upper bounds; one for unobserved relations (user specified)",
   "window": 4000,
   "sample": 4096,
   "population": 189118,
   "valid_graphs": 4084,
   "skipped": 12,
   "limits": {
-    "adj": 2,
-    "in_prov": 2,
+    "adj": 5,
+    "in_prov": 4,
     "sett_of": 1,
-    "owns_region": 1,
-    "owns_sett": 2,
-    "owns_char": 2,
-    "of_race": 1,
-    "at_region": 1,
+    "owns_region": 4,
+    "owns_sett": 4,
+    "owns_char": 5,
+    "of_race": 5,
+    "at_region": 3,
     "at_sett": 1,
     "besieging": 1,
     "garrisons": 1,
-    "in_province": 2,
-    "near": 6,
-    "can_reach": 4,
-    "dip_met": 10,
-    "dip_war": 1,
+    "in_province": 6,
+    "near": 20,
+    "can_reach": 10,
+    "dip_met": 17,
+    "dip_war": 3,
     "dip_allied": 1,
     "dip_trade": 1,
     "dip_vassal": 1,
-    "dip_nap": 1,
+    "dip_nap": 2,
     "dip_mil_ally": 1,
     "dip_def_ally": 1,
     "dip_mil_access": 1,
-    "has_slot": 4,
-    "slot_filled": 1,
+    "has_slot": 10,
+    "slot_filled": 2,
     "slot_locked": 1,
     "slot_building": 1,
-    "of_chain": 3,
-    "has_edict": 1,
-    "tech_requires": 1,
+    "of_chain": 5,
+    "has_edict": 2,
+    "tech_requires": 3,
     "researching": 1,
     "unlocks": 1,
-    "queued": 1,
-    "in_army": 5,
-    "innate": 3,
-    "skill_active": 7,
-    "skill_rank_locked": 8,
-    "skill_inactive": 30,
-    "tech_researched": 1,
-    "tech_available": 4,
-    "tech_locked": 53,
-    "skill_child_of": 1,
+    "queued": 2,
+    "in_army": 9,
+    "innate": 5,
+    "skill_active": 16,
+    "skill_rank_locked": 15,
+    "skill_inactive": 46,
+    "tech_researched": 3,
+    "tech_available": 13,
+    "tech_locked": 71,
+    "skill_child_of": 6,
     "chain_next_level": 1,
-    "wears": 1,
-    "holds_free": 1,
-    "grants": 2,
+    "wears": 4,
+    "holds_free": 4,
+    "grants": 5,
     "hinder_settlement": 1,
     "hinder_army": 1,
     "hinder_agent": 1,
     "hinder_character": 1,
     "hinder_province": 1,
-    "assist_army": 1,
+    "assist_army": 2,
     "assist_province": 1,
     "command_force": 1,
     "passive_ability": 1,
-    "act_actor": 20,
-    "act_target": 8,
-    "act_subject": 8,
-    "act_slot": 1,
-    "act_on": 1,
-    "in_group": 4,
-    "of_ego": 3,
-    "near_target": 11,
+    "act_actor": 72,
+    "act_target": 31,
+    "act_subject": 11,
+    "act_slot": 11,
+    "act_on": 6,
+    "in_group": 32,
+    "of_ego": 6,
+    "near_target": 24,
     "on_screen": 1,
     "of_dilemma": 1,
     "screen_fact": 1,
@@ -124,6 +124,38 @@
     "adj": [
       0,
       7
+    ],
+    "skill_rank_locked": [
+      0,
+      18
+    ],
+    "skill_active": [
+      0,
+      20
+    ],
+    "of_chain": [
+      0,
+      8
+    ],
+    "in_prov": [
+      0,
+      4
+    ],
+    "owns_region": [
+      0,
+      9
+    ],
+    "chain_next_level": [
+      0,
+      1
+    ],
+    "of_ego": [
+      0,
+      8
+    ],
+    "of_race": [
+      0,
+      6
     ]
   },
   "evidence": {
@@ -153,7 +185,7 @@
         "12": 1
       },
       "observed": true,
-      "default": 2
+      "default": 5
     },
     "in_prov": {
       "forward": {
@@ -166,7 +198,7 @@
         "1": 61747
       },
       "observed": true,
-      "default": 2
+      "default": 4
     },
     "sett_of": {
       "forward": {
@@ -213,7 +245,7 @@
         "38": 3
       },
       "observed": true,
-      "default": 1
+      "default": 4
     },
     "owns_sett": {
       "forward": {
@@ -232,7 +264,7 @@
         "15": 1
       },
       "observed": true,
-      "default": 2
+      "default": 4
     },
     "owns_char": {
       "forward": {
@@ -251,7 +283,7 @@
         "10": 1
       },
       "observed": true,
-      "default": 2
+      "default": 5
     },
     "of_race": {
       "forward": {
@@ -271,7 +303,7 @@
         "1": 47420
       },
       "observed": true,
-      "default": 1
+      "default": 5
     },
     "at_region": {
       "forward": {
@@ -287,7 +319,7 @@
         "1": 11611
       },
       "observed": true,
-      "default": 1
+      "default": 3
     },
     "at_sett": {
       "forward": {
@@ -335,7 +367,7 @@
         "1": 28188
       },
       "observed": true,
-      "default": 2
+      "default": 6
     },
     "near": {
       "forward": {
@@ -467,7 +499,7 @@
         "62": 2
       },
       "observed": true,
-      "default": 6
+      "default": 20
     },
     "can_reach": {
       "forward": {
@@ -503,7 +535,7 @@
         "21": 1
       },
       "observed": true,
-      "default": 4
+      "default": 10
     },
     "dip_met": {
       "forward": {
@@ -538,7 +570,7 @@
         "35": 1
       },
       "observed": true,
-      "default": 10
+      "default": 17
     },
     "dip_war": {
       "forward": {
@@ -564,7 +596,7 @@
         "11": 1
       },
       "observed": true,
-      "default": 1
+      "default": 3
     },
     "dip_allied": {
       "forward": {
@@ -607,7 +639,7 @@
         "2": 202
       },
       "observed": true,
-      "default": 1
+      "default": 2
     },
     "dip_mil_ally": {
       "forward": {
@@ -654,7 +686,7 @@
         "12": 12
       },
       "observed": true,
-      "default": 4
+      "default": 10
     },
     "slot_filled": {
       "forward": {
@@ -668,7 +700,7 @@
         "1": 15822
       },
       "observed": true,
-      "default": 1
+      "default": 2
     },
     "slot_locked": {
       "forward": {
@@ -709,7 +741,7 @@
         "1": 87037
       },
       "observed": true,
-      "default": 3
+      "default": 5
     },
     "has_edict": {
       "forward": {
@@ -720,7 +752,7 @@
         "2": 144
       },
       "observed": true,
-      "default": 1
+      "default": 2
     },
     "tech_requires": {
       "forward": {
@@ -749,7 +781,7 @@
         "18": 356
       },
       "observed": true,
-      "default": 1
+      "default": 3
     },
     "researching": {
       "forward": {
@@ -780,7 +812,7 @@
         "4": 2
       },
       "observed": true,
-      "default": 1
+      "default": 2
     },
     "in_army": {
       "forward": {
@@ -806,7 +838,7 @@
         "14": 1
       },
       "observed": true,
-      "default": 5
+      "default": 9
     },
     "innate": {
       "forward": {
@@ -831,7 +863,7 @@
         "17": 1
       },
       "observed": true,
-      "default": 3
+      "default": 5
     },
     "skill_active": {
       "forward": {
@@ -870,7 +902,7 @@
         "29": 2
       },
       "observed": true,
-      "default": 7
+      "default": 16
     },
     "skill_rank_locked": {
       "forward": {
@@ -909,7 +941,7 @@
         "22": 22
       },
       "observed": true,
-      "default": 8
+      "default": 15
     },
     "skill_inactive": {
       "forward": {
@@ -974,7 +1006,7 @@
         "62": 17
       },
       "observed": true,
-      "default": 30
+      "default": 46
     },
     "tech_researched": {
       "forward": {
@@ -989,7 +1021,7 @@
         "6": 1
       },
       "observed": true,
-      "default": 1
+      "default": 3
     },
     "tech_available": {
       "forward": {
@@ -1025,7 +1057,7 @@
         "40": 1
       },
       "observed": true,
-      "default": 4
+      "default": 13
     },
     "tech_locked": {
       "forward": {
@@ -1096,7 +1128,7 @@
         "82": 4
       },
       "observed": true,
-      "default": 53
+      "default": 71
     },
     "skill_child_of": {
       "forward": {
@@ -1149,7 +1181,7 @@
         "22": 1
       },
       "observed": true,
-      "default": 1
+      "default": 6
     },
     "chain_next_level": {
       "forward": {
@@ -1180,7 +1212,7 @@
         "9": 1
       },
       "observed": true,
-      "default": 1
+      "default": 4
     },
     "holds_free": {
       "forward": {
@@ -1197,7 +1229,7 @@
         "8": 2
       },
       "observed": true,
-      "default": 1
+      "default": 4
     },
     "grants": {
       "forward": {
@@ -1216,7 +1248,7 @@
         "7": 1
       },
       "observed": true,
-      "default": 2
+      "default": 5
     },
     "hinder_settlement": {
       "forward": {},
@@ -1259,7 +1291,7 @@
         "1": 2078
       },
       "observed": true,
-      "default": 1
+      "default": 2
     },
     "assist_province": {
       "forward": {},
@@ -1495,7 +1527,7 @@
         "1": 507826
       },
       "observed": true,
-      "default": 20
+      "default": 72
     },
     "act_target": {
       "forward": {
@@ -1617,7 +1649,7 @@
         "1": 409631
       },
       "observed": true,
-      "default": 8
+      "default": 31
     },
     "act_subject": {
       "forward": {
@@ -1639,7 +1671,7 @@
         "1": 127902
       },
       "observed": true,
-      "default": 8
+      "default": 11
     },
     "act_slot": {
       "forward": {
@@ -1663,7 +1695,7 @@
         "1": 19375
       },
       "observed": true,
-      "default": 1
+      "default": 11
     },
     "act_on": {
       "forward": {
@@ -1686,7 +1718,7 @@
         "1": 245358
       },
       "observed": true,
-      "default": 1
+      "default": 6
     },
     "in_group": {
       "forward": {
@@ -1844,7 +1876,7 @@
         "1": 507826
       },
       "observed": true,
-      "default": 4
+      "default": 32
     },
     "of_ego": {
       "forward": {
@@ -1863,7 +1895,7 @@
         "1": 56319
       },
       "observed": true,
-      "default": 3
+      "default": 6
     },
     "near_target": {
       "forward": {
@@ -1926,7 +1958,7 @@
         "49": 1
       },
       "observed": true,
-      "default": 11
+      "default": 24
     },
     "on_screen": {
       "forward": {},

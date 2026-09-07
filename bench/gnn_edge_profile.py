@@ -28,15 +28,6 @@ def percentile(histogram, fraction):
     return 0
 
 
-def median(histogram):
-    total = sum(histogram.values())
-    if not total:
-        return 0
-    lower = percentile(histogram, ((total + 1) // 2) / total)
-    upper = percentile(histogram, (total // 2 + 1) / total)
-    return (lower + upper + 1) // 2
-
-
 def write_report(report, document, out):
     rows = []
     for name, evidence in document["evidence"].items():
@@ -44,8 +35,8 @@ def write_report(report, document, out):
         reverse = {int(k): v for k, v in evidence["reverse"].items()}
         rows.append({"relation": name, "default": document["limits"][name],
                      "observations_forward": sum(forward.values()), "observations_reverse": sum(reverse.values()),
-                     "median_forward": median(forward), "median_reverse": median(reverse),
-                     "basis": "observed median" if evidence["observed"] else "unobserved: user default 1"})
+                     "p95_forward": percentile(forward, .95), "p95_reverse": percentile(reverse, .95),
+                     "basis": "observed p95" if evidence["observed"] else "unobserved: user default 1"})
     with (out / "defaults.csv").open("w", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
         writer.writeheader()
@@ -53,22 +44,22 @@ def write_report(report, document, out):
     text = ["# GNN edge selection measurements", "",
             "Every relation has its own integer cap. Zero disables it. The cap applies independently to incoming forward and reverse neighbors.", "",
             "All selection uses squared endpoint distance, then stable neighbor identity. Missing locations sort last; when the destination has no location, identity determines ordering. Duplicate connections to the same neighbor are removed. Spatial selection uses a KD-tree without a distance cutoff or an all-pairs matrix.", "",
-            "Defaults use the larger of the two positive-degree medians, rounded up to an integer. Unobserved relations default to 1. These are structural defaults, not prediction-quality optima.", "",
+            "Defaults use the larger of the two positive-degree 95th percentiles. Unobserved relations default to 1. These are structural defaults, not prediction-quality optima.", "",
             f"Calibration window: {document['window']}; population: {document['population']:,} labelled decisions; evenly spread sample: {document['sample']:,}; valid graphs: {document['valid_graphs']:,}; excluded by training's label/action matching rules: {document['skipped']}.", "",
-            "The proposed tuning set includes proximity relations and the highest-volume relations with defaults above one. Upper bounds use the larger directional p99. All ranges use integer steps of one.", "",
+            "The tuning set retains the original twelve relations and adds the next eight by total observed candidate-edge count. Upper bounds use the larger directional p99. All ranges use integer steps of one.", "",
             "| Tunable relation | Default | Range |", "|---|---:|---:|"]
     for name, bounds in document["tuning_ranges"].items():
         text.append(f"| `{name}` | {document['limits'][name]} | {bounds[0]}–{bounds[1]} |")
-    text += ["", "Only those tunable caps vary below; every other cap remains at its per-relation median default. Small uses 1, large uses each upper bound, and disabled uses 0. Node counts therefore remain unchanged.", "",
+    text += ["", "Only those tunable caps vary below; every other cap remains at its per-relation p95 default. Small uses 1, large uses each upper bound, and disabled uses 0. Node counts therefore remain unchanged.", "",
              "| Configuration | Graphs | Mean nodes | Minimum edges | Mean directed edges | P95 edges | Maximum edges | Mean tensor KiB | Candidate edges retained | Total seconds | Observed peak RSS GiB |",
              "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
     for name, row in report["variants"].items():
         text.append(f"| {name} | {row['graphs']:,} | {row['nodes_mean']:.1f} | {row['edges_min']:,} | {row['edges_mean']:.1f} | {row['edges_p95']:.0f} | {row['edges_max']:,} | {row['tensor_mib_mean'] * 1024:.1f} | {row['candidate_retention']:.1%} | {row['seconds']:.2f} | {row['peak_rss_gib']:.3f} |")
     text += ["", "Sizes are measured CPU tensor payloads for individual graphs, including node features and labels. They are not GPU training-memory measurements. Timings include fresh input queries, graph construction, and candidate-degree instrumentation for each configuration; source-head selection is recorded separately in measure.json. Benchmarks run sequentially in one process without retaining graph corpora between configurations. RSS is sampled after each graph and can miss transient peaks. The existing GPU-budget oversized-graph rejection is unchanged.", "",
-             "| Relation | Default | Forward median | Reverse median | Forward observations | Reverse observations | Basis |",
+             "| Relation | Default | Forward p95 | Reverse p95 | Forward observations | Reverse observations | Basis |",
              "|---|---:|---:|---:|---:|---:|---|"]
     for row in rows:
-        text.append(f"| `{row['relation']}` | {row['default']} | {row['median_forward']} | {row['median_reverse']} | {row['observations_forward']:,} | {row['observations_reverse']:,} | {row['basis']} |")
+        text.append(f"| `{row['relation']}` | {row['default']} | {row['p95_forward']} | {row['p95_reverse']} | {row['observations_forward']:,} | {row['observations_reverse']:,} | {row['basis']} |")
     text += ["", "Observation counts are node/relation occurrences across sampled graphs, not distinct campaign entities. Nodes with no candidate of that relation are excluded from its degree distribution. The full histograms are in evidence.json; sample.json records the selected source heads.", "",
              "The graph schema version is now 12. Models trained under the previous selection rules require retraining; old graph configurations are rejected rather than silently translated.", ""]
     (out / "results.md").write_text("\n".join(text), encoding="utf-8")
@@ -151,14 +142,14 @@ def main():
         limits, evidence = {}, {}
         for index, name in enumerate(S.RELATIONS):
             forward, reverse = histograms[index], histograms[index + S.N_FORWARD_RELATIONS]
-            limits[name] = max(1, median(forward), median(reverse))
+            limits[name] = max(1, percentile(forward, .95), percentile(reverse, .95))
             evidence[name] = {"forward": dict(sorted(forward.items())), "reverse": dict(sorted(reverse.items())),
                               "observed": bool(forward or reverse), "default": limits[name]}
         tunables = list(GC.TUNING_RANGES)
         ranges = {name: [0, max(percentile(histograms[S.REL_INDEX[name]], .99),
                                percentile(histograms[S.REL_INDEX[name] + S.N_FORWARD_RELATIONS], .99))]
                   for name in tunables}
-        document = {"method": "Maximum of forward and reverse positive incoming-degree medians; p99 tuning upper bounds; one for unobserved relations (user specified)",
+        document = {"method": "Maximum of forward and reverse positive incoming-degree p95; p99 tuning upper bounds; one for unobserved relations (user specified)",
                     "window": args.window, "sample": count, "population": report["population"],
                     "valid_graphs": report["variants"]["calibration"]["graphs"],
                     "skipped": report["variants"]["calibration"]["skipped"],
