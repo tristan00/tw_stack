@@ -38,6 +38,40 @@ def reference_norm(datas, cap):
 
 class InputTests(unittest.TestCase):
 
+    def test_item_offer_identity_accepts_name_and_rejects_ambiguity(self):
+        from advisor.mapgraph.project_offers import offer_params
+        item = {"key": "wh3_main_anc_weapon_hunters_talon", "name": "Hunter's Talon"}
+        entity = {"context_id": "18", "state": {"equipped": [item, dict(item)]}}
+        rec = {"world": {}, "entities": [{"context_kind": "campaign", "state": {"anc_pool": [item]}}]}
+        for action in ("items", "item_unequip"):
+            for identity in (item["key"], item["name"]):
+                self.assertEqual(offer_params(rec, entity, action, identity, None), {"item_key": item["key"]})
+        entity["state"]["equipped"].append({"key": "different_item", "name": item["name"]})
+        with self.assertRaisesRegex(ValueError, "2 distinct keys"):
+            offer_params(rec, entity, "item_unequip", item["name"], None)
+        with self.assertRaisesRegex(ValueError, "0 distinct keys"):
+            offer_params(rec, entity, "item_unequip", "missing", None)
+        entity["state"]["equipped"] = [{"key": None, "name": "Unknown item"}]
+        self.assertEqual(offer_params(rec, entity, "item_unequip", "Unknown item", None), {"item_key": None})
+
+    def test_study_patience_stops_at_40_and_resets_on_improvement(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from advisor.mapgraph.optimize_greedy import _patience_cb
+        state = SimpleNamespace(is_finished=lambda: True)
+        study = SimpleNamespace(best_trial=SimpleNamespace(number=0), stop=Mock(),
+                                trials=[SimpleNamespace(number=i, state=state) for i in range(40)])
+        callback = _patience_cb(40)
+        callback(study, study.trials[-1])
+        study.stop.assert_not_called()
+        study.trials.append(SimpleNamespace(number=40, state=state))
+        callback(study, study.trials[-1])
+        study.stop.assert_called_once()
+        study.stop.reset_mock()
+        study.best_trial.number = 20
+        callback(study, study.trials[-1])
+        study.stop.assert_not_called()
+
     def setUp(self):
         generator = torch.Generator().manual_seed(91)
         self.datas = []
@@ -128,6 +162,23 @@ class InputTests(unittest.TestCase):
                     for row, wanted_row in zip(batch.to_data_list(), wanted.to_data_list()):
                         for key in wanted_row.keys():
                             self.assertTrue(torch.equal(row[key], wanted_row[key]), key)
+
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA required")
+    def test_gpu_graph_fields_preserve_batches_and_release_source_storage(self):
+        from advisor.mapgraph.source import _pack, GraphView
+        block = _pack(self.datas)
+        views = [GraphView(block, i) for i in range(len(self.datas))]
+        partitions = [[views[3], views[0], views[2]], [views[1]]]
+        expected = [[T._batch(part[i:i + 2]) for i in range(0, len(part), 2)] for part in partitions]
+        for key, (value, offsets, dim) in block.items():
+            if key not in ("x", "node_type"):
+                block[key] = torch.as_tensor(value, device="cuda"), offsets, dim
+        actual = T._collate_partitions(partitions, 2, torch.device("cuda"), lambda s: None)
+        self.assertEqual(block, {})
+        for observed, reference in zip(actual, expected):
+            for batch, wanted in zip(observed, reference):
+                for key in wanted.keys():
+                    self.assertTrue(torch.equal(batch[key].cpu(), wanted[key]), key)
 
 
 if __name__ == "__main__":

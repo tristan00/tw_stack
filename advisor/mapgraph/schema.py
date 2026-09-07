@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 import common
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 INSTANCE_TYPES = ("faction", "region", "settlement", "province", "slot",
                   "lord", "hero", "action", "cgroup", "screen")
@@ -231,7 +231,6 @@ G_CTX_FIELDS = ("turn", "treasury", "income", "settlements", "armies",
 G_CTX_DIM = len(G_CTX_FIELDS)
 
 
-KNN_K = 16
 MODEL_DIR = common.MODEL_MAPGRAPH
 MIN_ROWS = 40
 

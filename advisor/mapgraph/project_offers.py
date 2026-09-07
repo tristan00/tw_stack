@@ -40,8 +40,10 @@ def offer_params(rec, entity, at, key, slot, action_key=None, ability=None):
         return {"region": cid}
     if at in ("items", "item_unequip"):
         rows = campaign.get("anc_pool", []) if at == "items" else st.get("equipped", [])
-        row = next(r for r in rows if str(r.get("key") or r.get("name")) == key)
-        return {"item_key": row["key"]}
+        matches = {r["key"] for r in rows if key in (r.get("key"), r.get("name"))}
+        if len(matches) != 1:
+            raise ValueError("item identity %r resolves to %d distinct keys" % (key, len(matches)))
+        return {"item_key": matches.pop()}
     if at == "building":
         row = next(r for r in st.get("buildable", []) if r["key"] == key
                    and (slot is None or r["slot_index"] == slot))

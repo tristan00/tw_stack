@@ -25,10 +25,12 @@ TRIALS_JSONL = os.path.join(OUT_DIR, "trials_%s.jsonl" % STAMP)
 
 FIXED = {"patience": 4, "bf16": True, "seed": 0, "device": "cuda",
          "epoch_cap_s": 60, "batch": 512}
-STUDY_PATIENCE = 40
+STUDY_PATIENCE = 100
+MAX_TRIALS = 1000
+TRIAL_BUDGET_S = 600
 TPE_STARTUP = 11
 SAMPLER_SEED = int(time.time()) % 100000
-TUNE_WINDOW = 2000
+TUNE_WINDOW = 2500
 GRAPH_PROBE = 200
 GPU_MEMORY_FRACTION = 0.70
 
@@ -66,11 +68,11 @@ def _log(msg):
 def _space(trial):
     p = {"lr": trial.suggest_float("lr", 1e-5, 5e-4, log=True),
          "weight_decay": trial.suggest_float("weight_decay", 1e-6, 1e-1, log=True),
-         "hidden": trial.suggest_int("hidden", 4, 128, step=4),
+         "hidden": trial.suggest_int("hidden", 4, 64, step=1),
          "dropout": trial.suggest_float("dropout", 0.0, 0.5),
          "grad_clip": trial.suggest_float("grad_clip", 0.1, 10.0, log=True),
-         "entity_layers": trial.suggest_int("entity_layers", 1, 5),
-         "action_rounds": trial.suggest_int("action_rounds", 1, 5),
+         "entity_layers": trial.suggest_int("entity_layers", 1, 6),
+         "action_rounds": trial.suggest_int("action_rounds", 1, 6),
          "attn": trial.suggest_categorical("attn", ["none", "act", "map", "all"]),
          "update": trial.suggest_categorical("update", ["mlp", "linear", "none"]),
          "conv": trial.suggest_categorical("conv", ["sage", "rel"]),
@@ -86,54 +88,17 @@ def _space(trial):
     kinds = (p["conv"], p["conv_map"] or p["conv"], p["conv_a2e"] or p["conv"],
              p["conv_e2a"])
     if "rel" in kinds:
-        p["dst_dim"] = trial.suggest_int("dst_dim", 4, 64, step=4)
+        p["dst_dim"] = trial.suggest_int("dst_dim", 4, 64, step=1)
     else:
         p["dst_dim"] = 4
     return p
 
 
 def _graph_space(trial):
-    spatial_nodes = trial.suggest_categorical(
-        "graph_spatial_nodes", ["mobile", "all"])
-    pair_mode = trial.suggest_categorical(
-        "graph_spatial_pairs", ["all", "mobile", "no_settlement_pair"])
-    attack_nodes = trial.suggest_categorical(
-        "graph_attack_nodes", ["mobile", "all"])
-    relation_mode = trial.suggest_categorical(
-        "graph_relations", ["all", "no_catalogue", "world_action"])
-    pairs = {
-        "all": None,
-        "mobile": ("hero:hero", "hero:lord", "lord:lord"),
-        "no_settlement_pair": ("hero:hero", "hero:lord", "hero:settlement",
-                               "lord:lord", "lord:settlement"),
-    }[pair_mode]
-    relations = {
-        "all": None,
-        "no_catalogue": tuple(r for r in S.RELATIONS if r not in S.CATALOGUE_RELATIONS),
-        "world_action": tuple(r for r in S.RELATIONS
-                              if r in S.WORLD_RELATIONS + S.DIPLO_RELATIONS
-                              + S.PROVINCE_RELATIONS + S.ACT_RELATIONS),
-    }[relation_mode]
-    max_distance = trial.suggest_int(
-        "graph_spatial_max_distance", 5, 100, step=5)
-    attack_max = trial.suggest_int(
-        "graph_attack_max_neighbors", 1, 20, step=1)
-    return GC.GraphBuildConfig(
-        spatial_neighbor_count=trial.suggest_int(
-            "graph_spatial_neighbor_count", 4, 32, step=1),
-        spatial_max_distance=max_distance,
-        spatial_node_types=("lord", "hero", "settlement")
-        if spatial_nodes == "all" else ("lord", "hero"),
-        spatial_pair_types=pairs,
-        attack_context_radius=trial.suggest_int(
-            "graph_attack_context_radius", 10, 50, step=1),
-        attack_context_max_neighbors=attack_max,
-        attack_context_node_types=("lord", "hero", "settlement")
-        if attack_nodes == "all" else ("lord", "hero"),
-        include_own_citizenry_nodes=trial.suggest_categorical(
-            "graph_include_own_citizenry_nodes", [False, True]),
-        enabled_relation_types=relations,
-    ).normalized()
+    limits = GC.default_limits()
+    for relation, (low, high) in GC.TUNING_RANGES.items():
+        limits[relation] = trial.suggest_int("graph_edge_" + relation, low, high, step=1)
+    return GC.GraphBuildConfig(edge_limits=limits).normalized()
 
 
 def _probe_source(source, size):
@@ -159,7 +124,7 @@ def _graph_gate(torch, max_corpus_gib, gpu_memory_fraction):
             "allowed_graph_gib": round(allowed_gib, 3)}
 
 
-def run(trials=None, budget_s=300.0, timeout_s=None, baseline=False,
+def run(trials=MAX_TRIALS, budget_s=TRIAL_BUDGET_S, timeout_s=None, baseline=False,
         max_corpus_gib=None, limit=None, window=TUNE_WINDOW,
         graph_probe=GRAPH_PROBE, gpu_memory_fraction=GPU_MEMORY_FRACTION,
         study_patience=STUDY_PATIENCE, on_trial=None, study_name=None):
@@ -257,7 +222,7 @@ def run(trials=None, budget_s=300.0, timeout_s=None, baseline=False,
             else:
                 probe = None
                 w = T.walk_source(
-                    source, graph_config, limit=limit, workers=2,
+                    source, graph_config, limit=limit, workers=4,
                     log=lambda s: _log("  t%d %s" % (trial.number, s)))
             metrics = w["metrics"]
             trial.set_user_attr("graph_metrics", metrics)
@@ -276,7 +241,9 @@ def run(trials=None, budget_s=300.0, timeout_s=None, baseline=False,
                 raise optuna.TrialPruned("stable split produced no validation rows")
             _, fit, _, _ = GT.fit_net(datas, ys, groups, cfg,
                                       log=lambda s: _log("  t%d %s" % (trial.number, s)),
-                                      on_epoch=on_epoch, prep=prep, trial_started=t0)
+                                      on_epoch=on_epoch, prep=prep, trial_started=t0,
+                                      on_first_step=lambda seconds: trial.set_user_attr(
+                                          "first_step_seconds", round(seconds, 3)))
         except optuna.TrialPruned as e:
             trial.set_user_attr("reason", str(e))
             raise
@@ -345,8 +312,8 @@ def run(trials=None, budget_s=300.0, timeout_s=None, baseline=False,
 if __name__ == "__main__":
     common.require_venv()
     a = sys.argv[1:]
-    n = int(a[a.index("--trials") + 1]) if "--trials" in a else None
-    b = float(a[a.index("--budget") + 1]) if "--budget" in a else 300.0
+    n = int(a[a.index("--trials") + 1]) if "--trials" in a else MAX_TRIALS
+    b = float(a[a.index("--budget") + 1]) if "--budget" in a else TRIAL_BUDGET_S
     t = float(a[a.index("--timeout") + 1]) if "--timeout" in a else None
     g = float(a[a.index("--max-corpus-gib") + 1]) if "--max-corpus-gib" in a else None
     limit = int(a[a.index("--limit") + 1]) if "--limit" in a else None

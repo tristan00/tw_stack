@@ -30,7 +30,8 @@ class GraphView:
 
     def __getitem__(self, key):
         import torch
-        return torch.from_numpy(self.array(key))
+        value = self.array(key)
+        return value if torch.is_tensor(value) else torch.from_numpy(value)
 
     def keys(self):
         return (*self.block, "y_z") if self.y_z is not None else tuple(self.block)

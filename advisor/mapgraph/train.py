@@ -137,7 +137,8 @@ def load_walk_source(runs_root=None, limit=None, log=print, window=None):
             "population_decisions": population}
 
 
-def walk_source(source, graph_config=None, limit=None, log=print, workers=1, arrays=False):
+def walk_source(source, graph_config=None, limit=None, log=print, workers=1, arrays=False,
+                storage_device=None):
     if arrays:
         from advisor.mapgraph.arrays import to_arrays as convert
     else:
@@ -152,6 +153,12 @@ def walk_source(source, graph_config=None, limit=None, log=print, workers=1, arr
     query_seconds, query_rows, build_seconds, tensor_seconds = 0.0, 0, 0.0, 0.0
     if workers > 1:
         for walked in source["records"].graphs(graph_config, workers):
+            if storage_device is not None and walked["examples"]:
+                import torch
+                block = walked["examples"][0]["data"].block
+                for key, (value, offsets, dim) in block.items():
+                    if key not in ("x", "node_type"):
+                        block[key] = torch.as_tensor(value, device=storage_device), offsets, dim
             examples.extend(walked["examples"])
             input_seconds += walked["metrics"]["input_seconds"]
             query_seconds += walked["metrics"]["query_seconds"]
@@ -248,11 +255,17 @@ def _batch_field(items, key, offsets):
     values = [data_array(d, key) for d in items]
     dim = 1 if key in ("edge_index", "a2e_index", "e2a_index") else 0
     sizes = np.asarray([v.shape[dim] for v in values], dtype=np.int64)
-    value = np.concatenate(values, axis=dim)
     indexed = key in ("edge_index", "a2e_index", "e2a_index", "action_index")
-    if indexed:
-        value += np.repeat(offsets[:-1], sizes)
-    return (torch.from_numpy(value),
+    if torch.is_tensor(values[0]):
+        value = torch.cat(values, dim=dim)
+        if indexed:
+            value += torch.as_tensor(np.repeat(offsets[:-1], sizes), device=value.device)
+    else:
+        value = np.concatenate(values, axis=dim)
+        if indexed:
+            value += np.repeat(offsets[:-1], sizes)
+        value = torch.from_numpy(value)
+    return (value,
             torch.from_numpy(np.concatenate(([0], np.cumsum(sizes)))),
             torch.from_numpy(offsets[:-1].copy() if indexed else np.zeros(len(items), dtype=np.int64)))
 

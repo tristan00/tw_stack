@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 
-import math
-import sys
+import hashlib
+import json
 
 from advisor.mapgraph import schema as S
 from advisor.mapgraph import guard as G
@@ -20,7 +20,7 @@ _SKILL_REL = {"active": "skill_active", "locked_due_to_rank": "skill_rank_locked
 
 
 class Graph:
-    __slots__ = ("_nodes", "_edges", "config", "_catalogue_rows", "_allowed_relations",
+    __slots__ = ("_nodes", "_edges", "config", "_catalogue_rows", "_positions", "_context_targets",
                  "x", "node_type", "race_idx", "agent_idx", "stance_idx", "subtype_idx",
                  "atype_idx", "term_idx", "cat_idx", "src", "dst", "rel", "val",
                  "ux", "uy",
@@ -30,8 +30,8 @@ class Graph:
     def __init__(self, config=None):
         self.config = GC.from_dict(config)
         self._catalogue_rows = {}
-        self._allowed_relations = (None if self.config.enabled_relation_types is None
-                                   else frozenset(self.config.enabled_relation_types))
+        self._positions = []
+        self._context_targets = []
         self._nodes = []
         self._edges = []
         self.x = []
@@ -74,6 +74,9 @@ class Graph:
             row[col] = float(v)
             self.provenance.setdefault("%s.%s" % (ntype, k), set()).add(v.eid.split(":")[0])
         idx = len(self._nodes)
+        point = (values or {})
+        self._positions.append((float(point["x"]), float(point["y"]))
+                               if _pos_ok(point.get("x"), point.get("y")) else (float("nan"), float("nan")))
         self.id2idx[nid] = idx
         self._nodes.append((nid, row, _TI[ntype], race, agent, stance, subtype,
                             atype, term, cat, 1.0 if own else 0.0))
@@ -82,8 +85,7 @@ class Graph:
         return idx
 
     def edge(self, i, j, rel, val=0.0, ux=0.0, uy=0.0):
-        if i is None or j is None or (self._allowed_relations is not None
-                                     and rel not in self._allowed_relations):
+        if i is None or j is None:
             return
         r = S.REL_INDEX[rel]
         v, x, y = float(val), float(ux), float(uy)
@@ -141,7 +143,7 @@ def _pos_ok(x, y):
     return x is not None and y is not None and 0 <= float(x) < 4096 and 0 <= float(y) < 4096
 
 
-def build_graph(record, config=None):
+def build_graph(record, config=None, observe_edges=None):
     config = GC.from_dict(config)
     world = record.get("world") or {}
     campaign = record.get("campaign") or {}
@@ -477,9 +479,6 @@ def build_graph(record, config=None):
         if sj is not None:
             g.edge(ci, sj, "garrisons")
 
-    g.finalize()
-    _wire_knn(g, config)
-    near_pts = _target_pts(g, config.attack_context_node_types)
     pend_by_cqi = {cqi: st.get("pending_recruits")
                    for cqi, (kind, st) in char_state.items()
                    if st and st.get("pending_recruits") is not None}
@@ -492,11 +491,11 @@ def build_graph(record, config=None):
         for o in e.get("offers") or []:
             n_offers += 1
             _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me,
-                        region_xy, campaign, world, pend_by_cqi, near_pts)
+                        region_xy, campaign, world, pend_by_cqi)
 
     g.finalize()
-    if not g.src:
-        return None
+    from advisor.mapgraph.edge_selection import select_edges
+    select_edges(g, observe_edges)
 
     cd = G.Reader(campaign, "campaign", "campaign")
     g.g_ctx = [
@@ -561,42 +560,6 @@ def _wire_char(g, ci, cqi, row, faction, prov_of_region, st):
             g.edge(ci, g.cat_node("item", ek), "wears")
 
 
-def _wire_knn(g, config):
-    xi = S.TYPE_FIELDS["lord"].index("x")
-    yi = S.TYPE_FIELDS["lord"].index("y")
-    sxi = S.TYPE_FIELDS["settlement"].index("x")
-    syi = S.TYPE_FIELDS["settlement"].index("y")
-    pts = []
-    for i, t in enumerate(g.node_type):
-        tn = S.NODE_TYPES[t]
-        if tn not in config.spatial_node_types:
-            continue
-        if tn in ("lord", "hero"):
-            x, y = g.x[i][xi], g.x[i][yi]
-        elif tn == "settlement":
-            x, y = g.x[i][sxi], g.x[i][syi]
-        else:
-            continue
-        if x or y:
-            pts.append((i, tn, x, y))
-    if len(pts) < 2:
-        return
-    seen = set()
-    for i, t0, x0, y0 in pts:
-        d = sorted((math.hypot(x0 - x1, y0 - y1), j, x1, y1)
-                   for j, t1, x1, y1 in pts
-                   if j != i and config.allows_pair(t0, t1))
-        if config.spatial_max_distance is not None:
-            d = [row for row in d if row[0] <= config.spatial_max_distance]
-        for dd, j, x1, y1 in d[:config.spatial_neighbor_count]:
-            pair = (i, j) if i < j else (j, i)
-            if pair in seen:
-                continue
-            seen.add(pair)
-            ux, uy = ((x1 - x0) / dd, (y1 - y0) / dd) if dd > 0 else (0.0, 0.0)
-            g.edge(i, j, "near", val=dd, ux=ux, uy=uy)
-
-
 def _lord_memory_row(campaign, cqi, row=None):
     camp = campaign or {}
     out = {}
@@ -624,28 +587,6 @@ def _lord_memory_row(campaign, cqi, row=None):
     return out
 
 
-def _target_pts(g, node_types=None):
-    node_types = set(node_types or GC.SPATIAL_TYPES)
-    out = []
-    lxi = S.TYPE_FIELDS["lord"].index("x")
-    lyi = S.TYPE_FIELDS["lord"].index("y")
-    sxi = S.TYPE_FIELDS["settlement"].index("x")
-    syi = S.TYPE_FIELDS["settlement"].index("y")
-    for i, t in enumerate(g.node_type):
-        tn = S.NODE_TYPES[t]
-        if tn not in node_types:
-            continue
-        if tn in ("lord", "hero"):
-            x, y = g.x[i][lxi], g.x[i][lyi]
-        elif tn == "settlement":
-            x, y = g.x[i][sxi], g.x[i][syi]
-        else:
-            continue
-        if x or y:
-            out.append((i, x, y))
-    return out
-
-
 def _ego_of(g, ck, cid, prov_of_region, me):
     if ck in ("lord", "hero"):
         return g.id2idx.get("c:" + cid)
@@ -666,8 +607,7 @@ _CAT_OF_TYPE = {"recruit_unit": "unit", "recruit_ror": "unit", "recruit_blessed"
 
 
 def _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me,
-                region_xy=(), campaign=None, world=None, pending=None,
-                near_pts=()):
+                region_xy=(), campaign=None, world=None, pending=None):
     at = str(o.get("action_type") or "")
     key = str(o.get("key") or "")
     params = o.get("params") or {}
@@ -723,7 +663,14 @@ def _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me,
         qr = G.Reader(row, eid, "memory.queue")
         for k in row:
             avals[k] = qr.num(k)
-    ai = g.add("a:%s:%s:%s:%d" % (ck, cid, key, len(g.action_nodes)), "action",
+    identity = hashlib.sha1(json.dumps(params, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    base_id = "a:%s:%s:%s:%s:%s" % (ck, cid, at, key, identity)
+    occurrence = 0
+    action_id = base_id
+    while action_id in g.id2idx:
+        occurrence += 1
+        action_id = base_id + ":" + str(occurrence)
+    ai = g.add(action_id, "action",
                avals, atype=S.atype_index(at), term=term,
                stance=S.stance_index(key) if at == "stance" else 0)
     g.action_keys.append((str(ck), str(cid), at, key))
@@ -732,7 +679,8 @@ def _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me,
     grp = (ego, at)
     gi = groups.get(grp)
     if gi is None:
-        gi = g.add("cg:%s:%s" % (ego, at), "cgroup", {})
+        actor_id = g._nodes[ego][0] if ego is not None else "missing"
+        gi = g.add("cg:%s:%s" % (actor_id, at), "cgroup", {})
         groups[grp] = gi
         g.edge(gi, ego, "of_ego")
     g.edge(ai, gi, "in_group")
@@ -763,22 +711,8 @@ def _add_action(g, o, ego, ck, cid, groups, prov_of_region, slot_index, me,
     if tgt is not None:
         g.edge(ai, tgt, "act_target")
 
-    if at in M.PB_ATTACK_TYPES and _pos_ok(params.get("x"), params.get("y")):
-        tx, ty = float(params["x"]), float(params["y"])
-        found = []
-        for j, jx, jy in near_pts:
-            if j == tgt or j == ego:
-                continue
-            d = math.hypot(jx - tx, jy - ty)
-            if d > g.config.attack_context_radius:
-                continue
-            found.append((d, j, jx, jy))
-        found.sort()
-        if g.config.attack_context_max_neighbors is not None:
-            found = found[:g.config.attack_context_max_neighbors]
-        for d, j, jx, jy in found:
-            ux, uy = ((jx - tx) / d, (jy - ty) / d) if d > 0 else (0.0, 0.0)
-            g.edge(ai, j, "near_target", val=d, ux=ux, uy=uy)
+    if at in M.PB_ATTACK_TYPES:
+        g._context_targets.append((ai, ego, tgt))
 
     subject = params.get("faction") or params.get("target_faction")
     if subject:

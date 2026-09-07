@@ -77,7 +77,9 @@ def main():
             with (out / "launch.log").open("a") as log:
                 subprocess.Popen([str(root / ".venv/Scripts/python.exe"), "-u", "bench/gnn_study_run.py",
                                   str(out), "--trials", str(status["requested_trials"]),
-                                  "--window", str(status["window"]), "--resume"],
+                                  "--window", str(status["window"]), "--study-patience",
+                                  str(status.get("study_patience", 0)), "--budget",
+                                  str(status["budget_s"]), "--resume"],
                                  cwd=root, stdout=log, stderr=log, creationflags=subprocess.CREATE_NO_WINDOW)
             deadline = time.monotonic() + 20
             while time.monotonic() < deadline:

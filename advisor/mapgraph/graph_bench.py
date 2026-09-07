@@ -13,22 +13,11 @@ from advisor.mapgraph import train as T
 
 
 def configs():
+    limits = GC.default_limits()
     return {
-        "default": GC.DEFAULT,
-        "sparse": GC.GraphBuildConfig(
-            spatial_neighbor_count=4,
-            spatial_max_distance=50,
-            spatial_node_types=("lord", "hero"),
-            spatial_pair_types=("hero:hero", "hero:lord", "lord:lord"),
-            attack_context_radius=15,
-            attack_context_max_neighbors=4,
-            attack_context_node_types=("lord", "hero"),
-        ),
-        "dense": GC.GraphBuildConfig(
-            spatial_neighbor_count=32,
-            attack_context_radius=50,
-            include_own_citizenry_nodes=True,
-        ),
+        "default": GC.GraphBuildConfig(),
+        "sparse": GC.GraphBuildConfig(dict(limits, **{r: 1 for r in GC.TUNING_RANGES})),
+        "dense": GC.GraphBuildConfig(dict(limits, **{r: bounds[1] for r, bounds in GC.TUNING_RANGES.items()})),
     }
 
 

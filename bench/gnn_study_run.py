@@ -132,11 +132,13 @@ def memory_commit():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("output", type=Path)
-    parser.add_argument("--trials", type=int, default=100)
-    parser.add_argument("--window", type=int, default=2000)
+    parser.add_argument("--trials", type=int, default=O.MAX_TRIALS)
+    parser.add_argument("--window", type=int, default=O.TUNE_WINDOW)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--budget", type=float, default=O.TRIAL_BUDGET_S)
+    parser.add_argument("--study-patience", type=int, default=O.STUDY_PATIENCE)
     args = parser.parse_args()
-    if args.trials < 1 or args.window < 1:
+    if args.trials < 1 or args.window < 1 or args.study_patience < 0 or args.budget <= 0:
         parser.error("trials and window must be positive")
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=args.resume)
@@ -152,7 +154,8 @@ def main():
     sys.stderr = sys.stdout
     O.OUT_DIR, O.TRIALS_JSONL = str(out), str(out / "completed.jsonl")
     status = dict(pid=os.getpid(), started=time.time(), state="RUNNING", requested_trials=args.trials,
-                  window=args.window, budget_s=300, study_name="gnn_greedy_" + O.STAMP, finished_trials=0)
+                  window=args.window, budget_s=args.budget, study_patience=args.study_patience,
+                  study_name="gnn_greedy_" + O.STAMP, finished_trials=0)
     remaining = args.trials
     if previous:
         import optuna
@@ -180,10 +183,11 @@ def main():
         write_json(out / "status.json", status)
         print("RESULTS_UPDATED", status["finished_trials"], flush=True)
     try:
-        result = O.run(trials=remaining, budget_s=300, window=args.window,
-                       study_patience=None, on_trial=completed,
+        result = O.run(trials=remaining, budget_s=args.budget, window=args.window,
+                       study_patience=args.study_patience or None, on_trial=completed,
                        study_name=status["study_name"] if args.resume else None)
         status.update(state="COMPLETE", exit_code=result, ended=time.time())
+        status["stop_reason"] = "trial_limit" if status["finished_trials"] >= args.trials else "study_patience"
     except BaseException as error:
         status.update(state="FAILED", error=repr(error), ended=time.time())
         raise
@@ -191,6 +195,8 @@ def main():
         stop.set()
         thread.join(timeout=5)
         write_json(out / "status.json", status)
+        if "study" in locals():
+            export(study, out)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 
 import json
+import copy
 import os
 import shutil
 import sys
@@ -53,16 +54,23 @@ def prepare(datas, ys, groups, cfg, log=print, norm=None, free_datas=False):
     val = [datas[i] for i in val_idx]
     if free_datas:
         datas.clear()
-        loader, vloader = T._collate_partitions((trn, val), cfg["batch"], dev, log)
+        loader, vloader = T._collate_partitions((trn, val), cfg["batch"], torch.device("cpu"), log)
     else:
-        loader = T._collate(trn, cfg["batch"], dev, log, "greedy train")
-        vloader = T._collate(val, cfg["batch"], dev, log, "greedy val") if val_idx else []
+        loader = T._collate(trn, cfg["batch"], torch.device("cpu"), log, "greedy train")
+        vloader = T._collate(val, cfg["batch"], torch.device("cpu"), log, "greedy val") if val_idx else []
     del trn, val
 
     val_var = None
     if vloader:
         yv = torch.cat([b.y_z for b in vloader])
         val_var = float(yv.var(unbiased=False)) or 1.0
+    if dev.type == "cuda":
+        reserved = torch.cuda.memory_reserved()
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+        log("mapgraph.greedy_train: preparation GPU allocated %.3f GiB, reserved %.3f -> %.3f GiB"
+            % (torch.cuda.memory_allocated() / 2**30, reserved / 2**30,
+               torch.cuda.memory_reserved() / 2**30))
     log("mapgraph.greedy_train: prepare exit %.1fs" % (time.perf_counter() - started))
     return {"batch": cfg["batch"], "seed": cfg["seed"], "norm": norm, "loader": loader,
             "vloader": vloader, "val_var": val_var, "y_mean": y_mean, "y_sd": y_sd,
@@ -96,6 +104,7 @@ def fit_net(datas, ys, groups, cfg, log=print, on_epoch=None, free_datas=False,
     amp = (dev.type == "cuda") and bool(cfg.get("bf16", True))
 
     def step(b):
+        b = copy.copy(b).to(dev)
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=amp):
             out = net(b)
         n = int(b.n_actions.numel())

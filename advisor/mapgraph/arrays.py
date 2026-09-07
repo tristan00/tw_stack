@@ -22,11 +22,7 @@ def to_arrays(g, y=None, taken=None):
     data = {"x": np.asarray(g.x, dtype=np.float32), "node_type": ntype}
     for name, mask in zip(("edge", "a2e", "e2a"), masks):
         indices = np.stack((src[mask], dst[mask]))
-        if indices.shape[1]:
-            values = (indices, rel[mask], val[mask], dirs[mask])
-        else:
-            values = (np.zeros((2, 1), dtype=np.int64), np.zeros(1, dtype=np.int64),
-                      np.zeros(1, dtype=np.float32), np.zeros((1, 2), dtype=np.float32))
+        values = (indices, rel[mask], val[mask], dirs[mask])
         data.update((name + "_" + key, value)
                     for key, value in zip(("index", "rel", "val", "dir"), values))
     for name in IDX_FIELDS[1:]:
