@@ -171,7 +171,7 @@ function bestDelta(fk: ForkRow): number | null {
 
 const SHOW_STEP = 50
 
-function ChoicesView({ family }: { family: Family }) {
+export function ChoicesView({ family }: { family: Family }) {
   const { data, error, loading, reload } = useApi<ChoicesPage>(
     `/api/choices/${CHOICE_FAMILY[family]}`,
     [family],

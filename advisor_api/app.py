@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 import arms
 import common
-from advisor_api import db, ident, proc, queries as q
+from advisor_api import db, game, ident, proc, queries as q
 from advisor_api.models import (
     ActionsPage, AgreementPage, AgreementSeriesPage,
     CampaignDetail, CampaignsPage, ControlResult, Count,
@@ -114,6 +114,54 @@ def _con():
 
 def _scope(text, detail=None) -> Scope:
     return Scope(text=text, detail=detail)
+
+
+@app.get("/api/game/campaigns", tags=["game"])
+def get_game_campaigns():
+    return game.campaigns(_con())
+
+
+@app.get("/api/game/records/{subject}", tags=["game"])
+def get_game_records(subject: str, limit: int = Query(100, ge=1, le=500),
+                     before: int | None = Query(None, ge=1), search: str | None = None):
+    result = game.records(_con(), subject, limit, before, search)
+    if result is None:
+        raise HTTPException(404, "Unknown record subject")
+    return result
+
+
+@app.get("/api/game/database", tags=["game"])
+def get_game_database():
+    return game.database(_con())
+
+
+@app.get("/api/game/experiments", tags=["game"])
+def get_game_experiments():
+    return game.experiments(_con())
+
+
+@app.get("/api/game/database/{schema}/{table}", tags=["game"])
+def get_game_database_columns(schema: str, table: str):
+    result = game.database_columns(_con(), schema, table)
+    if not result:
+        raise HTTPException(404, "Unknown table")
+    return result
+
+
+@app.get("/api/game/campaigns/{campaign_key}", tags=["game"])
+def get_game_campaign(campaign_key: str, turn: int | None = Query(None, ge=0)):
+    result = game.campaign(_con(), campaign_key, turn)
+    if result is None:
+        raise HTTPException(404, "No recorded campaign state at this turn")
+    return result
+
+
+@app.get("/api/game/campaigns/{campaign_key}/history", tags=["game"])
+def get_game_history(campaign_key: str):
+    result = game.history(_con(), campaign_key)
+    if result is None:
+        raise HTTPException(404, "No recorded campaign")
+    return result
 
 
 @app.get("/api/run", response_model=RunPage, tags=["run"])

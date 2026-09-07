@@ -1,239 +1,258 @@
-import { FlaskConical, Moon, Sun } from 'lucide-react'
+import { Moon, Sun, Swords } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { NavLink, Outlet, useLocation } from 'react-router-dom'
-import { EntityLink, Dot } from '@/components/primitives'
+import {
+  Link,
+  Navigate,
+  Outlet,
+  useLocation,
+  useNavigate,
+  useSearchParams,
+} from 'react-router-dom'
 import { QuickJump } from '@/components/QuickJump'
-import { mapShort } from '@/components/startcharts'
-import { useApi, type RunPage } from '@/lib/api'
+import { useApi } from '@/lib/api'
+import {
+  GameContext,
+  SUBJECTS,
+  mapName,
+  type CampaignChoice,
+  type GamePage,
+} from '@/lib/game'
 import { ago } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
-
-const CATALOG_PATHS = ['/items', '/buildings', '/research', '/skills']
-
-const GAME_NAV = [
-  { to: '/', label: 'now', asks: 'what is happening right now' },
-  { to: '/campaigns', label: 'campaigns', asks: 'how are campaigns going' },
-  { to: '/lookup', label: 'lookup', asks: 'which campaigns passed through situations like this' },
-  { to: '/items', label: 'catalog', asks: 'items, buildings, research and skills across the corpus' },
-  { to: '/status', label: 'status', asks: 'services, streams, and view settings' },
+const MODEL_PATHS = [
+  '/run',
+  '/experiments',
+  '/models',
+  '/decisions',
+  '/database',
+  '/infra',
+  '/log',
+  '/selector',
+  '/positions',
 ]
-
-const STACK_NAV = [
-  { to: '/run', label: 'run', asks: 'is the automated run healthy right now' },
-  { to: '/decisions', label: 'decisions', asks: 'what the advisor chose and why' },
-  { to: '/positions', label: 'positions', asks: 'what the advisor took in situations like this' },
-  { to: '/log', label: 'log', asks: 'what exactly happened, second by second' },
-  { to: '/selector', label: 'selector', asks: 'why the selector played this start' },
-  { to: '/models', label: 'models', asks: 'are the models learning' },
-  { to: '/infra', label: 'infra', asks: 'stack controls and launches' },
+const MODEL_NAV = [
+  { to: '/run', label: 'Run' },
+  { to: '/experiments', label: 'Experiments' },
+  { to: '/decisions', label: 'Decisions' },
+  { to: '/database', label: 'Database' },
 ]
-
-const devListeners = new Set<() => void>()
-
-function devModeOn(): boolean {
-  try {
-    return localStorage.getItem('devmode') === '1'
-  } catch {
-    return false
-  }
-}
-
-function setDevMode(on: boolean) {
-  try {
-    localStorage.setItem('devmode', on ? '1' : '0')
-  } catch {
-    return
-  }
-  devListeners.forEach((fn) => fn())
-}
-
-function useServerMode(): 'full' | 'dashboard' {
-  const { data } = useApi<{ mode?: string }>('/api/health', [], { live: false })
-  return data?.mode === 'dashboard' ? 'dashboard' : 'full'
-}
-
-function useDevMode(): boolean {
-  const [dev, setDev] = useState(devModeOn)
-  useEffect(() => {
-    const fn = () => setDev(devModeOn())
-    devListeners.add(fn)
-    return () => {
-      devListeners.delete(fn)
-    }
-  }, [])
-  return dev
-}
 
 export function useUiMode(): 'full' | 'dashboard' {
-  const server = useServerMode()
-  const dev = useDevMode()
-  return server === 'dashboard' ? 'dashboard' : dev ? 'full' : 'dashboard'
-}
-
-function useModeAttribute(mode: 'full' | 'dashboard') {
-  useEffect(() => {
-    document.documentElement.setAttribute('data-ui-mode', mode)
-  }, [mode])
-}
-
-type Theme = 'system' | 'light' | 'dark'
-
-function useTheme() {
-  const [theme, setTheme] = useState<Theme>(
-    () => (localStorage.getItem('theme') as Theme) || 'system',
-  )
-  useEffect(() => {
-    const root = document.documentElement
-    if (theme === 'system') root.removeAttribute('data-theme')
-    else root.setAttribute('data-theme', theme)
-    localStorage.setItem('theme', theme)
-  }, [theme])
-  return { theme, setTheme }
-}
-
-
-function StatusLine() {
-  const { data } = useApi<RunPage>('/api/run')
-  const cur = data?.current
-  const services = data?.services ?? []
-  return (
-    <div className="flex min-w-0 flex-wrap items-baseline gap-x-4 gap-y-1">
-      <div className="min-w-0">
-        {cur?.campaign ? (
-          <span className="flex items-baseline gap-2">
-            <EntityLink
-              to={`/campaigns/${encodeURIComponent(cur.campaign.raw)}`}
-              title={`open this campaign\n${cur.campaign.raw}`}
-              className="text-lg font-semibold tracking-tight"
-            >
-              {cur.leader ?? cur.campaign.label}
-            </EntityLink>
-            {cur.campaign.culture && (
-              <span className="text-dim text-2xs">{cur.campaign.culture}</span>
-            )}
-            {cur.faction_key && (
-              <EntityLink
-                to={`/starts/${encodeURIComponent(cur.campaign_map?.raw ?? '')}/${encodeURIComponent(cur.faction_key)}`}
-                title="open this start"
-                className="text-dim text-2xs"
-              >
-                {mapShort(cur.campaign_map?.raw, cur.campaign_map?.label)}
-              </EntityLink>
-            )}
-          </span>
-        ) : (
-          <span className="text-dim text-lg">no campaign running</span>
-        )}
-      </div>
-      {cur?.turn !== null && cur?.turn !== undefined && (
-        <span className="text-dim text-2xs uppercase tracking-wide">
-          turn <b className="num text-fg text-sm">{cur.turn}</b>
-        </span>
-      )}
-      {cur?.settlements !== null && cur?.settlements !== undefined && (
-        <span className="text-dim text-2xs uppercase tracking-wide">
-          setts <b className="num text-fg text-sm">{cur.settlements}</b>
-        </span>
-      )}
-      {cur?.stored_campaigns !== null && cur?.stored_campaigns !== undefined && (
-        <span className="text-dim text-2xs uppercase tracking-wide">
-          campaigns <b className="num text-fg text-sm">{cur.stored_campaigns}</b>
-        </span>
-      )}
-      <span className="flex items-center gap-2.5">
-        {services
-          .filter((s) => s.name !== 'dashboard')
-          .map((s) => (
-            <span key={s.name} className="text-dim flex items-center gap-1 text-2xs">
-              <Dot state={s.up ? 'ok' : 'bad'} />
-              {s.name}
-            </span>
-          ))}
-      </span>
-      {cur?.age_seconds !== null && cur?.age_seconds !== undefined && (
-        <span className="text-dim ml-auto text-2xs">state {ago(cur.age_seconds)}</span>
-      )}
-    </div>
-  )
+  const { pathname } = useLocation()
+  return MODEL_PATHS.some((p) => pathname.startsWith(p)) ? 'full' : 'dashboard'
 }
 
 export function Layout() {
-  const { theme, setTheme } = useTheme()
-  const server = useServerMode()
-  const dev = useDevMode()
-  const mode = server === 'dashboard' ? 'dashboard' : dev ? 'full' : 'dashboard'
-  useModeAttribute(mode)
   const { pathname } = useLocation()
-  const nav = mode === 'dashboard' ? GAME_NAV : [...GAME_NAV, ...STACK_NAV]
+  const navigate = useNavigate()
+  const [params] = useSearchParams()
+  const { data: health } = useApi<{ mode: string }>('/api/health', [], {
+    live: false,
+  })
+  const choices = useApi<CampaignChoice[]>('/api/game/campaigns')
+  const pathKey = pathname.startsWith('/campaigns/')
+    ? decodeURIComponent(pathname.split('/')[2])
+    : ''
+  const campaignKey =
+    pathKey || params.get('campaign') || choices.data?.[0]?.key || ''
+  const turn = params.get('turn')
+  const game = useApi<GamePage>(
+    campaignKey
+      ? `/api/game/campaigns/${encodeURIComponent(campaignKey)}${turn ? `?turn=${encodeURIComponent(turn)}` : ''}`
+      : null,
+    [campaignKey, turn],
+  )
+  const model = useUiMode() === 'full'
+  const area = model
+    ? 'Model'
+    : pathname.startsWith('/analytics') || pathname === '/lookup'
+      ? 'Analytics'
+      : pathname.startsWith('/explore') ||
+          ['/items', '/research', '/skills', '/traits', '/buildings'].some(
+            (p) => pathname.startsWith(p),
+          )
+        ? 'Explore'
+        : ['/options', '/status'].includes(pathname)
+          ? 'Options'
+          : 'Campaign'
+  const [theme, setTheme] = useState(
+    () => localStorage.getItem('theme') || 'light',
+  )
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme)
+    localStorage.setItem('theme', theme)
+  }, [theme])
+  useEffect(() => {
+    document.documentElement.setAttribute(
+      'data-ui-mode',
+      model ? 'full' : 'dashboard',
+    )
+  }, [model])
+  const context = new URLSearchParams()
+  if (campaignKey) context.set('campaign', campaignKey)
+  if (turn) context.set('turn', turn)
+  const to = (path: string) => `${path}?${context}`
+  const selected =
+    game.data?.meta.key === campaignKey &&
+    (!turn || game.data.selected.turn === Number(turn))
+      ? game.data
+      : null
+  const subject = params.get('subject') || 'home'
+  const changeCampaign = (key: string) =>
+    navigate(`/?campaign=${encodeURIComponent(key)}&subject=${subject}`)
   return (
-    <div className="mx-auto flex min-h-full max-w-[1800px] flex-col px-4 py-3">
-      <header className="border-line mb-4 border-b pb-3">
-        <div className="mb-2 flex items-center justify-between gap-4">
-          <StatusLine />
-          <span className="flex shrink-0 items-center gap-1.5">
-            {server === 'full' && (
-              <button
-                onClick={() => setDevMode(!dev)}
-                className={cn(
-                  'border-line rounded-md border p-1.5',
-                  dev ? 'text-accent' : 'text-dim hover:text-fg',
-                )}
-                title={
-                  dev
-                    ? 'dev dashboard on — click for the default dashboard alone'
-                    : 'default dashboard — click to also show the dev dashboard (run, decisions, positions, log, selector, models, infra)'
-                }
-                aria-label="toggle dev mode"
+    <GameContext.Provider
+      value={{
+        ...game,
+        data: selected,
+        campaignKey,
+        error: game.error || choices.error,
+        loading: game.loading || choices.loading,
+      }}
+    >
+      <div className="app-shell">
+        <header className="app-header">
+          <div className="top-bar">
+            <Link to={to('/')} className="brand" aria-label="Campaign home">
+              <Swords size={19} />
+            </Link>
+            <nav aria-label="Main navigation" className="top-nav">
+              {[
+                ['Campaign', '/'],
+                ['Analytics', '/analytics'],
+                ['Explore', '/explore'],
+                ['Options', '/options'],
+              ].map(([label, path]) => (
+                <Link
+                  key={path}
+                  to={to(path)}
+                  className={cn('top-link', area === label && 'active')}
+                >
+                  {label}
+                </Link>
+              ))}
+            </nav>
+            <div className="campaign-switch">
+              <select
+                aria-label="Campaign"
+                value={campaignKey}
+                onChange={(e) => changeCampaign(e.target.value)}
               >
-                <FlaskConical className="size-4" />
-              </button>
-            )}
-            <button
-              onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-              className="border-line text-dim hover:text-fg rounded-md border p-1.5"
-              title={`theme: ${theme} — click to switch`}
-              aria-label="switch theme"
-            >
-              {theme === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />}
-            </button>
-          </span>
-        </div>
-        <nav className="flex flex-wrap items-center gap-1">
-          {nav.map((item) => (
-            <span key={item.to} className="flex items-center">
-              {item.to === '/run' && (
-                <span className="flex items-center" aria-hidden>
-                  <span className="bg-line mx-1.5 h-4 w-px" />
-                  <span className="text-dim mr-1 text-2xs tracking-wide uppercase">dev</span>
+                {pathKey && !choices.data?.some((c) => c.key === pathKey) && (
+                  <option value={pathKey}>
+                    {selected?.meta.leader || pathKey}
+                  </option>
+                )}
+                {(choices.data || []).map((c) => (
+                  <option key={c.key} value={c.key}>
+                    {c.leader || c.faction} · {mapName(c.map)} ·{' '}
+                    {new Date(c.ts * 1000).toLocaleDateString()} · t{c.turn} ·{' '}
+                    {c.key.slice(-6)}
+                  </option>
+                ))}
+              </select>
+              {selected && (
+                <span className="recorded">
+                  <span className="text-ok">●</span> turn{' '}
+                  {selected.selected.turn} · recorded{' '}
+                  {ago(Math.max(0, Date.now() / 1000 - selected.selected.ts))}
                 </span>
               )}
-              <NavLink
-                to={item.to}
-                end={item.to === '/'}
-                title={item.asks}
-                className={({ isActive }) =>
-                  cn(
-                    'rounded-md px-3 py-1.5 text-sm',
-                    (item.label === 'catalog'
-                      ? CATALOG_PATHS.some((c) => pathname.startsWith(c))
-                      : isActive)
-                      ? 'bg-raised text-fg font-semibold'
-                      : 'text-dim hover:text-fg hover:bg-raised/60',
-                  )
-                }
-              >
-                {item.label}
-              </NavLink>
-            </span>
-          ))}
-          <span className="text-dim num ml-auto text-2xs">ctrl+k jump</span>
-        </nav>
-      </header>
-      <main className="min-w-0 flex-1 pb-10">
-        <Outlet />
-      </main>
-      <QuickJump />
-    </div>
+            </div>
+            {health?.mode === 'full' && (
+              <div className="mode-switch" aria-label="Dashboard mode">
+                <Link to={to('/')} className={!model ? 'active' : ''}>
+                  Game
+                </Link>
+                <Link to={to('/run')} className={model ? 'active' : ''}>
+                  Model
+                </Link>
+              </div>
+            )}
+            <button
+              className="theme-button"
+              aria-label="Switch theme"
+              onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+            >
+              {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
+            </button>
+          </div>
+          <nav className="subject-nav" aria-label={`${area} navigation`}>
+            <span className="nav-caption">{area}</span>
+            {model ? (
+              MODEL_NAV.map((i) => (
+                <Link
+                  key={i.to}
+                  to={to(i.to)}
+                  className={cn('subject-link', pathname === i.to && 'active')}
+                >
+                  {i.label}
+                </Link>
+              ))
+            ) : area === 'Campaign' ? (
+              SUBJECTS.map((s) => (
+                <Link
+                  key={s}
+                  to={`/?${context}&subject=${s.toLowerCase()}`}
+                  className={cn(
+                    'subject-link',
+                    subject === s.toLowerCase() && 'active',
+                  )}
+                >
+                  {s}
+                </Link>
+              ))
+            ) : area === 'Analytics' ? (
+              <>
+                <Link className="subject-link" to={to('/analytics')}>
+                  Exclusive choices
+                </Link>
+                <Link className="subject-link" to={to('/lookup')}>
+                  Campaign lookup
+                </Link>
+              </>
+            ) : area === 'Explore' ? (
+              <>
+                <Link className="subject-link" to={to('/explore')}>
+                  Records
+                </Link>
+                {['items', 'research', 'skills', 'buildings', 'traits'].map(
+                  (s) => (
+                    <Link
+                      className={cn(
+                        'subject-link',
+                        pathname === `/${s}` && 'active',
+                      )}
+                      key={s}
+                      to={to(`/${s}`)}
+                    >
+                      {s}
+                    </Link>
+                  ),
+                )}
+              </>
+            ) : (
+              <>
+                <Link className="subject-link" to={to('/options')}>
+                  Score & preferences
+                </Link>
+                <Link className="subject-link" to={to('/status')}>
+                  Services
+                </Link>
+              </>
+            )}
+          </nav>
+        </header>
+        <main className="app-main">
+          {model && health?.mode === 'dashboard' ? (
+            <Navigate to="/" replace />
+          ) : (
+            <Outlet />
+          )}
+        </main>
+        <QuickJump />
+      </div>
+    </GameContext.Provider>
   )
 }
