@@ -124,6 +124,15 @@ class EdgeSelectionTests(unittest.TestCase):
             self.assertEqual(config.edge_limits[relation], 0)
         trial.suggest_categorical.assert_not_called()
 
+    def test_gpu_budget_uses_free_memory_and_optional_lower_ceiling(self):
+        from unittest.mock import Mock
+        from advisor.mapgraph.optimize_greedy import _graph_gate
+        torch = Mock()
+        torch.cuda.mem_get_info.return_value = (8 * 2**30, 32 * 2**30)
+        self.assertEqual(_graph_gate(torch, None, .7)["allowed_graph_gib"], 5.6)
+        self.assertEqual(_graph_gate(torch, 2, .7)["allowed_graph_gib"], 2)
+        self.assertEqual(_graph_gate(torch, 20, .7)["allowed_graph_gib"], 5.6)
+
     def test_defaults_match_observed_medians_and_unobserved_policy(self):
         import json
         from bench.gnn_edge_profile import median

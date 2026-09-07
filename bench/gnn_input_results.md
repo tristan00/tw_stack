@@ -56,18 +56,8 @@ Preparation improved by about 11.6 times from the unprofiled intermediate run, a
 
 Correctness checks cover 2,000 real decisions under default, sparse, and dense graph configurations: 6,000 exact graph comparisons against the gameplay hydration path. Tests also compare normalization against the original formula, including sampling and zero-IQR fields; collation against PyG, including round trips; label arithmetic; and tensor transport.
 
-Run benchmarks sequentially and verify their processes exit before starting another. Reproduction commands from the repository root:
+Run benchmarks sequentially and verify their processes exit before starting another. Current test commands are in `tests/README.md`. These historical measurements used the original validation helpers; the maintained full-window benchmark is `bench/gnn_first_step_check.py`.
 
-```powershell
-.venv/Scripts/python.exe -m unittest advisor.mapgraph.test_input
-.venv/Scripts/python.exe -m advisor.mapgraph.invariants
-.venv/Scripts/python.exe -u bench/gnn_startup_check.py bench/gnn-startup-recheck
-.venv/Scripts/python.exe bench/gnn_projection_check.py 1000
-.venv/Scripts/python.exe bench/gnn_parallel_check.py
-.venv/Scripts/python.exe bench/gnn_tuner_check.py
-.venv/Scripts/python.exe -u bench/gnn_profile.py 0 --no-profile --small-model --workers 2 --output bench/gnn-full
-```
-
-The final full-startup log, metrics, and resource samples are in `bench/gnn-startup-final`. Earlier diagnostic profiles and saved reference implementations are archived in `C:/Users/trist/.codex/visualizations/2026/09/06/01a075ce-ec3b-7e60-bc4c-3a105cb995d7/gnn-input-evidence`. The startup reproduction requires the cancelled study's `bench/gnn-study-100-20260906/trials.json` to select its original trial-0 parameters.
+The final full-startup log, metrics, and resource samples are in `bench/gnn-startup-final`. Earlier diagnostic profiles and saved reference implementations are archived in `C:/Users/trist/.codex/visualizations/2026/09/06/01a075ce-ec3b-7e60-bc4c-3a105cb995d7/gnn-input-evidence`. The current startup benchmark uses the cancelled 12-edge study's trial-0 parameters, as described in `tests/README.md`.
 
 The profiling script samples process-tree RSS and available system memory every two seconds. It stops its worker processes and exits if available memory falls below 8 GiB. Reported CPU seconds cover the parent process; they are not total CPU consumption across workers. GPU peak is PyTorch's peak allocated memory, not total driver memory. Normalization and preparation timings are logged separately from graph construction.

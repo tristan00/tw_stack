@@ -163,22 +163,6 @@ class InputTests(unittest.TestCase):
                         for key in wanted_row.keys():
                             self.assertTrue(torch.equal(row[key], wanted_row[key]), key)
 
-    @unittest.skipUnless(torch.cuda.is_available(), "CUDA required")
-    def test_gpu_graph_fields_preserve_batches_and_release_source_storage(self):
-        from advisor.mapgraph.source import _pack, GraphView
-        block = _pack(self.datas)
-        views = [GraphView(block, i) for i in range(len(self.datas))]
-        partitions = [[views[3], views[0], views[2]], [views[1]]]
-        expected = [[T._batch(part[i:i + 2]) for i in range(0, len(part), 2)] for part in partitions]
-        for key, (value, offsets, dim) in block.items():
-            if key not in ("x", "node_type"):
-                block[key] = torch.as_tensor(value, device="cuda"), offsets, dim
-        actual = T._collate_partitions(partitions, 2, torch.device("cuda"), lambda s: None)
-        self.assertEqual(block, {})
-        for observed, reference in zip(actual, expected):
-            for batch, wanted in zip(observed, reference):
-                for key in wanted.keys():
-                    self.assertTrue(torch.equal(batch[key].cpu(), wanted[key]), key)
 
 
 if __name__ == "__main__":

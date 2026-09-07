@@ -7,7 +7,6 @@ from unittest.mock import patch
 import numpy as np
 from catboost import CatBoostRegressor, Pool
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from advisor import model
 from advisor import optimize_catboost
