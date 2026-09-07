@@ -93,9 +93,11 @@ def kill_game():
 
 def kill_session(game=True):
     n = _ps_kill("session.py")
+    from advisor import opslog
+    closed = opslog.reap_sessions()
     if game:
         kill_game()
-    return "killed sessions=%d" % n
+    return "killed sessions=%d, ledger rows closed=%d" % (n, closed)
 
 
 def kill_recorder():
@@ -209,16 +211,38 @@ def up(campaigns, turns, retrain_every=0, cold=False,
         steps.append(start_ui(port=port))
         steps.append(start_analytics())
         common.wait("runctl_ui_spawn_grace", 2.0)
-    steps.append("session -> %s" % start_session(campaigns, turns,
-                                                 retrain_every=retrain_every,
-                                                 cold=cold, dev=dev,
-                                                 factions=factions, strategies=strategies,
-                                                 retrain_first=retrain_first,
-                                                 presave_radius=presave_radius,
-                                                 width=width, ucb=ucb,
-                                                 interrupt_strategies=interrupt_strategies,
-                                                 code_version=code_version))
+    session_log = start_session(campaigns, turns,
+                                retrain_every=retrain_every,
+                                cold=cold, dev=dev,
+                                factions=factions, strategies=strategies,
+                                retrain_first=retrain_first,
+                                presave_radius=presave_radius,
+                                width=width, ucb=ucb,
+                                interrupt_strategies=interrupt_strategies,
+                                code_version=code_version)
+    steps.append("session -> %s" % session_log)
+    steps.append(_confirm_session(session_log))
     return steps
+
+
+SESSION_CONFIRM_S = 20.0
+
+
+def _confirm_session(log_path):
+    t0 = time.time()
+    while time.time() - t0 < SESSION_CONFIRM_S:
+        common.wait("runctl_session_confirm", 4.0)
+        if any("session.py" in row for row in status()):
+            continue
+        err = log_path[:-4] + ".err"
+        tail = ""
+        if os.path.exists(err):
+            with open(err, encoding="utf-8", errors="replace") as fh:
+                tail = "".join(fh.readlines()[-15:])
+        raise SystemExit(
+            "SESSION DIED %.0fs after launch -- nothing is playing. log=%s tail=%s"
+            % (time.time() - t0, log_path, tail))
+    return "session confirmed alive after %.0fs" % SESSION_CONFIRM_S
 
 
 def down():

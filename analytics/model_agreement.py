@@ -12,7 +12,7 @@ from analytics import metrics as M
 from analytics import store as _store
 
 NAME = "model_agreement"
-FORMULA_VERSION = 4
+FORMULA_VERSION = 5
 DEPENDS_ON = ()
 TABLES = ("model_agreement",)
 
@@ -39,7 +39,7 @@ _SELECT = (
     " WHERE s.snapshot_id > %s AND s.snapshot_id <= %s"
     " ORDER BY s.snapshot_id")
 
-_COLUMNS = ("decision_id", "pair", "status", "n", "rho", "tau", "rbo",
+_COLUMNS = ("decision_id", "pair", "status", "n", "n_a", "n_b", "rho", "tau", "rbo",
             "top1_agree", "top5_overlap", "top10_overlap", "taken_rank_a",
             "taken_rank_b", "ts", "campaign_id", "policy_id", "action_type_id",
             "entity_kind_id")
@@ -111,6 +111,7 @@ def _rows(row, vecs) -> list:
         ok_b = ~np.isnan(vb) if vb is not None else None
         n_a = int(ok_a.sum()) if ok_a is not None else 0
         n_b = int(ok_b.sum()) if ok_b is not None else 0
+        rec["n_a"], rec["n_b"] = n_a, n_b
         if seq is not None and 0 <= int(seq) < n_offers:
             si = int(seq)
             if ok_a is not None and ok_a[si]:

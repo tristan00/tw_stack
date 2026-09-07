@@ -390,7 +390,6 @@ def run_campaigns(n=3, turns=20, plan="all",
     import opslog
     import random
     rng = random.Random(seed)
-    opslog.open_session(campaigns=n, turns=turns)
     ex = Executor(Bus())
     mix = ({"random": 1.0} if cold and strategies is None
            else P.normalize_strategies(strategies))
@@ -444,12 +443,22 @@ def run_campaigns(n=3, turns=20, plan="all",
     report = {"started": time.time(), "requested": {"campaigns": n, "turns": turns, "plan": plan,
                                                     "strategies": mix,
                                                     "interrupt_strategies": imix,
+                                                    "retrain_every": retrain_every,
+                                                    "turn_budget": _turn_budget(turns),
+                                                    "start_pool": "r%g · %s · %d start(s)" % (
+                                                        presave_radius,
+                                                        "all" if plan == "all"
+                                                        else ",".join(sorted(
+                                                            [plan] if isinstance(plan, str)
+                                                            else plan)),
+                                                        len(presaves)),
                                                     "code_version":
                                                         os.environ.get("TW_CODE_VERSION")},
               "campaigns": []}
     stamp = time.strftime("%Y%m%d_%H%M%S")
     out_path = os.path.join(runs_root, "session_%s.json" % stamp)
     report["session"] = out_path
+    opslog.open_session(trial=stamp)
     report["trials"] = []
 
     launch_failures = 0
@@ -697,6 +706,7 @@ def run_campaigns(n=3, turns=20, plan="all",
         _wr_s = time.time() - _t
         _t = time.time()
         _checkpoint_trial(stretch, generation, report, trained, log)
+        _beat(report, log)
         log("   boundary bookkeeping: postmortem %.1fs, report %.1fs, trial_checkpoint %.1fs"
             % (_pm_s, _wr_s, time.time() - _t))
 
@@ -704,7 +714,12 @@ def run_campaigns(n=3, turns=20, plan="all",
     report["seconds"] = round(time.time() - report["started"], 1)
     report["totals"] = _totals(report)
     _write(out_path, report)
-    opslog.close_session("complete", turns=(report.get("totals") or {}).get("turns"))
+    totals = report.get("totals") or {}
+    opslog.close_session("complete", campaigns=totals.get("campaigns"),
+                         turns=totals.get("turns_played"),
+                         turns_per_hour=_turns_per_hour(report),
+                         last_turn_seconds=_last_turn_seconds(report),
+                         stalls=_stall_count())
     log("\n" + "=" * 78)
     log("SESSION DONE in %.0fs -> %s" % (report["seconds"], out_path))
     for k, v in report["totals"].items():
@@ -881,6 +896,49 @@ def _turns_of(c):
     return int(c.get("turns_played") or c.get("turns_recorded") or 0)
 
 
+def _turn_budget(turns):
+    return max(turns) if isinstance(turns, (list, tuple)) else int(turns)
+
+
+def _turns_per_hour(report):
+    hours = (time.time() - report["started"]) / 3600.0
+    turns = sum(_turns_of(c) for c in report["campaigns"])
+    return round(turns / hours, 2) if hours > 0 else None
+
+
+def _last_turn_seconds(report):
+    timed = [c["timing"] for c in report["campaigns"] if c.get("timing")]
+    if not timed or not timed[-1].get("turns"):
+        return None
+    return round(float(timed[-1]["play_s"]) / timed[-1]["turns"], 1)
+
+
+def _stall_count():
+    import opslog
+    sid = opslog.session_id()
+    if sid is None:
+        return None
+    from decisions import pg
+    con = pg.connect(app_name="tw-stallcount", autocommit=True, readonly=True)
+    try:
+        return con.execute("SELECT count(*) FROM ops.stall WHERE session_id = %s",
+                           (sid,)).fetchone()[0]
+    finally:
+        con.close()
+
+
+def _beat(report, log):
+    import opslog
+    try:
+        opslog.beat_session(campaigns=len(report["campaigns"]),
+                            turns=sum(_turns_of(c) for c in report["campaigns"]),
+                            turns_per_hour=_turns_per_hour(report),
+                            last_turn_seconds=_last_turn_seconds(report),
+                            stalls=_stall_count())
+    except Exception as e:
+        log("   session heartbeat not recorded: %r" % (e,))
+
+
 def _gain_stats(stretch, part):
     measured = [c for c in stretch if c.get(part + "_gained") is not None]
     if not measured:
@@ -922,6 +980,9 @@ def _trial_row(stretch, gen_n, report, trained, log):
            "campaigns": len(played),
            "strategies": (report.get("requested") or {}).get("strategies"),
            "interrupt_strategies": (report.get("requested") or {}).get("interrupt_strategies"),
+           "retrain_every": (report.get("requested") or {}).get("retrain_every"),
+           "turn_budget": (report.get("requested") or {}).get("turn_budget"),
+           "start_pool": (report.get("requested") or {}).get("start_pool"),
            "feature_version": _feature_version(),
            "code_version": (report.get("requested") or {}).get("code_version"),
            "corpus_at_train": report.get("_corpus"),

@@ -25,19 +25,36 @@ def session_id():
     return _SESSION[0]
 
 
-def open_session(campaigns=None, turns=None, code_version=None):
+def reap_sessions(status="killed", con=None):
+    t0 = time.time()
+    own = con is None
+    con = con or _con()
+    try:
+        n = con.execute(
+            "UPDATE ops.session SET status = %s, ended_ts = %s"
+            " WHERE host = %s AND status = 'running'",
+            (status, time.time(), socket.gethostname())).rowcount
+    finally:
+        if own:
+            con.close()
+    log("reap_sessions exit %.0f ms closed=%d" % ((time.time() - t0) * 1000, n))
+    return n
+
+
+def open_session(trial=None, code_version=None):
     t0 = time.time()
     launch_id = os.environ.get("TW_LAUNCH_ID")
     segment_id = os.environ.get("TW_SEGMENT_ID")
     con = _con()
     try:
+        reap_sessions(con=con)
         sid = con.execute(
-            "INSERT INTO ops.session (launch_id, segment_id, started_ts, status,"
-            " campaigns, turns, host, code_version)"
-            " VALUES (%s,%s,%s,'running',%s,%s,%s,%s) RETURNING session_id",
+            "INSERT INTO ops.session (launch_id, segment_id, trial, started_ts, status,"
+            " host, code_version)"
+            " VALUES (%s,%s,%s,%s,'running',%s,%s) RETURNING session_id",
             (int(launch_id) if launch_id else None,
-             int(segment_id) if segment_id else None, time.time(),
-             campaigns, turns, socket.gethostname(),
+             int(segment_id) if segment_id else None, trial, time.time(),
+             socket.gethostname(),
              code_version or os.environ.get("TW_CODE_VERSION"))).fetchone()[0]
     finally:
         con.close()
@@ -47,8 +64,8 @@ def open_session(campaigns=None, turns=None, code_version=None):
     return sid
 
 
-def close_session(status, turns=None, turns_per_hour=None, last_turn_seconds=None,
-                  stalls=None):
+def beat_session(campaigns=None, turns=None, turns_per_hour=None,
+                 last_turn_seconds=None, stalls=None):
     t0 = time.time()
     sid = _SESSION[0]
     if sid is None:
@@ -56,10 +73,32 @@ def close_session(status, turns=None, turns_per_hour=None, last_turn_seconds=Non
     con = _con()
     try:
         con.execute(
-            "UPDATE ops.session SET ended_ts = %s, status = %s, turns = COALESCE(%s, turns),"
-            " turns_per_hour = %s, last_turn_seconds = %s, stalls = %s"
-            " WHERE session_id = %s",
-            (time.time(), status, turns, turns_per_hour, last_turn_seconds, stalls, sid))
+            "UPDATE ops.session SET campaigns = %s, turns = %s, turns_per_hour = %s,"
+            " last_turn_seconds = %s, stalls = %s WHERE session_id = %s",
+            (campaigns, turns, turns_per_hour, last_turn_seconds, stalls, sid))
+    finally:
+        con.close()
+    log("beat_session exit %.0f ms session_id=%d campaigns=%s turns=%s"
+        % ((time.time() - t0) * 1000, sid, campaigns, turns))
+    return sid
+
+
+def close_session(status, campaigns=None, turns=None, turns_per_hour=None,
+                  last_turn_seconds=None, stalls=None):
+    t0 = time.time()
+    sid = _SESSION[0]
+    if sid is None:
+        return None
+    con = _con()
+    try:
+        con.execute(
+            "UPDATE ops.session SET ended_ts = %s, status = %s,"
+            " campaigns = COALESCE(%s, campaigns), turns = COALESCE(%s, turns),"
+            " turns_per_hour = COALESCE(%s, turns_per_hour),"
+            " last_turn_seconds = COALESCE(%s, last_turn_seconds),"
+            " stalls = COALESCE(%s, stalls) WHERE session_id = %s",
+            (time.time(), status, campaigns, turns, turns_per_hour,
+             last_turn_seconds, stalls, sid))
     finally:
         con.close()
     log("close_session exit %.0f ms session_id=%d status=%s"

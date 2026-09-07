@@ -252,7 +252,8 @@ def campaign(con, key, turn=None):
                sc.settlements, sc.treasury, sc.income, sc.net_income,
                sc.armies, sc.allies, sc.vassals, sc.power_rank, sc.lord_level,
                sc.settlement_income, sc.province_income, sc.raiding_income,
-               sc.trade_value, sc.upkeep, sc.expenditure
+               sc.trade_value, sc.upkeep, sc.expenditure,
+               ibs.background_income
                , MAX(sc.settlements) OVER history AS peak_settlements
                , MAX(sc.lord_level) OVER history AS peak_level
                , MAX(sc.allies) OVER history AS peak_allies
@@ -262,6 +263,7 @@ def campaign(con, key, turn=None):
                , FIRST_VALUE(sc.allies) OVER history AS first_allies
                , FIRST_VALUE(sc.vassals) OVER history AS first_vassals
         FROM corpus.snapshot s JOIN corpus.snapshot_campaign sc USING (snapshot_id)
+        LEFT JOIN corpus.income_by_source ibs USING (snapshot_id)
         WHERE s.campaign_id = %s
         WINDOW history AS (ORDER BY s.snapshot_id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
         ORDER BY s.turn, s.snapshot_id DESC
@@ -334,6 +336,17 @@ def campaign(con, key, turn=None):
         for trait in ch['traits']:
             trait['label'] = labels.trait_name(trait['key']) or labels.pretty(trait['key'])
             trait['effects'] = next((level['effects'] for level in labels.trait_level_rows(trait['key']) if level['level']==trait['level']), [])
+        ch['trait_progress'] = _rows(con, """
+            SELECT t.key, m.points FROM corpus.char_state_ext ext
+            JOIN corpus.trait_progress_set_member m ON m.set_id=ext.trait_progress_set_id
+            JOIN dict.trait t ON t.id=m.trait_id
+            WHERE ext.snapshot_id=%s AND ext.character_id=%s
+            ORDER BY m.points DESC, m.ord
+        """, (ch['snapshot_id'], ch['character_id']))
+        for progress in ch['trait_progress']:
+            progress['label'] = labels.trait_name(progress['key']) or labels.pretty(progress['key'])
+            progress['threshold'] = next((level['threshold'] for level in labels.trait_level_rows(progress['key'])
+                                          if level['threshold'] and level['threshold'] > progress['points']), None)
         bonuses = {}
         for source, entries in [('skills', [e for s in ch['skills'] if s['level']>0 for e in effects.get((s['key'],s['level']), [])])]:
             for effect in entries:
@@ -374,7 +387,7 @@ def campaign(con, key, turn=None):
             WHERE m.set_id = %s ORDER BY m.ord
         """, (state['current_research_id'], state['tech_set_id']))
         parents = labels.tech_parents()
-        groups = labels.tech_groups()
+        lines = labels.tech_lines()
         tech_effects = {}
         for effect in _rows(con, """
             SELECT t.key, e.effect, e.value, e.effect_scope FROM refc.tech t
@@ -385,7 +398,7 @@ def campaign(con, key, turn=None):
         for tech in research:
             tech['label'] = labels.tech_name(tech['key']) or labels.pretty(tech['key'])
             tech['effect'] = labels.tech_description(tech['key'])
-            tech['branch'] = labels.tech_group_name(groups.get(tech['key'])) or 'Other'
+            tech['branch'] = lines.get(tech['key'])
             tech['parent'] = parents.get(tech['key'])
             tech['effects'] = tech_effects.get(tech['key'], [])
     regions = []
@@ -407,10 +420,17 @@ def campaign(con, key, turn=None):
             region['outline'] = json.loads(region['outline']) if region['outline'] else []
         relations = _rows(con, """
             SELECT f.key, m.standing, m.at_war, m.allied, m.trade, m.nap,
-                   m.mil_access, m.mil_ally, m.def_ally, m.their_vassal
+                   m.mil_access, m.mil_ally, m.def_ally, m.their_vassal,
+                   CASE WHEN m.at_war THEN 'at war' WHEN m.allied THEN 'allied'
+                        WHEN m.nap THEN 'non-aggression' WHEN m.trade THEN 'trade' END AS since_kind,
+                   (SELECT MIN(d.from_turn) FROM analytics.diplomacy_state_change d
+                     WHERE d.campaign_id = %s AND d.faction_id = m.faction_id
+                       AND d.kind = CASE WHEN m.at_war THEN 'at_war' WHEN m.allied THEN 'allied'
+                                         WHEN m.nap THEN 'nap' WHEN m.trade THEN 'trade' END
+                       AND d.from_turn <= %s AND d.to_turn >= %s) AS since
             FROM corpus.relation_set_member m JOIN dict.faction f ON f.id = m.faction_id
             WHERE m.set_id = %s ORDER BY m.standing DESC NULLS LAST
-        """, (world['relation_set_id'],))
+        """, (cid, selected_turn, selected_turn, world['relation_set_id']))
         for relation in relations:
             relation['label'] = _name('faction', relation['key'])
     provinces = _rows(con, """
@@ -420,8 +440,18 @@ def campaign(con, key, turn=None):
         WHERE s.campaign_id = %s AND s.snapshot_id <= %s AND s.turn = %s
         ORDER BY ps.region_id, ps.snapshot_id DESC
     """, (cid, sid, selected_turn))
+    breakdown_ids = sorted({p['income_breakdown_set_id'] for p in provinces
+                            if p['income_breakdown_set_id'] is not None})
+    breakdowns = {}
+    for row in _rows(con, """
+        SELECT set_id, label, amount FROM corpus.income_breakdown_set_member
+        WHERE set_id = ANY(%s) ORDER BY set_id, ord
+    """, (breakdown_ids,)) if breakdown_ids else []:
+        breakdowns.setdefault(row['set_id'], []).append(
+            dict(label=row['label'], amount=row['amount']))
     for province in provinces:
         province['label'] = _name('garrison', province['key'])
+        province['income_breakdown'] = breakdowns.get(province['income_breakdown_set_id'], [])
         province['slots'] = _rows(con, """
             SELECT k.key, m.slot_index FROM corpus.built_set_member m
             JOIN dict.building k ON k.id = m.building_id WHERE m.set_id = %s ORDER BY m.slot_index
@@ -457,8 +487,9 @@ def campaign(con, key, turn=None):
     """, (sid,))
     finance = [dict(component_id=field, label=label, value=f"{selected[field]:,}", turn=selected_turn,
                     kind='expenditure' if field in ('upkeep','expenditure') else 'income')
-               for field, label in [('settlement_income','Settlement income'), ('province_income','Province income'),
-                                    ('raiding_income','Raiding'), ('trade_value','Trade value'),
+               for field, label in [('settlement_income','Settlement income'),
+                                    ('raiding_income','Raiding'), ('background_income','Other income'),
+                                    ('province_income','Province income'), ('trade_value','Trade value'),
                                     ('upkeep','Army upkeep'), ('expenditure','Total expenditure'),
                                     ('net_income','Income next turn')]
                if selected[field] is not None]
@@ -468,6 +499,8 @@ def campaign(con, key, turn=None):
             SELECT a.key, m.name AS label FROM corpus.item_slot_set_member m
             JOIN dict.ancillary a ON a.id = m.ancillary_id WHERE m.set_id = %s
         """, (state['anc_pool_set_id'],))
+        for item in pool:
+            item['effects'] = labels.item_effect_rows(item['key'])
     return dict(meta=meta, selected=selected, series=series, characters=chars,
                 research=research, regions=regions, provinces=provinces,
                 diplomacy=relations, armies=armies, hostiles=hostiles,

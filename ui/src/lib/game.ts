@@ -34,6 +34,7 @@ export interface Point {
   vassals: number | null
   power_rank: number | null
   lord_level: number | null
+  background_income: number | null
 }
 export interface Effect {
   name: string
@@ -74,6 +75,12 @@ export interface Character {
   wounded: boolean
   bonuses: (Effect & { sources: string[] })[]
   traits: { key: string; label: string; level: number; effects: Effect[] }[]
+  trait_progress: {
+    key: string
+    label: string
+    points: number
+    threshold: number | null
+  }[]
   items: Item[]
   skills: Skill[]
   units_list: {
@@ -140,6 +147,7 @@ export interface GamePage {
     growth_per_turn: number | null
     income: number | null
     free_slots: number | null
+    income_breakdown: { label: string; amount: number | null }[]
     slots: { key: string; label: string; slot_index: number }[]
   }[]
   diplomacy: {
@@ -151,6 +159,8 @@ export interface GamePage {
     trade: boolean
     nap: boolean
     mil_access: boolean
+    since: number | null
+    since_kind: string | null
   }[]
   armies: {
     cqi: number

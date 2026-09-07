@@ -281,7 +281,9 @@ class InterruptRanker:
         X = F.matrix(rows, num, cat)
         preds = list(self.model.predict(Pool(X, cat_features=list(
             range(len(num), len(num) + len(cat))))))
-        return dict(zip(opts, _ranks(preds)))
+        ranks = _ranks(preds)
+        return {o: {"score": round(preds[i], 5), "exploit": round(ranks[i], 4)}
+                for i, o in enumerate(opts)}
 
     def _draw(self):
         roll = self.rng.random()
@@ -308,9 +310,8 @@ class InterruptRanker:
         world = (record or {}).get("world")
 
         usable, why = self._exploit_ready(screen)
-        exploit = (self.score(screen, options, campaign, panel, world, meta)
-                   if usable else {})
-        rich = {o: {"exploit": exploit[o]} for o in opts if o in exploit}
+        rich = (self.score(screen, options, campaign, panel, world, meta)
+                if usable else {})
 
         drawn = self._draw()
         if drawn == "random":
@@ -323,13 +324,14 @@ class InterruptRanker:
             sys.stderr.write("interrupt_model: %s -> %r (greedy_catboost_random_fallback, %s)\n"
                              % (screen, pick, why))
             return pick, "greedy_catboost_random_fallback", rich
-        if not exploit:
+        if not rich:
             if self.ready:
                 raise P.ModelUnavailable(
                     "interrupt_model: greedy_catboost drawn with a ready model but scoring "
                     "produced nothing for screen %r" % (screen,))
             return self.rng.choice(opts), "greedy_catboost_random_fallback", rich
-        return max(exploit, key=exploit.get), "greedy_catboost", rich
+        return (max(rich, key=lambda o: rich[o]["exploit"]),
+                "greedy_catboost", rich)
 
 
 def main():

@@ -11,7 +11,7 @@ import arms
 from analytics import store as _store
 from analytics.model_agreement import PAIR_KEYS
 
-FORMULA_VERSION = 5
+FORMULA_VERSION = 6
 
 TARGET_POINTS = 40
 MIN_BUCKET = 50
@@ -30,6 +30,20 @@ def _med(vals):
 def _mean(vals):
     v = [x for x in vals if x is not None]
     return float(statistics.fmean(v)) if v else None
+
+
+def _quartiles(vals):
+    v = sorted(x for x in vals if x is not None)
+    if not v:
+        return None, None
+    at = lambda p: float(v[int(round(p * (len(v) - 1)))])
+    return at(0.25), at(0.75)
+
+
+def _pct(rank, n):
+    if rank is None or n is None or n < 2:
+        return None
+    return 100.0 * (float(rank) - 1.0) / (float(n) - 1.0)
 
 
 def bucket_size(comparable: int) -> int:
@@ -67,12 +81,15 @@ class _Summary(_Rollup):
                 (pair,)).fetchall()
             comparable = len(rows)
             top1 = sum(1 for r in rows if r["top1_agree"])
+            q1, q3 = _quartiles([r["rho"] for r in rows])
             an.execute(
                 "INSERT INTO agreement_summary(pair, scope, comparable, rho_median,"
-                " rho_mean, tau_median, rbo_median, top1_rate, missing_b, no_scores)"
-                " VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                " rho_mean, rho_q1, rho_q3, tau_median, rbo_median, top1_rate,"
+                " missing_b, no_scores)"
+                " VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (pair, "all", comparable,
                  _med([r["rho"] for r in rows]), _mean([r["rho"] for r in rows]),
+                 q1, q3,
                  _med([r["tau"] for r in rows]), _med([r["rbo"] for r in rows]),
                  (top1 / comparable if comparable else None),
                  counts.get("missing_b", 0), counts.get("no_scores", 0)))
@@ -138,10 +155,11 @@ class _Series(_Rollup):
             _store.executemany(
                 an,
                 "INSERT INTO agreement_series(pair, axis, seq, from_decision,"
-                " to_decision, from_ts, decisions, rho_median, gate, trial,"
-                " generation, retrained, bucket_size)"
+                " to_decision, from_ts, decisions, rho_median, rho_q1, rho_q3,"
+                " gate, trial, generation, retrained, bucket_size)"
                 " VALUES(%(pair)s,%(axis)s,%(seq)s,%(from_decision)s,"
                 "%(to_decision)s,%(from_ts)s,%(decisions)s,%(rho_median)s,"
+                "%(rho_q1)s,%(rho_q3)s,"
                 "%(gate)s,%(trial)s,%(generation)s,%(retrained)s,%(bucket_size)s)",
                 [dict(p, bucket_size=size) for p in out])
             total += len(out)
@@ -155,22 +173,26 @@ def _point(pair, axis, seq, chunk, gate) -> dict:
          "from_decision": (chunk[0]["decision_id"] if chunk else None),
          "to_decision": (chunk[-1]["decision_id"] if chunk else None),
          "from_ts": (chunk[0]["ts"] if chunk else None),
-         "decisions": len(chunk), "rho_median": None, "gate": None}
+         "decisions": len(chunk), "rho_median": None, "rho_q1": None,
+         "rho_q3": None, "gate": None}
     if len(chunk) < gate:
         p["gate"] = "%d of %d needed" % (len(chunk), gate)
         return p
     p["rho_median"] = _med([r["rho"] for r in chunk])
+    p["rho_q1"], p["rho_q3"] = _quartiles([r["rho"] for r in chunk])
     return p
 
 
+DIM_COLS = "a.rho, a.top1_agree, a.taken_rank_a, a.taken_rank_b, a.n_a, a.n_b"
+
 DIM_SQL = {
-    "arm": ("SELECT pp.key k, a.rho, a.top1_agree FROM model_agreement a"
+    "arm": ("SELECT pp.key k, " + DIM_COLS + " FROM model_agreement a"
             " JOIN dict.enum pp ON pp.enum_id = a.policy_id"
             " WHERE a.pair=%s AND a.status='ok'"),
-    "action_type": ("SELECT at.key k, a.rho, a.top1_agree FROM model_agreement a"
+    "action_type": ("SELECT at.key k, " + DIM_COLS + " FROM model_agreement a"
                     " JOIN dict.action_type at ON at.id = a.action_type_id"
                     " WHERE a.pair=%s AND a.status='ok'"),
-    "context_kind": ("SELECT ek.key k, a.rho, a.top1_agree FROM model_agreement a"
+    "context_kind": ("SELECT ek.key k, " + DIM_COLS + " FROM model_agreement a"
                      " JOIN dict.enum ek ON ek.enum_id = a.entity_kind_id"
                      " WHERE a.pair=%s AND a.status='ok'"),
 }
@@ -193,11 +215,19 @@ class _Breakdown(_Rollup):
                     groups.setdefault(key, []).append(r)
                 for k, rs in groups.items():
                     top1 = sum(1 for r in rs if r["top1_agree"])
+                    a_pct = _med([_pct(r["taken_rank_a"], r["n_a"]) for r in rs])
+                    b_pct = _med([_pct(r["taken_rank_b"], r["n_b"]) for r in rs])
                     out.append((pair, dim, str(k), len(rs),
                                 _med([r["rho"] for r in rs]),
-                                top1 / len(rs) if rs else None))
+                                top1 / len(rs) if rs else None,
+                                _med([r["taken_rank_a"] for r in rs]), a_pct,
+                                _med([r["taken_rank_b"] for r in rs]), b_pct,
+                                (None if a_pct is None or b_pct is None
+                                 else b_pct - a_pct),
+                                sum(1 for r in rs if arms.fell_back(r["k"]))))
         _store.executemany(
-            an, "INSERT INTO agreement_breakdown VALUES(%s,%s,%s,%s,%s,%s)", out)
+            an, "INSERT INTO agreement_breakdown VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,"
+                "%s,%s,%s)", out)
         log("breakdown exit %.0f ms rows=%d" % ((time.time() - t0) * 1000, len(out)))
         return hi, len(out)
 

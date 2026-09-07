@@ -2275,14 +2275,16 @@ def _catalog_ref(family, keys) -> dict:
                         "level": _building_level(i), "cost": _i(i.get("create_cost"))}
     elif family == "research":
         uni = {u["key"]: u for u in labels.tech_rows_for(keys)}
+        lines = labels.tech_lines()
         for key in keys:
             u = uni.get(key) or {}
             out[key] = {"tier": _i(u.get("tier")),
-                        "points": _i(u.get("research_points_required"))}
+                        "points": _i(u.get("research_points_required")),
+                        "line": lines.get(key)}
     elif family == "skills":
         unlocks = labels.skill_unlock_ranks(keys)
         for key in keys:
-            out[key] = {"unlock_rank": _i(unlocks.get(key)) or None}
+            out[key] = {"unlock_rank": _i(unlocks.get(key))}
     elif family == "traits":
         lv = labels.trait_levels_for(keys)
         cats = labels.trait_categories(keys)
@@ -2843,6 +2845,7 @@ def catalog_key_page(con, family: str, key: str) -> dict | None:
         parents = labels.tech_parents().get(key) or []
         children = labels.tech_children().get(key) or []
         out.update(tier=ref.get("tier"), points=ref.get("points"),
+                   line=ref.get("line"),
                    parent=_parent_ident(labels.tech_parents(), key),
                    description=labels.tech_description(key, tkey),
                    related=related_rows(
@@ -4543,6 +4546,7 @@ def agreement_page(pair: str | None = None):
         coverage=Rate(n=comparable, of=decisions, noun="decisions",
                       population="recorded in this run dir"),
         rho_median=_f(s.get("rho_median")), rho_mean=_f(s.get("rho_mean")),
+        rho_q1=_f(s.get("rho_q1")), rho_q3=_f(s.get("rho_q3")),
         tau_median=_f(s.get("tau_median")),
         same_best=Rate(n=same, of=comparable, noun="decisions", population="comparable"),
         excluded=_excluded_counts(s, a, b))
@@ -4564,6 +4568,9 @@ def agreement_page(pair: str | None = None):
     ]
     rows = [AgreementRankRow(
         picked_by=_phrase(r["key"]), decisions=_i(r["decisions"], 0) or 0,
+        a_rank=_f(r["a_rank"]), a_pct=_f(r["a_pct"]),
+        b_rank=_f(r["b_rank"]), b_pct=_f(r["b_pct"]),
+        delta_pct=_f(r["delta_pct"]), fell_back=_i(r["fell_back"], 0) or 0,
         rho_median=_f(r["rho_median"]))
         for r in _rows("SELECT * FROM agreement_breakdown WHERE dim='arm' AND pair=%s"
                        " ORDER BY decisions DESC", (po.key,))]
@@ -4615,6 +4622,7 @@ def agreement_series(axis: str = "window", pair: str | None = None):
             from_decision=_i(r["from_decision"]), to_decision=_i(r["to_decision"]),
             from_ts=_f(r["from_ts"]),
             rho_median=_f(r["rho_median"]),
+            rho_q1=_f(r["rho_q1"]), rho_q3=_f(r["rho_q3"]),
             same_top=Rate(n=0, of=n, noun="decisions",
                           population="comparable, in this bucket"),
             gate=r["gate"])
@@ -4629,6 +4637,7 @@ def agreement_series(axis: str = "window", pair: str | None = None):
             decisions=Count(value=n, noun="decisions",
                             population="comparable, inside this version's window"),
             rho_median=_f(r["rho_median"]),
+            rho_q1=_f(r["rho_q1"]), rho_q3=_f(r["rho_q3"]),
             same_top=Rate(n=0, of=n, noun="decisions",
                           population="comparable, inside this version's window")))
     drawable = [p for p in pts if p["rho_median"] is not None]
@@ -4761,9 +4770,10 @@ def _training_history() -> list:
     import glob
 
     root = common.native(common.RUNS_ROOT)
-    reports = sorted(glob.glob(os.path.join(root, "session_*.json")))[-SESSION_REPORTS:]
+    reports = sorted(glob.glob(os.path.join(root, "session_*.json")))
     out = []
-    for path in reports:
+    seen = 0
+    for path in reversed(reports):
         try:
             with open(path, encoding="utf-8") as fh:
                 rep = json.load(fh)
@@ -4771,6 +4781,7 @@ def _training_history() -> list:
             continue
         stamp = os.path.basename(path).replace("session_", "").replace(".json", "")
         gen = 0
+        evs = []
         for camp in rep.get("campaigns") or []:
             rt = camp.get("retrain") or {}
             irt = camp.get("retrain_interrupt") or {}
@@ -4822,14 +4833,20 @@ def _training_history() -> list:
                     "seconds": _f(ggnn.get("seconds")),
                 }),
             }
-            out.append(TrainingEvent(
+            evs.append(TrainingEvent(
                 when=time.strftime("%Y-%m-%d %H:%M",
                                    time.localtime(_f(camp.get("started"), 0.0) or 0.0)),
                 trial="%s-g%d" % (stamp, gen),
                 corpus_rows=corpus_rows,
                 corpus_campaigns=corpus_campaigns,
                 groups={k: v for k, v in groups.items() if v}))
-    out.reverse()
+        if not evs:
+            continue
+        evs.reverse()
+        out.extend(evs)
+        seen += 1
+        if seen >= SESSION_REPORTS:
+            break
     return out
 
 

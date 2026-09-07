@@ -1,17 +1,28 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 import time
 
 from decisions import canon, dicts, pg, rowmap, schema_map, sets
 
 MAX_ENTITIES = 64
+CCO_DILEMMA_PREFIX = 'CcoCdirEventsDilemmaChoiceDetailRecord'
+OPTION_SUFFIX = re.compile(
+    r'(FIRST|SECOND|THIRD|FOURTH|FIFTH|SIXTH|SEVENTH|EIGHTH|SCRIPTED_\d*)$')
 
 
 def _num(v):
     try:
         return int(float(str(v).replace(',', '').strip()))
+    except (TypeError, ValueError):
+        return None
+
+
+def _num_or_none(v):
+    try:
+        return float(str(v).strip())
     except (TypeError, ValueError):
         return None
 
@@ -23,6 +34,11 @@ def _exact_int(name, v):
     if i != v:
         raise ValueError('%s is %r, not a whole number' % (name, v))
     return i
+
+
+def _ident(o):
+    return (o.get('context_kind'), str(o.get('context_id')),
+            o.get('action_type'), str(o.get('key')))
 
 
 def log(msg):
@@ -51,6 +67,7 @@ class Store:
         self.campaigns = {}
         self.characters = {}
         self.actions = {}
+        self.screen_keys = None
         self.conn.on_rollback = self._forget
         self.collector_sha = collector_sha
         self.version_id = None
@@ -345,6 +362,10 @@ class Store:
         t0 = time.time()
         log('write_decide enter decision_id=%s offers=%d' % (decision_id, len(offers or [])))
         seqs = self._entity_seqs(decision_id)
+        by_ident = {}
+        for s in scores or []:
+            by_ident.setdefault(_ident(s), s)
+        scored = 0
         with self.conn.unit('U2'):
             actions = self._actions([(o.get('action_type'), o.get('key'))
                                      for o in offers or []])
@@ -354,15 +375,18 @@ class Store:
                 slot = o.get('slot_index')
                 if slot is None:
                     slot = (o.get('params') or {}).get('slot_index')
+                s = by_ident.get(_ident(o)) or {}
+                scored += 1 if s else 0
+                ggnn = (s.get('models') or {}).get('greedy_gnn') or {}
                 rows.append((decision_id, seq,
                              (o.get('entity_seq') if o.get('entity_seq') is not None
                               else self._seq_of(seqs, o)), action,
-                             _exact_int('slot_index', slot), o.get('score'),
-                             o.get('exploit'), _exact_int('rank', o.get('rank')),
-                             o.get('pct_global'), o.get('gnn_impact'),
-                             _exact_int('gnn_rank', o.get('gnn_rank')),
-                             o.get('ggnn_score'),
-                             _exact_int('ggnn_rank', o.get('ggnn_rank'))))
+                             _exact_int('slot_index', slot), s.get('score'),
+                             s.get('exploit'), _exact_int('rank', s.get('rank')),
+                             s.get('pct_global'), s.get('gnn_impact'),
+                             _exact_int('gnn_rank', s.get('gnn_rank')),
+                             ggnn.get('score'),
+                             _exact_int('ggnn_rank', ggnn.get('rank'))))
             if rows:
                 with self.conn.cursor().copy(
                         "COPY corpus.offer (decision_id, offer_seq, entity_seq, action_id,"
@@ -377,17 +401,16 @@ class Store:
                 self._timings(decision_id, timings)
             if pick:
                 if pick.get('offer_seq') is None:
-                    ident = (pick.get('context_kind'), str(pick.get('context_id')),
-                             pick.get('action_type'), str(pick.get('key')))
+                    ident = _ident(pick)
                     for seq, o in enumerate(offers or []):
-                        if (o.get('context_kind'), str(o.get('context_id')),
-                                o.get('action_type'), str(o.get('key'))) == ident:
+                        if _ident(o) == ident:
                             pick = dict(pick, offer_seq=seq)
                             break
                 self._taken(decision_id, pick, seqs)
             if req_id is not None:
                 self._respond(req_id, decision_id)
-        log('write_decide exit %.1f ms' % ((time.time() - t0) * 1000))
+        log('write_decide exit %.1f ms scored=%d/%d' % ((time.time() - t0) * 1000,
+                                                        scored, len(rows)))
 
     def _actions(self, pairs):
         want = sorted({p for p in pairs if p not in self.actions})
@@ -475,18 +498,22 @@ class Store:
             sig = confirm.get('signal')
             sig_id = self.dicts.resolve('confirm_signal', [sig]).get(sig) if sig else None
             counted = bool(result.get('counted'))
+            prechecks = result.get('prechecks') or {}
+            failed = prechecks.get('failed_precheck')
             vals = (result.get('executed'), result.get('confirmed'), counted,
                     refusals.get(result.get('refusal')), sig_id,
                     confirm.get('latency_ms'), t.get('snapshot_ms'), t.get('gates_ms'),
                     t.get('execute_ms'), t.get('confirm_ms'), t.get('confirm_wasted_ms'),
-                    t.get('polls'), t.get('total_ms'), result.get('prechecks_passed'),
+                    t.get('polls'), t.get('total_ms'), prechecks.get('passed'),
+                    self.dicts.resolve_enum('precheck', [failed])[failed] if failed else None,
                     result.get('doomed'), result.get('stderr'))
             row = self.conn.execute(
                 "UPDATE corpus.taken SET executed = %s, confirmed = %s, counted = %s,"
                 " refusal_id = %s, confirm_signal_id = %s, latency_ms = %s,"
                 " snapshot_ms = %s, gates_ms = %s, execute_ms = %s, confirm_ms = %s,"
                 " confirm_wasted_ms = %s, polls = %s, total_ms = %s,"
-                " prechecks_passed = %s, doomed = %s, stderr = %s"
+                " prechecks_passed = %s, failed_precheck_id = %s, doomed = %s,"
+                " stderr = %s"
                 " WHERE decision_id = %s AND refusal_id = %s RETURNING campaign_id",
                 vals + (decision_id, refusals['awaiting_execution'])).fetchone()
             if row is None:
@@ -506,9 +533,9 @@ class Store:
                         " policy_id, ts, executed, confirmed, counted, refusal_id,"
                         " confirm_signal_id, latency_ms, snapshot_ms, gates_ms,"
                         " execute_ms, confirm_ms, confirm_wasted_ms, polls, total_ms,"
-                        " prechecks_passed, doomed, stderr)"
+                        " prechecks_passed, failed_precheck_id, doomed, stderr)"
                         " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
-                        "%s,%s,%s,%s) RETURNING campaign_id",
+                        "%s,%s,%s,%s,%s) RETURNING campaign_id",
                         (decision_id, camp,
                          self._action(result.get('action_type'), result.get('key')),
                          policy.get(result.get('policy')), time.time()) + vals).fetchone()
@@ -522,17 +549,26 @@ class Store:
         log('write_verification exit %.1f ms' % ((time.time() - t0) * 1000))
 
 
+    def _screen_keys(self):
+        if self.screen_keys is None:
+            self.screen_keys = (
+                {r[0] for r in self.conn.execute("SELECT key FROM ref.incidents")},
+                {r[0] for r in self.conn.execute("SELECT key FROM ref.dilemmas")})
+        return self.screen_keys
+
     def _screen_ids(self, kind, rec):
         if kind != 'dilemma':
             return None, None
         ctx = str(rec.get('dilemma_id') or rec.get('root_context') or '')
-        if not ctx:
+        if not ctx.startswith(CCO_DILEMMA_PREFIX):
             return None, None
-        head = ctx.split(':', 1)[0]
-        key = ctx.split(':', 1)[1] if ctx.startswith('Cco') and ':' in ctx else ctx
-        if ctx.startswith('Cco') and 'Incident' in head:
-            return None, self.dicts.resolve('incident', [key]).get(key)
-        return self.dicts.resolve('dilemma', [key]).get(key), None
+        key = ctx[len(CCO_DILEMMA_PREFIX):]
+        incidents, dilemmas = self._screen_keys()
+        if key not in incidents and key not in dilemmas:
+            key = OPTION_SUFFIX.sub('', key) or key
+        if key in incidents:
+            return None, self.dicts.resolve('incident', [key])[key]
+        return self.dicts.resolve('dilemma', [key])[key], None
 
     def _battle_panel(self, snapshot_id, panel):
         res = panel.get('result') or {}
@@ -774,15 +810,45 @@ class Store:
             camp = self.conn.execute(
                 "SELECT campaign_id FROM corpus.campaign WHERE campaign_key = %s",
                 (key,)).fetchone()
-            kinds = self.dicts.resolve_enum('diplo_event_kind', [row.get('kind') or 'deal'])
-            chans = self.dicts.resolve_enum('diplo_channel',
-                                            [row.get('channel') or 'outgoing'])
+            kind = row.get('kind') or 'deal'
+            chan = row.get('channel')
+            gift = row.get('gift')
+            policy = row.get('policy')
+            faction = row.get('faction')
+            terms = row.get('terms') or []
+            tracked = row.get('tracked') or []
+            panel = row.get('panel') or {}
+            pair = row.get('pair') or {}
+            standing = pair.get('standing')
+            ended_by = row.get('ended_by')
             self.conn.execute(
                 "INSERT INTO corpus.diplomacy_event (campaign_id, turn, ts, ts_recorded,"
-                " kind_id, channel_id) VALUES (%s,%s,%s,%s,%s,%s)",
+                " kind_id, channel_id, faction_id, term_ids, gift_id, ok, failed_at,"
+                " success_chance, accepted, chosen, answer, executed, confirmed,"
+                " policy_id, proposer, speech, attitude, pair_at_war, pair_allied,"
+                " pair_trade, pair_our_master, pair_their_vassal, pair_standing,"
+                " turns_played, ended_by, tracked_faction_ids)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
+                "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (camp[0] if camp else None, row.get('turn') or 0,
                  row.get('ts') or time.time(), time.time(),
-                 kinds[row.get('kind') or 'deal'], chans[row.get('channel') or 'outgoing']))
+                 self.dicts.resolve_enum('diplo_event_kind', [kind])[kind],
+                 self.dicts.resolve_enum('diplo_channel', [chan])[chan] if chan else None,
+                 self.dicts.resolve('faction', [faction]).get(faction) if faction else None,
+                 [self.dicts.resolve_enum('diplo_term', [t])[t] for t in terms] or None,
+                 self.dicts.resolve_enum('gift', [gift])[gift] if gift else None,
+                 row.get('ok'), panel.get('failed_at'),
+                 _num_or_none(panel.get('success_chance')), panel.get('accepted'),
+                 row.get('chosen'), row.get('answer'), row.get('executed'),
+                 row.get('confirmed'),
+                 self.dicts.resolve_enum('policy', [policy])[policy] if policy else None,
+                 row.get('proposer'), row.get('speech'), row.get('attitude'),
+                 pair.get('at_war'), pair.get('allied'), pair.get('trade'),
+                 pair.get('our_master'), pair.get('their_vassal'),
+                 int(round(standing)) if standing is not None else None,
+                 row.get('turns_played'),
+                 [ended_by] if isinstance(ended_by, str) else (ended_by or None),
+                 [self.dicts.resolve('faction', [f])[f] for f in tracked] or None))
             if req_id is not None:
                 self._respond(req_id, None)
         log('write_diplomacy exit %.1f ms' % ((time.time() - t0) * 1000))

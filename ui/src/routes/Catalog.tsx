@@ -47,6 +47,7 @@ function famCols(family: Family): Col<CatalogIndexRow>[] {
   if (family === 'research') {
     cols.push(
       { key: 'race', label: 'race', value: (r) => r.race ?? '', render: (r) => (r.race ? <span className="text-dim">{r.race}</span> : <span className="text-dim">—</span>) },
+      { key: 'line', label: 'branch', value: (r) => r.line ?? '', render: (r) => (r.line ? <span className="text-dim">{r.line}</span> : <span className="text-dim">—</span>) },
       { key: 'tier', label: 'tier', align: 'right', value: (r) => r.tier ?? 0, render: (r) => dashNum(r.tier) },
       { key: 'points', label: 'points', align: 'right', value: (r) => r.points ?? undefined, sortUndefined: 'last', render: (r) => dashNum(r.points) },
     )

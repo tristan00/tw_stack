@@ -374,7 +374,7 @@ def tech_rows_for(keys) -> list:
     if not ks:
         return []
     return [dict(r) for r in _rows(
-        "SELECT key, technology_key, tier, research_points_required"
+        "SELECT key, technology_key, tier, research_points_required, node_set"
         " FROM tech WHERE key = ANY(%s)"
         " AND COALESCE(is_hidden, 0) = 0", (ks,))]
 
@@ -475,6 +475,28 @@ def tech_groups() -> dict:
         for r in _rows("SELECT node_key, ui_group FROM tech_groups"):
             _tech_groups_cache[r["node_key"]] = r["ui_group"]
     return _tech_groups_cache
+
+
+_tech_lines_cache: dict = {}
+
+
+def tech_lines() -> dict:
+    if not _tech_lines_cache:
+        for r in _rows("SELECT key, node_set FROM tech"):
+            _tech_lines_cache[r["key"]] = _tech_line_of(r["node_set"])
+    return _tech_lines_cache
+
+
+def _tech_line_of(node_set) -> str | None:
+    tail = str(node_set or "").split("_", 1)
+    if len(tail) < 2:
+        return None
+    name = tail[1]
+    if name.startswith("mil"):
+        return "Military"
+    if name.startswith("civ"):
+        return "Civil"
+    return pretty(name)
 
 
 def tech_group_name(group: str | None) -> str | None:

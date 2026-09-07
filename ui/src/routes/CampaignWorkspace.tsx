@@ -548,12 +548,24 @@ function CharacterView({ data }: { data: GamePage }) {
           <div className="mt-2">
             <ItemsList items={c.items} />
           </div>
-          <span className="eyebrow mt-5">Traits</span>
+          <span className="eyebrow mt-5">
+            Traits{c.traits?.length ? '' : ' · progress toward'}
+          </span>
           <div className="mt-2">
             {c.traits?.length ? (
               c.traits.map((trait) => (
                 <p key={trait.key}>
                   <Thing family="traits" item={trait} /> · level {trait.level}
+                </p>
+              ))
+            ) : c.trait_progress?.length ? (
+              c.trait_progress.map((trait) => (
+                <p key={trait.key}>
+                  <Thing family="traits" item={trait} />{' '}
+                  <span className="text-dim num">
+                    {trait.points}
+                    {trait.threshold ? ` / ${trait.threshold}` : ''} points
+                  </span>
                 </p>
               ))
             ) : (
@@ -804,7 +816,19 @@ function RealmView({ data }: { data: GamePage }) {
       key: 'income',
       label: 'Income',
       value: (r) => r.income ?? undefined,
-      render: (r) => value(r.income),
+      render: (r) => (
+        <div>
+          <b className="num">{value(r.income)}</b>
+          {r.income_breakdown?.[0]?.label === r.label && (
+            <div className="text-dim mt-0.5 text-2xs">
+              province{' '}
+              {r.income_breakdown
+                .map((b) => `${b.label} ${value(b.amount)}`)
+                .join(' · ')}
+            </div>
+          )}
+        </div>
+      ),
     },
   ]
   return (
@@ -894,6 +918,22 @@ function DiplomacyView({ data }: { data: GamePage }) {
           {r.at_war ? 'War' : r.allied ? 'Ally' : 'Peace'}
         </span>
       ),
+    },
+    {
+      key: 'since',
+      label: 'Since',
+      value: (r) => r.since ?? undefined,
+      render: (r) =>
+        r.since != null ? (
+          <span className="num">
+            turn {r.since}
+            {r.since_kind && (
+              <span className="text-dim"> · {r.since_kind}</span>
+            )}
+          </span>
+        ) : (
+          <span className="text-dim">—</span>
+        ),
     },
     ...(['trade', 'nap', 'mil_access'] as const).map((key) => ({
       key,

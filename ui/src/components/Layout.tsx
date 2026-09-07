@@ -179,7 +179,6 @@ export function Layout() {
             </button>
           </div>
           <nav className="subject-nav" aria-label={`${area} navigation`}>
-            <span className="nav-caption">{area}</span>
             {model ? (
               MODEL_NAV.map((i) => (
                 <Link
@@ -191,18 +190,31 @@ export function Layout() {
                 </Link>
               ))
             ) : area === 'Campaign' ? (
-              SUBJECTS.map((s) => (
+              <>
                 <Link
-                  key={s}
-                  to={`/?${context}&subject=${s.toLowerCase()}`}
+                  to={to('/campaigns')}
                   className={cn(
                     'subject-link',
-                    subject === s.toLowerCase() && 'active',
+                    pathname === '/campaigns' && 'active',
                   )}
                 >
-                  {s}
+                  Campaigns
                 </Link>
-              ))
+                {SUBJECTS.map((s) => (
+                  <Link
+                    key={s}
+                    to={`/?${context}&subject=${s.toLowerCase()}`}
+                    className={cn(
+                      'subject-link',
+                      pathname === '/' &&
+                        subject === s.toLowerCase() &&
+                        'active',
+                    )}
+                  >
+                    {s}
+                  </Link>
+                ))}
+              </>
             ) : area === 'Analytics' ? (
               <>
                 <Link className="subject-link" to={to('/analytics')}>

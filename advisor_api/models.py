@@ -1342,6 +1342,8 @@ class GenerationRow(BaseModel):
     decisions: Count
     rho_median: float | None = None
     rho_mean: float | None = None
+    rho_q1: float | None = None
+    rho_q3: float | None = None
     tau_mean: float | None = None
     rbo_mean: float | None = None
     same_top: Rate
