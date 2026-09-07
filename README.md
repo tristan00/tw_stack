@@ -28,7 +28,7 @@ downstream of it.
 
 ## Structure
 
-Six components, one direction of data flow. `ARCHITECTURE.md` has the detail.
+Six components, one direction of data flow.
 
 | | |
 |---|---|
@@ -45,8 +45,8 @@ recorder streams.
 
 ## The models
 
-Two learned rankers compete inside one strategy portfolio, alongside a hand-written
-ruleset and a random arm, so the corpus keeps a coverage tail while the models take over:
+Two learned rankers compete inside one strategy portfolio, alongside a random arm, so
+the corpus keeps a coverage tail while the models take over:
 
 - **greedy_catboost** — CatBoost on an E1/E2 advantage formulation, global and local.
 - **greedy_gnn** — a graph encoder over the campaign (factions, regions, armies and the
@@ -56,7 +56,7 @@ ruleset and a random arm, so the corpus keeps a coverage tail while the models t
 
 Blocking screens (pre-battle, occupation, dilemmas, diplomacy) are their own decision
 family with their own mix (`--interrupt-strategies`): `greedy_catboost` has an interrupt
-model, `random` and `ruleset` need none, and the graph arms have no interrupt model.
+model, `random` needs none, and the graph arms have no interrupt model.
 
 Campaigns are abandoned early when they stop growing, so the run spends its time on
 trajectories that are still going somewhere rather than on 20 turns of nothing.
@@ -64,7 +64,7 @@ trajectories that are still going somewhere rather than on 20 turns of nothing.
 The trainable arms are hard dependencies: a missing or broken model stops the run rather
 than silently playing random in its place, and retraining only happens when asked
 (`--retrain-every N`). The operating rules the run is held to — throughput, lifecycle,
-waits, screen handling — live in `CLAUDE.md`.
+waits, screen handling — live in `Agents.md`.
 
 ## Requirements
 
@@ -108,24 +108,25 @@ rather than shipping a pack pointing at the machine that last built it.
 
 ## Running it
 
-    python runctl.py up                  # the configured run: run_config.RUN
-
-`run_config.RUN` is the authoritative description of the run — campaigns, turns, the
-strategy mix, ruleset, campaign-map mix, presave radius, retrain cadence. `runctl up`
-starts four processes: the recorder, the API on `:8777`, the analytics roller, and the
-play session. It builds and installs the mod pack, boots the game, and drives it from
-there — nothing else to click. Any RUN value can be overridden per launch, e.g.:
-
-    python runctl.py up 500 20 --campaign "Realm of Chaos=0.5,Immortal Empires=0.5" \
+    python runctl.py up 1000 20 --factions all --presave-radius 150 --ucb 1.0 \
+        --retrain-every 100 --retrain-first \
         --strategies greedy_catboost=0.3,greedy_gnn=0.3,random=0.4 \
-        --interrupt-strategies greedy_catboost=0.5,random=0.5 \
-        --factions all --presave-radius 150
+        --interrupt-strategies greedy_catboost=0.8,random=0.2
+
+`runctl up` has no defaults: the two positionals plus `--factions`, `--retrain-every`,
+`--presave-radius` and `--ucb` are all required, so nothing — retraining above all — can
+happen without being stated on the command line. `run_config.RUN` carries the same
+settings for the dashboard's launch controls, which are its only reader; runctl does
+not consult it.
+
+`runctl up` starts four processes: the recorder, the API on `:8777`, the analytics
+roller, and the play session. It builds and installs the mod pack, boots the game, and
+drives it from there — nothing else to click.
 
 Models are chosen only through the two mixes — `--strategies` for actions,
 `--interrupt-strategies` for blocking screens; there is no model flag (the exploit scorer
-that ranks every offer is fixed — `advisor/backends.py` is its registry). `--epsilon`,
-`--retrain`, `--cfg`/`--nn-*` were removed and are rejected with pointers to their
-replacements.
+that ranks every offer is fixed). `--model`, `--backend`, `--epsilon`, `--retrain` and
+`--nn-*` were removed and are rejected with pointers to their replacements.
 
     open http://127.0.0.1:8777          # watch it
     python runctl.py harness            # supervise: kill and relaunch a dead, stalled,
@@ -135,7 +136,7 @@ replacements.
 The run is engineered for throughput measured in turns per hour, wall-clock honest:
 campaigns kill the game the moment their fate is sealed and the next boots fresh, stalls
 end campaigns in seconds instead of being waited out, and every wait in the stack logs
-its use and outcome with ISO timestamps. `CLAUDE.md` states these rules precisely.
+its use and outcome with ISO timestamps. `Agents.md` states these rules precisely.
 
 ## The dashboard on its own — a manual run tracker
 
@@ -161,8 +162,6 @@ instance can never show the dev side.
 What it needs: postgres reachable (`TW_PG_*`, see `decisions/pg.py`), the reference
 schema loaded for localized names, and — for `--record` — the compiled mod pack
 installed so the game feeds the bus. `python doctor.py` checks all of it.
-
-`python ui_docshots.py` regenerates these from the live UI (API must be up).
 
 The run screen — live throughput against the 60 turns/hour floor, services, per-stage
 timing, and the session log:
@@ -191,9 +190,8 @@ blend, explore, score and rank:
 
 ![starts](docs/ui/campaigns-starts.png)
 
-The selector — every UCB pick in order: the winning blend + explore, coverage and
-concentration over time, pick lanes per start, expected vs realised reward, the ranking
-behind any pick, and the pick log:
+The selector — every UCB pick in order: the pick log, the full ranking behind any
+pick, and the window churn as starts age in and out:
 
 ![selector](docs/ui/campaigns-selector.png)
 

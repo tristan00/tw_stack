@@ -12,27 +12,16 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(_HERE))
 import common
 
-sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "campaigns"))
-try:
-    from splitter import CampaignTracker
-except Exception as e:
-    CampaignTracker = None
-    sys.stderr.write("manager: CampaignTracker import failed (campaign-swap disabled) -> %s\n"
-                     % repr(e)[:80])
-
 
 class Ctx:
 
-    def __init__(self, out_dir, t0, stop_event, shot_req, emit, on_error,
-                 on_state=None, swap=None):
+    def __init__(self, out_dir, t0, stop_event, shot_req, emit, on_error):
         self.out_dir = out_dir
         self._t0 = t0
         self._stop = stop_event
         self.shot_req = shot_req
         self._emit = emit
         self._on_error = on_error
-        self._on_state = on_state or (lambda *a, **k: False)
-        self._swap = swap or (lambda: None)
 
     def emit(self, row):
         self._emit(row)
@@ -45,12 +34,6 @@ class Ctx:
 
     def on_error(self, where, exc):
         self._on_error(where, exc)
-
-    def on_state(self, faction, subculture, turn):
-        return self._on_state(faction, subculture, turn)
-
-    def swap(self):
-        self._swap()
 
 
 class _Writer:
@@ -146,7 +129,7 @@ class Recording:
 
     def __init__(self, out_dir, t0, stop_event, threads, events_writer, *,
                  out_root=None, writers=None, ctxs=None, on_error=None,
-                 meta_overrides=None, restart_turn=1, reset_bus=None):
+                 meta_overrides=None, reset_bus=None):
         self.out_dir = out_dir
         self.out_root = out_root
         self.t0 = t0
@@ -159,22 +142,7 @@ class Recording:
         self._on_error = on_error
         self._meta_overrides = dict(meta_overrides or {})
         self._reset_bus = reset_bus or reset_bus_files
-        self._tracker = CampaignTracker(restart_turn) if CampaignTracker is not None else None
-        self._swap_lock = threading.Lock()
-        self.campaign_index = 0
-        self.swap_count = 0
         self.dirs = [out_dir]
-
-    def observe_state(self, faction, subculture, turn):
-        if self._tracker is None:
-            return False
-        try:
-            started_new = self._tracker.observe(faction, subculture, turn)
-        except Exception as e:
-            sys.stderr.write("manager: tracker.observe failed -> %s\n" % repr(e)[:80])
-            return False
-        return False
-
 
     def stop(self, join_timeout=3.0):
         self._stop.set()
@@ -194,7 +162,7 @@ class Recording:
 
 
 def start(out_root, streams, *, recorder_version, meta_overrides=None,
-          restart_turn=1, reset_bus=None):
+          reset_bus=None):
     t0 = time.time()
     out = _new_run_dir(out_root)
     stop_event = threading.Event()
@@ -220,15 +188,14 @@ def start(out_root, streams, *, recorder_version, meta_overrides=None,
 
     rec = Recording(out, t0, stop_event, [], events, out_root=out_root, writers=writers,
                     ctxs=[], on_error=on_error, meta_overrides=base_meta,
-                    restart_turn=restart_turn, reset_bus=reset_bus)
+                    reset_bus=reset_bus)
 
     threads = []
     for s in streams:
         sdir = s.get("out_dir") or out
         w = get_writer(sdir, s.get("out_file", "events.jsonl"))
         out_file = s.get("out_file", "events.jsonl")
-        ctx = Ctx(sdir, t0, stop_event, shot_req, w, on_error,
-                  on_state=rec.observe_state)
+        ctx = Ctx(sdir, t0, stop_event, shot_req, w, on_error)
         rec._ctxs.append((ctx, out_file))
         nm = s.get("name", getattr(s["run"], "__name__", "stream"))
         th = threading.Thread(target=_run_guarded,
@@ -276,7 +243,6 @@ def main():
         sys.path.insert(0, os.path.join(os.path.dirname(here), repo))
     import input_stream
     import shots_stream
-    import events_stream
     import logs_stream
     import ui_capture_stream
     import actions_stream
@@ -323,9 +289,6 @@ def main():
     if decisions_on:
         streams.append({"run": decisions_stream.run, "name": "decisions",
                         "out_file": "decisions_stream.jsonl"})
-    streams.append({"run": events_stream.run, "name": "events",
-                    "out_file": "events_stream.jsonl",
-                    "kwargs": {"log_dirs": log_dirs}})
     if input_on:
         streams.append({"run": input_stream.run, "name": "input"})
     if shots_on:

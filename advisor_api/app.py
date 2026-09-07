@@ -689,7 +689,7 @@ def get_forcing(version: str | None = None) -> ForcingPage:
         decisions=n, version=version, versions=versions, tiles=tiles,
         empty_reason=(None if tiles else
                       "no decision in this run dir was drawn by a model arm yet -- the "
-                      "strategy mix has only produced random and ruleset picks so far"))
+                      "strategy mix has only produced random picks so far"))
 
 
 @app.get("/api/models/agreement", response_model=AgreementPage, tags=["models"])
@@ -752,7 +752,6 @@ def _launch_defaults() -> LaunchDefaults:
         retrain_first=bool(run.get("retrain_first")),
         strategies=str(run.get("strategies") or ""),
         interrupt_strategies=str(run.get("interrupt_strategies") or ""),
-        ruleset=str(run.get("ruleset") or ""),
         presave_radius=float(run["presave_radius"]),
         ucb=(float(run["ucb"]) if run.get("ucb") else None), dev=bool(run.get("dev", True)))
 
@@ -772,7 +771,7 @@ def get_infra() -> InfraPage:
         defaults=defaults,
         cold_defaults=LaunchDefaults(campaigns=10, turns_min=2, turns_max=40,
                                      retrain_every=0, retrain_first=False,
-                                     strategies="", interrupt_strategies="", ruleset="",
+                                     strategies="", interrupt_strategies="",
                                      presave_radius=defaults.presave_radius,
                                      dev=defaults.dev),
         log_tail=tail)

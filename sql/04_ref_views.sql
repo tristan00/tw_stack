@@ -197,14 +197,6 @@ SELECT s."key" AS node_set, COALESCE(s.agent_subtype_key, '') AS subtype,
        COALESCE(s.agent_key, '') AS agent
   FROM ref.character_skill_node_sets s;
 
-CREATE OR REPLACE VIEW refc.skill_set_members AS
-SELECT DISTINCT ON (i."set", n.character_skill_key)
-       i."set" AS node_set, n.character_skill_key AS skill,
-       n.tier AS tier, n.indent AS indent
-  FROM ref.character_skill_node_set_items i
-  JOIN ref.character_skill_nodes n ON n."key" = i.item
- ORDER BY i."set", n.character_skill_key, n.ctid;
-
 CREATE OR REPLACE VIEW refc.merc_units AS
 SELECT g.unit_record AS unit, j.pool AS pool,
        COALESCE(p.ui_recruitment_info, '') AS flavor,

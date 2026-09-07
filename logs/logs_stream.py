@@ -11,15 +11,6 @@ BULK_ROOT = common.STREAM_ROOT
 
 LOGTAIL_EVERY = 3.0
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "campaigns"))
-try:
-    from splitter import scan_state_rows
-except Exception as e:
-    scan_state_rows = None
-    sys.stderr.write("logs: scan_state_rows import failed (campaign-swap disabled) -> %s\n"
-                     % repr(e)[:80])
-
 
 def _append_tail(ctx, base, data: bytes) -> str:
     d = os.path.join(ctx.out_dir, "logs")
@@ -30,40 +21,10 @@ def _append_tail(ctx, base, data: bytes) -> str:
     return dst
 
 
-def _write_scriptlog_chunk(ctx, src, chunk: bytes, on_state, swap) -> None:
-    base = os.path.basename(src)
-    pos = 0
-    for faction, subculture, turn, line_off in scan_state_rows(chunk):
-        try:
-            needs_swap = on_state(faction, subculture, turn)
-        except Exception as e:
-            sys.stderr.write("logs: on_state failed -> %s\n" % repr(e)[:80])
-            continue
-        if not needs_swap:
-            continue
-        if line_off > pos:
-            dst = _append_tail(ctx, base, chunk[pos:line_off])
-            ctx.emit({"t": ctx.now(), "kind": "log_tail", "src": src,
-                      "bytes": line_off - pos, "dst": dst})
-        pos = line_off
-        try:
-            swap()
-        except Exception as e:
-            sys.stderr.write("logs: campaign swap failed -> %s\n" % repr(e)[:80])
-    if len(chunk) > pos:
-        dst = _append_tail(ctx, base, chunk[pos:])
-        ctx.emit({"t": ctx.now(), "kind": "log_tail", "src": src,
-                  "bytes": len(chunk) - pos, "dst": dst})
-
-
 def run(ctx, log_dirs, poll_every: float = LOGTAIL_EVERY, own_slack: float = 2.0) -> None:
     os.makedirs(os.path.join(ctx.out_dir, "logs"), exist_ok=True)
     off = {}
     cutoff = time.time() - own_slack
-
-    on_state = getattr(ctx, "on_state", None)
-    swap = getattr(ctx, "swap", None)
-    split_campaigns = bool(scan_state_rows and on_state and swap)
 
     def is_ours(src: str) -> bool:
         try:
@@ -107,12 +68,9 @@ def run(ctx, log_dirs, poll_every: float = LOGTAIL_EVERY, own_slack: float = 2.0
                         with open(src, "rb") as f:
                             f.seek(off[src])
                             chunk = f.read(sz - off[src])
-                        if split_campaigns and "script_log" in os.path.basename(src).lower():
-                            _write_scriptlog_chunk(ctx, src, chunk, on_state, swap)
-                        else:
-                            dst = _append_tail(ctx, os.path.basename(src), chunk)
-                            ctx.emit({"t": ctx.now(), "kind": "log_tail", "src": src,
-                                      "bytes": len(chunk), "dst": dst})
+                        dst = _append_tail(ctx, os.path.basename(src), chunk)
+                        ctx.emit({"t": ctx.now(), "kind": "log_tail", "src": src,
+                                  "bytes": len(chunk), "dst": dst})
                         off[src] = sz
                 except Exception as e:
                     ctx.on_error("logs:" + str(src), e)

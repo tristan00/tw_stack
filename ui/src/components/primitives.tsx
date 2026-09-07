@@ -345,12 +345,6 @@ export function RangeMeter({
 
 export type ModelTag = 'cat' | 'gnn' | 'ggnn'
 
-export const MODEL_ARM: Record<ModelTag, string> = {
-  cat: 'greedy_catboost',
-  gnn: 'marwil_gnn',
-  ggnn: 'greedy_gnn',
-}
-
 const MODEL_BAR: Record<ModelTag, string> = { cat: 'bg-cat', gnn: 'bg-gnn', ggnn: 'bg-ggnn' }
 
 export function armTag(arm: string | null | undefined): ModelTag {

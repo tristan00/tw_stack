@@ -30,7 +30,7 @@ Sources merged, all reduced to one epoch clock:
 | --- | --- |
 | `session` | `<TWDATA>/logs/advisor/session_*.log` and `.err` — turns, actions, WAIT/TRY/PHASE, launches, ucb tables |
 | `manager` `ui` `analytics` `harness` | the service logs under `<TWDATA>/logs/services` |
-| `store` | `decisions.sqlite`: decisions and their timings, picks and scores, taken, interrupts, rpc, postmortems, diplomacy, ucb picks |
+| `store` | Postgres (`decisions/pg.py`): decisions and their timings, picks and scores, taken, interrupts, rpc, postmortems, diplomacy, ucb picks |
 | `action` | the per-action stderr captured into `taken.diagnostics`, one row per stamped line |
 | `trace` `turn_trail` `loop` `locomotion` `clear_screen` `post_attack` `dstream` `events` | the run-dir jsonl streams |
 | `dev_events` `dev_actions` | the dev streams under `<TWDATA>/logs/dev` |
@@ -44,7 +44,7 @@ A source is only as useful here as its clock, so:
 - Every service line is stamped by `common.install_stamped_logs()` and rendered by
   `common.stamp()` — one definition, ISO local to the millisecond, rounded not truncated.
 - Every manager stream row carries an absolute `ts` (added by the writer when the producer
-  does not set one). The older relative `t` stays for the campaign splitter; the timeline
+  does not set one). The older relative `t` is still written by the streams; the timeline
   falls back to `t` plus `meta.json`'s `t0_epoch` only when `ts` is absent.
 - Action stderr captured into `taken.diagnostics` is stamped per line as it is captured, so
   the waits inside an action can be placed against the run's other sources.

@@ -1541,7 +1541,6 @@ class LaunchDefaults(BaseModel):
     retrain_first: bool = False
     strategies: str = ""
     interrupt_strategies: str = ""
-    ruleset: str = ""
     presave_radius: float = 150.0
     width: int = 0
     ucb: float | None = None

@@ -164,14 +164,6 @@ function LaunchForm({
                 onChange={(e) => set('interrupt_strategies', e.target.value)}
               />
             </Field>
-            <Field label="ruleset" help="required when 'ruleset' is in either mix">
-              <input
-                className={input}
-                placeholder="probe_gaps"
-                value={form.ruleset ?? ''}
-                onChange={(e) => set('ruleset', e.target.value)}
-              />
-            </Field>
           </>
         )}
         <div className="flex items-end gap-4">

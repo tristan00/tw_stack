@@ -87,10 +87,6 @@ CREATE TABLE dict.selector (
   id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   key TEXT NOT NULL UNIQUE
 );
-CREATE TABLE dict.occupation_option (
-  id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  key TEXT NOT NULL UNIQUE
-);
 CREATE TABLE corpus.state_set (
   set_id   BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   kind     SMALLINT NOT NULL,
@@ -1085,38 +1081,6 @@ CREATE TABLE ref.loc (
   PRIMARY KEY (tbl, col, key)
 );
 
-CREATE SCHEMA migrate;
-CREATE TABLE migrate.checkpoint (
-  stage        TEXT NOT NULL,
-  range_lo     BIGINT NOT NULL,
-  range_hi     BIGINT NOT NULL,
-  state        TEXT NOT NULL,
-  worker       TEXT,
-  started_ts   DOUBLE PRECISION,
-  finished_ts  DOUBLE PRECISION,
-  rows_in      BIGINT,
-  rows_out     BIGINT,
-  error        TEXT,
-  PRIMARY KEY (stage, range_lo),
-  CHECK (state IN ('pending', 'running', 'done', 'failed')),
-  CHECK (range_hi >= range_lo)
-);
-CREATE TABLE migrate.mismatch (
-  stage        TEXT NOT NULL,
-  snapshot_id  BIGINT NOT NULL,
-  role         TEXT NOT NULL,
-  entity_seq   SMALLINT,
-  path         TEXT NOT NULL,
-  expected     TEXT,
-  actual       TEXT,
-  PRIMARY KEY (stage, snapshot_id, role, entity_seq, path)
-);
-CREATE TABLE migrate.id_map (
-  old_table   TEXT NOT NULL,
-  old_id      BIGINT NOT NULL,
-  new_id      BIGINT NOT NULL,
-  PRIMARY KEY (old_table, old_id)
-);
 CREATE TABLE analytics.state (
   tenant           TEXT PRIMARY KEY,
   formula_version  SMALLINT NOT NULL,
