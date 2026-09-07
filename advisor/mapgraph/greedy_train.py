@@ -21,7 +21,10 @@ sys.path.insert(0, common.DECISIONS)
 
 MODEL_DIR = common.MODEL_MAPGRAPH_GREEDY
 
-CFG = dict(T.CFG)
+with open(os.path.join(os.path.dirname(__file__), "current_parameters.json"), encoding="utf-8") as file:
+    _CURRENT = json.load(file)
+CFG = _CURRENT["model_config"]
+GRAPH_CONFIG = GC.from_dict(_CURRENT["graph_config"])
 MIN_ROWS = S.MIN_ROWS
 
 
@@ -231,7 +234,7 @@ def train(runs_root=None, cfg=None, log=None, model_dir=MODEL_DIR, limit=None,
     log = log or (lambda s: sys.stderr.write(str(s) + "\n"))
     cfg = dict(CFG, **(cfg or {}))
     t0 = time.time()
-    graph_config = GC.from_dict(graph_config)
+    graph_config = GC.from_dict(GRAPH_CONFIG if graph_config is None else graph_config)
     w = T.walk(runs_root, graph_config=graph_config, limit=limit, log=log)
     ex = w["examples"]
     if len(ex) < MIN_ROWS:
@@ -272,7 +275,7 @@ def _cli(a):
     limit = int(a[a.index("--limit") + 1]) if "--limit" in a else None
     out = a[a.index("--out") + 1] if "--out" in a else None
     graph_config = (GC.from_dict(json.loads(a[a.index("--graph-config") + 1]))
-                    if "--graph-config" in a else GC.DEFAULT)
+                    if "--graph-config" in a else GRAPH_CONFIG)
     return over, limit, out, graph_config
 
 
