@@ -46,6 +46,7 @@ ABBREV = {"hidden": "hid", "entity_layers": "ent", "action_rounds": "rnd",
           "encoder_val_loss": "enc_loss", "sequence_seconds": "sq_secs",
           "embedding_seconds": "emb_secs", "peak_allocated_gib": "gib"}
 PREFIX = (("graph_edge_", "g:"),)
+WIDTH = 200
 _NUMERIC = re.compile(r"^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?%?$")
 
 
@@ -85,7 +86,19 @@ def _value_head(name):
     return "value"
 
 
-def table(study, out=print):
+def _chunks(w, width):
+    groups, current, used = [], [], 0
+    for i in range(1, len(w)):
+        if current and used + w[i] + 2 > width:
+            groups.append(current)
+            current, used = [], w[0] + 2
+        current.append(i)
+        used += w[i] + 2
+    groups.append(current)
+    return groups
+
+
+def table(study, out=print, width=WIDTH):
     import optuna
     st = optuna.trial.TrialState
     tag = {st.COMPLETE: "done", st.PRUNED: "pruned", st.FAIL: "fail",
@@ -118,14 +131,17 @@ def table(study, out=print):
     num = [all(_NUMERIC.match(r[i]) or r[i] == "-" for r in rows)
            for i in range(len(head))]
 
-    def line(cells):
-        return "  ".join(c.rjust(w[i]) if num[i] else c.ljust(w[i])
-                         for i, c in enumerate(cells)).rstrip()
+    def line(cells, index):
+        return "  ".join(cells[i].rjust(w[i]) if num[i] else cells[i].ljust(w[i])
+                         for i in index).rstrip()
 
-    out(line(head))
-    out("  ".join("-" * n for n in w))
-    for r in rows:
-        out(line(r))
+    for group in _chunks(w, width):
+        index = [0] + group
+        out(line(head, index))
+        out("  ".join("-" * w[i] for i in index))
+        for r in rows:
+            out(line(r, index))
+        out("")
 
 
 def studies(store, prefix=None):
@@ -150,7 +166,7 @@ def main(a):
         return 1
     study = optuna.load_study(study_name=name, storage=store)
     print(name)
-    table(study)
+    table(study, width=int(a[a.index("--width") + 1]) if "--width" in a else WIDTH)
     return 0
 
 
