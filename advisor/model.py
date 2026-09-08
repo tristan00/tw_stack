@@ -27,7 +27,7 @@ MODEL_FILE = "model.cbm"
 MIN_ROWS = 40
 
 
-def _note_memory(mem, rec, taken, was_counted, pb_map):
+def _note_memory(mem, rec, taken, pb_map):
     if not taken or not taken[2]:
         return
     st = None
@@ -36,7 +36,7 @@ def _note_memory(mem, rec, taken, was_counted, pb_map):
                 and str(e.get("context_id")) == str(taken[1])):
             st = e.get("state") or {}
             break
-    mem.note_pick(taken[0], taken[1], taken[2], st, was_counted)
+    mem.note_pick(taken[0], taken[1], taken[2], st)
     hit = pb_map.get(rec.get("decision_id"))
     if hit is not None:
         mem.note_prebattle(taken[0], taken[1], hit["action_type"], hit["key"],
@@ -61,7 +61,7 @@ def gather(runs_root=RUNS_ROOT, window=TRAIN_WINDOW_CAMPAIGNS, as_pool=False):
 
 def _gather(runs_root, window, full):
     dbs = common.run_dbs(runs_root)
-    ys, groups, confirmed = [], [], []
+    ys, groups = [], []
     n_decisions = skipped = 0
     campaigns_seen = set()
     skipped_dbs = []
@@ -83,8 +83,8 @@ def _gather(runs_root, window, full):
                 pb_map = MEM.prebattle_attributions(s.con, camps=camp_ids)
                 floor = s.window_floor(window)
                 act_idx, mov_idx, hist, counts, mems = {}, {}, {}, {}, {}
-                for rec, taken, was_counted in s.taken_rows(min_decision=floor,
-                                                           campaign_keys=keys):
+                for rec, taken in s.taken_rows(min_decision=floor,
+                                               campaign_keys=keys):
                     n_decisions += 1
                     campaigns_seen.add(rec.get("campaign_id"))
                     ik = (rec.get("campaign_id"), rec.get("turn"))
@@ -108,7 +108,7 @@ def _gather(runs_root, window, full):
                     y = target(decision_deltas(rec.get("campaign"), turns,
                                                rec.get("turn")))
                     triples = F.decision_rows(rec) if y is not None else None
-                    _note_memory(mem, rec, taken, was_counted, pb_map)
+                    _note_memory(mem, rec, taken, pb_map)
                     if y is None:
                         skipped += 1
                         continue
@@ -120,11 +120,9 @@ def _gather(runs_root, window, full):
                     full.append(row)
                     ys.append(y)
                     groups.append(rec.get("campaign_id"))
-                    confirmed.append(was_counted)
         finally:
             s.close()
     return {"full": full, "y": ys, "groups": groups,
-            "confirmed": confirmed, "n_confirmed": sum(1 for c in confirmed if c),
             "n_decisions": n_decisions, "skipped_unlabelled": skipped,
             "runs": len(dbs) - len(skipped_dbs), "skipped_dbs": skipped_dbs,
             "campaigns": len(campaigns_seen)}

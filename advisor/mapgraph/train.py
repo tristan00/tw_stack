@@ -175,7 +175,7 @@ def walk_source(source, graph_config=None, limit=None, log=print, workers=1, arr
         records = ()
     else:
         records = source["records"]
-    for rec, taken, counted, y, gain in records:
+    for rec, taken, y, gain in records:
         if y is None:
             tally["no_label"] += 1
             continue

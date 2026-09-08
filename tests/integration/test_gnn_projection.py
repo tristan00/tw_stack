@@ -24,7 +24,7 @@ class GraphProjectionTests(unittest.TestCase):
                     new, seconds = projection.read(chunk)
                     print("PROJECTED", len(new), seconds, flush=True)
                     for rows in st.hydrate_decisions(chunk):
-                        for old, taken, counted in rows:
+                        for old, taken in rows:
                             direct = new[old["decision_id"]]
                             for name, cfg in graph_bench.configs().items():
                                 a, b = reference.build_graph(old, cfg), B.build_graph(direct, cfg)

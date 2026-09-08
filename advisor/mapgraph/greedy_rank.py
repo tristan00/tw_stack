@@ -112,7 +112,7 @@ def _smoke(run_dir=common.RUN_DIR):
         s.close()
     if not recs:
         raise SystemExit("smoke: no labelled decisions in %s" % run_dir)
-    for rec, taken, _ in reversed(recs):
+    for rec, taken in reversed(recs):
         offers = [dict(o, context_kind=e["context_kind"], context_id=e["context_id"])
                   for e in rec.get("entities") or [] for o in e.get("offers") or []]
         if not offers:

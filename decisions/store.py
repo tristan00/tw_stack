@@ -83,11 +83,6 @@ class DecisionStore:
         except Exception:
             pass
 
-    def _kind_id(self, domain, key):
-        return self.con.execute(
-            "SELECT enum_id FROM dict.enum WHERE domain = %s AND key = %s",
-            (domain, key)).fetchone()[0]
-
     def _skip_refusal_ids(self):
         return [r[0] for r in self.con.execute(
             "SELECT enum_id FROM dict.enum WHERE domain = 'refusal' AND key = ANY(%s)",
@@ -161,19 +156,6 @@ class DecisionStore:
             kind, cid = 'campaign', 'campaign'
         return (kind, str(cid), at, str(ak))
 
-    @timed('taken_map')
-    def taken_map(self, confirmed_only=False, min_decision=None):
-        sql, args = self._taken_sql(" AND t.decision_id >= %s",
-                                    [int(min_decision or 0)])
-        out = {}
-        for did, kind, cqi, region, faction, at, ak, counted, ts, eseq, ckey \
-                in self.con.execute(sql, tuple(args)):
-            if confirmed_only and not counted:
-                continue
-            out[did] = (self._identity(kind, cqi, region, faction, at, ak),
-                        bool(counted))
-        return out
-
     @timed('labelled_count')
     def labelled_count(self, min_decision=None):
         skip = self._skip_refusal_ids()
@@ -190,14 +172,12 @@ class DecisionStore:
                 ts, eseq, ckey in self.con.execute(sql, tuple(args))]
 
     @timed('labelled_decisions')
-    def labelled_decisions(self, confirmed_only=False, after=None, before=None, limit=None,
-                           spread=False):
-        rows = self.labelled_heads(confirmed_only, after, before, limit, spread)
+    def labelled_decisions(self, after=None, before=None, limit=None, spread=False):
+        rows = self.labelled_heads(after, before, limit, spread)
         return [row for chunk in self.hydrate_decisions(rows) for row in chunk]
 
     @timed('labelled_heads')
-    def labelled_heads(self, confirmed_only=False, after=None, before=None, limit=None,
-                       spread=False):
+    def labelled_heads(self, after=None, before=None, limit=None, spread=False):
         rng, args = "", []
         if after is not None:
             rng += " AND t.decision_id > %s"
@@ -206,11 +186,10 @@ class DecisionStore:
             rng += " AND t.decision_id <= %s"
             args.append(int(before))
         sql, args = self._taken_sql(rng, args)
-        if limit is not None and not confirmed_only and not spread:
+        if limit is not None and not spread:
             sql += " LIMIT %s"
             args.append(max(0, int(limit)))
-        rows = [r for r in self.con.execute(sql, tuple(args))
-                if not (confirmed_only and not r[7])]
+        rows = list(self.con.execute(sql, tuple(args)))
         if limit is not None:
             n = max(0, int(limit))
             if spread and n and len(rows) > n:
@@ -226,12 +205,10 @@ class DecisionStore:
             chunk = rows[i:i + hydrate.PREFETCH_CHUNK]
             pre = hydrate.Prefetch(self.con, [r[0] for r in chunk])
             out = []
-            for did, kind, cqi, region, faction, at, ak, counted, ts, eseq, ckey \
-                    in chunk:
+            for did, kind, cqi, region, faction, at, ak, counted, ts, eseq, ckey in chunk:
                 rec = hydrate.record(self.con, did, pre=pre)
                 hydrate.offers(self.con, rec, pre=pre)
-                out.append((rec, self._identity(kind, cqi, region, faction, at, ak),
-                            bool(counted)))
+                out.append((rec, self._identity(kind, cqi, region, faction, at, ak)))
             yield out
         log('hydrate_decisions exit %.1f ms rows=%d'
             % ((time.perf_counter() - started) * 1000, len(rows)))
@@ -254,8 +231,7 @@ class DecisionStore:
                         rec = hydrate.record(self.con, did, pre=pre)
                         hydrate.attach_taken(self.con, rec, eseq, at, ak)
                         n += 1
-                        yield (rec, self._identity(kind, cqi, region, faction, at, ak),
-                               bool(counted))
+                        yield rec, self._identity(kind, cqi, region, faction, at, ak)
                     del pre
         finally:
             log('taken_rows exit %.1f ms rows=%d'

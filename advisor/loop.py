@@ -527,7 +527,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
                 act_hist.append("end_turn")
                 del act_hist[:-F.PREV_ACTIONS]
                 F.bump_action_counts(act_counts, "end_turn")
-                mem.note_pick("faction", "*", "end_turn", None, True)
+                mem.note_pick("faction", "*", "end_turn", None)
             break
         if turn is not None and turn != _last_beat_turn[0]:
             _last_beat_turn[0] = turn
@@ -565,7 +565,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
                 act_hist.append("end_turn")
                 del act_hist[:-F.PREV_ACTIONS]
                 F.bump_action_counts(act_counts, "end_turn")
-                mem.note_pick("faction", "*", "end_turn", None, True)
+                mem.note_pick("faction", "*", "end_turn", None)
             break
         _t = time.time()
         journal.log_decide(run_dir, decision_id, _offers_for_store, pick,
@@ -612,7 +612,7 @@ def _run_turn(run_dir, executor, pol, wd, stuck, log, act_hist=None,
         confirmed += 1 if ok else 0
         pol.note_result(pick, ok)
         mem.note_pick(pick["context_kind"], pick["context_id"], pick["action_type"],
-                      _entity_state_of(record, pick), ok)
+                      _entity_state_of(record, pick))
         if pick["action_type"] in MEM.PB_ATTACK_TYPES:
             mem.note_exec(pick, record.get("world"))
         if ok:

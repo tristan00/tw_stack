@@ -145,7 +145,7 @@ class DecisionSource:
                                 TARGET_WEIGHTS.get(k, 1.0) * v for k, v in deltas.items()
                                 if k != "survival" and v is not None)
                             count += 1
-                            yield rec, st._identity(*h[1:7]), bool(h[7]), y, gain
+                            yield rec, st._identity(*h[1:7]), y, gain
                         if offset % 4096 == 0:
                             self.log("mapgraph.source: %d decisions, SQL projection %.1fs, elapsed %.1fs"
                                      % (count, read_s, time.perf_counter() - started))

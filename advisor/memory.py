@@ -121,12 +121,12 @@ class CampaignMemory:
                 self.queue_stall.pop(cqi, None)
             self.queue_seen[cqi] = [self.turn, rows]
 
-    def note_pick(self, ck, cid, atype, state, counted):
+    def note_pick(self, ck, cid, atype, state):
         if not atype or atype == "noop":
             return
         self.acts += 1
         self.observe_entity(ck, cid, state)
-        if counted and atype in RECRUIT_TYPES:
+        if atype in RECRUIT_TYPES:
             cqi = str(cid)
             self.recruit_counts[cqi] = self.recruit_counts.get(cqi, 0) + 1
 
@@ -151,7 +151,7 @@ class CampaignMemory:
 
     def feed_interrupts(self, recs):
         for r in recs or []:
-            if r.get("kind") != "pre_battle" or not r.get("counted"):
+            if r.get("kind") != "pre_battle":
                 continue
             rts = r.get("ts") or 0.0
             hit = None
@@ -239,7 +239,7 @@ _PB_ATTRIB_SQL = (
     " SELECT i.interrupt_id, i.chosen, s.campaign_id, s.ts"
     " FROM corpus.interrupt i"
     " JOIN corpus.snapshot s ON s.snapshot_id = i.interrupt_id"
-    " WHERE i.kind_id = %(kind)s AND i.counted"
+    " WHERE i.kind_id = %(kind)s"
     " __CAMP_FILTER__"
     ") SELECT t.decision_id, ty.key, a.action_key, p.chosen,"
     " ib.result_state, ib.casualties_text"
@@ -356,7 +356,7 @@ def replay_stamps(store, want):
 
 _REPLAY_SQL = (
     "SELECT t.decision_id, s.turn, s.campaign_id, ek.key, ch.cqi, dr.key, df.key,"
-    " ty.key, t.counted, cs.pending_recruit_unit_ids, cs.x, cs.y,"
+    " ty.key, cs.pending_recruit_unit_ids, cs.x, cs.y,"
     " cs.pending_queue_set_id"
     " FROM corpus.taken t"
     " JOIN corpus.snapshot s ON s.snapshot_id = t.decision_id"
@@ -402,13 +402,13 @@ def _replay_stamps(store, want):
     skip = list(_enum_ids(con, "refusal",
                           ["awaiting_execution", "campaign_died"]).values())
     rows = con.execute(_REPLAY_SQL, (skip, camps)).fetchall()
-    queues = _queue_members(con, [r[12] for r in rows])
-    unit_ids = sorted({u for r in rows for u in (r[9] or [])})
+    queues = _queue_members(con, [r[11] for r in rows])
+    unit_ids = sorted({u for r in rows for u in (r[8] or [])})
     unit_keys = {i: k for i, k in con.execute(
         "SELECT id, key FROM dict.unit WHERE id = ANY(%s)", (unit_ids,))} \
         if unit_ids else {}
     mems, out = {}, {}
-    for (did, turn, camp, kind, cqi, region, faction, at, counted, pend, sx, sy,
+    for (did, turn, camp, kind, cqi, region, faction, at, pend, sx, sy,
          qset) in rows:
         mem = mems.get(camp)
         if mem is None:
@@ -428,7 +428,7 @@ def _replay_stamps(store, want):
             cid = region
         else:
             kind, cid = "campaign", faction
-        mem.note_pick(kind, cid, at, state, bool(counted))
+        mem.note_pick(kind, cid, at, state)
         hit = pb.get(did)
         if hit is not None:
             mem.note_prebattle(kind, cid, hit["action_type"], hit["key"],
