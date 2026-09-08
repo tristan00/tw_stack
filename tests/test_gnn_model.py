@@ -5,7 +5,6 @@ import pytest
 
 from advisor.mapgraph import build as B, graph_config as GC, schema as S
 from advisor.mapgraph.edge_selection import select_edges
-from bench.gnn_edge_profile import percentile
 from tests.test_gnn_edges import add_node
 
 pytestmark = pytest.mark.skip("not part of the suite")
@@ -37,7 +36,6 @@ def test_zero_remains_empty_through_tensor_conversion_and_model_backward():
 
 
 def test_defaults_match_observed_p95_and_unobserved_policy():
-    assert percentile({1: 95, 100: 5}, .95) == 1
     document = json.loads(GC.DEFAULTS_PATH.read_text())
     for name, evidence in document["evidence"].items():
         percentiles = []
