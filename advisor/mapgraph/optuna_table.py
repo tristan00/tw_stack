@@ -23,6 +23,7 @@ PARAM_ORDER = ["hidden", "entity_layers", "action_rounds", "dst_dim", "depth", "
                "map_aggr", "act_aggr"]
 ATTR_ORDER = ["r2", "epochs", "stopped", "iterations", "best_iteration", "hit_cap",
               "seconds"]
+ATTR_SKIP = {"artifacts", "graph_config", "model_config", "graph_metrics"}
 ABBREV = {"hidden": "hid", "entity_layers": "ent", "action_rounds": "rnd",
           "dst_dim": "dst", "weight_decay": "wd", "dropout": "drop",
           "grad_clip": "clip", "self_transform": "self", "update": "upd",
@@ -33,13 +34,33 @@ ABBREV = {"hidden": "hid", "entity_layers": "ent", "action_rounds": "rnd",
           "one_hot_max_size": "onehot", "leaf_estimation_iterations": "leafit",
           "r2": "val_r2", "stopped": "stop", "seconds": "secs",
           "best_iteration": "bestit", "hit_cap": "cap", "epochs": "ep",
-          "iterations": "trees"}
+          "iterations": "trees", "encoder_fraction": "encfrac",
+          "history_length": "hist", "latent": "lat", "ssl_epochs": "sslep",
+          "ssl_patience": "sslpat", "representation_hidden": "rep_hid",
+          "representation_objective": "rep_obj", "sequence_kind": "sq_kind",
+          "sequence_layers": "sq_lay", "sequence_hidden": "sq_hid",
+          "sequence_dropout": "sq_drop", "sequence_lr": "sq_lr",
+          "sequence_weight_decay": "sq_wd", "sequence_epochs": "sq_ep",
+          "sequence_patience": "sq_pat", "sequence_batch": "sq_batch",
+          "encoder_seconds": "enc_secs", "encoder_epochs": "enc_ep",
+          "encoder_val_loss": "enc_loss", "sequence_seconds": "sq_secs",
+          "embedding_seconds": "emb_secs", "peak_allocated_gib": "gib"}
+PREFIX = (("graph_edge_", "g:"),)
 _NUMERIC = re.compile(r"^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?%?$")
 
 
 def storage():
     from decisions import pg
     return "postgresql+psycopg://%s@%s:%d/optuna" % (pg.USER, pg.HOST, pg.PORT)
+
+
+def _head(k):
+    if k in ABBREV:
+        return ABBREV[k]
+    for prefix, short in PREFIX:
+        if k.startswith(prefix):
+            return short + k[len(prefix):]
+    return k
 
 
 def _cell(v):
@@ -71,7 +92,7 @@ def table(study, out=print):
            st.RUNNING: "running", st.WAITING: "queued"}
     trials = study.trials
     params = _ordered({k for t in trials for k in t.params}, PARAM_ORDER)
-    attrs = _ordered({k for t in trials for k in t.user_attrs}, ATTR_ORDER)
+    attrs = _ordered({k for t in trials for k in t.user_attrs} - ATTR_SKIP, ATTR_ORDER)
 
     def rank(t):
         if t.state == st.COMPLETE and t.value is not None:
@@ -80,9 +101,9 @@ def table(study, out=print):
             return (2, t.number, 0.0)
         return (1, t.number, 0.0)
 
-    head = (["trial"] + [ABBREV.get(k, k) for k in params]
+    head = (["trial"] + [_head(k) for k in params]
             + ["state", _value_head(study.study_name)]
-            + [ABBREV.get(k, k) for k in attrs])
+            + [_head(k) for k in attrs])
     rows = []
     for t in sorted(trials, key=rank):
         rows.append([str(t.number)]
@@ -98,11 +119,11 @@ def table(study, out=print):
            for i in range(len(head))]
 
     def line(cells):
-        return "   ".join(c.rjust(w[i]) if num[i] else c.ljust(w[i])
-                          for i, c in enumerate(cells)).rstrip()
+        return "  ".join(c.rjust(w[i]) if num[i] else c.ljust(w[i])
+                         for i, c in enumerate(cells)).rstrip()
 
     out(line(head))
-    out("   ".join("-" * n for n in w))
+    out("  ".join("-" * n for n in w))
     for r in rows:
         out(line(r))
 
