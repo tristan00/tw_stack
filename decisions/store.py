@@ -130,7 +130,7 @@ class DecisionStore:
     def _taken_sql(self, extra_where, args):
         skip = self._skip_refusal_ids()
         return ("SELECT t.decision_id, ek.key, ch.cqi, dr.key, df.key,"
-                " ty.key, a.action_key, t.counted, t.ts, t.entity_seq, c.campaign_key"
+                " ty.key, a.action_key, t.ts, t.entity_seq, c.campaign_key"
                 " FROM corpus.taken t"
                 " JOIN corpus.campaign c ON c.campaign_id = t.campaign_id"
                 " JOIN dict.faction df ON df.id = c.faction_id"
@@ -168,7 +168,7 @@ class DecisionStore:
     def action_sequence(self, min_decision=None):
         sql, args = self._taken_sql(
             " AND ty.key != 'noop' AND t.decision_id >= %s", [int(min_decision or 0)])
-        return [(ckey, ts, at) for did, kind, cqi, region, faction, at, ak, counted,
+        return [(ckey, ts, at) for did, kind, cqi, region, faction, at, ak,
                 ts, eseq, ckey in self.con.execute(sql, tuple(args))]
 
     @timed('labelled_decisions')
@@ -205,7 +205,7 @@ class DecisionStore:
             chunk = rows[i:i + hydrate.PREFETCH_CHUNK]
             pre = hydrate.Prefetch(self.con, [r[0] for r in chunk])
             out = []
-            for did, kind, cqi, region, faction, at, ak, counted, ts, eseq, ckey in chunk:
+            for did, kind, cqi, region, faction, at, ak, ts, eseq, ckey in chunk:
                 rec = hydrate.record(self.con, did, pre=pre)
                 hydrate.offers(self.con, rec, pre=pre)
                 out.append((rec, self._identity(kind, cqi, region, faction, at, ak)))
@@ -227,7 +227,7 @@ class DecisionStore:
                 while chunk := cursor.fetchmany(hydrate.PREFETCH_CHUNK):
                     pre = hydrate.Prefetch(self.con, [r[0] for r in chunk],
                                            include_offers=False)
-                    for did, kind, cqi, region, faction, at, ak, counted, ts, eseq, ckey in chunk:
+                    for did, kind, cqi, region, faction, at, ak, ts, eseq, ckey in chunk:
                         rec = hydrate.record(self.con, did, pre=pre)
                         hydrate.attach_taken(self.con, rec, eseq, at, ak)
                         n += 1
@@ -285,7 +285,7 @@ class DecisionStore:
             args.append(sorted(campaign_keys))
         heads = self.con.execute(
             "SELECT i.interrupt_id, s.ts, c.campaign_key, s.turn, ik.key, sa.key,"
-            " i.chosen, i.answer, i.executed, i.confirmed, i.counted, rf.key,"
+            " i.chosen, i.answer, rf.key,"
             " dd.key, di.key, i.root_context, ps.turn, i.root, rg.key"
             " FROM corpus.interrupt i"
             " JOIN corpus.snapshot s ON s.snapshot_id = i.interrupt_id"
@@ -342,8 +342,8 @@ class DecisionStore:
                 'offers': list(off or []), 'treaties': list(tre or []),
                 'amount_demanded': amtd, 'amount_offered': amto}
         out = []
-        for (iid, ts, ckey, turn, kind, state_at, chosen, answer, executed,
-             confirmed, counted, refusal, dkey, ikey, root_context, prev_turn,
+        for (iid, ts, ckey, turn, kind, state_at, chosen, answer,
+             refusal, dkey, ikey, root_context, prev_turn,
              root, region) in heads:
             screen_id = ((root_context or root)
                          if kind in DILEMMA_ID_KINDS else None)
@@ -356,7 +356,6 @@ class DecisionStore:
             out.append({'interrupt_id': iid, 'ts': ts, 'campaign_id': ckey,
                         'turn': turn, 'prev_turn': prev_turn, 'state_at': state_at,
                         'screen': kind, 'options': options, 'chosen': chosen,
-                        'answer': answer, 'executed': executed,
-                        'confirmed': confirmed, 'counted': counted,
+                        'answer': answer,
                         'refusal': refusal, 'panel': panel})
         return out

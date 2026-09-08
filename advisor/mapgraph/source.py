@@ -129,7 +129,7 @@ class DecisionSource:
                 projection = None
                 try:
                     setup_started = time.perf_counter()
-                    series = st.target_series({h[10] for h in heads})
+                    series = st.target_series({h[9] for h in heads})
                     stamps = memory.replay_stamps(st, [h[0] for h in heads])
                     projection = Projection(st.con)
                     setup_s += time.perf_counter() - setup_started
@@ -140,7 +140,7 @@ class DecisionSource:
                         for h in chunk:
                             rec = records.pop(h[0])
                             rec["campaign"].update(stamps.pop(h[0], {}))
-                            deltas = decision_deltas(rec["campaign"], series.get(h[10]) or {}, rec["turn"])
+                            deltas = decision_deltas(rec["campaign"], series.get(h[9]) or {}, rec["turn"])
                             y = target(deltas)
                             gain = None if y is None else sum(
                                 TARGET_WEIGHTS.get(k, 1.0) * v for k, v in deltas.items()
