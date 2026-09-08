@@ -1,39 +1,31 @@
-# Project tests
+# Tests
 
-Install requirements-test.txt into the project virtual environment. Run from the repository root:
-
-```powershell
-.venv/Scripts/python.exe -m tests
-```
-
-This launches pytest with a 20-second deadline covering the entire pytest process, including startup, collection, fixtures, tests, and reporting. Timeout terminates only the test process and returns exit code 124. Automatic third-party plugin loading is disabled and numerical library threads are limited to one. The supervisor writes tests/.results/process.json with measured process wall time and exit code.
-
-Direct pytest also works:
+One folder, pytest only. Run from the repository root:
 
 ```powershell
 .venv/Scripts/python.exe -m pytest
 ```
 
-Use python -m tests to enforce the 20-second process budget; direct pytest does not enforce a timeout. Both commands collect only tests/unit by default. The default suite uses small synthetic inputs, has no model fitting, and does not query the database or GPU.
+The whole run has a 20-second budget covering startup, collection and tests. Overrunning it kills the run with exit code 124. Requirements are in `requirements-test.txt`.
 
-Tests are selected to avoid interfering with tuning and runctl. There are no runtime access blockers or import restrictions. Keep tests independent of running applications by testing pure logic and using tiny synthetic fixtures.
+## The suite
 
-Pytest prints slowest phases and writes tests/.results/timings.json with collection time and every test's setup, call, teardown, and total durations. tests/.results/junit.xml provides CI-compatible results. Reports are overwritten on each run and ignored by Git. A forced timeout may interrupt these two reports; process.json is authoritative for the supervised run's outcome.
+A test is in the suite unless its file carries the skip mark:
+
+```python
+pytestmark = pytest.mark.skip("not part of the suite")
+```
+
+Suite tests use small synthetic inputs, fit no models, and touch neither the database nor the GPU. Everything else is marked and reports as skipped.
+
+## Rules
+
+A commit runs the suite and nothing else. A marked file is never part of a commit, push, or verification, and editing one does not license running it.
+
+Marked files are not a suite and not the user's test process. They reach the real database, real models, and the GPU, so tuning and runctl must be stopped first. An agent that wants one runs it alone, on its own responsibility, and never reports what it found: no pre-existing failure raised as a finding, no note left for later, no re-running until it passes.
+
+A test that fails is fixed or deleted in the same change.
 
 ## Adding tests
 
-Put pure logic checks under tests/unit/test_*.py, using pytest assertions and fixtures. Keep synthetic inputs small and use tmp_path for files. Prefer tests that finish in milliseconds. No live services, model imports, subprocesses, application state changes, or large datasets belong here. A check that pushes the suite over 20 seconds belongs outside the default suite until its cost is reduced. Collection/import time counts too.
-
-## Explicit checks
-
-Framework-heavy checks remain under tests/adhoc; real database and GPU checks remain under tests/integration. Default discovery excludes these directories before importing them, including pytest tests. Explicit paths require the corresponding opt-in flag.
-
-```powershell
-.venv/Scripts/python.exe -m pytest --run-adhoc tests/adhoc
-.venv/Scripts/python.exe -m pytest --run-integration tests/integration/test_gnn_source.py tests/integration/test_gnn_projection.py
-.venv/Scripts/python.exe -m pytest --run-gpu-tests tests/integration/test_gnn_gpu.py
-```
-
-These opt-in commands run checks outside the default suite and its time budget. Run them sequentially, with tuning and runctl stopped. Existing unittest-style classes are executed by pytest.
-
-Full-window tools remain under bench/, outside pytest discovery: gnn_first_step_check.py, gnn_edge_profile.py, gnn_input_profile.py, and gnn_profile.py. They require explicit invocation and may access real data, GPU resources, and application outputs. The first-step tool uses the cancelled 12-edge study's trial-0 parameters as its baseline.
+Pure logic goes in `tests/test_*.py` unmarked. Keep inputs small, use `tmp_path` for files, prefer milliseconds, and remember import time counts against the budget. No live services, model imports, subprocesses, application state changes, or large datasets. Anything heavier gets the skip mark.
