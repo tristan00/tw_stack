@@ -12,8 +12,10 @@ import common
 sys.path.insert(0, common.ADVISOR)
 sys.path.insert(0, common.DECISIONS)
 
-STUDY_PREFIXES = ("gnn_greedy_", "gnn_sequence_", "catboost_main_", "catboost_interrupt_")
-VALUE_HEADER = (("gnn_greedy_", "val_mse"), ("gnn_sequence_", "val_mse"), ("catboost_", "val_rmse"))
+STUDY_PREFIXES = ("gnn_greedy_", "gnn_sequence_", "catboost_main_", "catboost_interrupt_",
+                  "temporal_graph_")
+VALUE_HEADER = (("gnn_greedy_", "val_mse"), ("gnn_sequence_", "val_mse"),
+                ("temporal_graph_", "val_mse"), ("catboost_", "val_rmse"))
 
 PARAM_ORDER = ["hidden", "entity_layers", "action_rounds", "dst_dim", "depth", "lr",
                "learning_rate", "weight_decay", "l2_leaf_reg", "dropout", "grad_clip",
@@ -23,7 +25,7 @@ PARAM_ORDER = ["hidden", "entity_layers", "action_rounds", "dst_dim", "depth", "
                "map_aggr", "act_aggr"]
 ATTR_ORDER = ["r2", "epochs", "stopped", "iterations", "best_iteration", "hit_cap",
               "seconds"]
-ATTR_SKIP = {"artifacts", "graph_config", "model_config", "graph_metrics"}
+ATTR_SKIP = {"artifacts", "graph_config", "model_config", "graph_metrics", "config", "setup"}
 ABBREV = {"hidden": "hid", "entity_layers": "ent", "action_rounds": "rnd",
           "dst_dim": "dst", "weight_decay": "wd", "dropout": "drop",
           "grad_clip": "clip", "self_transform": "self", "update": "upd",
@@ -104,6 +106,13 @@ def table(study, out=print, width=WIDTH):
     tag = {st.COMPLETE: "done", st.PRUNED: "pruned", st.FAIL: "fail",
            st.RUNNING: "running", st.WAITING: "queued"}
     trials = study.trials
+    metric = study.user_attrs.get("metric")
+    if metric == "raw_reward_mse":
+        value_head = "reward_mse"
+    elif study.study_name.startswith(("gnn_", "temporal_graph_")):
+        value_head = "legacy_norm_mse"
+    else:
+        value_head = _value_head(study.study_name)
     params = _ordered({k for t in trials for k in t.params}, PARAM_ORDER)
     attrs = _ordered({k for t in trials for k in t.user_attrs} - ATTR_SKIP, ATTR_ORDER)
 
@@ -115,7 +124,7 @@ def table(study, out=print, width=WIDTH):
         return (1, t.number, 0.0)
 
     head = (["trial"] + [_head(k) for k in params]
-            + ["state", _value_head(study.study_name)]
+            + ["state", value_head]
             + [_head(k) for k in attrs])
     rows = []
     for t in sorted(trials, key=rank):

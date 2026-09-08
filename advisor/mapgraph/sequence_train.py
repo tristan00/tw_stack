@@ -10,6 +10,7 @@ from advisor.mapgraph.trial_budget import remaining
 from advisor.mapgraph.representation import GraphRepresentation, corrupt, sample_candidate
 from advisor.mapgraph.temporal import TemporalReward
 from advisor.mapgraph.sequence_config import history_indices
+from advisor.reward_data import score
 
 
 def _state(model):
@@ -184,14 +185,17 @@ def fit_net(ys, groups, decisions, cfg, prep, directory, deadline, log=print):
     prep["loader"].clear()
     prep["vloader"].clear()
     sequence_fit, checkpoint = _head(embeddings, ys, groups, prep, cfg, deadline, log)
+    measured = score(np.asarray(ys)[prep["validation_indices"]], checkpoint["validation_predictions"])
     checkpoint.update(encoder=encoder_state, config=cfg, decisions=decisions, campaigns=groups,
         train_indices=prep["train_indices"], validation_indices=prep["validation_indices"])
-    fit = dict(val_mse=sequence_fit["val_mse"], val_r2=sequence_fit["val_r2"],
+    fit = dict(measured, normalized_val_mse=sequence_fit["val_mse"],
         epochs_run=sequence_fit["epochs"], stopped_by=sequence_fit["stopped_by"],
         encoder=encoder_fit, sequence=sequence_fit, embedding_seconds=embedding_seconds,
         train_rows=prep["train_rows"], val_rows=prep["val_rows"], val_var=prep["val_var"])
     remaining(deadline)
-    os.makedirs(directory, exist_ok=False)
+    os.makedirs(directory, exist_ok=True)
+    if os.path.exists(os.path.join(directory, "checkpoint.pt")):
+        raise FileExistsError("sequence checkpoint already exists")
     torch.save(checkpoint, os.path.join(directory, "checkpoint.pt"))
     fit["seconds"] = time.perf_counter() - started
     with open(os.path.join(directory, "fit.json"), "w", encoding="utf-8") as file:

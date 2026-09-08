@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 
-import gc
 import argparse
 import json
 import os
@@ -15,11 +14,10 @@ import common
 sys.path.insert(0, common.ADVISOR)
 sys.path.insert(0, common.DECISIONS)
 
-from advisor.mapgraph import greedy_train as GT
 from advisor.mapgraph import graph_config as GC
-from advisor.mapgraph import train as T
 from advisor.mapgraph import sequence_config as SC
-from advisor.mapgraph.trial_budget import remaining
+from advisor.reward_data import METRIC, remaining
+from advisor.reward_worker import run_trial, validate_budget
 
 OUT_DIR = os.path.join(common.native(common.LOGS_SERVICES), "optuna_gnn_sequence")
 
@@ -97,36 +95,24 @@ def _graph_space(trial):
     return GC.GraphBuildConfig(edge_limits=limits).normalized()
 
 
-def _fit_trial(trial, source, cfg, graph_config, directory, deadline, log):
-    from advisor.mapgraph import sequence_train as ST
+def _fit_trial(trial, window, cfg, graph_config, directory, deadline, log):
+    import optuna
 
-    remaining(deadline)
-    walked = T.walk_source(source, graph_config, workers=4, log=log, deadline=deadline)
-    remaining(deadline)
-    trial.set_user_attr("graph_metrics", walked["metrics"])
-    examples = walked["examples"]
-    if len(examples) < GT.MIN_ROWS:
-        raise ValueError("Only %d trainable graphs" % len(examples))
-    keys = [(e["campaign_id"], e["decision_id"]) for e in examples]
-    if any(d is None for _, d in keys) or len(set(keys)) != len(keys):
-        raise ValueError("Sequence history requires unique decision IDs within each campaign")
-    examples.sort(key=lambda e: (str(e["campaign_id"]), e["decision_id"]))
-    ys = [e["y"] for e in examples]
-    groups = [e["campaign_id"] for e in examples]
-    decisions = [e["decision_id"] for e in examples]
-    datas = T._tensorize(examples)
-    examples.clear()
-    prep = GT.prepare(datas, ys, groups, cfg, free_datas=True, log=log, deadline=deadline)
-    remaining(deadline)
-    return ST.fit_net(ys, groups, decisions, cfg, prep, directory, deadline, log=log)
-
+    os.makedirs(directory, exist_ok=False)
+    response = run_trial("sequence", window, dict(model=cfg, graph=graph_config.as_dict()),
+        directory, min(600, remaining(deadline)), cfg["device"], cfg["seed"], 0)
+    if response["status"] == "pruned":
+        raise optuna.TrialPruned(response["error"])
+    if response["status"] != "complete":
+        raise RuntimeError(response["error"])
+    return response["result"]
 
 def run(trials=MAX_TRIALS, budget_s=TRIAL_BUDGET_S, timeout_s=None,
         window=TUNE_WINDOW, study_patience=STUDY_PATIENCE):
     import optuna
-    import torch
 
     started = time.perf_counter()
+    validate_budget(budget_s)
     if trials < 1 or budget_s <= 0 or window < 1 or study_patience < 1:
         raise ValueError("Trials, budget, window and study patience must be positive")
     if timeout_s is not None and timeout_s <= 0:
@@ -135,13 +121,14 @@ def run(trials=MAX_TRIALS, budget_s=TRIAL_BUDGET_S, timeout_s=None,
     stamp = time.strftime("%Y%m%d_%H%M%S")
     _log("tuning enter window=%d trials=%d trial_budget=%.1fs study_timeout=%s seed=%d" %
          (window, trials, budget_s, timeout_s, SAMPLER_SEED))
-    source = T.load_walk_source(window=window, log=_log)
     remaining(study_deadline)
     sampler = optuna.samplers.TPESampler(seed=SAMPLER_SEED, multivariate=True,
                                          n_startup_trials=TPE_STARTUP)
     study = optuna.create_study(study_name="gnn_sequence_%s" % stamp, storage=_storage(),
         direction="minimize", sampler=sampler, pruner=optuna.pruners.NopPruner())
     study.set_user_attr("model_family", "sequence")
+    study.set_user_attr("metric", METRIC)
+    study.set_user_attr("source", "live corpus; advisor.reward_data")
     study.set_user_attr("window", window)
     study.set_user_attr("trial_budget_seconds", budget_s)
     study.set_user_attr("sampler_seed", SAMPLER_SEED)
@@ -163,15 +150,13 @@ def run(trials=MAX_TRIALS, budget_s=TRIAL_BUDGET_S, timeout_s=None,
             _log("  t%d %s" % (trial.number, message))
 
         try:
-            torch.cuda.reset_peak_memory_stats()
-            fit = _fit_trial(trial, source, cfg, graph_config, artifacts, deadline, log)
+            fit = _fit_trial(trial, window, cfg, graph_config, artifacts, deadline, log)
+            trial.set_user_attr("graph_metrics", fit["graph_metrics"])
             remaining(deadline)
-        except (TimeoutError, torch.cuda.OutOfMemoryError) as error:
+        except TimeoutError as error:
             trial.set_user_attr("reason", str(error))
             raise optuna.TrialPruned(str(error)) from None
         finally:
-            gc.collect()
-            torch.cuda.empty_cache()
             seconds = time.perf_counter() - trial_started
             trial.set_user_attr("seconds", seconds)
             _log("TRIAL %d exit %.1fs" % (trial.number, seconds))
@@ -182,7 +167,7 @@ def run(trials=MAX_TRIALS, budget_s=TRIAL_BUDGET_S, timeout_s=None,
             encoder_seconds=fit["encoder"]["seconds"], encoder_epochs=fit["encoder"]["epochs"],
             encoder_val_loss=fit["encoder"]["val_loss"], sequence_seconds=fit["sequence"]["seconds"],
             embedding_seconds=fit["embedding_seconds"],
-            peak_allocated_gib=torch.cuda.max_memory_allocated() / 2**30)
+            normalized_val_mse=fit["normalized_val_mse"])
         for key, value in attributes.items():
             trial.set_user_attr(key, value)
         _log("TRIAL %d score val_mse=%.5f R2=%.5f" % (trial.number, fit["val_mse"], fit["val_r2"]))

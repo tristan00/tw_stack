@@ -74,9 +74,9 @@ def test_two_stage_checkpoint_reproduces_validation(objective, kind, tmp_path):
         actual = sequence(tokens[validation], tokens[indices[validation]], lengths[validation]).numpy()
     reward_predictions = actual * checkpoint["reward_sd"] + checkpoint["reward_mean"]
     np.testing.assert_allclose(reward_predictions, checkpoint["validation_predictions"], atol=1e-5)
-    targets = (np.asarray(ys)[validation] - checkpoint["reward_mean"]) / checkpoint["reward_sd"]
-    assert np.mean((actual - targets) ** 2) == pytest.approx(fit["val_mse"], abs=1e-5)
-    assert fit["val_r2"] == pytest.approx(1 - fit["val_mse"] / prep["val_var"])
+    targets = np.asarray(ys)[validation]
+    assert np.mean((reward_predictions - targets) ** 2) == pytest.approx(fit["val_mse"], abs=1e-5)
+    assert fit["val_r2"] == pytest.approx(1 - fit["val_mse"] / targets.var())
     assert fit["encoder"]["epochs"] == 1
 
 
@@ -153,7 +153,7 @@ def test_two_stage_cuda_bfloat16(tmp_path):
                      time.perf_counter() + 30, log=lambda _: None)
     checkpoint = torch.load(directory / "checkpoint.pt", weights_only=False)
     validation = checkpoint["validation_indices"]
-    residual = (checkpoint["validation_predictions"] - np.asarray(ys)[validation]) / checkpoint["reward_sd"]
+    residual = checkpoint["validation_predictions"] - np.asarray(ys)[validation]
     assert np.mean(residual ** 2) == pytest.approx(fit["val_mse"], abs=1e-5)
     assert fit["encoder"]["epochs"] == 1 and fit["sequence"]["epochs"] == 2
 
