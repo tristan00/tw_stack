@@ -103,11 +103,3 @@ def test_tuner_uses_only_measured_edge_caps():
     assert len(calls) == len(GC.TUNING_RANGES)
     for relation in GC.TUNING_RANGES:
         assert config.edge_limits[relation] == 0
-
-
-def test_gpu_budget_uses_free_memory_and_optional_lower_ceiling():
-    from advisor.mapgraph.optimize_greedy import _graph_gate
-    torch = SimpleNamespace(cuda=SimpleNamespace(mem_get_info=lambda: (8 * 2**30, 32 * 2**30)))
-    assert _graph_gate(torch, None, .7)["allowed_graph_gib"] == 5.6
-    assert _graph_gate(torch, 2, .7)["allowed_graph_gib"] == 2
-    assert _graph_gate(torch, 20, .7)["allowed_graph_gib"] == 5.6

@@ -57,10 +57,10 @@ def data_array(data, key):
 
 def _graphs(job):
     from advisor.mapgraph import train
-    run_dir, heads, graph_config = job
+    run_dir, heads, graph_config, deadline = job
     source = {"records": DecisionSource([(run_dir, heads)], lambda s: None),
               "runs": 1, "population_decisions": len(heads)}
-    walked = train.walk_source(source, graph_config, log=lambda s: None, arrays=True)
+    walked = train.walk_source(source, graph_config, log=lambda s: None, arrays=True, deadline=deadline)
     walked["block"] = _pack([example["data"] for example in walked["examples"]]) if walked["examples"] else {}
     for example in walked["examples"]:
         example["data"] = None
@@ -87,10 +87,11 @@ class DecisionSource:
             offset += len(heads)
         return DecisionSource(jobs, self.log)
 
-    def graphs(self, graph_config, workers):
+    def graphs(self, graph_config, workers, deadline=None):
         import concurrent.futures
         from collections import deque
-        jobs = iter((run_dir, heads[i:i + 1024], graph_config.as_dict())
+        from advisor.mapgraph.trial_budget import remaining
+        jobs = iter((run_dir, heads[i:i + 1024], graph_config.as_dict(), deadline)
                     for run_dir, heads in self.jobs for i in range(0, len(heads), 1024))
         started = time.perf_counter()
         self.log("mapgraph.source: graph workers enter workers=%d" % workers)
@@ -101,7 +102,7 @@ class DecisionSource:
                     break
                 pending.append(pool.submit(_graphs, job))
             while pending:
-                walked = pending.popleft().result()
+                walked = pending.popleft().result(timeout=remaining(deadline) if deadline is not None else None)
                 block = walked.pop("block")
                 for index, example in enumerate(walked["examples"]):
                     example["data"] = GraphView(block, index)

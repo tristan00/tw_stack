@@ -28,7 +28,7 @@ GRAPH_CONFIG = GC.from_dict(_CURRENT["graph_config"])
 MIN_ROWS = S.MIN_ROWS
 
 
-def prepare(datas, ys, groups, cfg, log=print, norm=None, free_datas=False):
+def prepare(datas, ys, groups, cfg, log=print, norm=None, free_datas=False, deadline=None):
     import numpy as np
     import torch
     from base_model import stable_split
@@ -48,7 +48,7 @@ def prepare(datas, ys, groups, cfg, log=print, norm=None, free_datas=False):
 
     if norm is None:
         t_n = time.time()
-        norm = N.norm_stats([datas[i] for i in trn_idx], log=log)
+        norm = N.norm_stats([datas[i] for i in trn_idx], log=log, deadline=deadline)
         log("mapgraph.greedy_train: norm stats %.1fs" % (time.time() - t_n))
 
     gen = torch.Generator().manual_seed(cfg["seed"])
@@ -57,7 +57,7 @@ def prepare(datas, ys, groups, cfg, log=print, norm=None, free_datas=False):
     val = [datas[i] for i in val_idx]
     if free_datas:
         datas.clear()
-        loader, vloader = T._collate_partitions((trn, val), cfg["batch"], torch.device("cpu"), log)
+        loader, vloader = T._collate_partitions((trn, val), cfg["batch"], torch.device("cpu"), log, deadline=deadline)
     else:
         loader = T._collate(trn, cfg["batch"], torch.device("cpu"), log, "greedy train")
         vloader = T._collate(val, cfg["batch"], torch.device("cpu"), log, "greedy val") if val_idx else []
@@ -77,6 +77,8 @@ def prepare(datas, ys, groups, cfg, log=print, norm=None, free_datas=False):
     log("mapgraph.greedy_train: prepare exit %.1fs" % (time.perf_counter() - started))
     return {"batch": cfg["batch"], "seed": cfg["seed"], "norm": norm, "loader": loader,
             "vloader": vloader, "val_var": val_var, "y_mean": y_mean, "y_sd": y_sd,
+            "train_indices": trn_idx, "validation_indices": val_idx,
+            "train_loader_indices": [trn_idx[i] for i in order0],
             "train_rows": len(trn_idx), "val_rows": len(val_idx)}
 
 

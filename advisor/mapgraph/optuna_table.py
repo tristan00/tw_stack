@@ -12,8 +12,8 @@ import common
 sys.path.insert(0, common.ADVISOR)
 sys.path.insert(0, common.DECISIONS)
 
-STUDY_PREFIXES = ("gnn_greedy_", "catboost_main_", "catboost_interrupt_")
-VALUE_HEADER = (("gnn_greedy_", "val_mse"), ("catboost_", "val_rmse"))
+STUDY_PREFIXES = ("gnn_greedy_", "gnn_sequence_", "catboost_main_", "catboost_interrupt_")
+VALUE_HEADER = (("gnn_greedy_", "val_mse"), ("gnn_sequence_", "val_mse"), ("catboost_", "val_rmse"))
 
 PARAM_ORDER = ["hidden", "entity_layers", "action_rounds", "dst_dim", "depth", "lr",
                "learning_rate", "weight_decay", "l2_leaf_reg", "dropout", "grad_clip",

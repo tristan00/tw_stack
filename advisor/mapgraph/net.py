@@ -104,9 +104,10 @@ def _group_stats(values, groups):
 
 
 @torch.no_grad()
-def norm_stats(datas, log=None):
+def norm_stats(datas, log=None, deadline=None):
     import time
     from advisor.mapgraph.source import data_array
+    from advisor.mapgraph.trial_budget import remaining
     started = time.perf_counter()
     xs = [data_array(d, "x") for d in datas]
     nt = np.concatenate([data_array(d, "node_type") for d in datas], dtype=np.min_scalar_type(_NT - 1),
@@ -120,6 +121,8 @@ def norm_stats(datas, log=None):
     spread = torch.ones(_NT, S.MAX_FIELDS)
     fitted = 0
     for c in range(S.MAX_FIELDS):
+        if deadline is not None:
+            remaining(deadline)
         valid = (fields > c) & (counts >= 8)
         if not valid.any():
             continue

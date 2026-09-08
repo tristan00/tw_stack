@@ -138,7 +138,8 @@ def load_walk_source(runs_root=None, limit=None, log=print, window=None):
 
 
 def walk_source(source, graph_config=None, limit=None, log=print, workers=1, arrays=False,
-                storage_device=None):
+                storage_device=None, deadline=None):
+    from advisor.mapgraph.trial_budget import remaining
     if arrays:
         from advisor.mapgraph.arrays import to_arrays as convert
     else:
@@ -152,7 +153,9 @@ def walk_source(source, graph_config=None, limit=None, log=print, workers=1, arr
     input_seconds = 0.0
     query_seconds, query_rows, build_seconds, tensor_seconds = 0.0, 0, 0.0, 0.0
     if workers > 1:
-        for walked in source["records"].graphs(graph_config, workers):
+        for walked in source["records"].graphs(graph_config, workers, deadline=deadline):
+            if deadline is not None:
+                remaining(deadline)
             if storage_device is not None and walked["examples"]:
                 import torch
                 block = walked["examples"][0]["data"].block
@@ -176,6 +179,8 @@ def walk_source(source, graph_config=None, limit=None, log=print, workers=1, arr
     else:
         records = source["records"]
     for rec, taken, y, gain in records:
+        if deadline is not None:
+            remaining(deadline)
         if y is None:
             tally["no_label"] += 1
             continue
@@ -197,6 +202,7 @@ def walk_source(source, graph_config=None, limit=None, log=print, workers=1, arr
         data = convert(g, y=y, taken=mask)
         tensor_seconds += time.perf_counter() - stage
         examples.append({"data": data, "y": float(y), "gain": float(gain),
+                         "decision_id": rec.get("decision_id"),
                          "campaign_id": rec.get("campaign_id"), "counts": g.counts})
         if limit and len(examples) >= limit:
             break
@@ -289,12 +295,13 @@ def _batch(items):
     return batch
 
 
-def _collate_partitions(partitions, size, dev, log):
+def _collate_partitions(partitions, size, dev, log, deadline=None):
     import numpy as np
     import torch
     from torch_geometric.data import Batch
     from advisor.mapgraph.net import DecisionGraph
     from advisor.mapgraph.source import GraphView
+    from advisor.mapgraph.trial_budget import remaining
     started = time.perf_counter()
     jobs, loaders, blocks = [], [], {}
     keys = next(items[0].keys() for items in partitions if items)
@@ -318,6 +325,8 @@ def _collate_partitions(partitions, size, dev, log):
     for key in keys:
         field_started = time.perf_counter()
         for group, offsets, batch in jobs:
+            if deadline is not None:
+                remaining(deadline)
             value, slices, increments = _batch_field(group, key, offsets)
             batch[key] = value.to(dev)
             batch._slice_dict[key], batch._inc_dict[key] = slices, increments
